@@ -1,0 +1,178 @@
+# 知天（zhitian）改动记录
+> Codex每次完成改动后必须追加到此文件
+
+## 2026-06-28
+- 初始化项目完整目录结构
+- 写入五层代码骨架
+- FastAPI基础服务完成
+- 写入三份docs文档
+- 修正zhipuai依赖版本为包源可安装版本
+- 修正langgraph依赖版本为包源可安装版本
+- 删除Codex内置Python 3.12创建的.venv
+- 使用本机Python 3.10.11重新创建.venv
+- 重新安装requirements.txt全部依赖并验证FastAPI接口
+- 更新GLM模型配置：主模型、fallback模型和视觉模型
+- 执行层接入GLM与Tavily真实SDK调用，按Level1规则重试和超时
+- /chat接口串联感知层、规划层、执行层和输出层
+- 显式补充sniffio依赖，修复zhipuai SDK导入缺失依赖问题
+- 写入真实API Key到.env并完成GLM chat链路验证
+- 完成Tavily search链路验证，/chat完整链路跑通
+- 删除根目录重复的三份Markdown文档，保留docs目录版本
+- 实现SQLite短期记忆，自动创建conversations和sessions表
+- /chat每轮结束后写入user和assistant对话记录
+- GLM调用前注入同session最近10条历史消息
+- 验证同session第二轮可记住“郑同学”，data/history.db已生成
+- 实现Chroma长期记忆，集合名称为zhitian_memory
+- /chat成功响应后异步写入assistant回复到向量库
+- 完成Chroma默认embedding模型下载、向量写入和search_memory检索验证
+- 确认data/vectordb目录已生成Chroma持久化文件
+- 实现方案B简化版LangGraph三节点状态机：classify、execute、respond
+- classify节点接入GLM Function Call选择search_web或direct_answer
+- /chat改为调用planning.run_graph，layer_trace固定为perception、planning、execution、output
+- 规划层异常按Level2规则降级为直接GLM回复
+- 搜索链路新增GLM query改写，Tavily使用优化后的搜索关键词
+- 搜索结果注入GLM上下文，由GLM基于原始问题生成自然语言回复
+- 为“适合出门”类问题增加天气方向纠偏，避免搜索偏向黄历
+- 删除“适合出门”搜索硬编码纠偏规则，改为通过GLM query优化prompt处理
+- 优化搜索query改写prompt，覆盖天气、比较、时事新闻等意图规则
+- 在项目开发规则中新增禁止用硬编码规则处理语义问题的约束
+- 规划层新增retrieve节点，调用Chroma长期记忆search_memory并写入state.context
+- LangGraph流转更新为classify -> retrieve -> execute -> respond
+- respond节点在存在长期记忆上下文时，将历史记录拼入GLM system_prompt生成最终回复
+- 验证/chat两轮对话和retrieve_node检索链路，确认layer_trace保持perception、planning、execution、output
+- 更新技术栈文档中的GLM模型为glm-4.7-flash，并重排claude_memory第四阶段待办任务
+
+## 2026-06-29
+- 优化Chroma长期记忆检索质量，search_memory接口改为支持session_id参数
+- search_memory新增距离阈值过滤，仅返回Chroma L2距离score < 0.8的结果
+- search_memory优先检索当前session记忆，不足top_k时再补充其他session相关记忆
+- planning.retrieve_node调用search_memory时传入state.session_id，减少旧测试记忆污染
+- 同步更新记忆层接口文档、CHANGELOG和claude_memory第四阶段进度
+- 执行层_llm_chat新增stream参数，stream=True时通过zhipuai SDK流式返回GLM内容片段
+- 新增POST /chat/stream接口，返回text/event-stream格式SSE事件
+- /chat/stream按data: {"chunk": "..."}格式输出内容，并以data: {"chunk": "[DONE]"}结束
+- 流式接口在完整回复拼接后继续写入SQLite短期记忆和Chroma长期记忆
+- /chat/stream在存在Chroma上下文时将历史记录注入GLM system_prompt，并保持逐chunk输出
+- 使用curl -N验证/chat/stream逐chunk返回和[DONE]结束标志，确认普通/chat接口不受影响
+- 记忆层新增get_session_history接口，按时间顺序返回指定session完整对话历史
+- clear_session扩展为同时清空SQLite短期记忆和Chroma长期向量记忆
+- 新增GET /memory/{session_id}接口，返回session_id、history和count
+- 新增DELETE /memory/{session_id}接口，返回cleared状态并清空两层记忆
+- 验证/memory查询、删除、删除后为空，以及/chat和/chat/stream回归正常
+- _search_web新增Tavily结果质量兜底：空结果时降级为模型知识回答并提示网络搜索无结果
+- _search_web新增Tavily异常兜底：按Level1规则重试1次后仍失败则降级为模型知识回答并提示搜索服务暂时不可用
+- _search_web新增低相关兜底：所有Tavily结果score < 0.3时降级为模型知识回答并提示搜索结果相关性不足
+- 保持正常搜索链路不变，高相关结果继续注入GLM上下文整理为自然语言回复
+- 使用函数级模拟验证空结果、异常、低相关和正常搜索路径
+- 规划层classify工具列表新增ask_clarification，用于缺少城市、位置等关键信息时向用户追问
+- LangGraph新增条件边：classify返回clarify时直接进入respond，跳过retrieve和execute
+- respond节点支持clarify意图，直接返回澄清问题，不再调用GLM二次生成
+- 规划层新增城市信息感知，检测到用户提供城市时写入Chroma长期记忆：用户城市：{城市}
+- classify阶段只读取当前session的城市/位置长期记忆，避免跨session城市污染
+- 搜索执行时将retrieve上下文传入query改写，天气/出行类问题可自动带入已记住城市
+- 验证“今天天气怎么样”会追问城市，“北京今天天气怎么样”直接搜索，“你好”正常chat，回答城市后再问天气可自动带入北京
+- 新增utils/logger.py统一日志系统，日志文件路径为data/logs/zhitian.log
+- 日志同时输出到文件和控制台，格式为时间 | 级别 | 模块 | 消息
+- 日志文件INFO及以上写入，控制台WARNING及以上输出，按天轮转并保留7天
+- execution、planning、memory、main关键路径已接入日志，覆盖工具失败、降级、规划异常、记忆失败、请求记录和未捕获异常
+- 更新项目结构图，补充utils/目录和data/logs/日志目录
+- 边界验证澄清机制：附近推荐、无城市降雨问题、AI新闻、写诗分别覆盖clarify/search/chat路径
+- 修正澄清机制误判：新增LLM澄清守卫，避免“明天会下雨吗”“附近有什么好吃的”被误判为chat
+- 修正城市识别误判：仅当用户明确提供所在地时写入“用户城市”，避免“我不喜欢北京的天气”误写入北京
+- 验证/chat/stream读到首条SSE后断开连接，SQLite未写入残缺记忆，无需额外修改流式落库逻辑
+- 修复搜索降级丢失上下文问题，_fallback_llm_answer支持session_id和context，并在降级调用_llm_chat时注入会话历史和城市记忆
+- search_web执行参数新增session_id透传，规划层调用搜索工具时同步传入当前session_id
+- clear_session改为返回两层记忆清理结果，Chroma清理失败不再静默吞掉
+- DELETE /memory/{session_id}在SQLite已清空但Chroma失败时返回partial状态和明细
+- docs/claude_memory.md遗留问题清单保留问题1/5/7/8，并将问题4/6标记为已修复
+- 合并规划层GLM调用，classify_node不再单独调用城市抽取和澄清守卫
+- classify Function Call工具调整为search_web(query_hint)、direct_answer、ask_clarification(question)、save_city(city)
+- classify一次Function Call同时完成意图判断、澄清判断和城市提取；save_city可与主意图工具同时调用
+- 删除规划层额外的城市抽取GLM调用和澄清守卫GLM调用，降低普通消息RPM消耗
+- docs/claude_memory.md将遗留问题1“规划层GLM调用次数偏多”标记为已修复
+- 补充主意图工具city参数，兼容当前SDK不支持parallel_tool_calls的情况
+- 验证“你好”“今天天气怎么样”“北京今天天气”“我在北京，今天天气怎么样”均只触发1次规划层GLM调用
+- 验证澄清、搜索、chat、城市记忆路径均正常：“北京今天天气”不写用户城市，“我在北京，今天天气怎么样”写入用户城市：北京
+- 严格化规划层层间数据传递，新增Task Pydantic模型并将AgentState.tasks改为list[Task]
+- 执行层新增ToolResult Pydantic模型，execution.run统一返回ToolResult对象
+- planning.AgentState.results改为list[ToolResult]，节点间读取结果改为类型化属性访问
+- AgentState统一补充city字段，普通/chat与/chat/stream预处理状态保持同一结构
+- 通过py_compile语法检查，并验证/chat发送“你好”和“今天北京天气”均正常返回且layer_trace正确
+- /health接口改为真实健康检查，返回感知、记忆、规划、执行、输出五层状态和ISO时间戳
+- /health记忆层检查SQLite文件可读写、Chroma目录存在和collection.count()轻量操作
+- /health规划层检查GLM API Key和LangGraph graph初始化状态，执行层检查GLM与Tavily Key配置
+- 验证正常状态/status为ok，临时清空TAVILY_API_KEY时execution为degraded且整体degraded，恢复后回到ok
+- 安装并接入mcp==1.9.4，新增layers/mcp_server.py将search_web和llm_chat封装为MCP工具
+- 新增layers/mcp_client.py，规划层execute_node改为通过mcp_client.call_tool调用工具，保持execution.py业务逻辑不变
+- requirements.txt补充mcp相关兼容版本：pydantic==2.13.4、starlette==0.38.6、sse-starlette==3.0.3、PyJWT==2.8.0
+- docs/zhitian_structure.md项目结构图补充MCP工具服务端和客户端文件
+- 验证pip check无依赖冲突，所有层文件py_compile通过，/health返回ok，/chat发送“你好”正常返回
+- 验证“搜索今日新闻”已走搜索链路，但搜索结果整理阶段触发GLM内容安全过滤，未改动execution.py业务逻辑
+- 修复搜索结果整理失败被当成成功响应的问题：_search_web在GLM整理异常时抛出统一“搜索结果整理失败”
+- planning.respond_node检测ToolResult error后返回用户可读降级提示，不再把error_msg原文作为回复
+- /chat改为读取planning.run_graph_state完整状态，规划错误时status返回degraded
+- /chat在AgentState.error非空时跳过SQLite和Chroma写入，避免错误内容污染记忆库
+- 验证“搜索今日科技新闻”返回degraded和降级提示，SQLite历史为空，Chroma无错误向量；正常北京天气搜索仍为success
+- 新增layers/document_loader.py，支持txt/md直接读取、pdfplumber解析PDF、python-docx解析docx，并提供chunk_text切片
+- memory.py新增独立文档Collection：zhitian_documents，提供save_document和search_documents
+- execution.py新增search_documents工具，从已上传文档检索并返回带来源文件名的自然语言结果
+- planning.py新增search_documents Function Call工具，与search_web严格区分，仅在用户明确提到文档/资料/上传文件时使用
+- main.py新增临时POST /documents/upload接口，接收file_path并完成文档解析、切片和向量写入
+- requirements.txt新增pdfplumber和python-docx依赖，并验证pip check无冲突
+- 使用data/test_product_doc.txt验证文档上传成功，写入1个chunk
+- 工具区分度验证：今天天气怎么样 -> clarify；刚才上传的文档里说了什么 -> document（首次受GLM超时影响降级，重试通过）；搜索今天的AI新闻 -> search；这份文档的主要内容是什么 -> document
+
+## 2026-07-01
+- 文档向量库新增管理能力：memory.list_documents按source去重统计chunk数量和最早上传时间
+- memory.delete_document支持按source删除zhitian_documents Collection中的全部chunk，并返回删除数量
+- main.py新增GET /documents接口，返回已上传文档列表和总数
+- main.py新增DELETE /documents/{source}接口，支持URL decode后按source删除文档，未命中时返回not_found
+- docs/zhitian_structure.md第五章接口规范补充文档管理接口
+- 使用data/document_manage_test.txt验证上传、GET /documents列表、DELETE /documents/{source}删除和再次列表移除均通过
+- 新增用户认证系统：layers/auth.py使用独立data/users.db保存用户和session归属
+- config.py和.env新增JWT_SECRET_KEY配置，JWT_EXPIRE_HOURS固定为24小时
+- requirements.txt新增bcrypt，认证层使用bcrypt保存密码哈希，禁止明文密码
+- main.py新增POST /auth/register和POST /auth/login，登录成功返回JWT token和role
+- main.py新增Bearer Token依赖和customer/employee/reviewer三档权限控制
+- /chat和/chat/stream改为登录后访问，并在成功响应后绑定session到当前用户
+- /memory接口要求登录且校验session归属，防止用户查看或删除他人会话
+- 文档接口权限调整：上传和列表需要employee或reviewer，删除文档仅reviewer可用
+- 新增GET /pending占位接口，仅reviewer可访问
+- 验证注册zheng_customer、zheng_employee、zheng_reviewer三个用户成功，登录均返回token
+- 验证未登录/chat返回401，customer可发消息但上传文档403，employee可上传但删除文档403，reviewer可删除文档，customer访问他人session历史403
+- Phase 3信任分级机制完成：documents审核表建在data/users.db，Chroma chunk保持不变，trust_level只由SQL管理
+- auth.py新增register_document、list_pending_documents、approve_document、reject_document、get_verified_sources等文档审核函数
+- POST /documents/upload上传成功后生成doc_id并登记pending状态，返回doc_id和trust_level
+- GET /pending改为返回SQL中的pending文档列表，新增POST /approve/{doc_id}和POST /reject/{doc_id}审核接口
+- memory.search_documents新增verified_sources过滤参数，execution._search_documents检索前先读取SQL verified source白名单
+- 补强规划层search_documents工具说明，明确“这份文档说了什么”等本地文档指代必须走文档检索
+- 验证employee上传文档后为pending且不参与检索，reviewer审核通过后可被/chat文档检索命中，rejected文档不参与检索
+- 修复.env被写成UTF-8 BOM导致python-dotenv读取到\ufeffGLM_API_KEY、后端误报GLM_API_KEY未配置的问题
+- 将.env重写为无BOM UTF-8，并验证GLM_API_KEY、JWT_SECRET_KEY、TAVILY_API_KEY均可被config.py读取
+
+## 2026-07-02
+- 新建独立静态网页管理后台D:\zhiliao\zhitian_admin，包含index/login/employee/reviewer四个页面
+- zhitian_admin新增统一样式css/style.css和API封装js/api.js，所有请求统一携带Authorization: Bearer token并处理401回登录页
+- 登录页支持POST /auth/login，employee跳转员工页，reviewer跳转审核员页，customer提示使用桌面端应用
+- 员工页支持上传服务器文件路径到POST /documents/upload，展示doc_id和pending状态，并可刷新GET /documents列表
+- 审核员页支持GET /pending、POST /approve/{doc_id}、POST /reject/{doc_id}审核流，以及GET/DELETE /documents文档总览
+- 审核员页新增记忆总览，读取GET /health展示document_chunks和sqlite_conversations统计，不展示具体对话内容
+- /health memory层新增sqlite_conversations、chroma_count、document_chunks只读统计字段，保持原有sqlite/chroma健康字段兼容
+- 验证JS语法检查通过，/health统计字段返回正常，employee上传pending、reviewer查看pending/批准/拒绝、customer管理后台拦截逻辑均通过
+- 修复Chroma跨session补充召回隐私风险：memory.search_memory新增strict_session参数，strict_session=True时只检索当前session
+- planning.retrieve_node生产路径调用search_memory时固定传入strict_session=True，避免不同用户之间长期记忆互相召回
+- docs/zhitian_structure.md第六章同步更新search_memory接口签名
+- 验证user_a/user_b两个customer账号隔离：user_b无法检索到user_a的“我叫张三”记忆，user_a同session第二轮后仍可检索自己的姓名记忆
+- 修复日志记录用户消息片段的隐私问题：/chat和/chat/stream请求日志改为记录message_len，不再记录消息原文或片段
+- main.py、planning.py、execution.py、memory.py中的日志统一脱敏，query/source/file_path改为长度信息，异常原文改为error_type
+- 保留允许记录的session_id、intent、tool、状态和错误类型信息，避免用户消息、文档内容、GLM回复和搜索结果原文进入日志
+- 验证发送“我的密码是123456”后日志仅新增message_len=11，没有出现“密码”或“123456”，/chat返回success
+- 新增scripts/clean_testdata.py，支持清空data/users.db中的users、user_sessions、documents和data/history.db中的conversations、sessions
+- 运行清理脚本验证通过，清理后users/documents/user_sessions/conversations/sessions记录数均为0
+- 新增POST /knowledge/input接口，employee/reviewer可直接提交文字知识，内容切片写入zhitian_documents并登记pending审核状态
+- zhitian_admin员工页新增“直接录入文字”区域，支持标题、正文提交到/knowledge/input，成功后展示doc_id、source和trust_level
+- 验证employee直接录入文字返回pending，reviewer在/pending可见并批准，通过/chat文档检索路径可命中录入内容
+- 新增README.md，补充项目简介、环境要求、.env配置、三项目启动方式、角色说明、注册账号、多机共用和数据备份说明
+- 新增D:\zhiliao\启动知天.bat，一键启动后端和Flutter Windows客户端，并提示管理后台入口
+- 修复D:\zhiliao\启动知天.bat中的绝对路径，改为基于%~dp0定位zhitian、zhitian_app和zhitian_admin
+- 完成基地v1.0 Git存档准备，新增.gitignore并排除.env、.venv、data等敏感或本地运行数据
