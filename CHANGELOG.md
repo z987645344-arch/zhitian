@@ -188,3 +188,6 @@
 - POST /documents/upload和POST /knowledge/input生成doc_id后写入Chroma metadata，预览接口也改为按doc_id读取chunk
 - 验证同source下A文档verified、B文档pending时，B特有内容不会被检索；B审核通过后可被检索，doc_id预览隔离正常
 - 补全layers/auth.py日志脱敏：username/source/异常原文均改为长度或error_type，保留允许记录的user_id、doc_id和操作状态
+- 修复/chat/stream在clarify和search路径非真流式的问题：clarify按字符逐步SSE输出，search在Tavily后使用GLM流式整理结果
+- 新增execution.stream_search_result，普通POST /chat搜索路径保持非流式兼容，流式整理失败时降级为一次性提示或非流式整理
+- 验证Python语法检查通过，前端flutter analyze通过，管理后台JS语法检查通过

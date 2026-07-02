@@ -109,6 +109,82 @@ def _search_web(query: str, context: list[str] = None, session_id: str = None) -
         raise RuntimeError("搜索结果整理失败") from e
 
 
+def stream_search_result(
+    query: str,
+    context: list[str] = None,
+    session_id: str = None
+) -> Iterator[str]:
+    """流式联网搜索：Tavily完成后用GLM stream逐chunk整理搜索结果。"""
+    if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
+        raise ValueError("TAVILY_API_KEY未配置")
+
+    original_question = query
+    optimized_query = _rewrite_search_query(original_question, context)
+    client = TavilyClient(api_key=config.TAVILY_API_KEY)
+    try:
+        result = _search_tavily_with_retry(client, optimized_query)
+    except Exception as e:
+        logger.warning("Tavily调用失败，流式搜索降级为模型知识回答：error_type=%s", type(e).__name__)
+        yield _fallback_llm_answer(
+            original_question,
+            session_id=session_id,
+            context=context,
+            prefix="（搜索服务暂时不可用，以下为模型知识回答）"
+        )
+        return
+
+    results = result.get("results", []) if isinstance(result, dict) else []
+    if not results:
+        logger.warning("Tavily返回空结果，流式搜索降级为模型知识回答：query_len=%s", len(optimized_query or ""))
+        yield _fallback_llm_answer(
+            original_question,
+            session_id=session_id,
+            context=context,
+            prefix="（网络搜索无结果，以下为模型知识回答）"
+        )
+        return
+
+    if _has_low_search_relevance(results):
+        logger.warning("Tavily搜索结果相关性不足，流式搜索降级为模型知识回答：query_len=%s", len(optimized_query or ""))
+        yield _fallback_llm_answer(
+            original_question,
+            session_id=session_id,
+            context=context,
+            prefix="（搜索结果相关性不足，以下为模型知识回答）"
+        )
+        return
+
+    search_results = json.dumps(result, ensure_ascii=False)
+    emitted = False
+    try:
+        stream = _llm_chat(
+            message=original_question,
+            search_results=search_results,
+            original_question=original_question,
+            stream=True
+        )
+        for chunk in stream:
+            emitted = True
+            yield chunk
+    except Exception as e:
+        logger.warning(
+            "流式搜索结果整理失败：query_len=%s emitted=%s error_type=%s",
+            len(optimized_query or ""),
+            emitted,
+            type(e).__name__
+        )
+        if emitted:
+            return
+        try:
+            yield _llm_chat(
+                message=original_question,
+                search_results=search_results,
+                original_question=original_question
+            )
+        except Exception:
+            yield "抱歉，搜索结果处理失败，请稍后重试"
+
+
 def _search_documents(query: str) -> str:
     """检索已上传的本地文档并整理为自然语言。"""
     verified_doc_ids = auth.get_verified_doc_ids()

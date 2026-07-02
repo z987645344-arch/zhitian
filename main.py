@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import uuid
+import time
 from datetime import datetime
 from urllib.parse import unquote
 
@@ -457,7 +458,35 @@ def _chat_stream_events(request: ChatRequest, current_user: dict):
             perception_output.message
         )
 
-        if state["intent"] == "chat":
+        if state["intent"] == "clarify":
+            clarification = state.get("clarification") or state.get("response") or "请补充关键信息。"
+            for char in clarification:
+                chunks.append(char)
+                yield _sse_data({"chunk": char})
+                time.sleep(0.03)
+        elif state["intent"] == "search":
+            emitted = False
+            try:
+                stream = execution.stream_search_result(
+                    query=perception_output.message,
+                    context=state["context"],
+                    session_id=perception_output.session_id
+                )
+                for chunk in stream:
+                    emitted = True
+                    chunks.append(chunk)
+                    yield _sse_data({"chunk": chunk})
+            except Exception as e:
+                logger.error("/chat/stream搜索流式处理失败：session_id=%s error_type=%s", request.session_id, type(e).__name__)
+                if not emitted:
+                    final_state = planning.run_graph_state(
+                        perception_output.session_id,
+                        perception_output.message
+                    )
+                    final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
+                    chunks.append(final_data)
+                    yield _sse_data({"chunk": final_data})
+        elif state["intent"] == "chat":
             stream = execution._llm_chat(
                 message=perception_output.message,
                 session_id=perception_output.session_id,

@@ -49,6 +49,7 @@
 - [x] 直接录入知识接口（POST /knowledge/input）
 - [x] 员工撤销pending文档 + 审核员预览待审核文档
 - [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
+- [x] /chat/stream search/clarify路径真流式输出
 - [x] README和启动脚本完成
 
 ### 前端（D:\zhiliao\zhitian_app\）
@@ -61,7 +62,7 @@
 - [x] 新建对话按钮 + 错误提示
 - [x] 历史记录页
 - [x] 登录页 + token持久化
-- [ ] 界面美化
+- [x] 界面美化
 
 ### 管理后台（D:\zhiliao\zhitian_admin\）
 - [x] 静态网页项目创建
@@ -106,13 +107,13 @@ lib/
 ## 后端遗留问题（企业部署前处理）
 
 ```
-问题5  /chat/stream search/clarify路径非真流式
 MCP    当前为协议壳，后期替换为真实进程级调用
 ```
 
 ## 已修复遗留问题
 - 问题7：Chroma跨session补充召回已修复，planning.retrieve_node生产路径使用strict_session=True，只检索当前session长期记忆
 - 问题8：日志记录用户消息片段已修复，/chat与/chat/stream仅记录message_len，query/source/file_path仅记录长度，异常仅记录error_type
+- 问题5：/chat/stream search/clarify路径非真流式已修复，clarify按字符输出，search在Tavily后使用GLM流式整理结果
 - auth.py日志脱敏已补全：认证层不再记录username、source路径或异常消息原文，仅记录长度、user_id/doc_id和error_type
 - 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
 
@@ -120,7 +121,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - zhipuai SDK不支持parallel_tool_calls，已做兼容
 - mcp版本固定为1.9.4（新版与FastAPI不兼容）
 - Chroma 0.5.0启动时打印telemetry日志，不影响功能
-- 搜索链路约需20秒（3次GLM调用+网络请求），待流式显示优化后体验改善
+- 搜索链路仍受GLM和网络耗时影响，但/search结果整理阶段已支持SSE逐chunk输出
 - JWT_SECRET_KEY必须在.env里配置随机强密钥，不能使用占位值
 - .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
 
@@ -150,3 +151,4 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：修复文档审核体验，employee可撤销自己pending文档，reviewer可预览待审核文档chunk后再批准或拒绝
 - 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤
 - 2026-07-02：补全auth.py日志脱敏，认证层日志统一改为长度和error_type格式
+- 2026-07-02：完成客户端简约风格美化，统一蓝白灰视觉规范；/chat/stream的search和clarify路径改为真流式输出
