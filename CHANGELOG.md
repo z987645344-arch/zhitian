@@ -191,3 +191,7 @@
 - 修复/chat/stream在clarify和search路径非真流式的问题：clarify按字符逐步SSE输出，search在Tavily后使用GLM流式整理结果
 - 新增execution.stream_search_result，普通POST /chat搜索路径保持非流式兼容，流式整理失败时降级为一次性提示或非流式整理
 - 验证Python语法检查通过，前端flutter analyze通过，管理后台JS语法检查通过
+- 新增ADMIN_SECRET_KEY配置，供审核员执行知识库/记忆清空等高风险操作时二次确认
+- 新增GET /admin/knowledge接口，reviewer可查看文档知识、手动录入知识和脱敏session长期记忆片段
+- 新增POST /admin/delete_memory接口，支持按管理员密码清空全部长期记忆、全部文档知识库或指定session前缀记忆
+- 记忆层新增文档chunk/长期记忆片段读取、全量清空和按session前缀删除能力；auth层新增documents审核表清空能力

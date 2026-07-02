@@ -52,6 +52,11 @@ class KnowledgeInputRequest(BaseModel):
     title: str = ""
 
 
+class AdminDeleteMemoryRequest(BaseModel):
+    admin_secret: str
+    target: str
+
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
@@ -396,6 +401,51 @@ async def reject_document(doc_id: str, current_user: dict = Depends(require_revi
     }
 
 
+@app.get("/admin/knowledge")
+async def admin_knowledge(current_user: dict = Depends(require_reviewer)):
+    logger.info("收到GET /admin/knowledge请求：user_id=%s", current_user["user_id"])
+    return _build_admin_knowledge_payload()
+
+
+@app.post("/admin/delete_memory")
+async def admin_delete_memory(
+    request: AdminDeleteMemoryRequest,
+    current_user: dict = Depends(require_reviewer)
+):
+    logger.info(
+        "收到POST /admin/delete_memory请求：user_id=%s target=%s",
+        current_user["user_id"],
+        _safe_admin_delete_target(request.target)
+    )
+    if not config.ADMIN_SECRET_KEY or request.admin_secret != config.ADMIN_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="管理员密码错误")
+
+    target = (request.target or "").strip()
+    if target == "all_memory":
+        deleted = memory.clear_all_vector_memory()
+        return {
+            "status": "success",
+            "deleted": f"已清空全部对话长期记忆，共删除{deleted}条"
+        }
+    if target == "all_documents":
+        deleted_chunks = memory.clear_all_documents()
+        deleted_records = auth.clear_document_records()
+        return {
+            "status": "success",
+            "deleted": f"已清空全部文档知识库，删除{deleted_chunks}个chunk和{deleted_records}条审核记录"
+        }
+    if target.startswith("session:"):
+        prefix = target.removeprefix("session:").strip()
+        if not prefix:
+            raise HTTPException(status_code=400, detail="session前缀不能为空")
+        deleted = memory.delete_memory_by_session_prefix(prefix)
+        return {
+            "status": "success",
+            "deleted": f"已删除session前缀为{prefix}的长期记忆，共{deleted}条"
+        }
+    raise HTTPException(status_code=400, detail="未知删除目标")
+
+
 def _list_documents_for_user(current_user: dict) -> list[dict]:
     chunk_info = {
         item["source"]: item
@@ -440,6 +490,68 @@ def _list_documents_for_user(current_user: dict) -> list[dict]:
         }
         for item in chunk_info.values()
     ]
+
+
+def _build_admin_knowledge_payload() -> dict:
+    document_records = {
+        item["doc_id"]: item
+        for item in auth.list_documents()
+        if item.get("doc_id")
+    }
+    grouped = {}
+    for chunk in memory.list_document_chunks():
+        doc_id = chunk.get("doc_id", "") or f"unknown:{chunk.get('source', '')}"
+        if doc_id not in grouped:
+            record = document_records.get(doc_id, {})
+            grouped[doc_id] = {
+                "doc_id": doc_id,
+                "source": chunk.get("source", "") or record.get("source", ""),
+                "trust_level": record.get("trust_level", "unknown"),
+                "chunks": []
+            }
+        grouped[doc_id]["chunks"].append((
+            int(chunk.get("chunk_index", 0)),
+            chunk.get("content", "")
+        ))
+
+    documents = []
+    manual_inputs = []
+    for item in grouped.values():
+        chunks = [content for _, content in sorted(item["chunks"], key=lambda pair: pair[0])]
+        entry = {
+            "doc_id": item["doc_id"],
+            "source": item["source"],
+            "trust_level": item["trust_level"],
+            "chunks": chunks
+        }
+        if str(item["source"]).startswith("manual_input:"):
+            manual_inputs.append(entry)
+        else:
+            documents.append(entry)
+
+    memory_fragments = [
+        {
+            "session_id": _mask_session_id(item.get("session_id", "")),
+            "content": item.get("content", "")
+        }
+        for item in memory.list_memory_fragments()
+    ]
+    return {
+        "documents": documents,
+        "manual_inputs": manual_inputs,
+        "memory_fragments": memory_fragments
+    }
+
+
+def _mask_session_id(session_id: str) -> str:
+    return (session_id or "")[:8]
+
+
+def _safe_admin_delete_target(target: str) -> str:
+    target = target or ""
+    if target.startswith("session:"):
+        return f"session:{target.removeprefix('session:')[:8]}"
+    return target
 
 
 def _chat_stream_events(request: ChatRequest, current_user: dict):
