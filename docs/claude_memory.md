@@ -113,6 +113,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 ## 已修复遗留问题
 - 问题7：Chroma跨session补充召回已修复，planning.retrieve_node生产路径使用strict_session=True，只检索当前session长期记忆
 - 问题8：日志记录用户消息片段已修复，/chat与/chat/stream仅记录message_len，query/source/file_path仅记录长度，异常仅记录error_type
+- auth.py日志脱敏已补全：认证层不再记录username、source路径或异常消息原文，仅记录长度、user_id/doc_id和error_type
 - 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
 
 ## 已知技术问题
@@ -148,3 +149,4 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：基地v1.0三项目Git存档完成：zhitian(e4f0836)、zhitian_app(4bdb500)、zhitian_admin(118ebd5)，三个仓库均clean
 - 2026-07-02：修复文档审核体验，employee可撤销自己pending文档，reviewer可预览待审核文档chunk后再批准或拒绝
 - 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤
+- 2026-07-02：补全auth.py日志脱敏，认证层日志统一改为长度和error_type格式

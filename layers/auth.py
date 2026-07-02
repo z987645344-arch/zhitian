@@ -60,7 +60,7 @@ def init_db() -> None:
                 """
             )
     except Exception as e:
-        logger.error("用户数据库初始化失败：%s", e)
+        logger.error("用户数据库初始化失败：error_type=%s", type(e).__name__)
         raise
 
 
@@ -90,7 +90,11 @@ def register_user(username: str, password: str, role: str) -> dict:
     except sqlite3.IntegrityError:
         raise ValueError("username已存在")
     except Exception as e:
-        logger.error("用户注册失败：username=%s error=%s", username, e)
+        logger.error(
+            "用户注册失败：username_len=%s error_type=%s",
+            len(username or ""),
+            type(e).__name__
+        )
         raise
 
     return {
@@ -158,7 +162,12 @@ def bind_session(session_id: str, user_id: str) -> None:
                 (session_id, user_id)
             )
     except Exception as e:
-        logger.error("绑定用户会话失败：session_id=%s user_id=%s error=%s", session_id, user_id, e)
+        logger.error(
+            "绑定用户会话失败：session_id=%s user_id=%s error_type=%s",
+            session_id,
+            user_id,
+            type(e).__name__
+        )
         raise
 
 
@@ -179,7 +188,12 @@ def verify_session_owner(session_id: str, user_id: str) -> bool:
             ).fetchone()
         return row is not None
     except Exception as e:
-        logger.error("校验用户会话归属失败：session_id=%s user_id=%s error=%s", session_id, user_id, e)
+        logger.error(
+            "校验用户会话归属失败：session_id=%s user_id=%s error_type=%s",
+            session_id,
+            user_id,
+            type(e).__name__
+        )
         raise
 
 
@@ -202,7 +216,12 @@ def register_document(doc_id: str, source: str, uploaded_by: str) -> None:
                 (doc_id, source, uploaded_by)
             )
     except Exception as e:
-        logger.error("登记文档失败：doc_id=%s source=%s error=%s", doc_id, source, e)
+        logger.error(
+            "登记文档失败：doc_id=%s source_len=%s error_type=%s",
+            doc_id,
+            len(source or ""),
+            type(e).__name__
+        )
         raise
 
 
@@ -220,7 +239,7 @@ def list_pending_documents() -> list[dict]:
             ).fetchall()
         return [_document_row_to_dict(row) for row in rows]
     except Exception as e:
-        logger.error("读取待审核文档失败：%s", e)
+        logger.error("读取待审核文档失败：error_type=%s", type(e).__name__)
         raise
 
 
@@ -285,7 +304,7 @@ def get_document(doc_id: str) -> dict | None:
             ).fetchone()
         return _document_row_to_dict(row) if row else None
     except Exception as e:
-        logger.error("读取文档状态失败：doc_id=%s error=%s", doc_id, e)
+        logger.error("读取文档状态失败：doc_id=%s error_type=%s", doc_id, type(e).__name__)
         raise
 
 
@@ -348,7 +367,11 @@ def _get_user_by_username(username: str) -> sqlite3.Row | None:
                 (username,)
             ).fetchone()
     except Exception as e:
-        logger.error("读取用户失败：username=%s error=%s", username, e)
+        logger.error(
+            "读取用户失败：username_len=%s error_type=%s",
+            len(username or ""),
+            type(e).__name__
+        )
         raise
 
 
@@ -368,7 +391,12 @@ def _review_document(doc_id: str, reviewer_user_id: str, trust_level: str) -> bo
             )
         return cursor.rowcount > 0
     except Exception as e:
-        logger.error("审核文档失败：doc_id=%s trust_level=%s error=%s", doc_id, trust_level, e)
+        logger.error(
+            "审核文档失败：doc_id=%s trust_level=%s error_type=%s",
+            doc_id,
+            trust_level,
+            type(e).__name__
+        )
         raise
 
 

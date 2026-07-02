@@ -187,3 +187,4 @@
 - memory.search_documents改为verified_doc_ids过滤，避免同source下pending/rejected chunk被verified记录带出
 - POST /documents/upload和POST /knowledge/input生成doc_id后写入Chroma metadata，预览接口也改为按doc_id读取chunk
 - 验证同source下A文档verified、B文档pending时，B特有内容不会被检索；B审核通过后可被检索，doc_id预览隔离正常
+- 补全layers/auth.py日志脱敏：username/source/异常原文均改为长度或error_type，保留允许记录的user_id、doc_id和操作状态
