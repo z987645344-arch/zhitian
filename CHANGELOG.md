@@ -141,10 +141,10 @@
 - 验证注册zheng_customer、zheng_employee、zheng_reviewer三个用户成功，登录均返回token
 - 验证未登录/chat返回401，customer可发消息但上传文档403，employee可上传但删除文档403，reviewer可删除文档，customer访问他人session历史403
 - Phase 3信任分级机制完成：documents审核表建在data/users.db，Chroma chunk保持不变，trust_level只由SQL管理
-- auth.py新增register_document、list_pending_documents、approve_document、reject_document、get_verified_sources等文档审核函数
+- auth.py新增register_document、list_pending_documents、approve_document、reject_document、get_verified_doc_ids等文档审核函数
 - POST /documents/upload上传成功后生成doc_id并登记pending状态，返回doc_id和trust_level
 - GET /pending改为返回SQL中的pending文档列表，新增POST /approve/{doc_id}和POST /reject/{doc_id}审核接口
-- memory.search_documents新增verified_sources过滤参数，execution._search_documents检索前先读取SQL verified source白名单
+- memory.search_documents新增verified_doc_ids过滤参数，execution._search_documents检索前先读取SQL verified doc_id白名单
 - 补强规划层search_documents工具说明，明确“这份文档说了什么”等本地文档指代必须走文档检索
 - 验证employee上传文档后为pending且不参与检索，reviewer审核通过后可被/chat文档检索命中，rejected文档不参与检索
 - 修复.env被写成UTF-8 BOM导致python-dotenv读取到\ufeffGLM_API_KEY、后端误报GLM_API_KEY未配置的问题
@@ -179,3 +179,11 @@
 - 完成zhitian_app Git存档：commit 4bdb500，提交Flutter Windows桌面端、登录、聊天、历史记录等客户端v1.0代码，确认build/未提交
 - 完成zhitian_admin Git存档：commit 118ebd5，提交员工上传/直接录入、审核员审核、文档总览和记忆统计等管理后台v1.0代码
 - 复核三项目Git状态：zhitian、zhitian_app、zhitian_admin均为working tree clean，基地v1.0三项目全部存档完毕
+- 修复文档删除权限：employee可撤销自己上传且仍为pending的文档，reviewer继续保留删除任意文档权限
+- DELETE /documents/{source}删除Chroma chunk时同步删除users.db中的documents审核记录，避免撤销后仍出现在pending列表
+- GET /documents返回SQL审核状态、上传者、doc_id、chunk_count和can_revoke字段，employee仅看到自己的文档记录
+- 新增GET /documents/{doc_id}/preview接口，reviewer可按doc_id预览文档在Chroma中的全部chunk内容
+- 修复文档审核隔离粒度问题：Chroma文档chunk metadata新增doc_id，检索白名单从source改为verified doc_id
+- memory.search_documents改为verified_doc_ids过滤，避免同source下pending/rejected chunk被verified记录带出
+- POST /documents/upload和POST /knowledge/input生成doc_id后写入Chroma metadata，预览接口也改为按doc_id读取chunk
+- 验证同source下A文档verified、B文档pending时，B特有内容不会被检索；B审核通过后可被检索，doc_id预览隔离正常

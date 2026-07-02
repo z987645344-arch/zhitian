@@ -224,6 +224,23 @@ def list_pending_documents() -> list[dict]:
         raise
 
 
+def list_documents() -> list[dict]:
+    """返回所有登记过的文档审核记录。"""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                FROM documents
+                ORDER BY uploaded_at DESC
+                """
+            ).fetchall()
+        return [_document_row_to_dict(row) for row in rows]
+    except Exception as e:
+        logger.error("读取文档审核记录失败：error_type=%s", type(e).__name__)
+        raise
+
+
 def approve_document(doc_id: str, reviewer_user_id: str) -> bool:
     """审核通过文档。"""
     return _review_document(doc_id, reviewer_user_id, "verified")
@@ -234,21 +251,21 @@ def reject_document(doc_id: str, reviewer_user_id: str) -> bool:
     return _review_document(doc_id, reviewer_user_id, "rejected")
 
 
-def get_verified_sources() -> list[str]:
-    """返回所有已审核通过文档的source列表。"""
+def get_verified_doc_ids() -> list[str]:
+    """返回所有审核通过的文档doc_id列表。"""
     try:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT source
+                SELECT doc_id
                 FROM documents
                 WHERE trust_level = 'verified'
-                ORDER BY source ASC
+                ORDER BY doc_id ASC
                 """
             ).fetchall()
-        return [str(row["source"]) for row in rows]
+        return [str(row["doc_id"]) for row in rows]
     except Exception as e:
-        logger.error("读取已审核文档source失败：%s", e)
+        logger.error("读取已审核文档doc_id失败：error_type=%s", type(e).__name__)
         raise
 
 
@@ -269,6 +286,51 @@ def get_document(doc_id: str) -> dict | None:
         return _document_row_to_dict(row) if row else None
     except Exception as e:
         logger.error("读取文档状态失败：doc_id=%s error=%s", doc_id, e)
+        raise
+
+
+def get_documents_by_source(source: str) -> list[dict]:
+    """按source读取文档审核记录。"""
+    if not source:
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                FROM documents
+                WHERE source = ?
+                ORDER BY uploaded_at DESC
+                """,
+                (source,)
+            ).fetchall()
+        return [_document_row_to_dict(row) for row in rows]
+    except Exception as e:
+        logger.error("按source读取文档审核记录失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
+        raise
+
+
+def can_employee_delete_document(doc_id: str, user_id: str) -> bool:
+    """判断员工是否有权撤销该文档：必须是自己上传的且状态为pending。"""
+    document = get_document(doc_id)
+    if not document:
+        return False
+    return document["uploaded_by"] == user_id and document["trust_level"] == "pending"
+
+
+def delete_document_records_by_source(source: str) -> int:
+    """删除指定source对应的审核记录。"""
+    if not source:
+        return 0
+    try:
+        with _connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM documents WHERE source = ?",
+                (source,)
+            )
+        return cursor.rowcount
+    except Exception as e:
+        logger.error("删除文档审核记录失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
         raise
 
 

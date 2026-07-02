@@ -229,10 +229,12 @@ def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[s
     return results
 
 
-def save_document(file_path: str, chunks: list[str]) -> int:
+def save_document(file_path: str, chunks: list[str], doc_id: str) -> int:
     """将文档切片写入独立Chroma Collection。"""
     if not file_path:
         raise ValueError("file_path不能为空")
+    if not doc_id:
+        raise ValueError("doc_id不能为空")
     if not chunks:
         return 0
 
@@ -248,6 +250,7 @@ def save_document(file_path: str, chunks: list[str]) -> int:
         metadatas=[
             {
                 "source": file_path,
+                "doc_id": doc_id,
                 "chunk_index": i,
                 "total_chunks": total_chunks,
                 "uploaded_at": uploaded_at
@@ -262,19 +265,19 @@ def save_document(file_path: str, chunks: list[str]) -> int:
 def search_documents(
     query: str,
     top_k: int = 5,
-    verified_sources: list[str] = None
+    verified_doc_ids: list[str] = None
 ) -> list[dict]:
-    """从本地文档Collection检索相关内容，可按已审核source过滤。"""
+    """从本地文档Collection检索相关内容，可按已审核doc_id过滤。"""
     if not query:
         return []
-    allowed_sources = None
-    if verified_sources is not None:
-        allowed_sources = {str(source) for source in verified_sources if source}
-        if not allowed_sources:
+    allowed_doc_ids = None
+    if verified_doc_ids is not None:
+        allowed_doc_ids = [str(doc_id) for doc_id in verified_doc_ids if doc_id]
+        if not allowed_doc_ids:
             return []
 
     collection = _get_document_collection()
-    result = _query_document_memory(collection, query, max(1, int(top_k)), allowed_sources)
+    result = _query_document_memory(collection, query, max(1, int(top_k)), allowed_doc_ids)
     documents = result.get("documents", [[]])
     metadatas = result.get("metadatas", [[]])
     if not documents:
@@ -286,11 +289,13 @@ def search_documents(
             continue
         metadata = metadata or {}
         source = str(metadata.get("source", ""))
-        if allowed_sources is not None and source not in allowed_sources:
+        doc_id = str(metadata.get("doc_id", ""))
+        if allowed_doc_ids is not None and doc_id not in allowed_doc_ids:
             continue
         results.append({
             "content": doc,
             "source": source,
+            "doc_id": doc_id,
             "chunk_index": int(metadata.get("chunk_index", 0))
         })
     return results
@@ -345,6 +350,32 @@ def delete_document(source: str) -> int:
         raise
 
 
+def get_document_chunks(source: str, doc_id: str = "") -> list[str]:
+    """读取指定文档的全部chunk，优先按doc_id过滤并按chunk_index排序。"""
+    if not source and not doc_id:
+        return []
+
+    collection = _get_document_collection()
+    try:
+        where = {"doc_id": doc_id} if doc_id else {"source": source}
+        result = collection.get(
+            where=where,
+            include=["documents", "metadatas"]
+        )
+    except Exception as e:
+        logger.error("Chroma文档预览读取失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
+        raise
+
+    documents = result.get("documents", [])
+    metadatas = result.get("metadatas", [])
+    indexed_chunks = []
+    for doc, metadata in zip(documents, metadatas):
+        metadata = metadata or {}
+        indexed_chunks.append((int(metadata.get("chunk_index", 0)), doc or ""))
+    indexed_chunks.sort(key=lambda item: item[0])
+    return [chunk for _, chunk in indexed_chunks if chunk]
+
+
 def _query_vector_memory(collection, query: str, n_results: int, where: dict = None) -> dict:
     """执行Chroma查询，兼容空集合或where无命中场景"""
     kwargs = {
@@ -371,35 +402,18 @@ def _query_document_memory(
     collection,
     query: str,
     n_results: int,
-    allowed_sources: set[str] = None
+    allowed_doc_ids: list[str] = None
 ) -> dict:
-    """文档检索，传入source白名单时逐source查询后按距离合并。"""
-    if allowed_sources is None:
+    """文档检索，传入doc_id白名单时只查询已审核文档chunk。"""
+    if allowed_doc_ids is None:
         return _query_vector_memory(collection, query, n_results)
 
-    merged = []
-    for source in sorted(allowed_sources):
-        result = _query_vector_memory(
-            collection,
-            query,
-            n_results,
-            where={"source": source}
-        )
-        documents = result.get("documents", [[]])
-        metadatas = result.get("metadatas", [[]])
-        distances = result.get("distances", [[]])
-        if not documents:
-            continue
-        for doc, metadata, distance in zip(documents[0], metadatas[0], distances[0]):
-            merged.append((distance if distance is not None else float("inf"), doc, metadata))
-
-    merged.sort(key=lambda item: item[0])
-    top_items = merged[:max(1, int(n_results))]
-    return {
-        "documents": [[item[1] for item in top_items]],
-        "metadatas": [[item[2] for item in top_items]],
-        "distances": [[item[0] for item in top_items]]
-    }
+    return _query_vector_memory(
+        collection,
+        query,
+        n_results,
+        where={"doc_id": {"$in": allowed_doc_ids}}
+    )
 
 
 def _append_relevant_documents(

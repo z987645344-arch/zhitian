@@ -47,6 +47,8 @@
 - [x] Phase 3信任分级机制（pending/verified/rejected审核流）
 - [x] 测试数据清理脚本
 - [x] 直接录入知识接口（POST /knowledge/input）
+- [x] 员工撤销pending文档 + 审核员预览待审核文档
+- [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
 - [x] README和启动脚本完成
 
 ### 前端（D:\zhiliao\zhitian_app\）
@@ -66,6 +68,7 @@
 - [x] 登录页（employee/reviewer分流，customer拦截）
 - [x] 员工页（上传文档、直接录入知识、文档列表）
 - [x] 审核员页（pending审核、文档总览、记忆统计）
+- [x] 员工撤销待审核文档、审核员预览待审核内容
 
 ---
 
@@ -110,6 +113,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 ## 已修复遗留问题
 - 问题7：Chroma跨session补充召回已修复，planning.retrieve_node生产路径使用strict_session=True，只检索当前session长期记忆
 - 问题8：日志记录用户消息片段已修复，/chat与/chat/stream仅记录message_len，query/source/file_path仅记录长度，异常仅记录error_type
+- 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
 
 ## 已知技术问题
 - zhipuai SDK不支持parallel_tool_calls，已做兼容
@@ -142,3 +146,5 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：新增POST /knowledge/input直接录入知识接口，管理后台员工页支持标题+正文提交，仍走pending审核流
 - 2026-07-02：新增README.md和D:\zhiliao\启动知天.bat，完成基础启动与备份说明
 - 2026-07-02：基地v1.0三项目Git存档完成：zhitian(e4f0836)、zhitian_app(4bdb500)、zhitian_admin(118ebd5)，三个仓库均clean
+- 2026-07-02：修复文档审核体验，employee可撤销自己pending文档，reviewer可预览待审核文档chunk后再批准或拒绝
+- 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤

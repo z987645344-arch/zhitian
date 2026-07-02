@@ -111,8 +111,8 @@ def _search_web(query: str, context: list[str] = None, session_id: str = None) -
 
 def _search_documents(query: str) -> str:
     """检索已上传的本地文档并整理为自然语言。"""
-    verified_sources = auth.get_verified_sources()
-    results = memory.search_documents(query, top_k=5, verified_sources=verified_sources)
+    verified_doc_ids = auth.get_verified_doc_ids()
+    results = memory.search_documents(query, top_k=5, verified_doc_ids=verified_doc_ids)
     if not results:
         return "未在已上传文档中找到相关内容"
 

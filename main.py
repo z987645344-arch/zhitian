@@ -277,8 +277,8 @@ async def upload_document(
         }
 
     chunks = document_loader.chunk_text(text)
-    count = memory.save_document(request.file_path, chunks)
     doc_id = str(uuid.uuid4())
+    count = memory.save_document(request.file_path, chunks, doc_id=doc_id)
     auth.register_document(doc_id, request.file_path, current_user["user_id"])
     return {
         "status": "success",
@@ -301,8 +301,8 @@ async def input_knowledge(
     title = (request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
     chunks = document_loader.chunk_text(content)
-    count = memory.save_document(source, chunks)
     doc_id = str(uuid.uuid4())
+    count = memory.save_document(source, chunks, doc_id=doc_id)
     auth.register_document(doc_id, source, current_user["user_id"])
     return {
         "status": "success",
@@ -316,7 +316,7 @@ async def input_knowledge(
 @app.get("/documents")
 async def list_documents(current_user: dict = Depends(require_employee)):
     logger.info("收到GET /documents请求")
-    documents = memory.list_documents()
+    documents = _list_documents_for_user(current_user)
     return {
         "documents": documents,
         "total": len(documents)
@@ -324,14 +324,37 @@ async def list_documents(current_user: dict = Depends(require_employee)):
 
 
 @app.delete("/documents/{source:path}")
-async def delete_document(source: str, current_user: dict = Depends(require_reviewer)):
+async def delete_document(source: str, current_user: dict = Depends(require_employee)):
     decoded_source = unquote(source)
     logger.info("收到DELETE /documents请求：source_len=%s", len(decoded_source or ""))
+    records = auth.get_documents_by_source(decoded_source)
+    if current_user["role"] != "reviewer":
+        if not records or not all(
+            auth.can_employee_delete_document(record["doc_id"], current_user["user_id"])
+            for record in records
+        ):
+            raise HTTPException(status_code=403, detail="只能撤销自己上传且待审核的文档")
+
     deleted_chunks = memory.delete_document(decoded_source)
+    deleted_records = auth.delete_document_records_by_source(decoded_source)
     return {
         "source": decoded_source,
         "deleted_chunks": deleted_chunks,
-        "status": "deleted" if deleted_chunks else "not_found"
+        "deleted_records": deleted_records,
+        "status": "deleted" if deleted_chunks or deleted_records else "not_found"
+    }
+
+
+@app.get("/documents/{doc_id}/preview")
+async def preview_document(doc_id: str, current_user: dict = Depends(require_reviewer)):
+    document = auth.get_document(doc_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    chunks = memory.get_document_chunks(document["source"], doc_id=doc_id)
+    return {
+        "doc_id": doc_id,
+        "source": document["source"],
+        "chunks": chunks
     }
 
 
@@ -370,6 +393,52 @@ async def reject_document(doc_id: str, current_user: dict = Depends(require_revi
         "reviewed_by": document["reviewed_by"],
         "reviewed_at": document["reviewed_at"]
     }
+
+
+def _list_documents_for_user(current_user: dict) -> list[dict]:
+    chunk_info = {
+        item["source"]: item
+        for item in memory.list_documents()
+    }
+    records = auth.list_documents()
+    if current_user["role"] != "reviewer":
+        records = [
+            record for record in records
+            if record["uploaded_by"] == current_user["user_id"]
+        ]
+
+    documents = []
+    for record in records:
+        chunks = chunk_info.get(record["source"], {})
+        item = {
+            **record,
+            "chunk_count": int(chunks.get("chunk_count", 0)),
+            "uploaded_at": record.get("uploaded_at") or chunks.get("uploaded_at", ""),
+            "can_revoke": (
+                current_user["role"] == "employee"
+                and auth.can_employee_delete_document(record["doc_id"], current_user["user_id"])
+            )
+        }
+        documents.append(item)
+
+    if documents:
+        return documents
+
+    if current_user["role"] != "reviewer":
+        return []
+
+    return [
+        {
+            **item,
+            "doc_id": "",
+            "trust_level": "unknown",
+            "uploaded_by": "",
+            "reviewed_by": "",
+            "reviewed_at": "",
+            "can_revoke": False
+        }
+        for item in chunk_info.values()
+    ]
 
 
 def _chat_stream_events(request: ChatRequest, current_user: dict):

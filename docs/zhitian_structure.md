@@ -227,6 +227,17 @@ COLLECTION_NAME = "zhitian_memory"
     "timestamp": "2026-06-28T10:00:00",
     "importance": "high | normal"
 }
+
+DOCUMENT_COLLECTION_NAME = "zhitian_documents"
+
+# 文档chunk的metadata
+{
+    "source": "文件名或manual_input标题",
+    "doc_id": "审核表中的文档ID",
+    "chunk_index": 0,
+    "total_chunks": 3,
+    "uploaded_at": "2026-07-02T10:00:00"
+}
 ```
 
 ### 记忆层对外接口
@@ -235,6 +246,8 @@ def save_message(session_id: str, role: str, content: str) -> None
 def get_history(session_id: str, limit: int = 10) -> list[dict]
 def save_to_vector(session_id: str, content: str, importance: str = "normal") -> None
 def search_memory(query: str, session_id: str = None, top_k: int = 3, strict_session: bool = False) -> list[str]
+def save_document(file_path: str, chunks: list[str], doc_id: str) -> int
+def search_documents(query: str, top_k: int = 5, verified_doc_ids: list[str] = None) -> list[dict]
 def clear_session(session_id: str) -> None
 ```
 
