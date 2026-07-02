@@ -166,7 +166,7 @@ DELETE /memory/{session_id} # 清空会话历史
 
 ### 文档管理
 ```
-POST   /documents/upload     # 上传本地文档路径并写入文档向量库
+POST   /documents/upload     # multipart/form-data上传文件，解析后写入文档向量库，不长期保存原始文件
 GET    /documents            # 获取已上传文档列表
 GET    /documents/verified   # reviewer获取已审核通过文档列表
 DELETE /documents/{source}   # 删除指定文档的全部chunk，source需URL编码
@@ -247,7 +247,7 @@ def save_message(session_id: str, role: str, content: str) -> None
 def get_history(session_id: str, limit: int = 10) -> list[dict]
 def save_to_vector(session_id: str, content: str, importance: str = "normal") -> None
 def search_memory(query: str, session_id: str = None, top_k: int = 3, strict_session: bool = False) -> list[str]
-def save_document(file_path: str, chunks: list[str], doc_id: str) -> int
+def save_document(source: str, chunks: list[str], doc_id: str) -> int
 def search_documents(query: str, top_k: int = 5, verified_doc_ids: list[str] = None) -> list[dict]
 def clear_session(session_id: str) -> None
 ```

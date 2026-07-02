@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -41,10 +41,6 @@ class ChatResponse(BaseModel):
     data: str
     layer_trace: list[str] = []
     session_id: str
-
-
-class DocumentUploadRequest(BaseModel):
-    file_path: str
 
 
 class KnowledgeInputRequest(BaseModel):
@@ -265,29 +261,42 @@ async def delete_memory(session_id: str, current_user: dict = Depends(get_curren
 
 @app.post("/documents/upload")
 async def upload_document(
-    request: DocumentUploadRequest,
+    file: UploadFile = File(...),
     current_user: dict = Depends(require_employee)
 ):
-    logger.info("收到/documents/upload请求：file_path_len=%s", len(request.file_path or ""))
-    text = document_loader.load_document(request.file_path)
-    if text.startswith("错误："):
-        return {
-            "status": "error",
-            "file_path": request.file_path,
-            "detail": text
-        }
+    filename = _safe_upload_filename(file.filename or "")
+    logger.info("收到/documents/upload请求：filename_len=%s", len(filename))
+    if not filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
 
-    chunks = document_loader.chunk_text(text)
     doc_id = str(uuid.uuid4())
-    count = memory.save_document(request.file_path, chunks, doc_id=doc_id)
-    auth.register_document(doc_id, request.file_path, current_user["user_id"])
-    return {
-        "status": "success",
-        "doc_id": doc_id,
-        "file_path": request.file_path,
-        "chunks": count,
-        "trust_level": "pending"
-    }
+    temp_path = ""
+    try:
+        temp_path = _save_temp_upload(file, doc_id, filename)
+        text = document_loader.load_document(temp_path)
+        if text.startswith("错误："):
+            return {
+                "status": "error",
+                "source": filename,
+                "detail": text
+            }
+
+        chunks = document_loader.chunk_text(text)
+        if not chunks:
+            raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
+
+        count = memory.save_document(filename, chunks, doc_id=doc_id)
+        auth.register_document(doc_id, filename, current_user["user_id"])
+        return {
+            "status": "success",
+            "doc_id": doc_id,
+            "source": filename,
+            "chunks": count,
+            "trust_level": "pending"
+        }
+    finally:
+        await file.close()
+        _remove_temp_upload(temp_path)
 
 
 @app.post("/knowledge/input")
@@ -464,6 +473,36 @@ def _merge_document_chunks(
         }
         for item in chunk_info.values()
     ]
+
+
+def _safe_upload_filename(filename: str) -> str:
+    normalized = (filename or "").replace("\\", "/")
+    return os.path.basename(normalized).strip()
+
+
+def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
+    temp_dir = os.path.join(config.BASE_DIR, "data", "tmp_uploads")
+    os.makedirs(temp_dir, exist_ok=True)
+    suffix = os.path.splitext(filename)[1].lower()
+    temp_path = os.path.join(temp_dir, f"{doc_id}{suffix}")
+    file.file.seek(0)
+    with open(temp_path, "wb") as f:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    return temp_path
+
+
+def _remove_temp_upload(temp_path: str) -> None:
+    if not temp_path:
+        return
+    try:
+        if os.path.isfile(temp_path):
+            os.remove(temp_path)
+    except Exception as e:
+        logger.warning("临时上传文件删除失败：path_len=%s error_type=%s", len(temp_path), type(e).__name__)
 
 
 def _chat_stream_events(request: ChatRequest, current_user: dict):

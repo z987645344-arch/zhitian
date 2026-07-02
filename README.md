@@ -53,6 +53,12 @@ D:\zhiliao\zhitian_admin\index.html
 - employee（员工）：使用管理后台上传文档和录入知识
 - reviewer（审核员）：使用管理后台审核文档、管理知识库
 
+## 文档上传说明
+
+管理后台使用浏览器文件上传，不需要填写服务器文件路径。
+
+上传后的原始文件只会临时保存用于解析，解析完成后立即删除；长期保存的是 Chroma 文档 chunk、向量索引和 SQLite 审核记录。
+
 ## 首次使用：注册账号
 
 调用 `POST /auth/register` 注册第一个 reviewer 账号。

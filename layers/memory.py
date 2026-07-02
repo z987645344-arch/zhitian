@@ -229,10 +229,10 @@ def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[s
     return results
 
 
-def save_document(file_path: str, chunks: list[str], doc_id: str) -> int:
+def save_document(source: str, chunks: list[str], doc_id: str) -> int:
     """将文档切片写入独立Chroma Collection。"""
-    if not file_path:
-        raise ValueError("file_path不能为空")
+    if not source:
+        raise ValueError("source不能为空")
     if not doc_id:
         raise ValueError("doc_id不能为空")
     if not chunks:
@@ -249,7 +249,7 @@ def save_document(file_path: str, chunks: list[str], doc_id: str) -> int:
         documents=clean_chunks,
         metadatas=[
             {
-                "source": file_path,
+                "source": source,
                 "doc_id": doc_id,
                 "chunk_index": i,
                 "total_chunks": total_chunks,

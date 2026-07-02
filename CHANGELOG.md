@@ -196,3 +196,5 @@
 - 保留原有权限边界：customer仅能访问本人session历史，employee/reviewer按既有文档审核流程操作，reviewer不再查看用户长期记忆原文
 - 新增GET /documents/verified接口，仅reviewer可访问，只返回trust_level=verified的文档记录，并补充Chroma chunk_count
 - 审核员“文档管理”区域改为读取/documents/verified，只展示已审核通过文档；pending文档继续只出现在“待审核文档”
+- POST /documents/upload从服务器路径上传改为multipart/form-data真实文件上传，解析后立即删除临时原始文件，只长期保存Chroma chunk/向量和SQLite审核记录
+- requirements.txt新增python-multipart；README补充文档上传不需要服务器路径、原始文件不长期保存的说明
