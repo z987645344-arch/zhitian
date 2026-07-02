@@ -176,3 +176,6 @@
 - 新增D:\zhiliao\启动知天.bat，一键启动后端和Flutter Windows客户端，并提示管理后台入口
 - 修复D:\zhiliao\启动知天.bat中的绝对路径，改为基于%~dp0定位zhitian、zhitian_app和zhitian_admin
 - 完成基地v1.0 Git存档准备，新增.gitignore并排除.env、.venv、data等敏感或本地运行数据
+- 完成zhitian_app Git存档：commit 4bdb500，提交Flutter Windows桌面端、登录、聊天、历史记录等客户端v1.0代码，确认build/未提交
+- 完成zhitian_admin Git存档：commit 118ebd5，提交员工上传/直接录入、审核员审核、文档总览和记忆统计等管理后台v1.0代码
+- 复核三项目Git状态：zhitian、zhitian_app、zhitian_admin均为working tree clean，基地v1.0三项目全部存档完毕

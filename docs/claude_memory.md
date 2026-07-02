@@ -141,3 +141,4 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：新增测试数据清理脚本，users.db和history.db可一键清空开发验证数据
 - 2026-07-02：新增POST /knowledge/input直接录入知识接口，管理后台员工页支持标题+正文提交，仍走pending审核流
 - 2026-07-02：新增README.md和D:\zhiliao\启动知天.bat，完成基础启动与备份说明
+- 2026-07-02：基地v1.0三项目Git存档完成：zhitian(e4f0836)、zhitian_app(4bdb500)、zhitian_admin(118ebd5)，三个仓库均clean
