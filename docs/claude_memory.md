@@ -50,7 +50,6 @@
 - [x] 员工撤销pending文档 + 审核员预览待审核文档
 - [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
 - [x] /chat/stream search/clarify路径真流式输出
-- [x] 审核员知识库查看 + 管理员密码二次确认危险删除
 - [x] README和启动脚本完成
 
 ### 前端（D:\zhiliao\zhitian_app\）
@@ -71,7 +70,6 @@
 - [x] 员工页（上传文档、直接录入知识、文档列表）
 - [x] 审核员页（pending审核、文档总览、记忆统计）
 - [x] 员工撤销待审核文档、审核员预览待审核内容
-- [x] 审核员知识库内容查看和危险操作区
 
 ---
 
@@ -125,7 +123,6 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - Chroma 0.5.0启动时打印telemetry日志，不影响功能
 - 搜索链路仍受GLM和网络耗时影响，但/search结果整理阶段已支持SSE逐chunk输出
 - JWT_SECRET_KEY必须在.env里配置随机强密钥，不能使用占位值
-- ADMIN_SECRET_KEY必须在.env里配置，审核员执行高风险清空操作时需要二次确认
 - .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
 
 ## 最近改动
@@ -155,4 +152,3 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤
 - 2026-07-02：补全auth.py日志脱敏，认证层日志统一改为长度和error_type格式
 - 2026-07-02：完成客户端简约风格美化，统一蓝白灰视觉规范；/chat/stream的search和clarify路径改为真流式输出
-- 2026-07-02：新增审核员知识库查看和危险操作区，支持查看文档/手动录入/记忆片段，并用ADMIN_SECRET_KEY二次确认清空操作

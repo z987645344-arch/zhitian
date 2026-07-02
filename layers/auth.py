@@ -353,17 +353,6 @@ def delete_document_records_by_source(source: str) -> int:
         raise
 
 
-def clear_document_records() -> int:
-    """清空documents审核表，返回删除记录数。"""
-    try:
-        with _connect() as conn:
-            cursor = conn.execute("DELETE FROM documents")
-        return cursor.rowcount
-    except Exception as e:
-        logger.error("清空文档审核记录失败：error_type=%s", type(e).__name__)
-        raise
-
-
 def _get_user_by_username(username: str) -> sqlite3.Row | None:
     if not username:
         return None

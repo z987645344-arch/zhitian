@@ -174,12 +174,6 @@ POST   /approve/{doc_id}     # reviewer审核通过文档
 POST   /reject/{doc_id}      # reviewer拒绝文档
 ```
 
-### 审核员知识库管理
-```
-GET  /admin/knowledge        # reviewer查看文档知识、手动录入知识和长期记忆片段
-POST /admin/delete_memory    # reviewer输入ADMIN_SECRET_KEY后二次确认清空知识/记忆
-```
-
 ### 健康检查
 ```
 GET /                       # 服务状态

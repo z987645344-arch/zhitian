@@ -19,7 +19,6 @@ HOST = "0.0.0.0"
 # 认证
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 JWT_EXPIRE_HOURS = 24
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "")
 
 # 路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
