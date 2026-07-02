@@ -124,6 +124,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 搜索链路仍受GLM和网络耗时影响，但/search结果整理阶段已支持SSE逐chunk输出
 - JWT_SECRET_KEY必须在.env里配置随机强密钥，不能使用占位值
 - .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
+- 审核员知识库内容查看和管理员二次确认危险删除功能已回退；当前不提供审核员查看用户长期记忆原文或一键清空全部记忆/知识库接口
 
 ## 最近改动
 > 后端完整记录见 D:\zhiliao\zhitian\CHANGELOG.md
@@ -152,3 +153,4 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤
 - 2026-07-02：补全auth.py日志脱敏，认证层日志统一改为长度和error_type格式
 - 2026-07-02：完成客户端简约风格美化，统一蓝白灰视觉规范；/chat/stream的search和clarify路径改为真流式输出
+- 2026-07-03：回退审核员知识库内容查看和管理员密码二次确认危险删除功能，清理ADMIN_SECRET_KEY残留，管理后台同步移除对应入口

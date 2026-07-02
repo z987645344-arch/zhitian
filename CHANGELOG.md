@@ -191,3 +191,6 @@
 - 修复/chat/stream在clarify和search路径非真流式的问题：clarify按字符逐步SSE输出，search在Tavily后使用GLM流式整理结果
 - 新增execution.stream_search_result，普通POST /chat搜索路径保持非流式兼容，流式整理失败时降级为一次性提示或非流式整理
 - 验证Python语法检查通过，前端flutter analyze通过，管理后台JS语法检查通过
+- 回退审核员知识库查看权限和管理员密码二次确认危险删除功能，撤销GET /admin/knowledge、POST /admin/delete_memory和ADMIN_SECRET_KEY配置
+- 清理.env中残留的ADMIN_SECRET_KEY，确认后端不再提供审核员查看长期记忆片段或全量清空知识库/记忆的接口
+- 保留原有权限边界：customer仅能访问本人session历史，employee/reviewer按既有文档审核流程操作，reviewer不再查看用户长期记忆原文
