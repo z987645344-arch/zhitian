@@ -168,6 +168,7 @@ DELETE /memory/{session_id} # 清空会话历史
 ```
 POST   /documents/upload     # 上传本地文档路径并写入文档向量库
 GET    /documents            # 获取已上传文档列表
+GET    /documents/verified   # reviewer获取已审核通过文档列表
 DELETE /documents/{source}   # 删除指定文档的全部chunk，source需URL编码
 GET    /pending              # reviewer查看待审核文档
 POST   /approve/{doc_id}     # reviewer审核通过文档

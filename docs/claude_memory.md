@@ -48,6 +48,7 @@
 - [x] 测试数据清理脚本
 - [x] 直接录入知识接口（POST /knowledge/input）
 - [x] 员工撤销pending文档 + 审核员预览待审核文档
+- [x] 审核员文档管理仅展示verified文档
 - [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
 - [x] /chat/stream search/clarify路径真流式输出
 - [x] README和启动脚本完成
@@ -155,3 +156,4 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-02：完成客户端简约风格美化，统一蓝白灰视觉规范；/chat/stream的search和clarify路径改为真流式输出
 - 2026-07-03：回退审核员知识库内容查看和管理员密码二次确认危险删除功能，清理ADMIN_SECRET_KEY残留，管理后台同步移除对应入口
 - 2026-07-03：审核员页文档管理列表新增预览按钮，复用单文档doc_id预览接口查看企业文档知识库chunk，不恢复用户长期记忆原文查看能力
+- 2026-07-03：新增GET /documents/verified，审核员页文档管理改为仅显示verified文档，pending文档仍只在待审核列表展示

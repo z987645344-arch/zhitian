@@ -324,6 +324,16 @@ async def list_documents(current_user: dict = Depends(require_employee)):
     }
 
 
+@app.get("/documents/verified")
+async def list_verified_documents(current_user: dict = Depends(require_reviewer)):
+    logger.info("收到GET /documents/verified请求：user_id=%s", current_user["user_id"])
+    documents = _merge_document_chunks(auth.list_verified_documents(), reviewer_mode=True)
+    return {
+        "documents": documents,
+        "total": len(documents)
+    }
+
+
 @app.delete("/documents/{source:path}")
 async def delete_document(source: str, current_user: dict = Depends(require_employee)):
     decoded_source = unquote(source)
@@ -397,17 +407,30 @@ async def reject_document(doc_id: str, current_user: dict = Depends(require_revi
 
 
 def _list_documents_for_user(current_user: dict) -> list[dict]:
-    chunk_info = {
-        item["source"]: item
-        for item in memory.list_documents()
-    }
     records = auth.list_documents()
     if current_user["role"] != "reviewer":
         records = [
             record for record in records
             if record["uploaded_by"] == current_user["user_id"]
         ]
+    return _merge_document_chunks(
+        records,
+        reviewer_mode=current_user["role"] == "reviewer",
+        current_user=current_user,
+        include_orphan_chunks=current_user["role"] == "reviewer"
+    )
 
+
+def _merge_document_chunks(
+    records: list[dict],
+    reviewer_mode: bool = False,
+    current_user: dict | None = None,
+    include_orphan_chunks: bool = False
+) -> list[dict]:
+    chunk_info = {
+        item["source"]: item
+        for item in memory.list_documents()
+    }
     documents = []
     for record in records:
         chunks = chunk_info.get(record["source"], {})
@@ -416,7 +439,8 @@ def _list_documents_for_user(current_user: dict) -> list[dict]:
             "chunk_count": int(chunks.get("chunk_count", 0)),
             "uploaded_at": record.get("uploaded_at") or chunks.get("uploaded_at", ""),
             "can_revoke": (
-                current_user["role"] == "employee"
+                bool(current_user)
+                and current_user["role"] == "employee"
                 and auth.can_employee_delete_document(record["doc_id"], current_user["user_id"])
             )
         }
@@ -425,7 +449,7 @@ def _list_documents_for_user(current_user: dict) -> list[dict]:
     if documents:
         return documents
 
-    if current_user["role"] != "reviewer":
+    if not reviewer_mode or not include_orphan_chunks:
         return []
 
     return [

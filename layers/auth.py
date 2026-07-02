@@ -260,6 +260,31 @@ def list_documents() -> list[dict]:
         raise
 
 
+def list_verified_documents() -> list[dict]:
+    """返回所有已审核通过的文档记录。"""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                FROM documents
+                WHERE trust_level = 'verified'
+                ORDER BY reviewed_at DESC
+                """
+            ).fetchall()
+        documents = [_document_row_to_dict(row) for row in rows]
+        return [
+            {
+                **document,
+                "chunk_count": 0
+            }
+            for document in documents
+        ]
+    except Exception as e:
+        logger.error("读取已审核文档记录失败：error_type=%s", type(e).__name__)
+        raise
+
+
 def approve_document(doc_id: str, reviewer_user_id: str) -> bool:
     """审核通过文档。"""
     return _review_document(doc_id, reviewer_user_id, "verified")

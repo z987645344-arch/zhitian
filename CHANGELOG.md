@@ -194,3 +194,5 @@
 - 回退审核员知识库查看权限和管理员密码二次确认危险删除功能，撤销GET /admin/knowledge、POST /admin/delete_memory和ADMIN_SECRET_KEY配置
 - 清理.env中残留的ADMIN_SECRET_KEY，确认后端不再提供审核员查看长期记忆片段或全量清空知识库/记忆的接口
 - 保留原有权限边界：customer仅能访问本人session历史，employee/reviewer按既有文档审核流程操作，reviewer不再查看用户长期记忆原文
+- 新增GET /documents/verified接口，仅reviewer可访问，只返回trust_level=verified的文档记录，并补充Chroma chunk_count
+- 审核员“文档管理”区域改为读取/documents/verified，只展示已审核通过文档；pending文档继续只出现在“待审核文档”
