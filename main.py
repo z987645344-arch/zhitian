@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 import config
-from layers import auth, document_loader, execution, memory, output, perception, planning
+from layers import auth, document_loader, execution, llm_client, memory, output, perception, planning
 from utils.logger import get_logger
 
 logger = get_logger("main")
@@ -285,12 +285,13 @@ async def upload_document(
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
 
-        count = memory.save_document(filename, chunks, doc_id=doc_id)
-        auth.register_document(doc_id, filename, current_user["user_id"])
+        source = _write_knowledge_source(doc_id, filename, text, "uploads")
+        count = memory.save_document(source, chunks, doc_id=doc_id)
+        auth.register_document(doc_id, source, current_user["user_id"])
         return {
             "status": "success",
             "doc_id": doc_id,
-            "source": filename,
+            "source": source,
             "chunks": count,
             "trust_level": "pending"
         }
@@ -309,9 +310,10 @@ async def input_knowledge(
         raise HTTPException(status_code=400, detail="content不能为空")
 
     title = (request.title or "").strip()
-    source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
     chunks = document_loader.chunk_text(content)
     doc_id = str(uuid.uuid4())
+    source_title = title or datetime.now().isoformat()
+    source = _write_knowledge_source(doc_id, source_title, content, "manual")
     count = memory.save_document(source, chunks, doc_id=doc_id)
     auth.register_document(doc_id, source, current_user["user_id"])
     return {
@@ -357,6 +359,8 @@ async def delete_document(source: str, current_user: dict = Depends(require_empl
 
     deleted_chunks = memory.delete_document(decoded_source)
     deleted_records = auth.delete_document_records_by_source(decoded_source)
+    if deleted_chunks or deleted_records:
+        _delete_knowledge_source(decoded_source)
     return {
         "source": decoded_source,
         "deleted_chunks": deleted_chunks,
@@ -480,6 +484,23 @@ def _safe_upload_filename(filename: str) -> str:
     return os.path.basename(normalized).strip()
 
 
+def _write_knowledge_source(doc_id: str, title: str, content: str, category: str) -> str:
+    safe_title = _safe_knowledge_title(title)
+    target_dir = os.path.join(config.KNOWLEDGE_BASE_PATH, category)
+    os.makedirs(target_dir, exist_ok=True)
+    file_name = f"{doc_id}_{safe_title}.md"
+    file_path = os.path.join(target_dir, file_name)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return os.path.relpath(file_path, config.BASE_DIR).replace("\\", "/")
+
+
+def _safe_knowledge_title(title: str) -> str:
+    base = os.path.splitext(_safe_upload_filename(title) or "knowledge")[0]
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in base)
+    return safe[:80] or "knowledge"
+
+
 def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
     temp_dir = os.path.join(config.BASE_DIR, "data", "tmp_uploads")
     os.makedirs(temp_dir, exist_ok=True)
@@ -503,6 +524,21 @@ def _remove_temp_upload(temp_path: str) -> None:
             os.remove(temp_path)
     except Exception as e:
         logger.warning("临时上传文件删除失败：path_len=%s error_type=%s", len(temp_path), type(e).__name__)
+
+
+def _delete_knowledge_source(source: str) -> None:
+    if not source or os.path.isabs(source):
+        return
+    normalized = source.replace("\\", "/")
+    file_path = os.path.abspath(os.path.join(config.BASE_DIR, normalized))
+    base_path = os.path.abspath(config.KNOWLEDGE_BASE_PATH)
+    if not file_path.startswith(base_path + os.sep):
+        return
+    try:
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        logger.warning("知识源文件删除失败：source_len=%s error_type=%s", len(source), type(e).__name__)
 
 
 def _chat_stream_events(request: ChatRequest, current_user: dict):
@@ -691,26 +727,36 @@ def _count_document_chunks() -> int:
 
 def _check_planning_health() -> dict:
     glm_key = bool(config.GLM_API_KEY)
+    deepseek_key = bool(config.DEEPSEEK_API_KEY)
+    llm_key = llm_client.has_valid_key()
     graph_ready = getattr(planning, "graph", None) is not None
     return {
-        "status": "healthy" if glm_key and graph_ready else "error",
+        "status": "healthy" if llm_key and graph_ready else "error",
+        "provider": llm_client.provider_name(),
         "glm_key": glm_key,
+        "deepseek_key": deepseek_key,
+        "llm_key": llm_key,
         "graph": graph_ready
     }
 
 
 def _check_execution_health() -> dict:
     glm_key = bool(config.GLM_API_KEY)
+    deepseek_key = bool(config.DEEPSEEK_API_KEY)
+    llm_key = llm_client.has_valid_key()
     tavily_key = bool(config.TAVILY_API_KEY)
-    if glm_key and tavily_key:
+    if llm_key and tavily_key:
         status = "healthy"
-    elif glm_key:
+    elif llm_key:
         status = "degraded"
     else:
         status = "error"
     return {
         "status": status,
+        "provider": llm_client.provider_name(),
         "glm_key": glm_key,
+        "deepseek_key": deepseek_key,
+        "llm_key": llm_key,
         "tavily_key": tavily_key
     }
 

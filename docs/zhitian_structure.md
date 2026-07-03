@@ -46,7 +46,7 @@ D:\zhiliao\zhitian\
 |------|---------|---------|
 | 语言 | Python 3.10.11 / UTF-8 | 不变 |
 | 后端框架 | FastAPI（localhost:8000） | 不变 |
-| LLM | GLM免费API（glm-4.7-flash） | Claude中转API |
+| LLM | 可配置GLM/DeepSeek（默认GLM glm-4.7-flash） | Claude中转API |
 | 记忆层 | Chroma + SQLite | Qdrant自托管 |
 | 规划层 | LangGraph | 视情况调整 |
 | 执行层 | MCP + Tavily搜索 | 扩展更多工具 |
@@ -166,7 +166,7 @@ DELETE /memory/{session_id} # 清空会话历史
 
 ### 文档管理
 ```
-POST   /documents/upload     # multipart/form-data上传文件，解析后写入文档向量库，不长期保存原始文件
+POST   /documents/upload     # multipart/form-data上传文件，解析后写入knowledge_base和文档向量库，不长期保存原始文件
 GET    /documents            # 获取已上传文档列表
 GET    /documents/verified   # reviewer获取已审核通过文档列表
 DELETE /documents/{source}   # 删除指定文档的全部chunk，source需URL编码

@@ -8,9 +8,8 @@ from collections.abc import Iterator
 
 from pydantic import BaseModel
 from tavily import TavilyClient
-from zhipuai import ZhipuAI
 import config
-from layers import auth, memory
+from layers import auth, llm_client, memory
 from utils.logger import get_logger
 
 logger = get_logger("execution")
@@ -192,15 +191,20 @@ def _search_documents(query: str) -> str:
     if not results:
         return "未在已上传文档中找到相关内容"
 
-    lines = ["根据已上传文档，找到以下相关内容："]
+    lines = ["根据已审核通过的企业知识库，找到以下相关内容："]
+    citations = []
     for index, item in enumerate(results, start=1):
         source = item.get("source", "")
         filename = source.replace("\\", "/").split("/")[-1] or source or "未知来源"
         chunk_index = item.get("chunk_index", 0)
+        doc_id = item.get("doc_id", "")
         content = str(item.get("content", "")).strip()
         if len(content) > 280:
             content = f"{content[:280]}..."
-        lines.append(f"{index}. 来源：{filename}（片段{chunk_index}）\n{content}")
+        lines.append(f"{index}. [{filename}#chunk-{chunk_index}]\n{content}")
+        citations.append(f"- {filename} | doc_id={doc_id or '-'} | chunk={chunk_index}")
+    lines.append("\n引用来源：")
+    lines.extend(citations)
     return "\n\n".join(lines)
 
 
@@ -269,8 +273,8 @@ def _llm_chat(
     system_prompt: str = ""
 ) -> str | Iterator[str]:
     """LLM对话：优先主模型，失败后自动降级到fallback模型"""
-    if not _has_valid_key(config.GLM_API_KEY, "GLM"):
-        raise ValueError("GLM_API_KEY未配置")
+    if not llm_client.has_valid_key():
+        raise ValueError(f"{llm_client.provider_name().upper()} API_KEY未配置")
 
     if search_results:
         messages = _build_search_answer_messages(
@@ -285,15 +289,15 @@ def _llm_chat(
 
     primary_error = ""
     try:
-        return _chat_with_model(config.LLM_MODEL, messages)
+        return _chat_with_model(llm_client.primary_model(), messages)
     except Exception as e:
         primary_error = str(e)
-        logger.warning("GLM主模型调用失败，准备fallback：error_type=%s", type(e).__name__)
+        logger.warning("LLM主模型调用失败，准备fallback：provider=%s error_type=%s", llm_client.provider_name(), type(e).__name__)
 
     try:
-        return _chat_with_model(config.FALLBACK_MODEL, messages)
+        return _chat_with_model(llm_client.fallback_model(), messages)
     except Exception as e:
-        logger.warning("GLM fallback调用失败：error_type=%s", type(e).__name__)
+        logger.warning("LLM fallback调用失败：provider=%s error_type=%s", llm_client.provider_name(), type(e).__name__)
         raise RuntimeError(f"主模型失败：{primary_error}；fallback失败：{e}") from e
 
 
@@ -302,64 +306,31 @@ def _stream_chat_with_fallback(messages: list[dict]) -> Iterator[str]:
     emitted = False
     primary_error = ""
     try:
-        for chunk in _stream_chat_with_model(config.LLM_MODEL, messages):
+        for chunk in _stream_chat_with_model(llm_client.primary_model(), messages):
             emitted = True
             yield chunk
         return
     except Exception as e:
         primary_error = str(e)
-        logger.warning("GLM流式主模型调用失败，准备fallback：error_type=%s", type(e).__name__)
+        logger.warning("LLM流式主模型调用失败，准备fallback：provider=%s error_type=%s", llm_client.provider_name(), type(e).__name__)
         if emitted:
             raise
 
     try:
-        yield from _stream_chat_with_model(config.FALLBACK_MODEL, messages)
+        yield from _stream_chat_with_model(llm_client.fallback_model(), messages)
     except Exception as e:
-        logger.warning("GLM流式fallback调用失败：error_type=%s", type(e).__name__)
+        logger.warning("LLM流式fallback调用失败：provider=%s error_type=%s", llm_client.provider_name(), type(e).__name__)
         raise RuntimeError(f"主模型失败：{primary_error}；fallback失败：{e}") from e
 
 
 def _stream_chat_with_model(model: str, messages: list[dict]) -> Iterator[str]:
-    """调用指定GLM模型并逐chunk返回文本片段"""
-    client = ZhipuAI(
-        api_key=config.GLM_API_KEY,
-        timeout=TIMEOUT,
-        max_retries=0
-    )
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        timeout=TIMEOUT
-    )
-    for chunk in response:
-        text = _extract_glm_delta(chunk)
-        if text:
-            yield text
+    """调用指定LLM模型并逐chunk返回文本片段"""
+    yield from llm_client.stream_chat(messages, model=model)
 
 
 def _chat_with_model(model: str, messages: list[dict]) -> str:
-    """调用指定GLM模型，按Level1规则重试1次"""
-    client = ZhipuAI(
-        api_key=config.GLM_API_KEY,
-        timeout=TIMEOUT,
-        max_retries=0
-    )
-    last_error = ""
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                timeout=TIMEOUT
-            )
-            return _extract_glm_text(response)
-        except Exception as e:
-            last_error = str(e)
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
-
-    raise RuntimeError(last_error)
+    """调用指定LLM模型，重试逻辑由统一客户端处理"""
+    return str(llm_client.chat(messages, model=model))
 
 
 def _build_glm_messages(session_id: str, message: str, system_prompt: str = "") -> list[dict]:
@@ -411,10 +382,10 @@ def _rewrite_search_query(message: str, context: list[str] = None) -> str:
     messages = [{"role": "user", "content": prompt}]
 
     try:
-        rewritten = _chat_with_model(config.LLM_MODEL, messages)
+        rewritten = _chat_with_model(llm_client.primary_model(), messages)
     except Exception:
         try:
-            rewritten = _chat_with_model(config.FALLBACK_MODEL, messages)
+            rewritten = _chat_with_model(llm_client.fallback_model(), messages)
         except Exception:
             return message
 
