@@ -198,3 +198,11 @@
 - 审核员“文档管理”区域改为读取/documents/verified，只展示已审核通过文档；pending文档继续只出现在“待审核文档”
 - POST /documents/upload从服务器路径上传改为multipart/form-data真实文件上传，解析后立即删除临时原始文件，只长期保存Chroma chunk/向量和SQLite审核记录
 - requirements.txt新增python-multipart；README补充文档上传不需要服务器路径、原始文件不长期保存的说明
+
+## 2026-07-05
+- 通过git revert撤回DeepSeek/LLM Provider切换试验提交，删除layers/llm_client.py并恢复到GLM固定模型稳定版
+- 确认当前代码树与DeepSeek改造前提交25e0ff4一致，保留multipart真实文件上传能力
+- 清理LLM_PROVIDER、DEEPSEEK_API_KEY、openai依赖和knowledge_base文件夹式知识源相关改动，后续如需模型切换将重新拆分设计
+- 发现当前.venv启动器仍指向不存在的本机Python路径，暂列为运行环境遗留问题；本次语法检查使用Codex内置Python通过
+- 拆分原D:\zhiliao\启动知天.bat总启动脚本：后端新增D:\zhiliao\zhitian\启动后端.bat，前端新增D:\zhiliao\zhitian_app\启动前端.bat，并删除旧总启动脚本
+- README启动说明同步改为后端/前端两个独立快捷脚本，避免一次性同时启动两个项目

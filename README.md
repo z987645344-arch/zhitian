@@ -26,6 +26,14 @@ JWT_SECRET_KEY=随机强密钥（建议32位以上随机字符串）
 
 后端：
 
+双击快捷脚本：
+
+```text
+D:\zhiliao\zhitian\启动后端.bat
+```
+
+或手动启动：
+
 ```bat
 cd D:\zhiliao\zhitian
 .venv\Scripts\activate
@@ -33,6 +41,14 @@ python main.py
 ```
 
 客户端：
+
+双击快捷脚本：
+
+```text
+D:\zhiliao\zhitian_app\启动前端.bat
+```
+
+或手动启动：
 
 ```bat
 cd D:\zhiliao\zhitian_app

@@ -127,6 +127,8 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - JWT_SECRET_KEY必须在.env里配置随机强密钥，不能使用占位值
 - .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
 - 审核员知识库内容查看和管理员二次确认危险删除功能已回退；当前不提供审核员查看用户长期记忆原文或一键清空全部记忆/知识库接口
+- DeepSeek/LLM Provider切换试验已通过git revert回退；当前后端保持GLM固定模型配置，后续模型切换需重新拆分为独立任务
+- 当前.venv启动器指向不存在的本机Python路径，后续需要重新创建或修复虚拟环境；代码语法检查可用Codex内置Python通过
 
 ## 最近改动
 > 后端完整记录见 D:\zhiliao\zhitian\CHANGELOG.md
@@ -159,3 +161,5 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-03：审核员页文档管理列表新增预览按钮，复用单文档doc_id预览接口查看企业文档知识库chunk，不恢复用户长期记忆原文查看能力
 - 2026-07-03：新增GET /documents/verified，审核员页文档管理改为仅显示verified文档，pending文档仍只在待审核列表展示
 - 2026-07-03：POST /documents/upload改为multipart/form-data真实文件上传，原始文件仅临时保存用于解析，解析后删除，不再要求员工填写服务器文件路径
+- 2026-07-05：通过git revert撤回DeepSeek/LLM Provider切换和knowledge_base知识源试验，当前代码树恢复到DeepSeek改造前的GLM固定模型稳定版，并保留multipart真实文件上传能力
+- 2026-07-05：拆分启动脚本，删除D:\zhiliao\启动知天.bat总启动入口，改为D:\zhiliao\zhitian\启动后端.bat和D:\zhiliao\zhitian_app\启动前端.bat两个独立快捷方式
