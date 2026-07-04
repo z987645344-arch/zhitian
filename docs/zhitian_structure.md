@@ -112,11 +112,18 @@ class PlanningOutput(BaseModel):
 
 ### 执行层 → 输出层
 ```python
+class Citation(BaseModel):
+    source: str            # 文档来源
+    doc_id: str            # 审核表中的文档ID
+    chunk_index: int       # 命中的chunk序号
+    score: float           # 相关性分数，越高越可信
+
 class ToolResult(BaseModel):
     tool: str
     status: str           # success | error
     data: str
     error_msg: str = ""
+    citations: list[Citation] = []
 
 class ExecutionOutput(BaseModel):
     session_id: str
@@ -131,6 +138,7 @@ class ChatResponse(BaseModel):
     data: str             # 最终回复内容
     layer_trace: list[str]
     session_id: str
+    citations: list[Citation] = []
 ```
 
 ---
@@ -151,11 +159,14 @@ POST /chat
   "message": "string",
   "mode": "chat"            # chat | search | file
 }
+
+# 响应中包含citations字段；普通chat/search为空，文档RAG命中时返回source/doc_id/chunk_index/score
 ```
 
 ### 流式对话（第四阶段实现）
 ```
 POST /chat/stream           # SSE流式响应，参数同上
+# 正文chunk结束后发送一次 {"type":"citations","citations":[...]}，再发送[DONE]
 ```
 
 ### 记忆管理
@@ -249,6 +260,7 @@ def save_to_vector(session_id: str, content: str, importance: str = "normal") ->
 def search_memory(query: str, session_id: str = None, top_k: int = 3, strict_session: bool = False) -> list[str]
 def save_document(source: str, chunks: list[str], doc_id: str) -> int
 def search_documents(query: str, top_k: int = 5, verified_doc_ids: list[str] = None) -> list[dict]
+# 每条结果包含content/source/doc_id/chunk_index/score；score为相关性分数，越高越可信
 def clear_session(session_id: str) -> None
 ```
 

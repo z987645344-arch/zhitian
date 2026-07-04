@@ -11,7 +11,7 @@ from zhipuai import ZhipuAI
 
 import config
 from layers import execution, memory
-from layers.execution import ToolResult
+from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
 
@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     context: list[str]
     tasks: list[Task]
     results: list[ToolResult]
+    citations: list[Citation]
     response: str
     error: str
     clarification: str
@@ -234,24 +235,30 @@ def respond_node(state: AgentState) -> AgentState:
     """respond节点：读取执行结果并生成最终响应"""
     if state["intent"] == "clarify":
         state["response"] = state["clarification"]
+        state["citations"] = []
         return state
 
     failed_results = [result for result in state["results"] if result.status == "error"]
     if failed_results:
         state["error"] = failed_results[0].error_msg or "工具调用失败"
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
+        state["citations"] = []
         return state
 
     if state["error"]:
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
+        state["citations"] = []
         return state
 
     if not state["results"]:
         state["response"] = ""
+        state["citations"] = []
         return state
 
-    base_response = state["results"][-1].data
-    if state["results"][-1].tool == "search_documents":
+    latest_result = state["results"][-1]
+    base_response = latest_result.data
+    state["citations"] = latest_result.citations or []
+    if latest_result.tool == "search_documents":
         state["response"] = base_response
         return state
     if state["context"]:
@@ -275,6 +282,7 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
         context=[],
         tasks=[],
         results=[],
+        citations=[],
         response="",
         error="",
         clarification="",
@@ -293,8 +301,12 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
             }
         )
         if fallback.status == "success":
+            state["results"] = [fallback]
+            state["citations"] = fallback.citations or []
             state["response"] = fallback.data
             return state
+        state["results"] = [fallback]
+        state["citations"] = []
         state["error"] = fallback.error_msg or "规划层降级失败"
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
         return state

@@ -203,6 +203,16 @@
 - 通过git revert撤回DeepSeek/LLM Provider切换试验提交，删除layers/llm_client.py并恢复到GLM固定模型稳定版
 - 确认当前代码树与DeepSeek改造前提交25e0ff4一致，保留multipart真实文件上传能力
 - 清理LLM_PROVIDER、DEEPSEEK_API_KEY、openai依赖和knowledge_base文件夹式知识源相关改动，后续如需模型切换将重新拆分设计
-- 发现当前.venv启动器仍指向不存在的本机Python路径，暂列为运行环境遗留问题；本次语法检查使用Codex内置Python通过
+- 复核本机Python环境：系统Python 3.10.11可用，项目.venv的python.exe可正常导入FastAPI；此前Codex内报错属于沙盒/PATH上下文差异，不影响本机运行
 - 拆分原D:\zhiliao\启动知天.bat总启动脚本：后端新增D:\zhiliao\zhitian\启动后端.bat，前端新增D:\zhiliao\zhitian_app\启动前端.bat，并删除旧总启动脚本
 - README启动说明同步改为后端/前端两个独立快捷脚本，避免一次性同时启动两个项目
+- RAG文档检索补全可信回答机制：search_documents返回source、doc_id、chunk_index、score，ToolResult和ChatResponse新增citations结构化字段
+- config.py新增RAG_SCORE_THRESHOLD配置，文档检索最高相关性分数未达阈值时返回“未找到可靠依据，无法确认答案”，citations为空
+- /chat/stream在正文结束后新增citations SSE事件，普通chat和联网search路径保持citations为空列表
+- docs/zhitian_structure.md同步更新层间Citation模型、ChatResponse返回结构、SSE citations事件和文档检索返回字段说明
+- 诊断Codex执行环境调用.venv问题：提权执行D:\zhiliao\zhitian\.venv\Scripts\python.exe可正常import fastapi，无需重建.venv
+- Codex提权启动main.py后/health返回ok，验证完成后已清理残留的项目Python子进程；后续运行时验证统一使用提权调用项目.venv
+- 运行时验证RAG可信回答：Chroma原始返回distances，memory.search_documents转换为score=1/(1+distance)，score越高越相关；execution按best_score >= RAG_SCORE_THRESHOLD放行，方向正确
+- 修正文档命中后的citations过滤：只返回score >= RAG_SCORE_THRESHOLD的可信chunk，避免低分旧测试chunk混入引用来源
+- 通过真实接口验证：文档命中问题返回答案和非空citations，低置信无关问题返回“未找到可靠依据，无法确认答案”且citations为空，普通chat和联网search均保持citations为空
+- 运行时验证后已删除本轮产生的测试文档chunk、审核记录和临时测试文件，并确认后端进程已停止

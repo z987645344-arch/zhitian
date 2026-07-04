@@ -30,3 +30,4 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 # 记忆
 MAX_HISTORY_LENGTH = 20
+RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.55"))

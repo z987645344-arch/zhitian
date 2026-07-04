@@ -280,11 +280,12 @@ def search_documents(
     result = _query_document_memory(collection, query, max(1, int(top_k)), allowed_doc_ids)
     documents = result.get("documents", [[]])
     metadatas = result.get("metadatas", [[]])
+    distances = result.get("distances", [[]])
     if not documents:
         return []
 
     results = []
-    for doc, metadata in zip(documents[0], metadatas[0]):
+    for doc, metadata, distance in zip(documents[0], metadatas[0], distances[0]):
         if not doc:
             continue
         metadata = metadata or {}
@@ -292,13 +293,24 @@ def search_documents(
         doc_id = str(metadata.get("doc_id", ""))
         if allowed_doc_ids is not None and doc_id not in allowed_doc_ids:
             continue
+        score = _distance_to_relevance_score(distance)
         results.append({
             "content": doc,
             "source": source,
             "doc_id": doc_id,
-            "chunk_index": int(metadata.get("chunk_index", 0))
+            "chunk_index": int(metadata.get("chunk_index", 0)),
+            "score": score
         })
     return results
+
+
+def _distance_to_relevance_score(distance) -> float:
+    """将Chroma L2距离转换为0-1相关性分数，越高越相关。"""
+    try:
+        value = max(0.0, float(distance))
+    except (TypeError, ValueError):
+        return 0.0
+    return round(1.0 / (1.0 + value), 6)
 
 
 def list_documents() -> list[dict]:

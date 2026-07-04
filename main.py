@@ -12,7 +12,7 @@ from urllib.parse import unquote
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 import config
 from layers import auth, document_loader, execution, memory, output, perception, planning
@@ -39,8 +39,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     status: str
     data: str
-    layer_trace: list[str] = []
+    layer_trace: list[str] = Field(default_factory=list)
     session_id: str
+    citations: list[execution.Citation] = Field(default_factory=list)
 
 
 class KnowledgeInputRequest(BaseModel):
@@ -172,6 +173,7 @@ async def chat(
             perception_output.message
         )
         final_data = final_state["response"]
+        citations = _serialize_citations(final_state.get("citations", []))
         has_error = bool(final_state.get("error"))
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
 
@@ -192,7 +194,8 @@ async def chat(
             session_id=perception_output.session_id,
             data=final_data,
             layer_trace=layer_trace,
-            status=status
+            status=status,
+            citations=citations
         )
         return ChatResponse(**response_data)
     except Exception as e:
@@ -508,6 +511,7 @@ def _remove_temp_upload(temp_path: str) -> None:
 def _chat_stream_events(request: ChatRequest, current_user: dict):
     layer_trace = ["perception", "planning", "execution", "output"]
     chunks = []
+    citations = []
     perception_output = None
     try:
         perception_input = perception.PerceptionInput(
@@ -547,6 +551,7 @@ def _chat_stream_events(request: ChatRequest, current_user: dict):
                         perception_output.message
                     )
                     final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
+                    citations = _serialize_citations(final_state.get("citations", []))
                     chunks.append(final_data)
                     yield _sse_data({"chunk": final_data})
         elif state["intent"] == "chat":
@@ -565,9 +570,11 @@ def _chat_stream_events(request: ChatRequest, current_user: dict):
                 perception_output.message
             )
             final_data = final_state["response"]
+            citations = _serialize_citations(final_state.get("citations", []))
             chunks.append(final_data)
             yield _sse_data({"chunk": final_data})
             if final_state.get("error"):
+                yield _sse_data({"type": "citations", "citations": citations})
                 yield _sse_data({"chunk": "[DONE]"})
                 return
 
@@ -577,6 +584,7 @@ def _chat_stream_events(request: ChatRequest, current_user: dict):
         if final_data:
             memory.save_to_vector(perception_output.session_id, final_data, "normal")
         auth.bind_session(perception_output.session_id, current_user["user_id"])
+        yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data({"chunk": "[DONE]"})
     except Exception as e:
         logger.error("/chat/stream未捕获异常：session_id=%s error_type=%s", request.session_id, type(e).__name__)
@@ -591,6 +599,7 @@ def _prepare_stream_state(session_id: str, message: str) -> planning.AgentState:
         context=[],
         tasks=[],
         results=[],
+        citations=[],
         response="",
         error="",
         clarification="",
@@ -608,6 +617,21 @@ def _prepare_stream_state(session_id: str, message: str) -> planning.AgentState:
 
 def _sse_data(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _serialize_citations(citations: list) -> list[dict]:
+    serialized = []
+    for citation in citations or []:
+        if hasattr(citation, "model_dump"):
+            serialized.append(citation.model_dump())
+        elif isinstance(citation, dict):
+            serialized.append({
+                "source": str(citation.get("source", "")),
+                "doc_id": str(citation.get("doc_id", "")),
+                "chunk_index": int(citation.get("chunk_index", 0)),
+                "score": float(citation.get("score", 0.0))
+            })
+    return serialized
 
 
 def _build_stream_system_prompt(context: list[str]) -> str:

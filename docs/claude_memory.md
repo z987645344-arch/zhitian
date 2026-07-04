@@ -118,6 +118,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 问题5：/chat/stream search/clarify路径非真流式已修复，clarify按字符输出，search在Tavily后使用GLM流式整理结果
 - auth.py日志脱敏已补全：认证层不再记录username、source路径或异常消息原文，仅记录长度、user_id/doc_id和error_type
 - 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
+- RAG回答已支持引用来源与低置信度拒答且运行时验证通过：Chroma原始值为distances，系统转换为score=1/(1+distance)，score越高越相关；低于RAG_SCORE_THRESHOLD时拒答且citations为空，命中时仅返回score达标的可信citations
 
 ## 已知技术问题
 - zhipuai SDK不支持parallel_tool_calls，已做兼容
@@ -128,7 +129,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
 - 审核员知识库内容查看和管理员二次确认危险删除功能已回退；当前不提供审核员查看用户长期记忆原文或一键清空全部记忆/知识库接口
 - DeepSeek/LLM Provider切换试验已通过git revert回退；当前后端保持GLM固定模型配置，后续模型切换需重新拆分为独立任务
-- 当前.venv启动器指向不存在的本机Python路径，后续需要重新创建或修复虚拟环境；代码语法检查可用Codex内置Python通过
+- 本机.venv已复核正常，Codex执行环境也已找到稳定验证方式：运行时验证需用提权方式调用D:\zhiliao\zhitian\.venv\Scripts\python.exe；已验证可import fastapi并可启动main.py访问/health。服务验证后需清理项目.venv派生的Python子进程，避免8000端口残留
 
 ## 最近改动
 > 后端完整记录见 D:\zhiliao\zhitian\CHANGELOG.md
@@ -163,3 +164,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-03：POST /documents/upload改为multipart/form-data真实文件上传，原始文件仅临时保存用于解析，解析后删除，不再要求员工填写服务器文件路径
 - 2026-07-05：通过git revert撤回DeepSeek/LLM Provider切换和knowledge_base知识源试验，当前代码树恢复到DeepSeek改造前的GLM固定模型稳定版，并保留multipart真实文件上传能力
 - 2026-07-05：拆分启动脚本，删除D:\zhiliao\启动知天.bat总启动入口，改为D:\zhiliao\zhitian\启动后端.bat和D:\zhiliao\zhitian_app\启动前端.bat两个独立快捷方式
+- 2026-07-05：复核后端Python环境，本机.venv可正常使用Python 3.10.11并导入FastAPI，环境状态改为正常
+- 2026-07-05：RAG可信回答完成，文档问答返回结构化citations，低置信度文档检索触发“未找到可靠依据”拒答，/chat/stream新增citations SSE事件
+- 2026-07-05：Codex运行时验证环境问题已诊断完成，提权调用项目.venv可正常导入FastAPI并启动后端访问/health，无需重建.venv；残留验证进程已清理
+- 2026-07-05：RAG citations运行时验证通过，确认score方向正确；修正命中后citations只保留达标chunk，真实接口验证覆盖文档命中、低置信拒答、普通chat和联网search路径

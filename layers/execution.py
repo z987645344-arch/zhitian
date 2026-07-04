@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from collections.abc import Iterator
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tavily import TavilyClient
 from zhipuai import ZhipuAI
 import config
@@ -16,11 +16,19 @@ from utils.logger import get_logger
 logger = get_logger("execution")
 
 
+class Citation(BaseModel):
+    source: str
+    doc_id: str
+    chunk_index: int
+    score: float
+
+
 class ToolResult(BaseModel):
     tool: str
     status: str
     data: str
     error_msg: str = ""
+    citations: list[Citation] = Field(default_factory=list)
 
 # 执行层错误处理规则
 MAX_RETRIES = 1
@@ -45,6 +53,8 @@ def run(tool: str, params: dict) -> ToolResult:
     for attempt in range(MAX_RETRIES + 1):
         try:
             result = func(**params)
+            if isinstance(result, ToolResult):
+                return result
             return ToolResult(tool=tool, status="success", data=result, error_msg="")
         except Exception as e:
             last_error = str(e)
@@ -190,18 +200,75 @@ def _search_documents(query: str) -> str:
     verified_doc_ids = auth.get_verified_doc_ids()
     results = memory.search_documents(query, top_k=5, verified_doc_ids=verified_doc_ids)
     if not results:
-        return "未在已上传文档中找到相关内容"
+        return ToolResult(
+            tool="search_documents",
+            status="success",
+            data="未找到可靠依据，无法确认答案",
+            citations=[]
+        )
 
-    lines = ["根据已上传文档，找到以下相关内容："]
+    best_score = max(float(item.get("score", 0.0)) for item in results)
+    trusted_results = [
+        item for item in results
+        if float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
+    ]
+    if best_score < config.RAG_SCORE_THRESHOLD or not trusted_results:
+        logger.info(
+            "文档检索低置信度拒答：query_len=%s best_score=%.4f threshold=%.4f",
+            len(query or ""),
+            best_score,
+            config.RAG_SCORE_THRESHOLD
+        )
+        return ToolResult(
+            tool="search_documents",
+            status="success",
+            data="未找到可靠依据，无法确认答案",
+            citations=[]
+        )
+
+    citations = [
+        Citation(
+            source=str(item.get("source", "")),
+            doc_id=str(item.get("doc_id", "")),
+            chunk_index=int(item.get("chunk_index", 0)),
+            score=float(item.get("score", 0.0))
+        )
+        for item in trusted_results
+    ]
+    answer = _answer_from_documents(query, trusted_results)
+    return ToolResult(
+        tool="search_documents",
+        status="success",
+        data=answer,
+        citations=citations
+    )
+
+
+def _answer_from_documents(query: str, results: list[dict]) -> str:
+    """基于可信文档chunk生成回答，来源信息只通过citations返回。"""
+    snippets = []
     for index, item in enumerate(results, start=1):
-        source = item.get("source", "")
-        filename = source.replace("\\", "/").split("/")[-1] or source or "未知来源"
-        chunk_index = item.get("chunk_index", 0)
         content = str(item.get("content", "")).strip()
-        if len(content) > 280:
-            content = f"{content[:280]}..."
-        lines.append(f"{index}. 来源：{filename}（片段{chunk_index}）\n{content}")
-    return "\n\n".join(lines)
+        if content:
+            snippets.append(f"[{index}]\n{content}")
+    if not snippets:
+        return "未找到可靠依据，无法确认答案"
+
+    prompt = (
+        "你是企业知识库问答助手。请只根据给定文档片段回答用户问题。"
+        "不要编造文档片段之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
+        "如果片段不足以回答，直接回答：未找到可靠依据，无法确认答案。\n\n"
+        f"用户问题：{query}\n\n"
+        "文档片段：\n"
+        + "\n\n".join(snippets)
+    )
+    try:
+        return str(_llm_chat(message=prompt)).strip()
+    except Exception as e:
+        logger.warning("文档回答生成失败，返回保守摘要：query_len=%s error_type=%s", len(query or ""), type(e).__name__)
+        contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]
+        summary = "\n\n".join(contents)
+        return summary[:800] if summary else "未找到可靠依据，无法确认答案"
 
 
 def _search_tavily_with_retry(client: TavilyClient, query: str) -> dict:
