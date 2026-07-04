@@ -7,14 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # LLM
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "glm").lower()
 GLM_API_KEY = os.getenv("GLM_API_KEY", "")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-LLM_MODEL = os.getenv("LLM_MODEL", "glm-4.7-flash")
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "glm-4-flash")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEEPSEEK_FALLBACK_MODEL = os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-v4-pro")
+LLM_MODEL = "glm-4.7-flash"
+FALLBACK_MODEL = "glm-4-flash"
 VISION_MODEL = "glm-4.6v-flash"
 
 # 服务
@@ -29,7 +24,6 @@ JWT_EXPIRE_HOURS = 24
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VECTORDB_PATH = os.path.join(BASE_DIR, "data", "vectordb")
 HISTORY_DB_PATH = os.path.join(BASE_DIR, "data", "history.db")
-KNOWLEDGE_BASE_PATH = os.path.join(BASE_DIR, "knowledge_base")
 
 # 工具
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")

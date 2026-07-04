@@ -3,7 +3,6 @@ python-multipart
 uvicorn==0.30.0
 pydantic==2.13.4
 zhipuai==2.1.5.20250825
-openai
 langchain==0.2.0
 langgraph==0.1.1
 chromadb==0.5.0

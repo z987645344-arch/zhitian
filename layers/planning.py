@@ -2,13 +2,15 @@
 # 规划层：LangGraph状态机调度意图分类、记忆检索、执行和响应生成
 
 import json
+import time
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel
+from zhipuai import ZhipuAI
 
 import config
-from layers import execution, llm_client, memory
+from layers import execution, memory
 from layers.execution import ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
@@ -299,12 +301,18 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
 
 
 def _classify_with_glm(message: str, context: list[str] = None) -> dict:
-    """使用当前LLM Function Call选择搜索或直接回答"""
-    if not llm_client.has_valid_key():
-        raise ValueError(f"{llm_client.provider_name().upper()} API_KEY未配置")
+    """使用GLM Function Call选择搜索或直接回答"""
+    if not config.GLM_API_KEY:
+        raise ValueError("GLM_API_KEY未配置")
 
     context_text = "\n".join(context or [])
-    response = llm_client.chat(
+    client = ZhipuAI(
+        api_key=config.GLM_API_KEY,
+        timeout=10.0,
+        max_retries=0
+    )
+    response = client.chat.completions.create(
+        model=config.FALLBACK_MODEL,
         messages=[
             {
                 "role": "system",
@@ -333,9 +341,9 @@ def _classify_with_glm(message: str, context: list[str] = None) -> dict:
                 "content": message
             }
         ],
-        model=llm_client.fallback_model(),
         tools=INTENT_TOOLS,
-        tool_choice="auto"
+        tool_choice="auto",
+        timeout=10.0
     )
     tool_calls = _extract_tool_calls(response)
     return _build_classify_decision(tool_calls)
@@ -369,24 +377,44 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
 
 
 def _chat_with_fallback(messages: list[dict]) -> str:
-    """调用当前LLM生成规划层最终回复，主模型失败后降级fallback"""
+    """调用GLM生成规划层最终回复，主模型失败后降级fallback"""
     primary_error = ""
     try:
-        return _chat_with_model(llm_client.primary_model(), messages)
+        return _chat_with_model(config.LLM_MODEL, messages)
     except Exception as e:
         primary_error = str(e)
 
     try:
-        return _chat_with_model(llm_client.fallback_model(), messages)
+        return _chat_with_model(config.FALLBACK_MODEL, messages)
     except Exception as e:
         raise RuntimeError(f"主模型失败：{primary_error}；fallback失败：{e}") from e
 
 
 def _chat_with_model(model: str, messages: list[dict]) -> str:
-    """调用指定LLM模型"""
-    if not llm_client.has_valid_key():
-        raise ValueError(f"{llm_client.provider_name().upper()} API_KEY未配置")
-    return str(llm_client.chat(messages, model=model))
+    """按Level1规则调用指定GLM模型"""
+    if not config.GLM_API_KEY:
+        raise ValueError("GLM_API_KEY未配置")
+
+    client = ZhipuAI(
+        api_key=config.GLM_API_KEY,
+        timeout=10.0,
+        max_retries=0
+    )
+    last_error = ""
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                timeout=10.0
+            )
+            return _extract_glm_text(response)
+        except Exception as e:
+            last_error = str(e)
+            if attempt == 0:
+                time.sleep(1.0)
+
+    raise RuntimeError(last_error)
 
 
 def _extract_tool_calls(response) -> list[dict]:

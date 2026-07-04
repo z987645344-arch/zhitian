@@ -18,17 +18,9 @@
 GLM_API_KEY=你的GLM API Key
 TAVILY_API_KEY=你的Tavily API Key
 JWT_SECRET_KEY=随机强密钥（建议32位以上随机字符串）
-
-# 可选：切换DeepSeek
-LLM_PROVIDER=glm
-DEEPSEEK_API_KEY=你的DeepSeek API Key
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_FALLBACK_MODEL=deepseek-v4-pro
 ```
 
 注意：`.env` 必须保存为无 BOM 的 UTF-8 格式。
-
-`LLM_PROVIDER` 默认是 `glm`。如需使用 DeepSeek，改为 `deepseek` 并填写 `DEEPSEEK_API_KEY`。
 
 ## 三个项目的启动方式
 
@@ -65,14 +57,7 @@ D:\zhiliao\zhitian_admin\index.html
 
 管理后台使用浏览器文件上传，不需要填写服务器文件路径。
 
-上传后的原始文件只会临时保存用于解析，解析完成后立即删除。
-
-长期保存的是：
-- `knowledge_base/` 中的可编辑 Markdown 知识源文件
-- Chroma 文档 chunk 和向量索引
-- SQLite 审核记录
-
-`knowledge_base/` 是企业知识源，Chroma 是检索索引；迁移和备份时应同时备份 `data/` 和 `knowledge_base/`。
+上传后的原始文件只会临时保存用于解析，解析完成后立即删除；长期保存的是 Chroma 文档 chunk、向量索引和 SQLite 审核记录。
 
 ## 首次使用：注册账号
 
@@ -90,6 +75,6 @@ D:\zhiliao\zhitian_admin\index.html
 
 代码备份：正常备份项目目录，`data/` 目录可单独处理。
 
-数据备份：单独备份 `data/` 目录（包含 SQLite 和 Chroma 向量库）以及 `knowledge_base/` 目录（企业知识源文件）。
+数据备份：单独备份 `data/` 目录（包含 SQLite 和 Chroma 向量库）。
 
-迁移到其他电脑：拷贝整个项目目录（含 `data/` 和 `knowledge_base/`）即可。
+迁移到其他电脑：拷贝整个项目目录（含 `data/`）即可。

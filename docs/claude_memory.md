@@ -51,9 +51,6 @@
 - [x] 审核员文档管理仅展示verified文档
 - [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
 - [x] 文档上传改为真实文件上传，移除服务器路径上传
-- [x] LLM Provider可配置切换（GLM/DeepSeek）
-- [x] knowledge_base企业知识源文件夹 + Chroma索引
-- [x] RAG文档检索返回引用来源信息
 - [x] /chat/stream search/clarify路径真流式输出
 - [x] README和启动脚本完成
 
@@ -162,4 +159,3 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-03：审核员页文档管理列表新增预览按钮，复用单文档doc_id预览接口查看企业文档知识库chunk，不恢复用户长期记忆原文查看能力
 - 2026-07-03：新增GET /documents/verified，审核员页文档管理改为仅显示verified文档，pending文档仍只在待审核列表展示
 - 2026-07-03：POST /documents/upload改为multipart/form-data真实文件上传，原始文件仅临时保存用于解析，解析后删除，不再要求员工填写服务器文件路径
-- 2026-07-04：新增统一LLM客户端，支持LLM_PROVIDER在GLM/DeepSeek间切换；企业知识写入knowledge_base可编辑源文件，Chroma作为索引，并在文档检索结果中返回引用来源
