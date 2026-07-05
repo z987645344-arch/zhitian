@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # 规划层：LangGraph状态机调度意图分类、记忆检索、执行和响应生成
 
 import json
@@ -32,6 +32,10 @@ class AgentState(TypedDict):
     tasks: list[Task]
     results: list[ToolResult]
     citations: list[Citation]
+    round_count: int
+    tool_call_history: list[dict]
+    react_action: str
+    react_limit_reached: bool
     response: str
     error: str
     clarification: str
@@ -194,42 +198,41 @@ def retrieve_node(state: AgentState) -> AgentState:
     return state
 
 
+def plan_node(state: AgentState) -> AgentState:
+    """plan node: ensure there is one pending task for the current round."""
+    if len(state["tasks"]) > state["round_count"]:
+        return state
+    task = _task_from_intent(state, order=len(state["tasks"]) + 1)
+    state["tasks"].append(task)
+    return state
+
+
 def execute_node(state: AgentState) -> AgentState:
-    """execute节点：按意图调度执行层工具"""
-    if state["intent"] == "search":
-        task = Task(
-            tool="search_web",
-            params={
-                "query": state["message"],
-                "context": state["context"],
-                "session_id": state["session_id"]
-            },
-            order=1
-        )
-    elif state["intent"] == "document":
-        task = Task(
-            tool="search_documents",
-            params={
-                "query": state["message"]
-            },
-            order=1
-        )
-    else:
-        task = Task(
-            tool="llm_chat",
-            params={
-                "message": state["message"],
-                "session_id": state["session_id"]
-            },
-            order=1
-        )
-    state["tasks"] = [task]
+    """execute node: run the next unexecuted task."""
+    if state["round_count"] >= len(state["tasks"]):
+        state["error"] = "没有可执行的任务"
+        return state
+
+    task = state["tasks"][state["round_count"]]
     result = mcp_client.call_tool(task.tool, task.params)
-    state["results"] = [result]
+    state["results"].append(result)
+    state["round_count"] += 1
+    state["tool_call_history"].append(_tool_history_item(task))
+    state["citations"] = _dedupe_citations(state["citations"] + (result.citations or []))
     if result.status == "error":
         state["error"] = result.error_msg
     return state
 
+
+def reflect_node(state: AgentState) -> AgentState:
+    """reflect node: decide whether another bounded tool round is needed."""
+    decision = should_continue_react(state)
+    state["react_action"] = decision["action"]
+    state["react_limit_reached"] = bool(decision.get("limit_reached", False))
+    next_task = decision.get("task")
+    if state["react_action"] == "continue" and next_task:
+        state["tasks"].append(next_task)
+    return state
 
 def respond_node(state: AgentState) -> AgentState:
     """respond节点：读取执行结果并生成最终响应"""
@@ -257,14 +260,14 @@ def respond_node(state: AgentState) -> AgentState:
 
     latest_result = state["results"][-1]
     base_response = latest_result.data
-    state["citations"] = latest_result.citations or []
+    state["citations"] = _dedupe_citations(state["citations"])
     if latest_result.tool == "search_documents":
-        state["response"] = base_response
+        state["response"] = _with_react_limit_notice(state, base_response)
         return state
     if state["context"]:
-        state["response"] = _respond_with_context(state, base_response)
+        state["response"] = _with_react_limit_notice(state, _respond_with_context(state, base_response))
     else:
-        state["response"] = base_response
+        state["response"] = _with_react_limit_notice(state, base_response)
     return state
 
 
@@ -283,6 +286,10 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
         tasks=[],
         results=[],
         citations=[],
+        round_count=0,
+        tool_call_history=[],
+        react_action="",
+        react_limit_reached=False,
         response="",
         error="",
         clarification="",
@@ -311,6 +318,210 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
         return state
 
+
+
+def should_continue_react(state: AgentState) -> dict:
+    """Use LLM reflection to decide whether another bounded tool round is useful."""
+    max_total_rounds = 1 + int(config.MAX_REACT_ROUNDS)
+    if state["error"] or not state["results"]:
+        return {"action": "respond"}
+
+    reflection = _reflect_with_glm(state)
+    if state["round_count"] >= max_total_rounds:
+        return {
+            "action": "respond",
+            "limit_reached": reflection.get("action") == "continue"
+        }
+    if reflection.get("action") != "continue":
+        return {"action": "respond"}
+
+    task = _task_from_reflection(state, reflection)
+    if not task or _has_called_task(state["tool_call_history"], task):
+        return {"action": "respond"}
+    return {"action": "continue", "task": task}
+
+
+def _reflect_with_glm(state: AgentState) -> dict:
+    """Ask GLM whether current tool results are enough, without hard-coded semantic branching."""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是轻量ReAct反思调度器，只判断当前工具结果是否足够回答用户问题。"
+                "如果足够，返回JSON：{\"action\":\"respond\"}。"
+                "如果不够，且需要再调用一次工具，返回JSON："
+                "{\"action\":\"continue\",\"tool\":\"search_web|search_documents|llm_chat\",\"query\":\"下一轮查询或消息\"}。"
+                "只能选择search_web、search_documents、llm_chat三个工具。"
+                "判断时可以参考：文档citations是否为空或分数不足、搜索结果是否与问题相关、是否需要用另一类信息交叉验证。"
+                "不要重复调用历史里已经用过的同一工具和同一参数。只返回JSON，不要解释。"
+            )
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "question": state["message"],
+                    "round_count": state["round_count"],
+                    "max_additional_rounds": config.MAX_REACT_ROUNDS,
+                    "tool_call_history": state["tool_call_history"],
+                    "results": _summarize_results_for_reflection(state["results"]),
+                    "citations": [citation.model_dump() for citation in _dedupe_citations(state["citations"])]
+                },
+                ensure_ascii=False
+            )
+        }
+    ]
+    try:
+        raw = _chat_with_fallback(messages)
+        return _parse_reflection(raw)
+    except Exception as e:
+        logger.error("ReAct反思判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
+        return {"action": "respond"}
+
+
+def _parse_reflection(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        return {"action": "respond"}
+    action = data.get("action")
+    if action != "continue":
+        return {"action": "respond"}
+    tool = str(data.get("tool", "")).strip()
+    if tool not in {"search_web", "search_documents", "llm_chat"}:
+        return {"action": "respond"}
+    query = str(data.get("query", "")).strip()
+    return {"action": "continue", "tool": tool, "query": query}
+
+
+def _task_from_intent(state: AgentState, order: int) -> Task:
+    if state["intent"] == "search":
+        return Task(
+            tool="search_web",
+            params={
+                "query": state["message"],
+                "context": state["context"],
+                "session_id": state["session_id"]
+            },
+            order=order
+        )
+    if state["intent"] == "document":
+        return Task(
+            tool="search_documents",
+            params={
+                "query": state["message"]
+            },
+            order=order
+        )
+    return Task(
+        tool="llm_chat",
+        params={
+            "message": state["message"],
+            "session_id": state["session_id"]
+        },
+        order=order
+    )
+
+
+def _task_from_reflection(state: AgentState, reflection: dict) -> Task | None:
+    tool = str(reflection.get("tool", "")).strip()
+    query = str(reflection.get("query", "")).strip() or state["message"]
+    order = len(state["tasks"]) + 1
+    if tool == "search_web":
+        return Task(
+            tool="search_web",
+            params={
+                "query": query,
+                "context": state["context"],
+                "session_id": state["session_id"]
+            },
+            order=order
+        )
+    if tool == "search_documents":
+        return Task(
+            tool="search_documents",
+            params={
+                "query": query
+            },
+            order=order
+        )
+    if tool == "llm_chat":
+        return Task(
+            tool="llm_chat",
+            params={
+                "message": query,
+                "session_id": state["session_id"]
+            },
+            order=order
+        )
+    return None
+
+
+def _tool_history_item(task: Task) -> dict:
+    return {
+        "tool": task.tool,
+        "params_summary": _task_params_summary(task)
+    }
+
+
+def _task_params_summary(task: Task) -> str:
+    if task.tool in {"search_web", "search_documents"}:
+        value = task.params.get("query", "")
+    else:
+        value = task.params.get("message", "")
+    return str(value or "").strip()[:80]
+
+
+def _has_called_task(history: list[dict], task: Task) -> bool:
+    candidate = _tool_history_item(task)
+    return any(
+        item.get("tool") == candidate["tool"]
+        and item.get("params_summary") == candidate["params_summary"]
+        for item in history or []
+    )
+
+
+def _summarize_results_for_reflection(results: list[ToolResult]) -> list[dict]:
+    summary = []
+    for result in results or []:
+        citations = result.citations or []
+        summary.append({
+            "tool": result.tool,
+            "status": result.status,
+            "data_preview": str(result.data or "")[:500],
+            "error_type": "tool_error" if result.status == "error" else "",
+            "citation_count": len(citations),
+            "citation_scores": [round(float(item.score), 6) for item in citations[:5]]
+        })
+    return summary
+
+
+def _dedupe_citations(citations: list[Citation]) -> list[Citation]:
+    deduped = []
+    seen = set()
+    for citation in citations or []:
+        if isinstance(citation, dict):
+            citation = Citation(**citation)
+        key = (citation.doc_id, citation.chunk_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(citation)
+    return deduped
+
+
+def _with_react_limit_notice(state: AgentState, response: str) -> str:
+    if not state.get("react_limit_reached"):
+        return response
+    notice = "基于目前检索到的信息回答，可能不够全面。"
+    if str(response or "").startswith(notice):
+        return response
+    return f"{notice}\n\n{response or ''}".strip()
 
 def _classify_with_glm(message: str, context: list[str] = None) -> dict:
     """使用GLM Function Call选择搜索或直接回答"""
@@ -555,7 +766,9 @@ def _extract_glm_text(response) -> str:
 builder = StateGraph(AgentState)
 builder.add_node("classify", classify_node)
 builder.add_node("retrieve", retrieve_node)
+builder.add_node("plan", plan_node)
 builder.add_node("execute", execute_node)
+builder.add_node("reflect", reflect_node)
 builder.add_node("respond", respond_node)
 builder.set_entry_point("classify")
 builder.add_conditional_edges(
@@ -566,7 +779,19 @@ builder.add_conditional_edges(
         "continue": "retrieve"
     }
 )
-builder.add_edge("retrieve", "execute")
-builder.add_edge("execute", "respond")
+builder.add_edge("retrieve", "plan")
+builder.add_edge("plan", "execute")
+builder.add_edge("execute", "reflect")
+builder.add_conditional_edges(
+    "reflect",
+    lambda state: "continue" if state["react_action"] == "continue" else "respond",
+    {
+        "continue": "plan",
+        "respond": "respond"
+    }
+)
 builder.add_edge("respond", END)
 graph = builder.compile()
+
+
+

@@ -387,3 +387,42 @@ TIMEOUT = 10.0      # 秒
    错误做法：if "出门" in message: return "天气相关关键词"
    正确做法：优化prompt让LLM自己理解语义
    原则：能用LLM解决的语义问题，不写if/else规则
+
+### 2026-07-05补充：轻量ReAct状态机
+
+第四章AgentState当前补充字段：
+```python
+class AgentState(TypedDict):
+    session_id: str
+    message: str
+    intent: str
+    context: list[str]
+    tasks: list[Task]
+    results: list[ToolResult]
+    citations: list[Citation]
+    round_count: int
+    tool_call_history: list[dict]
+    react_action: str
+    react_limit_reached: bool
+    response: str
+    error: str
+    clarification: str
+    city: str
+```
+
+第七章状态机当前流转：
+```text
+classify -> retrieve -> plan -> execute -> reflect
+                                ^              |
+                                |              | continue且未达上限
+                                +--------------+
+                                               |
+                                               v respond
+```
+
+ReAct约束：
+- `config.MAX_REACT_ROUNDS = 2`，表示初始execute之后最多追加2轮工具调用，总执行轮数最多为3。
+- 只允许组合现有三个工具：`search_web`、`search_documents`、`llm_chat`。
+- `reflect_node`只做调度，是否继续由`should_continue_react()`调用LLM根据工具结果、citations、分数和调用历史做语义判断。
+- `round_count`达到总轮数上限后强制进入respond；如果LLM仍判断信息不足，回复前追加“基于目前检索到的信息回答，可能不够全面。”兜底提示。
+- 多轮文档命中产生的citations按`doc_id + chunk_index`去重后返回输出层。

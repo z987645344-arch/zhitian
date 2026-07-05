@@ -178,3 +178,17 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - rejected文档在任何情况下都不会进入/debug/retrieve候选；结果新增status字段（verified/pending），防止审核员混淆“调试可见”和“客户正式问答可见”。
 - 隐私边界不变：该接口只调用zhitian_documents的search_documents和SQL文档审核白名单，不访问zhitian_memory、不调用search_memory、不读取用户对话历史。
 - 运行时验证通过：默认不返回pending，开启include_pending后pending以status=pending返回，rejected始终不返回，employee/customer访问403，/chat与/chat/stream正式链路仍只使用verified文档。
+
+## 2026-07-05 补充记录：轻量ReAct循环
+- 后端规划层已从线性单轮改为有限ReAct状态机：classify -> retrieve -> plan -> execute -> reflect，reflect在需要继续且未达上限时回到plan。
+- `MAX_REACT_ROUNDS=2`写入config.py，语义为初始execute后最多追加2轮，总执行轮数最多3；达到上限时强制respond，避免失控循环和成本失控。
+- 本次不新增工具，只组合`search_web`、`search_documents`、`llm_chat`；是否继续由`should_continue_react()`通过GLM根据结果摘要、citations和调用历史判断，节点函数只做调度。
+- AgentState新增round_count、tool_call_history、react_action、react_limit_reached；citations跨轮按doc_id+chunk_index去重。
+- 运行时验证通过：普通聊天单轮不被拉长，受控多轮能追加工具调用，上限兜底不会无限循环，citations去重有效，/chat正式接口未退化；验证临时知识已清理。
+
+## 2026-07-05 补充记录：should_continue_react真实判断质量
+- 已补齐上一轮验证缺口：本次不使用monkeypatch，不人为改写`_reflect_with_glm`或`should_continue_react()`返回值，走真实`/chat`接口观察GLM自主reflect判断。
+- 场景A：上传并审核一份“只说明能力、不说明价格”的测试知识，用户自然表达“如果文档没有可靠依据，请再联网查找”。真实reflect返回`{"action":"continue","tool":"search_web",...}`，说明GLM能自主判断文档依据不足并转联网搜索；搜索后第二次reflect仍尝试重复`search_web`，被tool_call_history重复调用拦截阻止。
+- 场景B：询问文档中明确存在的能力信息，真实reflect返回`{"action":"respond"}`，没有过度触发第二轮，回答和citations正常。
+- 结论区分：状态机工程正确性已验证；LLM判断质量初步可用，但存在“搜索后继续重复search_web”的倾向，当前由重复调用拦截兜底，后续如要提升Agent质量可单独优化reflect prompt。
+- 本轮测试文档和临时观测代码均已清理。

@@ -224,3 +224,17 @@
 - 检索调试接口新增include_pending开关：默认关闭时仅查询verified企业文档；开启后合并pending文档用于审核员检索质量调试；rejected文档始终排除。
 - /debug/retrieve结果新增status字段（verified/pending），用于区分调试候选是否为客户正式问答可见内容；正式/chat与/chat/stream链路仍只使用verified文档。
 - 运行时验证通过：默认结果不含pending，开启开关后pending文档以status=pending返回，rejected文档不返回，employee/customer访问/debug/retrieve均为403。
+
+## 2026-07-05
+- 规划层新增轻量ReAct循环：LangGraph流转改为classify -> retrieve -> plan -> execute -> reflect，reflect可在轮数上限内回到plan继续调用工具。
+- config.py新增MAX_REACT_ROUNDS=2，表示初始execute之后最多追加2轮工具调用；达到总轮数上限后强制respond，不允许无限循环。
+- AgentState新增round_count、tool_call_history、react_action、react_limit_reached字段，跨轮次保留工具调用历史和citations。
+- reflect判断由should_continue_react()调用GLM完成语义判断，仅允许search_web、search_documents、llm_chat三个既有工具；代码层只做工具白名单、重复调用和轮数上限硬拦截。
+- 多轮citations按doc_id+chunk_index去重；轮数上限仍信息不足时以当前最佳结果回复，并提示“基于目前检索到的信息回答，可能不够全面”。
+- 运行时验证通过：普通“你好”保持单轮round_count=1；受控多轮可追加第二轮工具；极端不足场景在总轮数3时强制respond；citations去重生效；/chat正式接口正常返回且测试知识已清理。
+
+## 2026-07-05
+- 补充验证should_continue_react真实LLM判断质量：未使用monkeypatch，走真实/chat接口，临时打印reflect原始JSON后已清理观测代码。
+- 场景A（文档缺少价格依据且用户自然表达“没有依据就联网查找”）：GLM自主返回continue并选择search_web，工具选择合理；搜索后第二次reflect仍尝试重复search_web，同query重复调用被代码层tool_call_history拦截，最终正常respond。
+- 场景B（文档已明确命中“支持哪些能力”）：GLM返回respond，没有过度触发第二轮；最终citations来自verified文档且测试知识已清理。
+- 结论：轻量ReAct不只是工程上可循环，真实LLM在缺依据转联网场景下能触发continue；但搜索后仍可能再次尝试重复同工具，当前依赖重复调用拦截避免多余轮次，后续可考虑优化reflect prompt降低重复continue倾向。
