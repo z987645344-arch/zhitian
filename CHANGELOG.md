@@ -216,3 +216,11 @@
 - 修正文档命中后的citations过滤：只返回score >= RAG_SCORE_THRESHOLD的可信chunk，避免低分旧测试chunk混入引用来源
 - 通过真实接口验证：文档命中问题返回答案和非空citations，低置信无关问题返回“未找到可靠依据，无法确认答案”且citations为空，普通chat和联网search均保持citations为空
 - 运行时验证后已删除本轮产生的测试文档chunk、审核记录和临时测试文件，并确认后端进程已停止
+- 新增reviewer专用POST /debug/retrieve检索调试接口，只查询zhitian_documents中trust_level=verified的企业文档，不访问zhitian_memory、search_memory或用户对话历史
+- /debug/retrieve返回完整top-k候选source/doc_id/chunk_index/score和当前RAG_SCORE_THRESHOLD，不做阈值过滤、不返回chunk正文、不写入数据库或向量库
+- 运行时验证/debug/retrieve：reviewer可查看完整候选含低分结果，employee/customer访问均返回403，pending测试文档不会出现在结果中，/chat与/chat/stream正式问答链路不受影响
+
+## 2026-07-05
+- 检索调试接口新增include_pending开关：默认关闭时仅查询verified企业文档；开启后合并pending文档用于审核员检索质量调试；rejected文档始终排除。
+- /debug/retrieve结果新增status字段（verified/pending），用于区分调试候选是否为客户正式问答可见内容；正式/chat与/chat/stream链路仍只使用verified文档。
+- 运行时验证通过：默认结果不含pending，开启开关后pending文档以status=pending返回，rejected文档不返回，employee/customer访问/debug/retrieve均为403。

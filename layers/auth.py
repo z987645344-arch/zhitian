@@ -313,6 +313,24 @@ def get_verified_doc_ids() -> list[str]:
         raise
 
 
+def get_pending_doc_ids() -> list[str]:
+    """返回所有待审核文档doc_id列表。"""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT doc_id
+                FROM documents
+                WHERE trust_level = 'pending'
+                ORDER BY doc_id ASC
+                """
+            ).fetchall()
+        return [str(row["doc_id"]) for row in rows]
+    except Exception as e:
+        logger.error("读取待审核文档doc_id失败：error_type=%s", type(e).__name__)
+        raise
+
+
 def get_document(doc_id: str) -> dict | None:
     """按doc_id读取文档审核状态。"""
     if not doc_id:

@@ -186,6 +186,19 @@ POST   /approve/{doc_id}     # reviewer审核通过文档
 POST   /reject/{doc_id}      # reviewer拒绝文档
 ```
 
+### 检索调试
+```
+POST   /debug/retrieve       # reviewer调试企业文档知识库检索质量，只查询verified文档，不访问用户个人记忆
+{
+  "query": "string",
+  "top_k": 5,
+  "include_pending": false
+}
+
+# 默认只查verified文档；include_pending=true时合并pending文档，rejected始终排除
+# 返回source/doc_id/status/chunk_index/score和当前RAG_SCORE_THRESHOLD；不返回chunk正文，不做阈值过滤
+```
+
 ### 健康检查
 ```
 GET /                       # 服务状态

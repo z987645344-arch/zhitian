@@ -49,6 +49,12 @@ class KnowledgeInputRequest(BaseModel):
     title: str = ""
 
 
+class DebugRetrieveRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    include_pending: bool = False
+
+
 class RegisterRequest(BaseModel):
     username: str
     password: str
@@ -343,6 +349,53 @@ async def list_verified_documents(current_user: dict = Depends(require_reviewer)
     return {
         "documents": documents,
         "total": len(documents)
+    }
+
+
+@app.post("/debug/retrieve")
+async def debug_retrieve(
+    request: DebugRetrieveRequest,
+    current_user: dict = Depends(require_reviewer)
+):
+    query = (request.query or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query不能为空")
+
+    safe_top_k = max(1, min(int(request.top_k or 5), 20))
+    logger.info(
+        "收到/debug/retrieve请求：user_id=%s query_len=%s top_k=%s include_pending=%s",
+        current_user["user_id"],
+        len(query),
+        safe_top_k,
+        bool(request.include_pending)
+    )
+    verified_doc_ids = auth.get_verified_doc_ids()
+    pending_doc_ids = auth.get_pending_doc_ids() if request.include_pending else []
+    allowed_doc_ids = verified_doc_ids + pending_doc_ids
+    doc_status = {
+        **{doc_id: "verified" for doc_id in verified_doc_ids},
+        **{doc_id: "pending" for doc_id in pending_doc_ids}
+    }
+    results = memory.search_documents(
+        query,
+        top_k=safe_top_k,
+        verified_doc_ids=allowed_doc_ids
+    )
+    debug_results = [
+        {
+            "source": str(item.get("source", "")),
+            "doc_id": str(item.get("doc_id", "")),
+            "status": doc_status.get(str(item.get("doc_id", "")), ""),
+            "chunk_index": int(item.get("chunk_index", 0)),
+            "score": float(item.get("score", 0.0))
+        }
+        for item in results
+    ]
+    debug_results.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "results": debug_results,
+        "total": len(debug_results),
+        "threshold": config.RAG_SCORE_THRESHOLD
     }
 
 

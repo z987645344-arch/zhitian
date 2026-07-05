@@ -65,6 +65,7 @@
 - [x] 历史记录页
 - [x] 登录页 + token持久化
 - [x] 界面美化
+- [x] RAG citations引用来源展示（流式citations事件解析、assistant气泡可展开来源列表）
 
 ### 管理后台（D:\zhiliao\zhitian_admin\）
 - [x] 静态网页项目创建
@@ -91,7 +92,7 @@
 ```
 lib/
 ├── main.dart
-├── models/message.dart           ← 消息模型（role/content/isStreaming）
+├── models/message.dart           ← 消息模型（role/content/isStreaming/citations）
 ├── providers/chat_provider.dart  ← 状态管理
 ├── pages/chat_page.dart          ← 聊天主界面
 ├── pages/settings_page.dart      ← 设置页（地址配置+连接测试）
@@ -119,6 +120,7 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - auth.py日志脱敏已补全：认证层不再记录username、source路径或异常消息原文，仅记录长度、user_id/doc_id和error_type
 - 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
 - RAG回答已支持引用来源与低置信度拒答且运行时验证通过：Chroma原始值为distances，系统转换为score=1/(1+distance)，score越高越相关；低于RAG_SCORE_THRESHOLD时拒答且citations为空，命中时仅返回score达标的可信citations
+- reviewer检索调试能力已完成并通过运行时验证：POST /debug/retrieve只查询zhitian_documents中的verified企业文档，返回source/doc_id/chunk_index/score完整候选；不访问zhitian_memory、不调用search_memory、不读取用户对话历史
 
 ## 已知技术问题
 - zhipuai SDK不支持parallel_tool_calls，已做兼容
@@ -168,3 +170,11 @@ MCP    当前为协议壳，后期替换为真实进程级调用
 - 2026-07-05：RAG可信回答完成，文档问答返回结构化citations，低置信度文档检索触发“未找到可靠依据”拒答，/chat/stream新增citations SSE事件
 - 2026-07-05：Codex运行时验证环境问题已诊断完成，提权调用项目.venv可正常导入FastAPI并启动后端访问/health，无需重建.venv；残留验证进程已清理
 - 2026-07-05：RAG citations运行时验证通过，确认score方向正确；修正命中后citations只保留达标chunk，真实接口验证覆盖文档命中、低置信拒答、普通chat和联网search路径
+- 2026-07-05：Flutter客户端完成RAG citations展示，ApiService解析/chat/stream的citations事件，ChatProvider绑定到assistant消息，MessageBubble支持可展开“引用来源”列表；flutter analyze/test通过
+- 2026-07-05：新增reviewer检索调试接口和管理后台调试区，严格限定verified企业文档候选，不返回chunk正文，不触碰用户个人记忆；运行时验证覆盖reviewer可查、employee/customer拒绝、pending文档隔离和正式问答链路不受影响
+
+## 2026-07-05 补充记录：检索调试include_pending开关
+- reviewer专用POST /debug/retrieve新增include_pending参数，默认False保持只查verified企业文档；include_pending=True时额外纳入pending文档，便于审核员在批准前测试检索匹配效果。
+- rejected文档在任何情况下都不会进入/debug/retrieve候选；结果新增status字段（verified/pending），防止审核员混淆“调试可见”和“客户正式问答可见”。
+- 隐私边界不变：该接口只调用zhitian_documents的search_documents和SQL文档审核白名单，不访问zhitian_memory、不调用search_memory、不读取用户对话历史。
+- 运行时验证通过：默认不返回pending，开启include_pending后pending以status=pending返回，rejected始终不返回，employee/customer访问403，/chat与/chat/stream正式链路仍只使用verified文档。
