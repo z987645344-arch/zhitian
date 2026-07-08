@@ -1,5 +1,7 @@
-# Claude 记忆库 · 知天（zhitian）
-> 每次新对话开头将此文档贴给Claude，确保上下文连续
+# 知天项目状态 · 指挥师记忆
+> 每次新对话开头贴给指挥师，确保上下文连续。
+> 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
+> **最后更新：2026-07-08**
 
 ---
 
@@ -10,185 +12,145 @@
 | 项目名 | 知天（zhitian） |
 | 后端路径 | D:\zhiliao\zhitian\ |
 | 前端路径 | D:\zhiliao\zhitian_app\ |
-| 管理后台路径 | D:\zhiliao\zhitian_admin\ |
-| 定位 | 本地私有化部署Agent，面向企业场景 |
-| 开发者 | Zheng，大三，有知了（Flutter Agent App）开发经验 |
+| 管理后台 | D:\zhiliao\zhitian_admin\ |
+| 定位 | 本地私有化部署 Agent，面向企业知识库问答场景 |
+| 开发者 | Zheng，大三 |
+| 技术设计 | 见 docs/zhitian_structure.md |
+| 工作手册 | 见 docs/claude_skill.md |
+
+---
 
 ## 协作分工
 
 | 角色 | 工具 | 职责 |
 |------|------|------|
-| 指挥大脑 | Claude（免费版，双账号轮换） | 需求分析、任务拆解、输出指令 |
-| 执行编程 | Codex（ChatGPT Plus网页版） | 接收指令、写代码、改文件 |
-| 代码环境 | VS Code | Codex操作的工作区 |
-| 测试验证 | WorkBuddy | 运行测试、反馈结果 |
+| 决策者 | 用户 | 产品方向、最终决策、与各 AI 沟通 |
+| 指挥师 | Claude（免费版，1/2 互为备份） | 讨论下一步、拆解任务、给 Codex 发指令 |
+| 编程执行 | Codex（ChatGPT Plus） | 接收指令、写代码、改文件、更新 CHANGELOG |
+| 测试秘书 | WorkBuddy | 运行测试、发现问题、维护项目状态 |
 
-## 给新Claude的说明
-> 你是接手的指挥师，阅读完此文档后同时阅读 docs/zhitian_structure.md 了解完整技术设计
-> 工作方式：分析需求 → 拆解任务 → 给Codex发指令 → 根据反馈继续
-> 目标平台：Windows桌面端（flutter run -d windows），后端localhost:8000
+> 指挥师 1 和 2 职责完全相同。设计为互为备份，额度不足时随时切换。
+> 切换不影响项目推进——读此文档 + claude_skill.md + CHANGELOG.md 即可接手。
 
 ---
 
-## 当前进度
+## 当前进行中
 
-### 后端（D:\zhiliao\zhitian\）
-- [x] 第一阶段：感知层 + 执行层 + 输出层跑通
-- [x] 第二阶段：SQLite短期记忆 + Chroma长期记忆
-- [x] 第三阶段：LangGraph规划层（GLM Function Call意图分类）
-- [x] 第四阶段：所有打磨任务完成
-- [x] MCP协议壳接入
-- [x] 层间数据严格化（Pydantic模型）
-- [x] /health真实健康检查
-- [x] 搜索结果整理失败兜底
-- [x] 文档检索能力（RAG基础：txt/md/pdf/docx解析、文档向量库、search_documents工具）
-- [x] 文档管理接口（GET /documents、DELETE /documents/{source}）
-- [x] 用户认证系统（JWT + bcrypt + 角色权限 + session归属）
-- [x] Phase 3信任分级机制（pending/verified/rejected审核流）
-- [x] 测试数据清理脚本
-- [x] 直接录入知识接口（POST /knowledge/input）
-- [x] 员工撤销pending文档 + 审核员预览待审核文档
-- [x] 审核员文档管理仅展示verified文档
-- [x] 文档审核隔离粒度修复（Chroma chunk按doc_id过滤）
-- [x] 文档上传改为真实文件上传，移除服务器路径上传
-- [x] /chat/stream search/clarify路径真流式输出
-- [x] README和启动脚本完成
-
-### 前端（D:\zhiliao\zhitian_app\）
-- [x] Flutter Windows桌面端项目创建
-- [x] 基础ChatPage UI（消息气泡、输入框）
-- [x] 接入真实SSE后端（POST /chat/stream）
-- [x] 设置页（后端地址配置、连接测试）
-- [x] Windows桌面端跑通，三个场景验证通过
-- [x] 流式逐字显示 + 加载动画（思考中气泡、首chunk后逐字显示）
-- [x] 新建对话按钮 + 错误提示
-- [x] 历史记录页
-- [x] 登录页 + token持久化
-- [x] 界面美化
-- [x] RAG citations引用来源展示（流式citations事件解析、assistant气泡可展开来源列表）
-
-### 管理后台（D:\zhiliao\zhitian_admin\）
-- [x] 静态网页项目创建
-- [x] 登录页（employee/reviewer分流，customer拦截）
-- [x] 员工页（上传文档、直接录入知识、文档列表）
-- [x] 审核员页（pending审核、文档总览、记忆统计）
-- [x] 员工撤销待审核文档、审核员预览待审核内容
-
----
-
-## 前端技术栈
-
-| 项目 | 说明 |
+| 项 | 说明 |
 |------|------|
-| 框架 | Flutter Windows桌面端 |
-| 状态管理 | Provider |
-| HTTP | http包，SSE流式 |
-| 存储 | shared_preferences |
-| 会话ID | uuid包生成，同一会话不变 |
-| 后端地址 | SharedPreferences存储，默认localhost:8000 |
+| 状态 | ✅ 文档检索 GLM 批量重排序已上线，等待下一轮规划 |
+| 上一轮完成 | 2026-07-09：search_documents 在 BM25+向量 hybrid search 后接入 GLM 批量重排序精排 |
+| 当前等待 | 用户确认是否前移 Agent 能力提升 |
+| 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
+| 下一步 | 按"接下来规划 → Agent 能力提升"讨论工具扩展、任务分解或推理过程展示 |
 
-## 前端目录结构
-
-```
-lib/
-├── main.dart
-├── models/message.dart           ← 消息模型（role/content/isStreaming/citations）
-├── providers/chat_provider.dart  ← 状态管理
-├── pages/chat_page.dart          ← 聊天主界面
-├── pages/settings_page.dart      ← 设置页（地址配置+连接测试）
-├── pages/history_page.dart       ← 历史记录页
-├── widgets/                      ← 聊天页拆分组件
-│   ├── chat_composer.dart
-│   ├── message_bubble.dart
-│   ├── streaming_cursor.dart
-│   └── thinking_bubble.dart
-└── services/api_service.dart     ← SSE封装
-```
+> 如果你是新接手的指挥师：当前长期记忆已开始保存有信息量的 user 消息和 assistant 回复，重要性评估已升级为规则速判 + GLM 边界兜底，并已接入按importance_level区分的时间衰减、淡出过滤和物理删除脚本；文档检索已接入 BM25+向量两阶段 hybrid search，并在候选阶段接入 GLM 批量重排序精排。下一步优先看"接下来规划"。
 
 ---
 
-## 后端遗留问题（企业部署前处理）
+## 大问题总结
 
-```
-MCP    当前为协议壳，后期替换为真实进程级调用
-```
+### 1. Agent 能力仍处初级阶段
 
-## 已修复遗留问题
-- 问题7：Chroma跨session补充召回已修复，planning.retrieve_node生产路径使用strict_session=True，只检索当前session长期记忆
-- 问题8：日志记录用户消息片段已修复，/chat与/chat/stream仅记录message_len，query/source/file_path仅记录长度，异常仅记录error_type
-- 问题5：/chat/stream search/clarify路径非真流式已修复，clarify按字符输出，search在Tavily后使用GLM流式整理结果
-- auth.py日志脱敏已补全：认证层不再记录username、source路径或异常消息原文，仅记录长度、user_id/doc_id和error_type
-- 文档审核隔离风险已修复：zhitian_documents chunk metadata新增doc_id，RAG检索白名单改为verified doc_id，不再按source放行
-- RAG回答已支持引用来源与低置信度拒答且运行时验证通过：Chroma原始值为distances，系统转换为score=1/(1+distance)，score越高越相关；低于RAG_SCORE_THRESHOLD时拒答且citations为空，命中时仅返回score达标的可信citations
-- reviewer检索调试能力已完成并通过运行时验证：POST /debug/retrieve只查询zhitian_documents中的verified企业文档，返回source/doc_id/chunk_index/score完整候选；不访问zhitian_memory、不调用search_memory、不读取用户对话历史
+当前 ReAct 循环可工作（GLM 能自主判断"文档缺依据时转联网搜索"），但：
+- 工具只有 3 个（search_web / search_documents / llm_chat），不能组合编排
+- 无任务分解能力（"调研竞品并写报告"无法拆成搜索→分析→写作）
+- 无并行工具调用（3 轮全串行）
+- reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
+- ReAct 延迟可能 30-60s（3 轮 × 多次 GLM 调用）；普通 chat 已绕过 reflect，避免误触发搜索链路
 
-## 已知技术问题
-- zhipuai SDK不支持parallel_tool_calls，已做兼容
-- mcp版本固定为1.9.4（新版与FastAPI不兼容）
-- Chroma 0.5.0启动时打印telemetry日志，不影响功能
-- 搜索链路仍受GLM和网络耗时影响，但/search结果整理阶段已支持SSE逐chunk输出
-- JWT_SECRET_KEY必须在.env里配置随机强密钥，不能使用占位值
-- .env必须保持无BOM UTF-8，否则python-dotenv可能把第一行解析为\ufeffGLM_API_KEY，导致后端误报GLM_API_KEY未配置
-- 审核员知识库内容查看和管理员二次确认危险删除功能已回退；当前不提供审核员查看用户长期记忆原文或一键清空全部记忆/知识库接口
-- DeepSeek/LLM Provider切换试验已通过git revert回退；当前后端保持GLM固定模型配置，后续模型切换需重新拆分为独立任务
-- 本机.venv已复核正常，Codex执行环境也已找到稳定验证方式：运行时验证需用提权方式调用D:\zhiliao\zhitian\.venv\Scripts\python.exe；已验证可import fastapi并可启动main.py访问/health。服务验证后需清理项目.venv派生的Python子进程，避免8000端口残留
+### 2. MCP 仍是协议壳
 
-## 最近改动
-> 后端完整记录见 D:\zhiliao\zhitian\CHANGELOG.md
-> 前端完整记录见 D:\zhiliao\zhitian_app\CHANGELOG.md
-> 管理后台路径见 D:\zhiliao\zhitian_admin\
+mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具发现、标准通信一个都没用。后期需替换为真实 MCP client 调用。
 
-- 2026-06-29：后端第四阶段全部完成，MCP/健康检查/数据严格化完成
-- 2026-06-30：Flutter Windows桌面端跑通，SSE链路验证通过
-- 2026-06-30：流式逐字显示+加载动画完成，发送后显示思考中气泡，首个chunk到达后逐字显示
-- 2026-06-30：新建对话按钮+错误提示完成，支持清空当前会话、重新生成sessionId、后端不可达/超时/其他异常提示
-- 2026-06-30：历史记录页完成，支持GET/DELETE /memory/{session_id}、下拉刷新、清空后新建会话
-- 2026-07-01：前端ChatPage组件拆分完成，新增widgets目录，并删除临时证明文件kskblzdjd.md
-- 2026-06-30：后端新增RAG基础能力，支持上传本地文档、切片写入独立Chroma Collection，并通过search_documents检索
-- 2026-07-01：后端新增文档管理接口，支持列出已上传文档和按source删除文档chunk，TestClient验证通过
-- 2026-07-01：后端新增用户认证系统，支持注册/登录、JWT鉴权、角色权限控制和session归属校验
-- 2026-07-01：Phase 3信任分级完成，文档上传默认pending，reviewer审核后verified文档才参与RAG检索
-- 2026-07-01：修复.env UTF-8 BOM导致GLM_API_KEY读取失败的问题，已改回无BOM UTF-8
-- 2026-07-02：新建zhitian_admin静态管理后台，支持员工上传文档、审核员批准/拒绝文档、文档总览和记忆统计
-- 2026-07-02：修复Chroma跨session补充召回隐私风险，规划层生产检索已启用strict_session=True
-- 2026-07-02：修复日志隐私问题，用户消息、文档内容、GLM回复和搜索结果原文不再进入日志
-- 2026-07-02：新增测试数据清理脚本，users.db和history.db可一键清空开发验证数据
-- 2026-07-02：新增POST /knowledge/input直接录入知识接口，管理后台员工页支持标题+正文提交，仍走pending审核流
-- 2026-07-02：新增README.md和D:\zhiliao\启动知天.bat，完成基础启动与备份说明
-- 2026-07-02：基地v1.0三项目Git存档完成：zhitian(e4f0836)、zhitian_app(4bdb500)、zhitian_admin(118ebd5)，三个仓库均clean
-- 2026-07-02：修复文档审核体验，employee可撤销自己pending文档，reviewer可预览待审核文档chunk后再批准或拒绝
-- 2026-07-02：修复文档审核隔离粒度问题，Chroma文档chunk新增doc_id metadata，RAG检索按verified doc_id过滤
-- 2026-07-02：补全auth.py日志脱敏，认证层日志统一改为长度和error_type格式
-- 2026-07-02：完成客户端简约风格美化，统一蓝白灰视觉规范；/chat/stream的search和clarify路径改为真流式输出
-- 2026-07-03：回退审核员知识库内容查看和管理员密码二次确认危险删除功能，清理ADMIN_SECRET_KEY残留，管理后台同步移除对应入口
-- 2026-07-03：审核员页文档管理列表新增预览按钮，复用单文档doc_id预览接口查看企业文档知识库chunk，不恢复用户长期记忆原文查看能力
-- 2026-07-03：新增GET /documents/verified，审核员页文档管理改为仅显示verified文档，pending文档仍只在待审核列表展示
-- 2026-07-03：POST /documents/upload改为multipart/form-data真实文件上传，原始文件仅临时保存用于解析，解析后删除，不再要求员工填写服务器文件路径
-- 2026-07-05：通过git revert撤回DeepSeek/LLM Provider切换和knowledge_base知识源试验，当前代码树恢复到DeepSeek改造前的GLM固定模型稳定版，并保留multipart真实文件上传能力
-- 2026-07-05：拆分启动脚本，删除D:\zhiliao\启动知天.bat总启动入口，改为D:\zhiliao\zhitian\启动后端.bat和D:\zhiliao\zhitian_app\启动前端.bat两个独立快捷方式
-- 2026-07-05：复核后端Python环境，本机.venv可正常使用Python 3.10.11并导入FastAPI，环境状态改为正常
-- 2026-07-05：RAG可信回答完成，文档问答返回结构化citations，低置信度文档检索触发“未找到可靠依据”拒答，/chat/stream新增citations SSE事件
-- 2026-07-05：Codex运行时验证环境问题已诊断完成，提权调用项目.venv可正常导入FastAPI并启动后端访问/health，无需重建.venv；残留验证进程已清理
-- 2026-07-05：RAG citations运行时验证通过，确认score方向正确；修正命中后citations只保留达标chunk，真实接口验证覆盖文档命中、低置信拒答、普通chat和联网search路径
-- 2026-07-05：Flutter客户端完成RAG citations展示，ApiService解析/chat/stream的citations事件，ChatProvider绑定到assistant消息，MessageBubble支持可展开“引用来源”列表；flutter analyze/test通过
-- 2026-07-05：新增reviewer检索调试接口和管理后台调试区，严格限定verified企业文档候选，不返回chunk正文，不触碰用户个人记忆；运行时验证覆盖reviewer可查、employee/customer拒绝、pending文档隔离和正式问答链路不受影响
+### 3. 记忆系统仍处基础阶段
 
-## 2026-07-05 补充记录：检索调试include_pending开关
-- reviewer专用POST /debug/retrieve新增include_pending参数，默认False保持只查verified企业文档；include_pending=True时额外纳入pending文档，便于审核员在批准前测试检索匹配效果。
-- rejected文档在任何情况下都不会进入/debug/retrieve候选；结果新增status字段（verified/pending），防止审核员混淆“调试可见”和“客户正式问答可见”。
-- 隐私边界不变：该接口只调用zhitian_documents的search_documents和SQL文档审核白名单，不访问zhitian_memory、不调用search_memory、不读取用户对话历史。
-- 运行时验证通过：默认不返回pending，开启include_pending后pending以status=pending返回，rejected始终不返回，employee/customer访问403，/chat与/chat/stream正式链路仍只使用verified文档。
+- user 消息和 assistant 回复已按重要性过滤后写入向量库
+- 重要性评估已升级为两段式：低信息短语/高信息特征先规则速判，边界消息调用 GLM fallback 模型二分类
+- 长期记忆已按 high/normal 两档设置半衰期、淡出阈值和硬删除阈值；检索时懒惰衰减重排，`scripts/forget_memory.py` 可物理删除过期对话记忆
+- Chroma 初始化、读写、删除已用全局 RLock 串行化，避免懒加载和并发读写竞态
+- 检索用 Chroma 默认 embedding，无重排序
 
-## 2026-07-05 补充记录：轻量ReAct循环
-- 后端规划层已从线性单轮改为有限ReAct状态机：classify -> retrieve -> plan -> execute -> reflect，reflect在需要继续且未达上限时回到plan。
-- `MAX_REACT_ROUNDS=2`写入config.py，语义为初始execute后最多追加2轮，总执行轮数最多3；达到上限时强制respond，避免失控循环和成本失控。
-- 本次不新增工具，只组合`search_web`、`search_documents`、`llm_chat`；是否继续由`should_continue_react()`通过GLM根据结果摘要、citations和调用历史判断，节点函数只做调度。
-- AgentState新增round_count、tool_call_history、react_action、react_limit_reached；citations跨轮按doc_id+chunk_index去重。
-- 运行时验证通过：普通聊天单轮不被拉长，受控多轮能追加工具调用，上限兜底不会无限循环，citations去重有效，/chat正式接口未退化；验证临时知识已清理。
+### 4. 生产级能力缺失
 
-## 2026-07-05 补充记录：should_continue_react真实判断质量
-- 已补齐上一轮验证缺口：本次不使用monkeypatch，不人为改写`_reflect_with_glm`或`should_continue_react()`返回值，走真实`/chat`接口观察GLM自主reflect判断。
-- 场景A：上传并审核一份“只说明能力、不说明价格”的测试知识，用户自然表达“如果文档没有可靠依据，请再联网查找”。真实reflect返回`{"action":"continue","tool":"search_web",...}`，说明GLM能自主判断文档依据不足并转联网搜索；搜索后第二次reflect仍尝试重复`search_web`，被tool_call_history重复调用拦截阻止。
-- 场景B：询问文档中明确存在的能力信息，真实reflect返回`{"action":"respond"}`，没有过度触发第二轮，回答和citations正常。
-- 结论区分：状态机工程正确性已验证；LLM判断质量初步可用，但存在“搜索后继续重复search_web”的倾向，当前由重复调用拦截兜底，后续如要提升Agent质量可单独优化reflect prompt。
-- 本轮测试文档和临时观测代码均已清理。
+| 维度 | 状态 |
+|------|------|
+| API 限流 | 已接入 slowapi，/chat 和 /chat/stream 按 JWT user_id 限流，默认 20 次/分钟 |
+| CORS | 已从 `allow_origins=["*"]` 收窄为读取 `CORS_ORIGINS` 白名单 |
+| 输入安全 | 无 prompt injection 防护 |
+| 审计日志 | 无 |
+| 监控 | 无 metrics/tracing |
+| 测试 | 0 个 |
+| 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
+| 水平扩展 | 不支持 |
+
+### 5. 检索质量基础水平
+
+- 已接入 BM25+向量两阶段 hybrid search，并在候选阶段接入 GLM 批量重排序精排
+- 切片已升级为段落优先+句子兜底的语义切分，目标长度仍为 500 字符
+- PDF 无 OCR
+
+---
+
+## 遗留问题
+
+| 编号 | 问题 | 位置 | 严重度 |
+|------|------|------|--------|
+| L1 | MCP 协议壳未替换 | mcp_client.py | P2 |
+| L6 | 0 个测试 | 全项目 | P1 |
+| L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
+
+---
+
+## 接下来规划
+
+按优先级排序，具体由用户和指挥师讨论后决定：
+
+### 第一优先：记忆与检索质量改进
+- 重要性评估、遗忘机制、hybrid search 和 GLM 重排序已完成
+
+### 第二优先：Agent 能力提升
+- 扩展工具集（数据库查询、API 调用、文件操作）
+- 任务分解（复杂任务拆子任务）
+- 思考链输出（用户可见 Agent 推理过程）
+
+### 第三优先：工程化
+- 写测试（pytest）
+- PostgreSQL 迁移
+- Docker Compose 部署
+- CI/CD
+
+---
+
+## 已知技术约束
+
+| 约束 | 说明 |
+|------|------|
+| zhipuai SDK | 不支持 parallel_tool_calls，已做兼容 |
+| mcp 版本 | 固定 1.9.4，新版与 FastAPI 不兼容 |
+| Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
+| CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
+| .env | 必须保持无 BOM UTF-8，否则 python-dotenv 把第一行解析为 \ufeffGLM_API_KEY |
+| JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
+| Codex 环境 | 运行时验证需用提权方式调用 .venv\Scripts\python.exe |
+| DeepSeek 试验 | 已 git revert 回退，后续模型切换需重新拆分为独立任务 |
+| .venv | Python 3.10.11，可正常 import fastapi，环境状态正常 |
+| 日志轮转 | 已使用SafeTimedRotatingFileHandler容错Windows文件占用；重复初始化不会重复挂同一路径FileHandler |
+
+---
+
+## 项目当前完成度
+
+| 维度 | 状态 |
+|------|------|
+| 五层架构 | ✅ 全部实现（感知/记忆/规划/执行/输出 + 认证 + MCP壳 + 文档解析） |
+| ReAct 循环 | ✅ 轻量 ReAct 可工作（search/document路径可reflect，chat路径单轮respond） |
+| RAG 知识库 | ✅ 基础链路完整（上传→审核→检索→可信回答→引用→调试） |
+| 用户认证 | ✅ JWT + bcrypt + 三档角色 + session 归属 |
+| 文档审核 | ✅ pending/verified/rejected 完整审核流 |
+| 流式输出 | ✅ SSE 真流式（clarify 逐字 / search GLM流式整理 / chat 流式） |
+| 日志脱敏 | ✅ 用户消息/文档内容/搜索结果不进日志 |
+| 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
+| Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |
+| 管理后台 | ✅ 静态网页（员工上传/录入 + 审核员审核/调试） |
+| Git 存档 | ✅ 三项目 v1.0 均已 commit |

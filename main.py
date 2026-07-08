@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # 知天（zhitian）FastAPI主入口
 
 import json
@@ -9,10 +9,13 @@ import time
 from datetime import datetime
 from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
 from layers import auth, document_loader, execution, memory, output, perception, planning
@@ -22,9 +25,34 @@ logger = get_logger("main")
 
 app = FastAPI(title="知天 Agent API", version="0.1.0")
 
+def _rate_limit_key(request: Request) -> str:
+    authorization = request.headers.get("Authorization", "")
+    if authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            user = auth.verify_token(token)
+            return str(user.get("user_id") or token[:16])
+        except Exception:
+            return token[:16] or "anonymous"
+    client = request.client.host if request.client else "anonymous"
+    return client
+
+
+limiter = Limiter(key_func=_rate_limit_key)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "请求过于频繁，请稍后重试"}
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,7 +103,8 @@ def get_current_user(authorization: str = Header(default="", alias="Authorizatio
     try:
         return auth.verify_token(token)
     except PermissionError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.warning("认证失败：error_type=%s", type(e).__name__)
+        raise HTTPException(status_code=401, detail="认证失败，请重试")
     except RuntimeError as e:
         logger.error("认证配置错误：error_type=%s", type(e).__name__)
         raise HTTPException(status_code=401, detail="认证不可用")
@@ -125,7 +154,8 @@ async def register(request: RegisterRequest):
         user = auth.register_user(request.username, request.password, request.role)
         return user
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("/auth/register参数无效：username_len=%s error_type=%s", len(request.username or ""), type(e).__name__)
+        raise HTTPException(status_code=400, detail="注册信息无效，请检查后重试")
     except Exception as e:
         logger.error(
             "/auth/register未捕获异常：username_len=%s error_type=%s",
@@ -145,7 +175,8 @@ async def login(request: LoginRequest):
             "role": user["role"]
         }
     except PermissionError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.warning("/auth/login认证失败：username_len=%s error_type=%s", len(request.username or ""), type(e).__name__)
+        raise HTTPException(status_code=401, detail="认证失败，请重试")
     except RuntimeError as e:
         logger.error("/auth/login配置错误：error_type=%s", type(e).__name__)
         raise HTTPException(status_code=500, detail="认证配置错误")
@@ -159,18 +190,20 @@ async def login(request: LoginRequest):
 
 
 @app.post("/chat", response_model=ChatResponse)
+@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute")
 async def chat(
-    request: ChatRequest,
+    request: Request,
+    chat_request: ChatRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     layer_trace = ["perception", "planning", "execution", "output"]
-    logger.info("收到/chat请求：session_id=%s message_len=%s", request.session_id, len(request.message or ""))
+    logger.info("收到/chat请求：session_id=%s message_len=%s", chat_request.session_id, len(chat_request.message or ""))
     try:
         perception_input = perception.PerceptionInput(
-            session_id=request.session_id,
-            raw_message=request.message,
-            mode=request.mode
+            session_id=chat_request.session_id,
+            raw_message=chat_request.message,
+            mode=chat_request.mode
         )
         perception_output = perception.process(perception_input)
 
@@ -188,10 +221,16 @@ async def chat(
             memory.save_message(perception_output.session_id, "assistant", final_data)
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
-                memory.save_to_vector,
+                memory.maybe_save_to_vector,
                 perception_output.session_id,
-                final_data,
-                "normal"
+                "user",
+                perception_output.message
+            )
+            background_tasks.add_task(
+                memory.maybe_save_to_vector,
+                perception_output.session_id,
+                "assistant",
+                final_data
             )
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
@@ -205,9 +244,9 @@ async def chat(
         )
         return ChatResponse(**response_data)
     except Exception as e:
-        logger.error("/chat未捕获异常：session_id=%s error_type=%s", request.session_id, type(e).__name__)
+        logger.error("/chat未捕获异常：session_id=%s error_type=%s", chat_request.session_id, type(e).__name__)
         response_data = output.format_error(
-            session_id=request.session_id,
+            session_id=chat_request.session_id,
             error_msg="服务异常",
             layer_trace=layer_trace
         )
@@ -215,14 +254,21 @@ async def chat(
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest, current_user: dict = Depends(get_current_user)):
+@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute")
+async def chat_stream(
+    request: Request,
+    chat_request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
     logger.info(
         "收到/chat/stream请求：session_id=%s message_len=%s",
-        request.session_id,
-        len(request.message or "")
+        chat_request.session_id,
+        len(chat_request.message or "")
     )
     return StreamingResponse(
-        _chat_stream_events(request, current_user),
+        _chat_stream_events(chat_request, current_user, background_tasks),
+        background=background_tasks,
         media_type="text/event-stream"
     )
 
@@ -391,7 +437,6 @@ async def debug_retrieve(
         }
         for item in results
     ]
-    debug_results.sort(key=lambda item: item["score"], reverse=True)
     return {
         "results": debug_results,
         "total": len(debug_results),
@@ -413,6 +458,7 @@ async def delete_document(source: str, current_user: dict = Depends(require_empl
 
     deleted_chunks = memory.delete_document(decoded_source)
     deleted_records = auth.delete_document_records_by_source(decoded_source)
+    memory.mark_document_bm25_dirty()
     return {
         "source": decoded_source,
         "deleted_chunks": deleted_chunks,
@@ -448,6 +494,7 @@ async def approve_document(doc_id: str, current_user: dict = Depends(require_rev
     approved = auth.approve_document(doc_id, current_user["user_id"])
     if not approved:
         raise HTTPException(status_code=404, detail="文档不存在")
+    memory.mark_document_bm25_dirty()
     document = auth.get_document(doc_id)
     return {
         "doc_id": doc_id,
@@ -462,6 +509,7 @@ async def reject_document(doc_id: str, current_user: dict = Depends(require_revi
     rejected = auth.reject_document(doc_id, current_user["user_id"])
     if not rejected:
         raise HTTPException(status_code=404, detail="文档不存在")
+    memory.mark_document_bm25_dirty()
     document = auth.get_document(doc_id)
     return {
         "doc_id": doc_id,
@@ -561,7 +609,7 @@ def _remove_temp_upload(temp_path: str) -> None:
         logger.warning("临时上传文件删除失败：path_len=%s error_type=%s", len(temp_path), type(e).__name__)
 
 
-def _chat_stream_events(request: ChatRequest, current_user: dict):
+def _chat_stream_events(request: ChatRequest, current_user: dict, background_tasks: BackgroundTasks):
     layer_trace = ["perception", "planning", "execution", "output"]
     chunks = []
     citations = []
@@ -634,14 +682,25 @@ def _chat_stream_events(request: ChatRequest, current_user: dict):
         final_data = "".join(chunks)
         memory.save_message(perception_output.session_id, "user", perception_output.message)
         memory.save_message(perception_output.session_id, "assistant", final_data)
-        if final_data:
-            memory.save_to_vector(perception_output.session_id, final_data, "normal")
         auth.bind_session(perception_output.session_id, current_user["user_id"])
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data({"chunk": "[DONE]"})
+        if final_data:
+            background_tasks.add_task(
+                memory.maybe_save_to_vector,
+                perception_output.session_id,
+                "user",
+                perception_output.message
+            )
+            background_tasks.add_task(
+                memory.maybe_save_to_vector,
+                perception_output.session_id,
+                "assistant",
+                final_data
+            )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：session_id=%s error_type=%s", request.session_id, type(e).__name__)
-        yield _sse_data({"error": str(e) or "服务异常"})
+        yield _sse_data({"error": "服务暂时异常，请重试"})
 
 
 def _prepare_stream_state(session_id: str, message: str) -> planning.AgentState:
@@ -807,3 +866,5 @@ def _overall_health_status(layers: dict) -> str:
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)
+
+

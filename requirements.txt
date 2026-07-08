@@ -16,3 +16,5 @@ PyJWT==2.8.0
 pdfplumber
 python-docx
 bcrypt
+slowapi
+rank_bm25

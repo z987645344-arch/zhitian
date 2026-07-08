@@ -554,6 +554,8 @@ def _classify_with_glm(message: str, context: list[str] = None) -> dict:
                     "天气/下雨/出行问题只要消息里有城市或上下文有用户城市，必须选search_web。"
                     "明确示例：“北京今天天气”必须选search_web；“我在北京，今天天气怎么样”必须选search_web，并在search_web.city中填写北京。"
                     "“北京”“上海”“广州”等城市名出现在天气/出行问题中时，视为城市已提供，不要澄清。"
+                    "自我介绍、姓名、偏好、常住地、来自哪里等个人信息陈述不需要联网，必须选direct_answer；"
+                    "这类消息即使包含城市，也只在direct_answer.city中带出城市，不要选search_web，除非用户同时询问天气、出行、新闻、价格或实时信息。"
                     "附近推荐问题没有位置且上下文也没有位置时，必须选ask_clarification。"
                     "用户只是评价、喜欢/不喜欢、询问或提到某城市时，不要调用save_city。"
                     f"\n\n可用历史上下文：\n{context_text or '无'}"
@@ -744,7 +746,12 @@ def _save_city_memory(session_id: str, city: str) -> None:
     if not session_id or not city:
         return
     try:
-        memory.save_to_vector(session_id, f"用户城市：{city}", importance="high")
+        memory.save_to_vector(
+            session_id,
+            f"用户城市：{city}",
+            role="user",
+            importance_level=memory.IMPORTANCE_LEVEL_HIGH
+        )
     except Exception as e:
         logger.error("城市信息写入失败：session_id=%s error_type=%s", session_id, type(e).__name__)
         pass
@@ -781,7 +788,14 @@ builder.add_conditional_edges(
 )
 builder.add_edge("retrieve", "plan")
 builder.add_edge("plan", "execute")
-builder.add_edge("execute", "reflect")
+builder.add_conditional_edges(
+    "execute",
+    lambda state: "respond" if state["intent"] == "chat" else "reflect",
+    {
+        "respond": "respond",
+        "reflect": "reflect"
+    }
+)
 builder.add_conditional_edges(
     "reflect",
     lambda state: "continue" if state["react_action"] == "continue" else "respond",

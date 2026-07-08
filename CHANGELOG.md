@@ -1,5 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
+> **最后追加：2026-07-09**
 
 ## 2026-06-28
 - 初始化项目完整目录结构
@@ -238,3 +239,74 @@
 - 场景A（文档缺少价格依据且用户自然表达“没有依据就联网查找”）：GLM自主返回continue并选择search_web，工具选择合理；搜索后第二次reflect仍尝试重复search_web，同query重复调用被代码层tool_call_history拦截，最终正常respond。
 - 场景B（文档已明确命中“支持哪些能力”）：GLM返回respond，没有过度触发第二轮；最终citations来自verified文档且测试知识已清理。
 - 结论：轻量ReAct不只是工程上可循环，真实LLM在缺依据转联网场景下能触发continue；但搜索后仍可能再次尝试重复同工具，当前依赖重复调用拦截避免多余轮次，后续可考虑优化reflect prompt降低重复continue倾向。
+
+## 2026-07-07
+- 新增slowapi限流依赖，main.py创建Limiter并绑定FastAPI app，/chat与/chat/stream按JWT user_id限流；默认RATE_LIMIT_PER_MINUTE=20，超限返回429和统一提示“请求过于频繁，请稍后重试”。
+- CORS从allow_origins=["*"]收窄为读取config.CORS_ORIGINS；.env新增CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080,null，并确认.env无BOM。
+- /chat/stream未捕获异常SSE输出改为统一脱敏提示“服务暂时异常，请重试”，日志继续仅记录session_id与error_type，不暴露异常原文。
+- GLM_MODEL、GLM_FALLBACK_MODEL、GLM_VISION_MODEL改为从.env读取，并保留glm-4.7-flash、glm-4-flash、glm-4.6v-flash作为默认值。
+- 运行时验证通过：/health返回ok；测试阈值1/min下同一token第二次/chat返回429；非白名单Origin预检/chat返回400且无allow-origin；清空GLM_API_KEY触发/chat/stream异常时仅返回脱敏提示。
+- config.py新增MEMORY_MIN_LENGTH配置，默认6，用于长期记忆重要性长度过滤。
+- memory.py新增is_message_important和maybe_save_to_vector，按长度和低信息量短语整体匹配过滤“你好”“收到”“好的，明白了”等短消息，不记录content原文。
+- save_to_vector新增role参数并保持默认assistant兼容；maybe_save_to_vector按传入role写入Chroma metadata，支持user和assistant分别写入。
+- /chat和/chat/stream成功响应后改为分别对assistant回复和user原始消息调用maybe_save_to_vector，SQLite短期记忆仍完整写入user与assistant，不做重要性过滤。
+- 长期记忆写入顺序调整为先判断并写入user消息，再处理assistant回复，避免长assistant回复向量化变慢时阻塞用户关键信息入库。
+- 验证通过：py_compile成功；直接调用记忆层确认“你好”和“好的，明白了”不新增Chroma记录，“我叫张三，来自杭州”可写入并通过search_memory检索，SQLite get_history仍完整保留user/assistant。
+- 路由级验证通过：使用FastAPI TestClient隔离GLM延迟后，/chat与/chat/stream均能写入有信息量user消息、过滤短assistant回复，并保持SQLite短期记忆完整；真实GLM /chat运行时验证受当前模型链路超时影响未作为最终判定依据。
+- 将真实GLM端到端/chat链路记录为待补验证项：后续需在GLM稳定时补测“我叫张三，来自杭州”到“我叫什么”的同session长期记忆召回，以及Chroma中user/assistant role写入情况；本项不阻塞本轮记忆改造完成状态。
+- docs/claude_memory.md移除“长期记忆只存assistant”遗留问题，并将下一步调整为Chroma并发安全和重要性评估升级；docs/zhitian_structure.md同步记忆层接口说明。
+
+## 2026-07-08
+- memory.py新增全局_chroma_lock = threading.RLock()，用于串行化保护所有Chroma client/collection懒加载、读写和删除操作；选择RLock以支持maybe_save_to_vector内部调用save_to_vector时同线程重入。
+- save_to_vector、maybe_save_to_vector、save_document、delete_document、search_memory、search_session_memory、search_documents、list_documents、get_document_chunks、clear_session中的Chroma部分均纳入_chroma_lock保护；SQLite短期记忆函数保持原样不加该锁。
+- _get_chroma_collection和_get_document_collection改为锁内双重检查，避免并发首次访问时重复初始化PersistentClient或collection。
+- 验证通过：py_compile成功；ThreadPoolExecutor 20并发写入+20并发检索无Chroma异常，Chroma计数增量20/预期20，检索可命中；单线程复验“你好”不写入、“我叫张三，来自杭州”可写入可检索、“好的，明白了”过滤成功，嵌套maybe_save_to_vector -> save_to_vector调用正常返回无死锁。
+- 验证过程中发现独立日志轮转问题：跨日期首次写日志时TimedRotatingFileHandler尝试重命名zhitian.log，被其他进程/句柄占用时会向stderr打印PermissionError；该问题不属于Chroma并发锁范围，未在本轮修改。
+- docs/claude_memory.md将L3“Chroma非线程安全”标记为已解决并从遗留问题表移除；docs/zhitian_structure.md同步补充Chroma全局RLock串行化说明。
+- utils/logger.py新增SafeTimedRotatingFileHandler，继承TimedRotatingFileHandler并在doRollover中捕获Windows常见PermissionError，最多重试2次、每次间隔0.5秒；全部失败时只输出一次简短提示并推迟到下一轮转周期，继续向当前日志文件追加。
+- 日志初始化增加同路径FileHandler防重复挂载检查，并补充项目console handler重复检查；即使_configured被重置或模块reload，也不会重复给root logger挂同一个zhitian.log文件句柄。
+- 原TimedRotatingFileHandler替换为SafeTimedRotatingFileHandler，保留when="midnight"、interval=1、backupCount=7、encoding="utf-8"配置，不改日志脱敏格式和业务日志内容。
+- 验证通过：py_compile成功；重复调用_configure_logging后root handler数量保持稳定且zhitian.log FileHandler只有1个；monkeypatch os.rename首次抛PermissionError、第二次成功时重试生效；os.rename持续抛PermissionError时不抛到上层、只提示一次且后续日志仍可写入当前文件；正常写入场景不受影响。
+- docs/claude_memory.md新增L11记录“Windows日志轮转文件占用会向stderr打印PermissionError”，并标注为已解决。
+- 诊断真实GLM端到端/chat链路：直接zhipuai SDK最小调用成功且约5.5秒返回，open.bigmodel.cn:443可达，确认不是GLM_API_KEY失效、额度阻断或本机网络不可达。
+- 发现代码路径问题：普通chat意图在execute后无条件进入reflect，真实“你好”曾被反思误判追加search_web，导致搜索链路和多次GLM失败/fallback拖慢到约106秒；修复为chat意图execute后直接respond，search/document路径才进入reflect。
+- 发现分类prompt问题：“我叫张三，来自杭州”这类包含城市的自我介绍可能被误判为search；补强规划层分类prompt，明确自我介绍、姓名、偏好、常住地、来自哪里等个人信息陈述必须选direct_answer，除非同时询问天气/出行/新闻/价格/实时信息。
+- 修复后真实基础/chat验证通过：无reload方式启动当前代码，发送“你好”约6.7秒返回success，无额外搜索链路。
+- 真实端到端两轮/chat验证通过：第一轮“我叫张三，来自杭州”约8.5秒返回success，等待后台写入后Chroma zhitian_memory中该session包含user=1和assistant=1，search_memory可命中；第二轮“我叫什么”约12.8秒返回success，回复命中前一轮长期记忆并提及已存信息。
+- 清理本轮临时codex_glm_*测试用户、session和Chroma测试记忆，停止验证用本地后端进程；docs/claude_memory.md将L10标记为已解决并删除“待补验证：真实GLM端到端/chat链路”章节，docs/zhitian_structure.md同步chat绕过reflect的状态机说明。
+- 分类prompt回归验证通过，未发现新问题：真实启动无reload后端并调用真实GLM分类函数验证天气、新闻、本地文档、自我介绍、个人信息+天气边界五类场景，实际intent分别符合search/search/document/chat/search预期；本轮未修改分类prompt或业务代码。
+- 诊断history.db与users.db连接方式：两者均为每次调用独立sqlite3连接，无全局共享connection、无check_same_thread=False，原先未设置WAL或busy_timeout。
+- memory.py和auth.py统一_connect新增timeout=5.0、PRAGMA journal_mode=WAL、PRAGMA busy_timeout=5000；因不存在跨线程共享SQLite连接，本轮未新增SQLite锁。
+- 验证通过：py_compile成功；ThreadPoolExecutor 20并发history写入+读取无database is locked，写入20/预期20；20并发注册临时用户无锁冲突，注册20/预期20；单线程历史读写和登录正常；测试session/user已清理。
+- docs/claude_memory.md将L7“SQLite不支持并发写入”标记为已解决；docs/zhitian_structure.md同步补充history.db/users.db短连接、WAL和busy_timeout说明。
+- memory.py升级长期记忆重要性评估为两段式：长度和低信息短语仍规则速判False，新增自我陈述前缀、数字、邮箱/英文专名等高信息规则速判True，边界消息再调用GLM fallback模型二分类important/unimportant。
+- config.py新增MEMORY_IMPORTANCE_GLM_TIMEOUT，默认3.0秒，约束长期记忆边界判断的GLM调用耗时；GLM异常或超时时只记录message_len和error_type并保守返回False，不阻塞/chat主响应、不误写入Chroma。
+- 低信息短语扩充“嗯嗯”“哦哦”“没事”“没关系”“随便”“都行”“不用了”等，继续保持整体匹配/高相似短句匹配，避免关键词包含误伤长消息。
+- 验证通过：py_compile成功；“嗯嗯”“你好”“好的，明白了”规则判False，“我叫李四，来自上海”规则判True且不触发GLM；边界句触发真实GLM判断并返回重要；模拟记忆重要性GLM超时时/chat仍返回200 success，SQLite短期历史完整写入，Chroma该session写入0条。
+- docs/claude_memory.md删除已解决的L7/L10/L11遗留问题行，并将记忆系统规划更新为“重要性评估已完成，下一步聚焦遗忘机制设计”。
+- 长期记忆写入新增importance_level元数据：高信息规则速判写入high，GLM边界判断写入normal；save_to_vector保留timestamp并新增importance_level参数，maybe_save_to_vector按判断结果透传级别。
+- config.py新增长期记忆遗忘配置：high/normal两档半衰期、淡出天数和硬删除天数，默认high为90/365/540天，normal为14/60/90天。
+- search_memory和search_session_memory新增懒惰遗忘：先保留原Chroma L2距离阈值过滤，再按importance_level和timestamp计算age_days；超过淡出天数的候选直接排除，未淡出的候选按半衰期计算effective_score并重排后返回top_k；缺少timestamp或importance_level的旧数据按normal且age=0兜底。
+- 新增scripts/forget_memory.py独立物理删除脚本，仅遍历zhitian_memory并按硬删除阈值删除过期对话记忆，打印待删除条数、实际删除条数和importance_level分类统计；不处理zhitian_documents企业文档向量库。
+- 验证通过：py_compile成功；maybe_save_to_vector写入自我介绍时metadata包含importance_level=high和timestamp；临时Chroma数据验证旧normal超过60天被淡出、旧high未超过365天仍可返回、缺字段旧数据不崩溃；forget_memory.py删除超过硬删除阈值的normal/high临时记录各1条，实际删除2条，测试记录已清理。
+- 修复F4认证异常信息泄露：get_current_user、/auth/register、/auth/login不再把ValueError/PermissionError原文透传到HTTPException.detail，统一返回用户可读提示；日志仅记录username_len和error_type。
+- 排查F5 CORS null来源：CHANGELOG已有2026-07-07记录显示null随CORS_ORIGINS白名单收窄一起加入，判断为兼容file://协议或桌面壳本地调试来源，暂保留；中文说明写入config.py，避免.env中文注释被第三方库按GBK读取导致启动异常。
+- 修复F6 /chat/stream长期记忆写入阻塞：流式接口改为接入BackgroundTasks，并在citations与[DONE]事件yield之后再登记maybe_save_to_vector任务，保持SSE事件顺序不变。
+- 修复F7 save_to_vector冗余参数：移除已被importance_level取代的importance参数；同步修复规划层城市记忆写入，显式role="user"、importance_level="high"，避免用户城市被写成assistant或按normal档过早淡出。
+- 验证通过：py_compile成功；错误密码登录返回“认证失败，请重试”且日志只含error_type；非白名单Origin预检/chat返回400；/chat/stream可返回[DONE]且长期记忆后台写入成功；城市记忆Chroma metadata确认为role=user、importance_level=high；测试用户、session和Chroma记录已清理。
+- document_loader.py将文档切片从500字符硬切升级为段落优先、句子兜底的语义切分：兼容单换行和连续换行段落边界，普通段落只在段落边界合并/切断，超过750字符的长段落降级为中英文句末标点切分，无标点超长文本保留500字符硬切兜底。
+- chunk_text保留原函数签名和500字符目标长度，过滤空白chunk；save_document继续按clean_chunks顺序写入连续chunk_index，Citation引用编号不受影响。
+- 验证通过：py_compile成功；多段落长文本切为3个chunk且未切断完整段落；超750字符单段落按句号后切分；无标点1250字符文本硬切为500/500/250且无异常；真实/documents/upload上传测试文档写入6个chunk，审核后/debug/retrieve可检索命中，Chroma chunk_index为0-5连续，测试文档和用户已清理。
+- requirements.txt新增rank_bm25依赖，memory.py为zhitian_documents新增内存BM25索引，使用字符级bigram和英文/数字简单词元，不引入jieba等分词依赖。
+- search_documents改为BM25+向量两阶段hybrid search：先对verified文档chunk做BM25粗筛，候选数为top_k的4倍，再通过Chroma向量检索重排并保留原函数签名；BM25索引为空或候选不足时降级到原纯向量检索。
+- BM25索引重建复用_chroma_lock保护Chroma读取和索引状态更新；审核通过、审核拒绝和删除文档只标记索引dirty，下次检索时懒重建，避免审核/删除接口同步重建索引。
+- 验证通过：py_compile成功；直接构造含ERR-8842、ZX-91Q-ALPHA、HydraNode等专有名词/编号chunk后，关键词query可由BM25阶段召回并最终返回目标chunk；空verified集合返回空且不抛异常；删除文档后索引标脏并在下次检索反映删除结果。
+- 真实链路验证通过：/documents/upload上传测试文档、审核通过后/debug/retrieve查询ERR-8842约41ms返回，top结果命中新文档；同一query的纯向量基线在该小样本中也命中目标chunk，但hybrid search新增了编号/术语精确匹配的BM25粗筛路径，降低专有名词检索完全依赖embedding语义相似度的风险；测试文档和用户已清理。
+
+## 2026-07-09
+- config.py新增RERANK_ENABLED、RERANK_CANDIDATE_COUNT、RERANK_TIMEOUT配置，用于控制文档检索候选阶段的GLM批量重排序。
+- memory.py新增_rerank_with_glm(query, candidates)，将hybrid search产出的前N条候选一次性打包给GLM fallback模型，要求返回严格JSON评分；只记录candidate_count、elapsed_ms和降级状态，不记录query原文或候选chunk内容。
+- search_documents在BM25粗筛+向量重排之后接入GLM rerank；RERANK_ENABLED=false时完全保留原hybrid顺序，GLM异常或超时时保留原顺序并正常返回，不影响文档检索可用性。
+- /debug/retrieve移除末尾按score二次排序，避免覆盖search_documents返回的rerank顺序，调试接口现在忠实展示检索层最终排序。
+- 验证通过：py_compile成功；构造候选chunk后GLM JSON评分可将明显相关候选排到首位且只调用一次；RERANK_ENABLED=false不调用GLM并保持原顺序；模拟TimeoutError时search_documents保留原顺序不报错。
+- 真实链路验证通过：/documents/upload→审核→/debug/retrieve在受控rerank下从[4,3,2,0,1]变为[1,4,3,2,0]，响应耗时约27ms→23ms；测试用户、审核记录和Chroma chunk已清理。

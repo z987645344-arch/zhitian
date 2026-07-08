@@ -2,13 +2,21 @@
 # 记忆层：短期SQLite对话历史 + 长期Chroma向量记忆
 
 import os
+import difflib
+import json
+import re
 import sqlite3
+import threading
+import time
 import uuid
 from datetime import datetime
+from typing import Optional, Tuple
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import chromadb
+from rank_bm25 import BM25Okapi
+from zhipuai import ZhipuAI
 import config
 from utils.logger import get_logger
 
@@ -17,9 +25,67 @@ logger = get_logger("memory")
 COLLECTION_NAME = "zhitian_memory"
 DOCUMENT_COLLECTION_NAME = "zhitian_documents"
 DEFAULT_VECTOR_ROLE = "assistant"
+IMPORTANCE_LEVEL_HIGH = "high"
+IMPORTANCE_LEVEL_NORMAL = "normal"
+LOW_INFORMATION_PHRASES = {
+    "你好",
+    "您好",
+    "谢谢",
+    "感谢",
+    "收到",
+    "好的",
+    "好的明白了",
+    "好的知道了",
+    "嗯",
+    "嗯嗯",
+    "哦",
+    "哦哦",
+    "行",
+    "OK",
+    "ok",
+    "拜拜",
+    "再见",
+    "辛苦了",
+    "明白了",
+    "知道了",
+    "没事",
+    "没关系",
+    "随便",
+    "都行",
+    "可以",
+    "不用了",
+    "算了",
+}
+LOW_INFORMATION_PUNCTUATION = "，。！？,.!? "
+HIGH_INFORMATION_PREFIXES = (
+    "我叫",
+    "我是",
+    "我在",
+    "我来自",
+    "我喜欢",
+    "我不喜欢",
+    "我的",
+    "我住在",
+    "我常住",
+    "我出生",
+    "我毕业",
+    "我从事",
+    "我负责",
+)
+HIGH_INFORMATION_PATTERNS = (
+    re.compile(r"\d"),
+    re.compile(r"[A-Z][A-Za-z0-9_+-]{2,}"),
+    re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"),
+)
 _chroma_client = None
 _chroma_collection = None
 _document_collection = None
+_chroma_lock = threading.RLock()
+_document_bm25_index = None
+_document_bm25_entries = []
+_document_bm25_dirty = True
+_document_bm25_signature = None
+BM25_CANDIDATE_MULTIPLIER = 4
 
 
 def init_db() -> None:
@@ -143,7 +209,65 @@ def get_session_history(session_id: str) -> list[dict]:
     ]
 
 
-def save_to_vector(session_id: str, content: str, importance: str = "normal") -> None:
+def is_message_important(content: str) -> bool:
+    """两段式判断消息是否值得写入长期向量记忆，不记录原文。"""
+    is_important, _importance_level = _judge_message_importance(content)
+    return is_important
+
+
+def _judge_message_importance(content: str) -> Tuple[bool, str]:
+    """返回是否重要及写入长期记忆的重要性等级。"""
+    stripped = (content or "").strip()
+    if len(stripped) < config.MEMORY_MIN_LENGTH:
+        return False, IMPORTANCE_LEVEL_NORMAL
+
+    normalized = _normalize_low_information_text(stripped)
+    if not normalized:
+        return False, IMPORTANCE_LEVEL_NORMAL
+
+    for phrase in LOW_INFORMATION_PHRASES:
+        normalized_phrase = _normalize_low_information_text(phrase)
+        if normalized == normalized_phrase:
+            return False, IMPORTANCE_LEVEL_NORMAL
+        if _is_highly_similar_short_phrase(normalized, normalized_phrase):
+            return False, IMPORTANCE_LEVEL_NORMAL
+
+    if _has_high_information_signal(stripped):
+        return True, IMPORTANCE_LEVEL_HIGH
+
+    if _classify_importance_with_glm(stripped):
+        return True, IMPORTANCE_LEVEL_NORMAL
+    return False, IMPORTANCE_LEVEL_NORMAL
+
+
+def maybe_save_to_vector(session_id: str, role: str, content: str) -> None:
+    """按重要性过滤后写入Chroma长期向量记忆。"""
+    is_important, importance_level = _judge_message_importance(content)
+    logger.info(
+        "长期记忆重要性判断：session_id=%s role=%s message_len=%s is_important=%s importance_level=%s",
+        session_id,
+        role,
+        len(content or ""),
+        is_important,
+        importance_level
+    )
+    if not is_important:
+        return
+    with _chroma_lock:
+        save_to_vector(
+            session_id,
+            content,
+            role=role,
+            importance_level=importance_level
+        )
+
+
+def save_to_vector(
+    session_id: str,
+    content: str,
+    role: str = DEFAULT_VECTOR_ROLE,
+    importance_level: str = IMPORTANCE_LEVEL_NORMAL
+) -> None:
     """写入Chroma长期向量记忆"""
     if not session_id:
         raise ValueError("session_id不能为空")
@@ -152,20 +276,96 @@ def save_to_vector(session_id: str, content: str, importance: str = "normal") ->
 
     timestamp = datetime.now().isoformat()
     try:
-        collection = _get_chroma_collection()
-        collection.add(
-            documents=[content],
-            metadatas=[{
-                "session_id": session_id,
-                "role": DEFAULT_VECTOR_ROLE,
-                "timestamp": timestamp,
-                "importance": importance
-            }],
-            ids=[str(uuid.uuid4())]
-        )
+        with _chroma_lock:
+            collection = _get_chroma_collection()
+            collection.add(
+                documents=[content],
+                metadatas=[{
+                    "session_id": session_id,
+                    "role": role,
+                    "timestamp": timestamp,
+                    "importance_level": _normalize_importance_level(importance_level)
+                }],
+                ids=[str(uuid.uuid4())]
+            )
     except Exception as e:
         logger.error("Chroma写入失败：session_id=%s error_type=%s", session_id, type(e).__name__)
         raise
+
+
+def _normalize_low_information_text(content: str) -> str:
+    """去除常见标点和空格，仅用于短语整体匹配。"""
+    return "".join(char for char in content.strip() if char not in LOW_INFORMATION_PUNCTUATION)
+
+
+def _is_highly_similar_short_phrase(content: str, phrase: str) -> bool:
+    """只对整体长度接近的短句做相似判断，避免误伤长信息消息。"""
+    if not content or not phrase:
+        return False
+    if len(content) > max(len(phrase) + 2, len(phrase) * 2):
+        return False
+    similarity = difflib.SequenceMatcher(None, content.lower(), phrase.lower()).ratio()
+    return similarity >= 0.85
+
+
+def _has_high_information_signal(content: str) -> bool:
+    """规则直判明显值得长期记忆的信息。"""
+    normalized = content.strip()
+    if any(normalized.startswith(prefix) for prefix in HIGH_INFORMATION_PREFIXES):
+        return True
+    if "，来自" in normalized or ",来自" in normalized:
+        return True
+    return any(pattern.search(normalized) for pattern in HIGH_INFORMATION_PATTERNS)
+
+
+def _classify_importance_with_glm(content: str) -> bool:
+    """用低成本模型兜底判断边界消息，异常时保守不写入。"""
+    try:
+        if not config.GLM_API_KEY:
+            raise ValueError("GLM_API_KEY未配置")
+        client = ZhipuAI(
+            api_key=config.GLM_API_KEY,
+            timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT,
+            max_retries=0
+        )
+        response = client.chat.completions.create(
+            model=config.FALLBACK_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "判断用户这句话是否包含值得长期记忆的信息。"
+                        "值得长期记忆的信息包括身份、偏好、长期事实、稳定状态、联系方式、地点、职业、项目背景等事实性陈述。"
+                        "寒暄、确认、语气词、临时请求、无具体事实的泛泛表达不重要。"
+                        "只能回答 important 或 unimportant，不要解释。"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ],
+            timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT
+        )
+        result = _extract_importance_text(response).strip().lower()
+        return result.startswith("important")
+    except Exception as e:
+        logger.warning("长期记忆GLM重要性判断失败：message_len=%s error_type=%s", len(content or ""), type(e).__name__)
+        return False
+
+
+def _extract_importance_text(response) -> str:
+    """兼容zhipuai响应对象和字典响应。"""
+    try:
+        return response.choices[0].message.content or ""
+    except Exception:
+        pass
+    if isinstance(response, dict):
+        choices = response.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            return message.get("content") or ""
+    return ""
 
 
 SIMILARITY_DISTANCE_THRESHOLD = 0.8
@@ -183,32 +383,34 @@ def search_memory(
     if strict_session and not session_id:
         return []
 
-    collection = _get_chroma_collection()
     safe_top_k = max(1, int(top_k))
-    results = []
+    candidates = []
     seen = set()
 
-    if session_id:
-        session_result = _query_vector_memory(
-            collection,
-            query,
-            safe_top_k,
-            where={"session_id": session_id}
-        )
-        _append_relevant_documents(results, seen, session_result, safe_top_k)
+    with _chroma_lock:
+        collection = _get_chroma_collection()
 
-    if strict_session:
-        return results
+        if session_id:
+            session_result = _query_vector_memory(
+                collection,
+                query,
+                safe_top_k * 4,
+                where={"session_id": session_id}
+            )
+            _append_relevant_documents(candidates, seen, session_result, safe_top_k * 4)
 
-    if len(results) < safe_top_k:
-        fallback_result = _query_vector_memory(
-            collection,
-            query,
-            safe_top_k * 4
-        )
-        _append_relevant_documents(results, seen, fallback_result, safe_top_k, exclude_session_id=session_id)
+        if strict_session:
+            return _rank_memory_candidates(candidates, safe_top_k)
 
-    return results
+        if len(candidates) < safe_top_k:
+            fallback_result = _query_vector_memory(
+                collection,
+                query,
+                safe_top_k * 4
+            )
+            _append_relevant_documents(candidates, seen, fallback_result, safe_top_k * 4, exclude_session_id=session_id)
+
+    return _rank_memory_candidates(candidates, safe_top_k)
 
 
 def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[str]:
@@ -216,17 +418,18 @@ def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[s
     if not query or not session_id:
         return []
 
-    collection = _get_chroma_collection()
-    results = []
+    candidates = []
     seen = set()
-    session_result = _query_vector_memory(
-        collection,
-        query,
-        max(1, int(top_k)),
-        where={"session_id": session_id}
-    )
-    _append_relevant_documents(results, seen, session_result, max(1, int(top_k)))
-    return results
+    with _chroma_lock:
+        collection = _get_chroma_collection()
+        session_result = _query_vector_memory(
+            collection,
+            query,
+            max(1, int(top_k)) * 4,
+            where={"session_id": session_id}
+        )
+        _append_relevant_documents(candidates, seen, session_result, max(1, int(top_k)) * 4)
+    return _rank_memory_candidates(candidates, max(1, int(top_k)))
 
 
 def save_document(source: str, chunks: list[str], doc_id: str) -> int:
@@ -238,27 +441,28 @@ def save_document(source: str, chunks: list[str], doc_id: str) -> int:
     if not chunks:
         return 0
 
-    collection = _get_document_collection()
     clean_chunks = [chunk for chunk in chunks if chunk]
     if not clean_chunks:
         return 0
 
     total_chunks = len(clean_chunks)
     uploaded_at = datetime.now().isoformat()
-    collection.add(
-        documents=clean_chunks,
-        metadatas=[
-            {
-                "source": source,
-                "doc_id": doc_id,
-                "chunk_index": i,
-                "total_chunks": total_chunks,
-                "uploaded_at": uploaded_at
-            }
-            for i in range(total_chunks)
-        ],
-        ids=[str(uuid.uuid4()) for _ in clean_chunks]
-    )
+    with _chroma_lock:
+        collection = _get_document_collection()
+        collection.add(
+            documents=clean_chunks,
+            metadatas=[
+                {
+                    "source": source,
+                    "doc_id": doc_id,
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                    "uploaded_at": uploaded_at
+                }
+                for i in range(total_chunks)
+            ],
+            ids=[str(uuid.uuid4()) for _ in clean_chunks]
+        )
     return total_chunks
 
 
@@ -267,7 +471,7 @@ def search_documents(
     top_k: int = 5,
     verified_doc_ids: list[str] = None
 ) -> list[dict]:
-    """从本地文档Collection检索相关内容，可按已审核doc_id过滤。"""
+    """从本地文档Collection检索相关内容，优先BM25粗筛再向量重排。"""
     if not query:
         return []
     allowed_doc_ids = None
@@ -276,11 +480,53 @@ def search_documents(
         if not allowed_doc_ids:
             return []
 
-    collection = _get_document_collection()
-    result = _query_document_memory(collection, query, max(1, int(top_k)), allowed_doc_ids)
-    documents = result.get("documents", [[]])
-    metadatas = result.get("metadatas", [[]])
-    distances = result.get("distances", [[]])
+    safe_top_k = max(1, int(top_k))
+    started_at = time.perf_counter()
+    with _chroma_lock:
+        collection = _get_document_collection()
+        bm25_candidates = _search_bm25_candidates(query, safe_top_k, allowed_doc_ids)
+        if bm25_candidates:
+            result = _query_document_memory(
+                collection,
+                query,
+                max(safe_top_k * BM25_CANDIDATE_MULTIPLIER, len(bm25_candidates)),
+                [candidate["doc_id"] for candidate in bm25_candidates]
+            )
+        else:
+            result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
+
+    candidate_keys = {
+        (candidate["doc_id"], int(candidate["chunk_index"]))
+        for candidate in bm25_candidates
+    }
+    results = _build_document_search_results(result, allowed_doc_ids, candidate_keys or None)
+    if bm25_candidates and len(results) < safe_top_k:
+        with _chroma_lock:
+            fallback_result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
+        fallback_results = _build_document_search_results(fallback_result, allowed_doc_ids, None)
+        results = _merge_document_results(results, fallback_results)
+
+    results.sort(key=lambda item: item["score"], reverse=True)
+    results = _apply_document_rerank(query, results)
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info(
+        "文档hybrid检索完成：query_len=%s bm25_candidates=%s result_count=%s elapsed_ms=%s",
+        len(query or ""),
+        len(bm25_candidates),
+        len(results[:safe_top_k]),
+        elapsed_ms
+    )
+    return results[:safe_top_k]
+
+
+def _build_document_search_results(
+    query_result: dict,
+    allowed_doc_ids: Optional[list[str]],
+    candidate_keys: Optional[set]
+) -> list[dict]:
+    documents = query_result.get("documents", [[]])
+    metadatas = query_result.get("metadatas", [[]])
+    distances = query_result.get("distances", [[]])
     if not documents:
         return []
 
@@ -291,17 +537,235 @@ def search_documents(
         metadata = metadata or {}
         source = str(metadata.get("source", ""))
         doc_id = str(metadata.get("doc_id", ""))
+        chunk_index = int(metadata.get("chunk_index", 0))
         if allowed_doc_ids is not None and doc_id not in allowed_doc_ids:
+            continue
+        if candidate_keys is not None and (doc_id, chunk_index) not in candidate_keys:
             continue
         score = _distance_to_relevance_score(distance)
         results.append({
             "content": doc,
             "source": source,
             "doc_id": doc_id,
-            "chunk_index": int(metadata.get("chunk_index", 0)),
+            "chunk_index": chunk_index,
             "score": score
         })
     return results
+
+
+def _merge_document_results(primary: list[dict], fallback: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for item in primary + fallback:
+        key = (item.get("doc_id", ""), int(item.get("chunk_index", 0)))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _apply_document_rerank(query: str, candidates: list[dict]) -> list[dict]:
+    if not config.RERANK_ENABLED:
+        return candidates
+    if not candidates:
+        return candidates
+
+    rerank_count = max(1, int(config.RERANK_CANDIDATE_COUNT))
+    head = candidates[:rerank_count]
+    tail = candidates[rerank_count:]
+    return _rerank_with_glm(query, head) + tail
+
+
+def _rerank_with_glm(query: str, candidates: list[dict]) -> list[dict]:
+    """用GLM一次性批量重排候选chunk，失败时返回原顺序。"""
+    if not candidates:
+        return candidates
+
+    started_at = time.perf_counter()
+    try:
+        if not config.GLM_API_KEY:
+            raise ValueError("GLM_API_KEY未配置")
+
+        payload = [
+            {
+                "index": index,
+                "doc_id": str(candidate.get("doc_id", "")),
+                "chunk_index": int(candidate.get("chunk_index", 0)),
+                "score": float(candidate.get("score", 0.0)),
+                "content": str(candidate.get("content", ""))[:1200]
+            }
+            for index, candidate in enumerate(candidates)
+        ]
+        client = ZhipuAI(
+            api_key=config.GLM_API_KEY,
+            timeout=config.RERANK_TIMEOUT,
+            max_retries=0
+        )
+        response = client.chat.completions.create(
+            model=config.FALLBACK_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是文档检索重排序器。请根据query判断每个candidate与query的相关性，"
+                        "只返回严格JSON，不要解释。JSON格式："
+                        "{\"scores\":[{\"index\":0,\"score\":8.5},...]}"
+                        "score取0到10，越相关越高。"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "query": query,
+                            "candidates": payload
+                        },
+                        ensure_ascii=False
+                    )
+                }
+            ],
+            timeout=config.RERANK_TIMEOUT
+        )
+        score_map = _parse_rerank_scores(_extract_importance_text(response), len(candidates))
+        reranked = sorted(
+            enumerate(candidates),
+            key=lambda item: (score_map.get(item[0], 0.0), float(item[1].get("score", 0.0))),
+            reverse=True
+        )
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "文档GLM重排序完成：candidate_count=%s elapsed_ms=%s",
+            len(candidates),
+            elapsed_ms
+        )
+        return [item for _index, item in reranked]
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.warning(
+            "文档GLM重排序失败，保留hybrid顺序：candidate_count=%s elapsed_ms=%s error_type=%s",
+            len(candidates),
+            elapsed_ms,
+            type(e).__name__
+        )
+        return candidates
+
+
+def _parse_rerank_scores(content: str, candidate_count: int) -> dict:
+    text = (content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text).strip()
+    data = json.loads(text)
+    raw_scores = data.get("scores", []) if isinstance(data, dict) else []
+    score_map = {}
+    for item in raw_scores:
+        if not isinstance(item, dict):
+            continue
+        index = int(item.get("index", -1))
+        if 0 <= index < candidate_count:
+            score = float(item.get("score", 0.0))
+            score_map[index] = max(0.0, min(10.0, score))
+    if not score_map:
+        raise ValueError("rerank scores为空")
+    return score_map
+
+
+def mark_document_bm25_dirty() -> None:
+    """标记文档BM25索引需要在下次检索时懒重建。"""
+    global _document_bm25_dirty
+    with _chroma_lock:
+        _document_bm25_dirty = True
+
+
+def _search_bm25_candidates(query: str, top_k: int, allowed_doc_ids: Optional[list[str]]) -> list[dict]:
+    """用BM25从verified文档chunk中粗筛候选。"""
+    _ensure_bm25_index(allowed_doc_ids)
+    if _document_bm25_index is None or not _document_bm25_entries:
+        return []
+
+    query_tokens = _bm25_tokenize(query)
+    if not query_tokens:
+        return []
+
+    scores = _document_bm25_index.get_scores(query_tokens)
+    ranked = sorted(
+        enumerate(scores),
+        key=lambda item: float(item[1]),
+        reverse=True
+    )
+    limit = max(1, int(top_k)) * BM25_CANDIDATE_MULTIPLIER
+    candidates = []
+    for index, score in ranked[:limit]:
+        if float(score) <= 0:
+            continue
+        entry = dict(_document_bm25_entries[index])
+        entry["bm25_score"] = float(score)
+        candidates.append(entry)
+    return candidates
+
+
+def _ensure_bm25_index(allowed_doc_ids: Optional[list[str]]) -> None:
+    signature = tuple(sorted(str(doc_id) for doc_id in (allowed_doc_ids or []) if doc_id))
+    if (
+        not _document_bm25_dirty
+        and _document_bm25_signature == signature
+        and _document_bm25_index is not None
+    ):
+        return
+    _rebuild_bm25_index(list(signature))
+
+
+def _rebuild_bm25_index(verified_doc_ids: list[str]) -> None:
+    """从Chroma读取当前verified文档chunk并重建BM25索引。调用方需持有_chroma_lock。"""
+    global _document_bm25_index, _document_bm25_entries, _document_bm25_dirty, _document_bm25_signature
+
+    started_at = time.perf_counter()
+    entries = []
+    corpus = []
+    if verified_doc_ids:
+        collection = _get_document_collection()
+        result = collection.get(
+            where={"doc_id": {"$in": verified_doc_ids}},
+            include=["documents", "metadatas"]
+        )
+        for doc, metadata in zip(result.get("documents", []) or [], result.get("metadatas", []) or []):
+            metadata = metadata or {}
+            text = doc or ""
+            tokens = _bm25_tokenize(text)
+            if not text or not tokens:
+                continue
+            entries.append({
+                "doc_id": str(metadata.get("doc_id", "")),
+                "source": str(metadata.get("source", "")),
+                "chunk_index": int(metadata.get("chunk_index", 0)),
+                "content": text
+            })
+            corpus.append(tokens)
+
+    _document_bm25_entries = entries
+    _document_bm25_index = BM25Okapi(corpus) if corpus else None
+    _document_bm25_dirty = False
+    _document_bm25_signature = tuple(sorted(str(doc_id) for doc_id in (verified_doc_ids or []) if doc_id))
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    logger.info(
+        "BM25文档索引重建完成：chunk_count=%s elapsed_ms=%s",
+        len(entries),
+        elapsed_ms
+    )
+
+
+def _bm25_tokenize(text: str) -> list[str]:
+    """字符级bigram为主，英文/数字按简单词元补充。"""
+    normalized = (text or "").lower()
+    compact = re.sub(r"\s+", "", normalized)
+    tokens = [
+        compact[index:index + 2]
+        for index in range(max(0, len(compact) - 1))
+        if compact[index:index + 2].strip()
+    ]
+    tokens.extend(re.findall(r"[a-z0-9_./:-]+", normalized))
+    return tokens
 
 
 def _distance_to_relevance_score(distance) -> float:
@@ -315,9 +779,10 @@ def _distance_to_relevance_score(distance) -> float:
 
 def list_documents() -> list[dict]:
     """列出已上传文档，按source去重并统计chunk数量。"""
-    collection = _get_document_collection()
     try:
-        result = collection.get(include=["metadatas"])
+        with _chroma_lock:
+            collection = _get_document_collection()
+            result = collection.get(include=["metadatas"])
     except Exception as e:
         logger.error("Chroma文档列表读取失败：error_type=%s", type(e).__name__)
         raise
@@ -349,14 +814,16 @@ def delete_document(source: str) -> int:
     if not source:
         return 0
 
-    collection = _get_document_collection()
     try:
-        result = collection.get(where={"source": source}, include=["metadatas"])
-        ids = result.get("ids", [])
-        if not ids:
-            return 0
-        collection.delete(ids=ids)
-        return len(ids)
+        with _chroma_lock:
+            collection = _get_document_collection()
+            result = collection.get(where={"source": source}, include=["metadatas"])
+            ids = result.get("ids", [])
+            if not ids:
+                return 0
+            collection.delete(ids=ids)
+            mark_document_bm25_dirty()
+            return len(ids)
     except Exception as e:
         logger.error("Chroma文档删除失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
         raise
@@ -367,13 +834,14 @@ def get_document_chunks(source: str, doc_id: str = "") -> list[str]:
     if not source and not doc_id:
         return []
 
-    collection = _get_document_collection()
     try:
         where = {"doc_id": doc_id} if doc_id else {"source": source}
-        result = collection.get(
-            where=where,
-            include=["documents", "metadatas"]
-        )
+        with _chroma_lock:
+            collection = _get_document_collection()
+            result = collection.get(
+                where=where,
+                include=["documents", "metadatas"]
+            )
     except Exception as e:
         logger.error("Chroma文档预览读取失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
         raise
@@ -429,13 +897,13 @@ def _query_document_memory(
 
 
 def _append_relevant_documents(
-    results: list[str],
+    results: list[dict],
     seen: set[str],
     query_result: dict,
     top_k: int,
     exclude_session_id: str = None
 ) -> None:
-    """按距离阈值追加检索结果，避免重复和当前session补充重复"""
+    """按距离阈值追加检索候选，避免重复和当前session补充重复。"""
     documents = query_result.get("documents", [[]])
     metadatas = query_result.get("metadatas", [[]])
     distances = query_result.get("distances", [[]])
@@ -451,8 +919,68 @@ def _append_relevant_documents(
             continue
         if distance is None or distance >= SIMILARITY_DISTANCE_THRESHOLD:
             continue
-        results.append(doc)
+        original_score = 1.0 / (1.0 + float(distance))
+        age_days = _memory_age_days((metadata or {}).get("timestamp"))
+        importance_level = _normalize_importance_level((metadata or {}).get("importance_level"))
+        if age_days > _fade_out_days(importance_level):
+            continue
+        effective_score = original_score * (0.5 ** (age_days / _halflife_days(importance_level)))
+        results.append({
+            "document": doc,
+            "original_score": original_score,
+            "effective_score": effective_score,
+            "age_days": age_days,
+            "importance_level": importance_level
+        })
         seen.add(doc)
+
+
+def _rank_memory_candidates(candidates: list[dict], top_k: int) -> list[str]:
+    """按时间衰减后的有效分重新排序并返回文档文本。"""
+    candidates.sort(key=lambda item: item.get("effective_score", 0.0), reverse=True)
+    return [
+        item["document"]
+        for item in candidates[:max(1, int(top_k))]
+        if item.get("document")
+    ]
+
+
+def _normalize_importance_level(importance_level: Optional[str]) -> str:
+    if importance_level == IMPORTANCE_LEVEL_HIGH:
+        return IMPORTANCE_LEVEL_HIGH
+    return IMPORTANCE_LEVEL_NORMAL
+
+
+def _memory_age_days(timestamp: Optional[str], now: datetime = None) -> float:
+    """解析长期记忆timestamp，旧数据缺字段时按新数据处理。"""
+    if not timestamp:
+        return 0.0
+    try:
+        created_at = datetime.fromisoformat(str(timestamp))
+    except ValueError:
+        return 0.0
+    current = now or datetime.now()
+    age_seconds = (current - created_at).total_seconds()
+    return max(0.0, age_seconds / 86400.0)
+
+
+def _halflife_days(importance_level: str) -> int:
+    if _normalize_importance_level(importance_level) == IMPORTANCE_LEVEL_HIGH:
+        return max(1, int(config.MEMORY_DECAY_HALFLIFE_HIGH_DAYS))
+    return max(1, int(config.MEMORY_DECAY_HALFLIFE_NORMAL_DAYS))
+
+
+def _fade_out_days(importance_level: str) -> int:
+    if _normalize_importance_level(importance_level) == IMPORTANCE_LEVEL_HIGH:
+        return max(1, int(config.MEMORY_FADE_OUT_HIGH_DAYS))
+    return max(1, int(config.MEMORY_FADE_OUT_NORMAL_DAYS))
+
+
+def hard_delete_days(importance_level: str) -> int:
+    """供遗忘脚本复用的长期记忆物理删除阈值。"""
+    if _normalize_importance_level(importance_level) == IMPORTANCE_LEVEL_HIGH:
+        return max(1, int(config.MEMORY_HARD_DELETE_HIGH_DAYS))
+    return max(1, int(config.MEMORY_HARD_DELETE_NORMAL_DAYS))
 
 
 def clear_session(session_id: str) -> bool:
@@ -472,8 +1000,9 @@ def clear_session(session_id: str) -> bool:
 def _clear_vector_session(session_id: str) -> bool:
     """删除指定session的Chroma向量记忆"""
     try:
-        collection = _get_chroma_collection()
-        collection.delete(where={"session_id": session_id})
+        with _chroma_lock:
+            collection = _get_chroma_collection()
+            collection.delete(where={"session_id": session_id})
         return True
     except Exception as e:
         logger.error("Chroma清空会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
@@ -482,8 +1011,10 @@ def _clear_vector_session(session_id: str) -> bool:
 
 def _connect() -> sqlite3.Connection:
     """创建SQLite连接"""
-    conn = sqlite3.connect(config.HISTORY_DB_PATH)
+    conn = sqlite3.connect(config.HISTORY_DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     return conn
 
 
@@ -514,19 +1045,22 @@ def _get_chroma_collection():
     if _chroma_collection is not None:
         return _chroma_collection
 
-    try:
-        os.makedirs(config.VECTORDB_PATH, exist_ok=True)
-        settings = chromadb.config.Settings(anonymized_telemetry=False)
-        _chroma_client = chromadb.PersistentClient(
-            path=config.VECTORDB_PATH,
-            settings=settings
-        )
-        _chroma_collection = _chroma_client.get_or_create_collection(
-            name=COLLECTION_NAME
-        )
-    except Exception as e:
-        logger.error("Chroma初始化失败：error_type=%s", type(e).__name__)
-        raise
+    with _chroma_lock:
+        if _chroma_collection is not None:
+            return _chroma_collection
+        try:
+            os.makedirs(config.VECTORDB_PATH, exist_ok=True)
+            settings = chromadb.config.Settings(anonymized_telemetry=False)
+            _chroma_client = chromadb.PersistentClient(
+                path=config.VECTORDB_PATH,
+                settings=settings
+            )
+            _chroma_collection = _chroma_client.get_or_create_collection(
+                name=COLLECTION_NAME
+            )
+        except Exception as e:
+            logger.error("Chroma初始化失败：error_type=%s", type(e).__name__)
+            raise
     return _chroma_collection
 
 
@@ -536,20 +1070,23 @@ def _get_document_collection():
     if _document_collection is not None:
         return _document_collection
 
-    try:
-        os.makedirs(config.VECTORDB_PATH, exist_ok=True)
-        settings = chromadb.config.Settings(anonymized_telemetry=False)
-        if _chroma_client is None:
-            _chroma_client = chromadb.PersistentClient(
-                path=config.VECTORDB_PATH,
-                settings=settings
+    with _chroma_lock:
+        if _document_collection is not None:
+            return _document_collection
+        try:
+            os.makedirs(config.VECTORDB_PATH, exist_ok=True)
+            settings = chromadb.config.Settings(anonymized_telemetry=False)
+            if _chroma_client is None:
+                _chroma_client = chromadb.PersistentClient(
+                    path=config.VECTORDB_PATH,
+                    settings=settings
+                )
+            _document_collection = _chroma_client.get_or_create_collection(
+                name=DOCUMENT_COLLECTION_NAME
             )
-        _document_collection = _chroma_client.get_or_create_collection(
-            name=DOCUMENT_COLLECTION_NAME
-        )
-    except Exception as e:
-        logger.error("Chroma文档Collection初始化失败：error_type=%s", type(e).__name__)
-        raise
+        except Exception as e:
+            logger.error("Chroma文档Collection初始化失败：error_type=%s", type(e).__name__)
+            raise
     return _document_collection
 
 
