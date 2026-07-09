@@ -38,9 +38,9 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ 文档检索 GLM 批量重排序已上线，等待下一轮规划 |
-| 上一轮完成 | 2026-07-09：search_documents 在 BM25+向量 hybrid search 后接入 GLM 批量重排序精排 |
-| 当前等待 | 用户确认是否前移 Agent 能力提升 |
+| 状态 | ✅ 测试覆盖计划（认证+规划层+记忆系统）已全部完成，等待进入Agent能力提升 |
+| 上一轮完成 | 2026-07-09：新增memory.py测试17项，覆盖重要性评估、遗忘机制、hybrid search和GLM重排序 |
+| 当前等待 | 用户确认正式进入 Agent 能力提升 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
 | 下一步 | 按"接下来规划 → Agent 能力提升"讨论工具扩展、任务分解或推理过程展示 |
 
@@ -80,7 +80,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 输入安全 | 无 prompt injection 防护 |
 | 审计日志 | 无 |
 | 监控 | 无 metrics/tracing |
-| 测试 | 0 个 |
+| 测试 | ✅ 认证模块+规划层状态机+记忆系统（重要性评估/遗忘机制/hybrid search/重排序）测试覆盖已上线 |
 | 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
 | 水平扩展 | 不支持 |
 
@@ -97,7 +97,6 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 编号 | 问题 | 位置 | 严重度 |
 |------|------|------|--------|
 | L1 | MCP 协议壳未替换 | mcp_client.py | P2 |
-| L6 | 0 个测试 | 全项目 | P1 |
 | L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
 
 ---
@@ -115,7 +114,6 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 - 思考链输出（用户可见 Agent 推理过程）
 
 ### 第三优先：工程化
-- 写测试（pytest）
 - PostgreSQL 迁移
 - Docker Compose 部署
 - CI/CD

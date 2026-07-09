@@ -18,3 +18,4 @@ python-docx
 bcrypt
 slowapi
 rank_bm25
+pytest

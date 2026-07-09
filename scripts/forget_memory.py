@@ -6,6 +6,7 @@
 
 import os
 import sys
+import argparse
 from collections import Counter
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +16,7 @@ if BASE_DIR not in sys.path:
 from layers import memory
 
 
-def main() -> None:
+def forget_expired_memories(dry_run: bool = False) -> dict:
     with memory._chroma_lock:
         collection = memory._get_chroma_collection()
         result = collection.get(include=["metadatas"])
@@ -34,13 +35,26 @@ def main() -> None:
 
         print("待删除长期记忆条数:", len(delete_ids))
         print("待删除分级统计:", dict(stats))
-        if delete_ids:
+        if delete_ids and not dry_run:
             collection.delete(ids=delete_ids)
 
         after = collection.get(include=["metadatas"])
         remaining_ids = after.get("ids", []) or []
         actual_deleted = len(ids) - len(remaining_ids)
         print("实际删除长期记忆条数:", actual_deleted)
+        return {
+            "pending_delete": len(delete_ids),
+            "actual_deleted": actual_deleted,
+            "stats": dict(stats),
+            "dry_run": dry_run
+        }
+
+
+def main(argv: list[str] = None) -> None:
+    parser = argparse.ArgumentParser(description="清理超过保留期的长期对话记忆")
+    parser.add_argument("--dry-run", action="store_true", help="只统计，不执行删除")
+    args = parser.parse_args(argv)
+    forget_expired_memories(dry_run=bool(args.dry_run))
 
 
 if __name__ == "__main__":

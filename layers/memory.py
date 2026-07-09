@@ -482,9 +482,9 @@ def search_documents(
 
     safe_top_k = max(1, int(top_k))
     started_at = time.perf_counter()
+    bm25_candidates = _search_bm25_candidates(query, safe_top_k, allowed_doc_ids)
     with _chroma_lock:
         collection = _get_document_collection()
-        bm25_candidates = _search_bm25_candidates(query, safe_top_k, allowed_doc_ids)
         if bm25_candidates:
             result = _query_document_memory(
                 collection,
@@ -502,6 +502,7 @@ def search_documents(
     results = _build_document_search_results(result, allowed_doc_ids, candidate_keys or None)
     if bm25_candidates and len(results) < safe_top_k:
         with _chroma_lock:
+            collection = _get_document_collection()
             fallback_result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
         fallback_results = _build_document_search_results(fallback_result, allowed_doc_ids, None)
         results = _merge_document_results(results, fallback_results)
@@ -681,14 +682,18 @@ def mark_document_bm25_dirty() -> None:
 def _search_bm25_candidates(query: str, top_k: int, allowed_doc_ids: Optional[list[str]]) -> list[dict]:
     """用BM25从verified文档chunk中粗筛候选。"""
     _ensure_bm25_index(allowed_doc_ids)
-    if _document_bm25_index is None or not _document_bm25_entries:
+    with _chroma_lock:
+        bm25_index = _document_bm25_index
+        bm25_entries = list(_document_bm25_entries)
+
+    if bm25_index is None or not bm25_entries:
         return []
 
     query_tokens = _bm25_tokenize(query)
     if not query_tokens:
         return []
 
-    scores = _document_bm25_index.get_scores(query_tokens)
+    scores = bm25_index.get_scores(query_tokens)
     ranked = sorted(
         enumerate(scores),
         key=lambda item: float(item[1]),
@@ -699,7 +704,7 @@ def _search_bm25_candidates(query: str, top_k: int, allowed_doc_ids: Optional[li
     for index, score in ranked[:limit]:
         if float(score) <= 0:
             continue
-        entry = dict(_document_bm25_entries[index])
+        entry = dict(bm25_entries[index])
         entry["bm25_score"] = float(score)
         candidates.append(entry)
     return candidates
@@ -717,36 +722,43 @@ def _ensure_bm25_index(allowed_doc_ids: Optional[list[str]]) -> None:
 
 
 def _rebuild_bm25_index(verified_doc_ids: list[str]) -> None:
-    """从Chroma读取当前verified文档chunk并重建BM25索引。调用方需持有_chroma_lock。"""
+    """从Chroma读取当前verified文档chunk并重建BM25索引。"""
     global _document_bm25_index, _document_bm25_entries, _document_bm25_dirty, _document_bm25_signature
 
     started_at = time.perf_counter()
+    rows = []
+    if verified_doc_ids:
+        with _chroma_lock:
+            collection = _get_document_collection()
+            result = collection.get(
+                where={"doc_id": {"$in": verified_doc_ids}},
+                include=["documents", "metadatas"]
+            )
+        rows = list(zip(result.get("documents", []) or [], result.get("metadatas", []) or []))
+
     entries = []
     corpus = []
-    if verified_doc_ids:
-        collection = _get_document_collection()
-        result = collection.get(
-            where={"doc_id": {"$in": verified_doc_ids}},
-            include=["documents", "metadatas"]
-        )
-        for doc, metadata in zip(result.get("documents", []) or [], result.get("metadatas", []) or []):
-            metadata = metadata or {}
-            text = doc or ""
-            tokens = _bm25_tokenize(text)
-            if not text or not tokens:
-                continue
-            entries.append({
-                "doc_id": str(metadata.get("doc_id", "")),
-                "source": str(metadata.get("source", "")),
-                "chunk_index": int(metadata.get("chunk_index", 0)),
-                "content": text
-            })
-            corpus.append(tokens)
+    for doc, metadata in rows:
+        metadata = metadata or {}
+        text = doc or ""
+        tokens = _bm25_tokenize(text)
+        if not text or not tokens:
+            continue
+        entries.append({
+            "doc_id": str(metadata.get("doc_id", "")),
+            "source": str(metadata.get("source", "")),
+            "chunk_index": int(metadata.get("chunk_index", 0)),
+            "content": text
+        })
+        corpus.append(tokens)
 
-    _document_bm25_entries = entries
-    _document_bm25_index = BM25Okapi(corpus) if corpus else None
-    _document_bm25_dirty = False
-    _document_bm25_signature = tuple(sorted(str(doc_id) for doc_id in (verified_doc_ids or []) if doc_id))
+    new_index = BM25Okapi(corpus) if corpus else None
+    new_signature = tuple(sorted(str(doc_id) for doc_id in (verified_doc_ids or []) if doc_id))
+    with _chroma_lock:
+        _document_bm25_entries = entries
+        _document_bm25_index = new_index
+        _document_bm25_dirty = False
+        _document_bm25_signature = new_signature
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     logger.info(
         "BM25文档索引重建完成：chunk_count=%s elapsed_ms=%s",

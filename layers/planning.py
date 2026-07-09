@@ -310,6 +310,7 @@ def run_graph_state(session_id: str, message: str) -> AgentState:
         if fallback.status == "success":
             state["results"] = [fallback]
             state["citations"] = fallback.citations or []
+            state["error"] = "planning_degraded"
             state["response"] = fallback.data
             return state
         state["results"] = [fallback]

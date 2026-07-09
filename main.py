@@ -614,6 +614,7 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
     chunks = []
     citations = []
     perception_output = None
+    has_error = False
     try:
         perception_input = perception.PerceptionInput(
             session_id=request.session_id,
@@ -646,6 +647,7 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                     yield _sse_data({"chunk": chunk})
             except Exception as e:
                 logger.error("/chat/stream搜索流式处理失败：session_id=%s error_type=%s", request.session_id, type(e).__name__)
+                has_error = True
                 if not emitted:
                     final_state = planning.run_graph_state(
                         perception_output.session_id,
@@ -675,17 +677,21 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
             chunks.append(final_data)
             yield _sse_data({"chunk": final_data})
             if final_state.get("error"):
+                has_error = True
                 yield _sse_data({"type": "citations", "citations": citations})
                 yield _sse_data({"chunk": "[DONE]"})
                 return
 
         final_data = "".join(chunks)
-        memory.save_message(perception_output.session_id, "user", perception_output.message)
-        memory.save_message(perception_output.session_id, "assistant", final_data)
-        auth.bind_session(perception_output.session_id, current_user["user_id"])
+        status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
+        if not has_error:
+            memory.save_message(perception_output.session_id, "user", perception_output.message)
+            memory.save_message(perception_output.session_id, "assistant", final_data)
+        if status == "success":
+            auth.bind_session(perception_output.session_id, current_user["user_id"])
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data({"chunk": "[DONE]"})
-        if final_data:
+        if not has_error and status == "success" and final_data:
             background_tasks.add_task(
                 memory.maybe_save_to_vector,
                 perception_output.session_id,

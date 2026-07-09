@@ -310,3 +310,15 @@
 - /debug/retrieve移除末尾按score二次排序，避免覆盖search_documents返回的rerank顺序，调试接口现在忠实展示检索层最终排序。
 - 验证通过：py_compile成功；构造候选chunk后GLM JSON评分可将明显相关候选排到首位且只调用一次；RERANK_ENABLED=false不调用GLM并保持原顺序；模拟TimeoutError时search_documents保留原顺序不报错。
 - 真实链路验证通过：/documents/upload→审核→/debug/retrieve在受控rerank下从[4,3,2,0,1]变为[1,4,3,2,0]，响应耗时约27ms→23ms；测试用户、审核记录和Chroma chunk已清理。
+- 修复WorkBuddy审计F8：/chat/stream搜索流式异常或fallback时设置错误标记，最终不再把错误降级回复写入SQLite短期记忆或长期向量记忆；正常流式响应仍保持原SSE顺序和记忆写入行为。
+- 优化WorkBuddy审计F9：BM25索引重建拆分为锁内读取Chroma、锁外构建BM25Okapi、短锁替换索引状态，减少重建期间对其他Chroma读写的阻塞。
+- 验证通过：py_compile成功；直接调用流式生成器验证正常响应会写入SQLite短期记忆，搜索流式异常fallback不会写入SQLite；构造verified文档chunk后触发BM25重建并可正常检索。
+- 新增pytest测试基础设施：requirements.txt加入pytest，新增pytest.ini、tests/conftest.py、tests/test_auth.py和tests/test_integration_smoke.py，提供TestClient fixture、唯一前缀测试用户注册/清理fixture，以及真实/chat集成冒烟测试标记。
+- 认证与权限离线测试覆盖注册三角色、重复注册、正确/错误密码登录、JWT有效/无效/过期校验、customer访问employee接口被拒绝、employee访问reviewer接口被拒绝；测试数据使用真实SQLite文件但按test_前缀自动清理。
+- 验证通过：py_compile新增测试文件成功；pytest tests/test_auth.py -v为9 passed；pytest tests/test_integration_smoke.py -v -m integration为1 passed；测试后data/users.db和data/history.db中test_前缀残留均为0。
+- 新增tests/test_planning.py，使用mock覆盖规划层状态机基础路径：classify的chat/search/document/clarify解析、clarify跳过retrieve/plan/execute、城市字段写入、ReAct continue/respond/上限强制respond、chat跳过reflect、工具白名单重复调用拦截、GLM主模型失败后fallback模型尝试。
+- 修复planning.run_graph_state的Level2降级标记：规划层异常后llm_chat fallback成功时也设置planning_degraded错误标记，使/chat返回status=degraded并沿用现有记忆写入守卫，不把降级响应写入记忆库。
+- 验证通过：py_compile tests/test_planning.py和layers/planning.py成功；pytest tests/test_planning.py -v为13 passed，耗时约0.65s且未触发真实网络调用；测试后data/users.db和data/history.db测试残留均为0。
+- 新增记忆系统测试覆盖：tests/test_memory_importance.py覆盖两段式重要性评估规则速判、GLM边界判断和异常保守不写入；tests/test_memory_forgetting.py覆盖时间衰减、fade_out过滤、旧数据兜底和forget_memory物理删除；tests/test_memory_hybrid_search.py覆盖BM25召回、纯向量降级、dirty懒重建和GLM批量重排序降级。
+- scripts/forget_memory.py新增--dry-run参数和forget_expired_memories(dry_run)返回统计，支持只统计不删除，便于安全验证物理删除计划。
+- 验证通过：py_compile新增memory测试和forget脚本成功；pytest tests/test_memory_importance.py tests/test_memory_forgetting.py tests/test_memory_hybrid_search.py -v为17 passed，耗时约0.52s且未触发真实GLM/Tavily调用；forget物理删除测试使用pytest临时Chroma路径隔离，真实data/vectordb当前memory_count=66、document_count=3，测试ID/测试metadata命中均为0。
