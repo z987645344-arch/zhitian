@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-07-08**
+> **最后更新：2026-07-12**
 
 ---
 
@@ -38,13 +38,13 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ 测试覆盖计划（认证+规划层+记忆系统）已全部完成，等待进入Agent能力提升 |
-| 上一轮完成 | 2026-07-09：新增memory.py测试17项，覆盖重要性评估、遗忘机制、hybrid search和GLM重排序 |
-| 当前等待 | 用户确认正式进入 Agent 能力提升 |
+| 状态 | ✅ fast/expert已按能力范围分层：fast本地知识库最简路径，expert完整Agent路径 |
+| 上一轮完成 | 2026-07-12：fast改为独立retrieve+本地Function Call路径，去除classify/search_web/reflect；expert继续保留完整LangGraph、联网搜索和文档精排 |
+| 当前等待 | Flutter快速/专家切换UI已完成；等待用户在日常使用中观察两种能力边界和响应体验 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
-| 下一步 | 按"接下来规划 → Agent 能力提升"讨论工具扩展、任务分解或推理过程展示 |
+| 下一步 | 继续“Agent能力提升”，优先讨论expert工具扩展和任务分解 |
 
-> 如果你是新接手的指挥师：当前长期记忆已开始保存有信息量的 user 消息和 assistant 回复，重要性评估已升级为规则速判 + GLM 边界兜底，并已接入按importance_level区分的时间衰减、淡出过滤和物理删除脚本；文档检索已接入 BM25+向量两阶段 hybrid search，并在候选阶段接入 GLM 批量重排序精排。下一步优先看"接下来规划"。
+> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，首次GLM Function Call只暴露search_documents/list_documents，无工具时1次模型调用、有工具时2次，不支持联网或reflect。expert使用DeepSeek完整LangGraph，保留classify、search_web、文档精排和ReAct。长期记忆已接入重要性判断、时间衰减、淡出和物理删除；文档检索已接入BM25+向量、title/source补充召回和批量重排序。下一步进入“Agent能力提升”。
 
 ---
 
@@ -53,11 +53,11 @@
 ### 1. Agent 能力仍处初级阶段
 
 当前 ReAct 循环可工作（GLM 能自主判断"文档缺依据时转联网搜索"），但：
-- 工具只有 3 个（search_web / search_documents / llm_chat），不能组合编排
+- 工具只有 4 个（search_web / search_documents / list_documents / llm_chat），不能组合编排
 - 无任务分解能力（"调研竞品并写报告"无法拆成搜索→分析→写作）
 - 无并行工具调用（3 轮全串行）
 - reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
-- ReAct 延迟可能 30-60s（3 轮 × 多次 GLM 调用）；普通 chat 已绕过 reflect，避免误触发搜索链路
+- ReAct仅保留在document路径；普通chat和search均单轮respond，避免重复联网搜索放大延迟
 
 ### 2. MCP 仍是协议壳
 
@@ -86,7 +86,8 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 ### 5. 检索质量基础水平
 
-- 已接入 BM25+向量两阶段 hybrid search，并在候选阶段接入 GLM 批量重排序精排
+- 已接入 BM25+向量两阶段 hybrid search，短查询可通过 verified 文档 title/source 元数据命中补充分数，并在候选阶段接入 GLM 批量重排序精排
+- document 意图已区分内容检索和清单列举两种子场景：search_documents 查内容，list_documents 列 verified 文档 source 清单；清单类路由不再依赖关键词/正则兜底，改由GLM Function Call分类
 - 切片已升级为段落优先+句子兜底的语义切分，目标长度仍为 500 字符
 - PDF 无 OCR
 
@@ -124,14 +125,18 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 | 约束 | 说明 |
 |------|------|
+| 双模型mode | `/chat`与`/chat/stream`缺省`mode=fast`走GLM本地简化路径；`mode=expert`走DeepSeek完整Agent路径，不跨tier fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
+| tier划分依据 | fast/expert不仅模型不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次GLM调用；expert保留完整分类、联网、精排和ReAct能力 |
+| Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
 | zhipuai SDK | 不支持 parallel_tool_calls，已做兼容 |
 | mcp 版本 | 固定 1.9.4，新版与 FastAPI 不兼容 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
+| RAG阈值 | 极短文档/极短查询的纯向量score仍可能低于`RAG_SCORE_THRESHOLD=0.55`；已通过title/source元数据补充召回缓解“查询主体命中文档标题/source”的场景（如“知了是什么”命中`知了简介`后提升到0.57），但短查询不命中任何文档标题/source时仍需后续评估query扩展或阈值策略 |
+| 搜索链路 | query改写失败直接使用原query，整理只调用当前mode模型一次，总预算30秒；search执行后直接respond，失败透明返回带前缀的Tavily原始摘要。最终实测expert平均27.84秒，较历史87.6秒下降约68% |
 | .env | 必须保持无 BOM UTF-8，否则 python-dotenv 把第一行解析为 \ufeffGLM_API_KEY |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
 | Codex 环境 | 运行时验证需用提权方式调用 .venv\Scripts\python.exe |
-| DeepSeek 试验 | 已 git revert 回退，后续模型切换需重新拆分为独立任务 |
 | .venv | Python 3.10.11，可正常 import fastapi，环境状态正常 |
 | 日志轮转 | 已使用SafeTimedRotatingFileHandler容错Windows文件占用；重复初始化不会重复挂同一路径FileHandler |
 

@@ -94,23 +94,12 @@ def test_glm_rerank_reorders_candidates(monkeypatch):
         {"doc_id": "doc-a", "chunk_index": 0, "content": "弱相关", "score": 0.9},
         {"doc_id": "doc-b", "chunk_index": 0, "content": "强相关", "score": 0.5},
     ]
-    monkeypatch.setattr(memory.config, "GLM_API_KEY", "test-key")
-    monkeypatch.setattr(memory, "_extract_importance_text", lambda response: '{"scores":[{"index":0,"score":2},{"index":1,"score":9}]}')
-
-    class FakeCompletions:
-        def create(self, **kwargs):
-            return object()
-
-    class FakeChat:
-        completions = FakeCompletions()
-
-    class FakeClient:
-        chat = FakeChat()
-
-        def __init__(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(memory, "ZhipuAI", FakeClient)
+    monkeypatch.setattr(memory.llm_provider, "chat_completion", Mock(return_value=object()))
+    monkeypatch.setattr(
+        memory.llm_provider,
+        "extract_text",
+        lambda response: '{"scores":[{"index":0,"score":2},{"index":1,"score":9}]}'
+    )
 
     reranked = memory._rerank_with_glm("query", candidates)
 
@@ -133,20 +122,10 @@ def test_rerank_exception_keeps_original_order(monkeypatch):
         {"doc_id": "doc-b", "chunk_index": 0, "content": "b", "score": 0.8},
     ]
 
-    class BrokenCompletions:
-        def create(self, **kwargs):
-            raise TimeoutError("simulated timeout")
-
-    class BrokenChat:
-        completions = BrokenCompletions()
-
-    class BrokenClient:
-        chat = BrokenChat()
-
-        def __init__(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(memory.config, "GLM_API_KEY", "test-key")
-    monkeypatch.setattr(memory, "ZhipuAI", BrokenClient)
+    monkeypatch.setattr(
+        memory.llm_provider,
+        "chat_completion",
+        Mock(side_effect=TimeoutError("simulated timeout"))
+    )
 
     assert memory._rerank_with_glm("query", candidates) == candidates

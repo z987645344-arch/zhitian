@@ -48,24 +48,16 @@ def test_boundary_message_calls_glm_once_for_unimportant(monkeypatch):
 
 
 def test_glm_exception_is_conservative_and_does_not_write(monkeypatch):
-    class BrokenCompletions:
-        def create(self, **kwargs):
-            raise TimeoutError("simulated timeout")
-
-    class BrokenChat:
-        completions = BrokenCompletions()
-
-    class BrokenClient:
-        chat = BrokenChat()
-
-        def __init__(self, **kwargs):
-            pass
-
     save_to_vector = Mock()
-    monkeypatch.setattr(memory.config, "GLM_API_KEY", "test-key")
-    monkeypatch.setattr(memory, "ZhipuAI", BrokenClient)
+    model_call = Mock(side_effect=TimeoutError("simulated timeout"))
+    monkeypatch.setattr(
+        memory.llm_provider,
+        "chat_completion",
+        model_call
+    )
     monkeypatch.setattr(memory, "save_to_vector", save_to_vector)
 
     assert memory.is_message_important("这个事情稍后再看看吧") is False
     memory.maybe_save_to_vector("memory-importance", "user", "这个事情稍后再看看吧")
     save_to_vector.assert_not_called()
+    assert model_call.call_count == 1

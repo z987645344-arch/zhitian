@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-07-09**
+> **最后追加：2026-07-12**
 
 ## 2026-06-28
 - 初始化项目完整目录结构
@@ -322,3 +322,44 @@
 - 新增记忆系统测试覆盖：tests/test_memory_importance.py覆盖两段式重要性评估规则速判、GLM边界判断和异常保守不写入；tests/test_memory_forgetting.py覆盖时间衰减、fade_out过滤、旧数据兜底和forget_memory物理删除；tests/test_memory_hybrid_search.py覆盖BM25召回、纯向量降级、dirty懒重建和GLM批量重排序降级。
 - scripts/forget_memory.py新增--dry-run参数和forget_expired_memories(dry_run)返回统计，支持只统计不删除，便于安全验证物理删除计划。
 - 验证通过：py_compile新增memory测试和forget脚本成功；pytest tests/test_memory_importance.py tests/test_memory_forgetting.py tests/test_memory_hybrid_search.py -v为17 passed，耗时约0.52s且未触发真实GLM/Tavily调用；forget物理删除测试使用pytest临时Chroma路径隔离，真实data/vectordb当前memory_count=66、document_count=3，测试ID/测试metadata命中均为0。
+- 修复文档清单类问法路由：planning新增document_list意图和list_documents Function Call工具定义，将“企业信息库有哪些文件”“已上传的企业信息库文档有哪些”“刚才上传的文档里有什么”等清单问题与search_documents内容检索问题区分。
+- execution.py新增list_documents工具，仅读取verified文档source清单并返回文件名列表，不做向量检索、不返回chunk内容；无verified文档时返回“当前企业信息库暂无已审核通过的文档。”。
+- 验证通过：py_compile layers/planning.py和layers/execution.py成功；真实/chat验证三类清单问法均返回文件列表且耗时约88-347ms；内容检索问法“请在文档中检索 ERR-8842 的相关内容”仍分类为document；补充planning单测覆盖document_list跳过reflect。
+- 诊断“知了简介”RAG分数低于阈值问题：该文档verified且仅1个chunk、47字，查询“知了”distance=1.411074，按1/(1+distance)得分0.414753，低于RAG_SCORE_THRESHOLD=0.55；查询改为“智能agent”时同一chunk得分0.645240。
+- 对照实验显示，1146字临时长文档（3个chunk）在短查询“蓝鲸/蓝鲸项目”下最高得分约0.43-0.44，完整问句“蓝鲸项目如何支持企业知识库和文档问答”最高得分0.599939；说明短查询+当前embedding/score阈值存在结构性低分风险，不仅是“知了简介”个案。
+- 诊断未修改RAG_SCORE_THRESHOLD或检索逻辑；临时对照文档已删除，真实Chroma中codex_diag_rich测试id和metadata命中均为0。
+- 移除planning.py中document_list意图的关键词/正则兜底函数，清单类与内容检索类路由改为完全依赖GLM Function Call分类结果，符合“不硬编码语义规则”约束。
+- 优化classify Function Call描述和prompt few-shot：明确list_documents用于“有哪些文件/文档/资料”清单类问题，search_documents用于文档内容、内部术语、编号、产品/项目定义类问题；“知了是什么”这类短定义问题优先检索企业知识库验证。
+- memory.search_documents新增title/source元数据补充匹配通道：当查询主体或编号命中文档source/title时，将对应chunk分数提升到RAG阈值上方小幅保证分（当前0.57），再参与原有排序和返回，不绕过分数机制。
+- 验证通过：py_compile成功；真实GLM离线分类中“企业信息库有哪些文件”“已上传的企业信息库文档有哪些”“刚才上传的文档里有什么文件”均返回document_list，“知了是什么”和ERR-8842类内容检索返回document；禁用GLM rerank的本地检索验证显示“知了是什么”命中manual_input:知了简介且score=0.57，可通过执行层阈值过滤返回citation。
+- 验证约束：完整/chat文档问答会把命中文档chunk发送给外部GLM生成最终回复，本轮未执行该外发验证；已用真实GLM分类 + 本地Chroma/执行层阈值验证覆盖本次改动核心路径。
+- 诊断截图中的“查询近期AI热点时间”：日志确认该请求在/chat/stream中被classify为search；同类真实Tavily调用可返回5条结果，说明不是“Tavily未调用/失败后无前缀伪装正常结果”。问题主要在搜索整理阶段GLM主模型/备用模型可能失败或限流，且此前缺少Tavily成功统计日志。
+- execution.py新增Tavily成功统计日志（result_count、max_score，不记录搜索结果正文），并收紧搜索结果整理prompt：统一注入当前日期，禁止编造搜索结果中没有的事件、发布时间或数据。
+- 修复日期注入：新增utils/time_context.py统一生成当前系统日期提示，普通llm_chat、搜索整理、搜索query改写、文档问答和规划层上下文respond均注入“当前真实系统日期”；真实GLM验证“现在的日期”已返回2026年7月9日。
+- 搜索整理失败兜底改造：当Tavily已有结果但GLM整理失败时，不再抛出不透明错误，而是返回带“搜索结果整理失败”前缀的原始搜索标题/链接/摘要，避免看似正常的编造回复。
+- document短查询链路优化：title/source元数据命中的少量候选（当前candidate_count<=3）跳过GLM rerank，并通过ToolResult.metadata传递title_source_match，让规划层直接respond、跳过reflect；本地验证“知了是什么”检索阶段约346ms且next_after_execute=respond，非title命中“智能agent”仍进入rerank分支。
+- 验证通过：py_compile成功；pytest tests/test_planning.py tests/test_memory_hybrid_search.py -v为21 passed；真实搜索链路在GLM整理失败时返回“搜索结果整理失败，以下为原始搜索结果摘要”前缀，但完整搜索链路在GLM连续失败时仍可能耗时约76s，后续需继续优化搜索链路超时预算。
+## 2026-07-10
+- 诊断L12搜索链路高延迟，不修改代码：阅读execution.py确认搜索链路理论配置为TIMEOUT=10s、MAX_RETRIES=1、RETRY_DELAY=1s；Tavily通过ThreadPoolExecutor单次10s超时且外层重试1次；GLM _chat_with_model每个模型最多2次attempt，每次timeout=10s，中间等待1s。
+- 真实分段计时“近期AI热点”类搜索链路：query改写耗时30955ms且成功；Tavily调用耗时4370ms且成功返回5条结果，max_score=0.7592；搜索结果整理主模型glm-4.7耗时24935ms后失败；fallback模型glm-4-flash耗时26867ms后失败；总耗时87129ms。
+- 逐attempt计时确认搜索结果整理阶段存在同层内部重试：glm-4.7第1次attempt耗时11591ms失败(APITimeoutError)，第2次耗时12620ms失败(APITimeoutError)；glm-4-flash第1次attempt耗时13320ms失败(APITimeoutError)，第2次耗时11981ms失败(APITimeoutError)。
+- 结论：76s/87s级别超时主要来自三段GLM串行累计，其中query改写约31s，搜索结果整理主备模型失败合计约52s；Tavily本身约4.4s，不是主要瓶颈。主模型和fallback模型各自失败时都会内部重试2次，单个模型整理失败可消耗约25-27s。
+
+## 2026-07-12
+- 新增`layers/llm_provider.py`双模型薄适配层：fast模式调用GLM，expert模式通过OpenAI兼容接口调用DeepSeek；`requirements.txt`新增`openai`，两种模式均为单次调用且禁止跨tier自动fallback。
+- `/chat`和`/chat/stream`请求体新增可选`mode`字段，只接受`fast`或`expert`；缺省及未提供时默认fast，现有Flutter客户端无需改动。非法mode返回400，日志仅记录mode值和必要统计。
+- mode写入`AgentState`并沿请求生命周期透传到classify、普通chat、query改写、搜索整理、reflect、文档重排序、RAG回答、上下文最终回复和后台记忆重要性判断；验证同一请求内无fast/expert混用。
+- 搜索链路取消query改写fallback与搜索整理主备重试：改写失败直接使用原query，整理只调用当前mode模型一次，失败立即返回带前缀的Tavily原始摘要；执行层不再整体重跑`search_web`或`llm_chat`。
+- 搜索总时间预算调整为30秒，query改写最多4秒；search意图完成一次`search_web`后直接respond，不再进入reflect，document路径仍保留reflect并禁止重复追加`search_web`。
+- 真实调用验证：fast/expert最小调用均成功；两种模式均把实时信息问法分类为search；expert文档重排序严格JSON解析成功并将相关候选置顶。
+- 最终配置下真实`/chat`搜索验证：expert 3/3成功完成分类、query改写和DeepSeek搜索整理，无原始摘要降级，平均27.84秒（25.31-32.48秒）；fast受GLM限流影响2/3完成搜索并透明降级为原始摘要、1/3在分类阶段降级，平均17.85秒。全部6次请求均无tier混用、无reflect追加搜索；相较历史完整链路平均87.6秒，expert平均耗时下降约68%。
+- 验证通过：py_compile覆盖全部改动文件；认证、规划和记忆离线测试44项全部通过；测试账号由验证脚本finally清理，未写入SQLite对话、Chroma记忆或文档数据。
+- 重新定义fast能力边界：fast不再与expert共用同一LangGraph链路，`run_graph_state`改为显式分派；fast走独立的retrieve→Function Call→可选本地工具→最终生成路径，expert继续使用原六节点完整图。
+- fast首次GLM调用只暴露`search_documents`和`list_documents`，不暴露`search_web`、`llm_chat`、澄清或城市工具；无工具调用时一次模型调用直接回答，调用本地工具时第二次模型调用结合工具结果生成最终回复，完全跳过classify和reflect。
+- fast保留Chroma长期记忆retrieve和最近SQLite对话历史；本地文档工具执行时关闭内部GLM rerank和文档回答生成，只返回检索证据与citations，严格控制整次fast请求最多2次模型调用。
+- fast响应后的长期记忆重要性判断仅使用现有规则速判，不再触发隐藏的后台GLM边界调用；expert仍保留同tier模型边界判断，确保fast实际API消耗与1/2次调用承诺一致。
+- `/chat/stream`的fast模式同步走独立fast路径并以SSE返回完整结果；expert流式路径保持原有分类、联网和文档能力。
+- 新增fast/expert分路测试，完整pytest为49 passed；真实GLM验证：闲聊1次调用约5.27秒，知识库“知了是什么”2次调用约14.09秒并执行search_documents，文件清单2次调用约13.11秒并执行list_documents，最新消息请求1次调用约6.29秒且可用工具/实际工具均不含search_web。
+- expert真实回归保持完整能力：Function Call工具集合包含search_web等完整工具，实时热点请求执行search_web，3次DeepSeek调用约30.01秒成功返回。
+- Flutter客户端聊天页新增“快速/专家”分段切换控件，默认fast并在应用运行期间保持选择；ApiService不再发送旧`mode=chat`，而是将当前选择映射为`fast`或`expert`写入`/chat/stream`请求体。
+- Flutter验证通过：`flutter analyze`无问题，8项测试全部通过；内存HTTP客户端确认fast/expert请求体序列化正确，真实本地后端SSE验证两种模式均返回HTTP 200和`[DONE]`，登录、历史和citations既有测试保持通过。

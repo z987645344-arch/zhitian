@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 import time
 from datetime import datetime
+from typing import Optional
 from urllib.parse import unquote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -61,7 +62,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str
     message: str
-    mode: str = "chat"
+    mode: Optional[str] = "fast"
 
 
 class ChatResponse(BaseModel):
@@ -197,19 +198,26 @@ async def chat(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
+    mode = _validate_chat_mode(chat_request.mode)
     layer_trace = ["perception", "planning", "execution", "output"]
-    logger.info("收到/chat请求：session_id=%s message_len=%s", chat_request.session_id, len(chat_request.message or ""))
+    logger.info(
+        "收到/chat请求：session_id=%s message_len=%s mode=%s",
+        chat_request.session_id,
+        len(chat_request.message or ""),
+        mode
+    )
     try:
         perception_input = perception.PerceptionInput(
             session_id=chat_request.session_id,
             raw_message=chat_request.message,
-            mode=chat_request.mode
+            mode=mode
         )
         perception_output = perception.process(perception_input)
 
         final_state = planning.run_graph_state(
             perception_output.session_id,
-            perception_output.message
+            perception_output.message,
+            mode=mode
         )
         final_data = final_state["response"]
         citations = _serialize_citations(final_state.get("citations", []))
@@ -224,13 +232,15 @@ async def chat(
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "user",
-                perception_output.message
+                perception_output.message,
+                mode
             )
             background_tasks.add_task(
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "assistant",
-                final_data
+                final_data,
+                mode
             )
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
@@ -261,11 +271,14 @@ async def chat_stream(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
+    mode = _validate_chat_mode(chat_request.mode)
     logger.info(
-        "收到/chat/stream请求：session_id=%s message_len=%s",
+        "收到/chat/stream请求：session_id=%s message_len=%s mode=%s",
         chat_request.session_id,
-        len(chat_request.message or "")
+        len(chat_request.message or ""),
+        mode
     )
+    chat_request.mode = mode
     return StreamingResponse(
         _chat_stream_events(chat_request, current_user, background_tasks),
         background=background_tasks,
@@ -622,9 +635,43 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
             mode=request.mode
         )
         perception_output = perception.process(perception_input)
+        if perception_output.mode == "fast":
+            final_state = planning.run_graph_state(
+                perception_output.session_id,
+                perception_output.message,
+                mode="fast"
+            )
+            final_data = final_state["response"]
+            citations = _serialize_citations(final_state.get("citations", []))
+            has_error = bool(final_state.get("error"))
+            yield _sse_data({"chunk": final_data})
+            yield _sse_data({"type": "citations", "citations": citations})
+            yield _sse_data({"chunk": "[DONE]"})
+            if not has_error:
+                memory.save_message(perception_output.session_id, "user", perception_output.message)
+                memory.save_message(perception_output.session_id, "assistant", final_data)
+                auth.bind_session(perception_output.session_id, current_user["user_id"])
+                if final_data:
+                    background_tasks.add_task(
+                        memory.maybe_save_to_vector,
+                        perception_output.session_id,
+                        "user",
+                        perception_output.message,
+                        "fast"
+                    )
+                    background_tasks.add_task(
+                        memory.maybe_save_to_vector,
+                        perception_output.session_id,
+                        "assistant",
+                        final_data,
+                        "fast"
+                    )
+            return
+
         state = _prepare_stream_state(
             perception_output.session_id,
-            perception_output.message
+            perception_output.message,
+            mode=perception_output.mode
         )
 
         if state["intent"] == "clarify":
@@ -639,7 +686,8 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                 stream = execution.stream_search_result(
                     query=perception_output.message,
                     context=state["context"],
-                    session_id=perception_output.session_id
+                    session_id=perception_output.session_id,
+                    tier=perception_output.mode
                 )
                 for chunk in stream:
                     emitted = True
@@ -651,7 +699,8 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                 if not emitted:
                     final_state = planning.run_graph_state(
                         perception_output.session_id,
-                        perception_output.message
+                        perception_output.message,
+                        mode=perception_output.mode
                     )
                     final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
                     citations = _serialize_citations(final_state.get("citations", []))
@@ -662,7 +711,8 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                 message=perception_output.message,
                 session_id=perception_output.session_id,
                 stream=True,
-                system_prompt=_build_stream_system_prompt(state["context"])
+                system_prompt=_build_stream_system_prompt(state["context"]),
+                tier=perception_output.mode
             )
             for chunk in stream:
                 chunks.append(chunk)
@@ -670,7 +720,8 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
         else:
             final_state = planning.run_graph_state(
                 perception_output.session_id,
-                perception_output.message
+                perception_output.message,
+                mode=perception_output.mode
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
@@ -696,23 +747,30 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "user",
-                perception_output.message
+                perception_output.message,
+                perception_output.mode
             )
             background_tasks.add_task(
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "assistant",
-                final_data
+                final_data,
+                perception_output.mode
             )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：session_id=%s error_type=%s", request.session_id, type(e).__name__)
         yield _sse_data({"error": "服务暂时异常，请重试"})
 
 
-def _prepare_stream_state(session_id: str, message: str) -> planning.AgentState:
+def _prepare_stream_state(
+    session_id: str,
+    message: str,
+    mode: str = "fast"
+) -> planning.AgentState:
     state = planning.AgentState(
         session_id=session_id,
         message=message,
+        mode=mode,
         intent="",
         context=[],
         tasks=[],
@@ -735,6 +793,13 @@ def _prepare_stream_state(session_id: str, message: str) -> planning.AgentState:
         state["intent"] = "chat"
         state["context"] = []
         return state
+
+
+def _validate_chat_mode(mode: Optional[str]) -> str:
+    normalized = str(mode or "fast").strip().lower()
+    if normalized not in {"fast", "expert"}:
+        raise HTTPException(status_code=400, detail="mode只支持fast或expert")
+    return normalized
 
 
 def _sse_data(payload: dict) -> str:

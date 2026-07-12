@@ -88,14 +88,15 @@ D:\zhiliao\zhitian\
 [感知层] perception.py
    strip() 清洗 + 封装 PerceptionOutput
    ↓
-[规划层] planning.py — LangGraph ReAct 状态机
-   classify   GLM Function Call 意图分类 + 城市提取 + 澄清判断
+[规划层] planning.py — fast简化路径 + expert LangGraph ReAct状态机
+   fast       retrieve → GLM Function Call（仅search_documents/list_documents）→ 可选本地工具 → 最终回答
+   expert     classify → retrieve → plan → execute → reflect/respond，保留完整工具集和联网能力
       ├── clarify → 直接 respond
       └── 其他 → retrieve
    retrieve   Chroma 长期记忆检索（strict_session=True，隔离用户）
    plan       根据意图生成 Task
    execute    通过 mcp_client 调用工具，返回 ToolResult + citations；chat意图执行后直接respond
-   reflect    search/document路径由GLM判断是否需要追加工具调用（最多 MAX_REACT_ROUNDS=2 轮）
+   reflect    document路径由当前mode模型判断是否需要追加工具调用（最多 MAX_REACT_ROUNDS=2 轮）；search执行一次后直接respond
       ├── continue → 回到 plan
       └── respond / 达到上限 → respond
    respond    结合上下文生成最终回复
@@ -136,13 +137,14 @@ class PerceptionOutput(BaseModel):
 
 ```python
 class Task(BaseModel):
-    tool: str             # search_web | search_documents | llm_chat
+    tool: str             # search_web | search_documents | list_documents | llm_chat
     params: dict
     order: int
 
 class AgentState(TypedDict):
     session_id: str
     message: str
+    mode: str                      # fast | expert，本次请求全链路统一tier
     intent: str                    # chat | search | document | clarify
     context: list[str]             # Chroma 检索的历史上下文
     tasks: list[Task]
@@ -261,7 +263,7 @@ class ChatResponse(BaseModel):
   Collection: zhitian_documents — 企业文档向量
   写入：成功响应后按两段式重要性评估写入 user 消息和 assistant 回复；文档切片写入 zhitian_documents
   文档切片：段落优先、句子兜底的语义切分，目标长度 500 字符；极端无边界长文本硬切兜底
-  文档检索：BM25 字符 bigram 粗筛 verified chunk，再用 Chroma 向量重排，候选阶段可用 GLM 批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
+  文档检索：BM25 字符 bigram 粗筛 verified chunk，再用 Chroma 向量重排；短查询命中文档source/title时以元数据精确匹配补充召回并小幅提升到RAG阈值上方；候选阶段可用 GLM 批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
   重要性：低信息/高信息规则速判，边界消息调用 GLM fallback 二分类；异常时保守不写入
   遗忘：按 importance_level=high/normal 设置半衰期、淡出阈值和硬删除阈值
   检索：L2 距离 < 0.8 才采纳，再按 age_days 做时间衰减重排；超过淡出天数的候选不返回
@@ -301,7 +303,7 @@ reviewer 审核通过 → verified（参与 RAG 检索）
 reviewer 审核拒绝 → rejected（永久排除）
 ```
 
-RAG 检索时只查询 `verified_doc_ids` 白名单中的文档 chunk。`RAG_SCORE_THRESHOLD = 0.55`，低于阈值的候选不返回。
+RAG 检索时只查询 `verified_doc_ids` 白名单中的文档 chunk。`RAG_SCORE_THRESHOLD = 0.55`，低于阈值的候选不返回；若查询主体或编号命中文档 `source/title` 元数据，可将对应chunk分数提升到阈值上方的小幅保证分后继续参与排序，用于缓解极短查询向量分数结构性偏低的问题。
 
 ---
 
@@ -337,24 +339,39 @@ data/users.db
 
 ## 八、规划层状态机
 
-### LangGraph 六节点
+### 两种模式
 
 ```
-classify   GLM Function Call，一次调用完成意图分类 + 城市提取 + 澄清判断
+fast（GLM，独立简化路径，不进入LangGraph）
+  retrieve（Chroma长期记忆，不调用模型）
+     ↓
+  GLM Function Call，只暴露search_documents和list_documents
+     ├── 无工具调用 → 直接回答（共1次模型调用）
+     └── 本地工具调用 → 执行一次工具 → 结合工具结果生成回答（共2次模型调用）
+
+expert（DeepSeek，完整LangGraph）
+  classify → retrieve → plan → execute → reflect/respond
+  保留search_web、search_documents、list_documents、llm_chat及多工具流转能力
+```
+
+### Expert LangGraph六节点
+
+```
+classify   DeepSeek Function Call，一次调用完成意图分类 + 城市提取 + 澄清判断
 retrieve   Chroma 长期记忆检索（strict_session=True）
 plan       根据 intent 生成 Task
 execute    mcp_client.call_tool 执行，返回 ToolResult + citations
-reflect    GLM 判断当前结果是否足够，决定 continue 或 respond
+reflect    DeepSeek判断当前结果是否足够，决定continue或respond
 respond    结合上下文生成最终回复
 ```
 
-### 流转逻辑
+### Expert流转逻辑
 
 ```
 classify
   ├── clarify → respond（跳过 retrieve/plan/execute）
   └── 其他 → retrieve → plan → execute
-                                  ├── chat → respond
+                                  ├── chat/document_list → respond
                                   └── search/document → reflect
                                                   │
                                           continue │ respond / 达到上限
@@ -369,12 +386,15 @@ classify
 ### ReAct 约束
 
 - `config.MAX_REACT_ROUNDS = 2`，初始 execute 后最多追加 2 轮，总执行轮数最多 3
-- chat 意图不进入 reflect，单轮 llm_chat 后直接 respond，避免普通聊天被误判追加搜索
-- 只允许组合现有三个工具：`search_web`、`search_documents`、`llm_chat`
-- `should_continue_react()` 通过 GLM 语义判断是否继续
+- chat 和 document_list 意图不进入 reflect，单轮工具执行后直接 respond，避免普通聊天或文档清单被误判追加搜索
+- document 意图默认进入 reflect；但 title/source 元数据命中且候选数较少的高置信短查询会直接 respond，跳过 rerank/reflect 叠加延迟
+- 只允许组合现有四个工具：`search_web`、`search_documents`、`list_documents`、`llm_chat`
+- `should_continue_react()` 通过DeepSeek语义判断是否继续
 - 代码层硬拦截：工具白名单、重复调用检测、轮数上限
 - 达到上限仍信息不足时，回复前追加"基于目前检索到的信息回答，可能不够全面。"
 - 多轮 citations 按 `doc_id + chunk_index` 去重
+- fast模式不进入classify、plan或reflect，不提供search_web，也不支持追加检索；search_documents在工具阶段关闭内部模型重排和回答生成，确保整条fast请求最多2次模型调用
+- fast保留retrieve节点的Chroma长期记忆读取，为低成本上下文回答提供依据
 
 ---
 
@@ -400,14 +420,17 @@ Level 3 · 服务错误（main.py）
 Tavily 异常 → 降级为模型知识回答 + 前缀"搜索服务暂时不可用"
 Tavily 空结果 → 降级为模型知识回答 + 前缀"网络搜索无结果"
 Tavily 全部 score < 0.3 → 降级为模型知识回答 + 前缀"搜索结果相关性不足"
-GLM 整理失败 → 抛出"搜索结果整理失败"，respond 返回降级提示
+GLM 整理失败 → 返回原始搜索结果摘要 + 前缀"搜索结果整理失败"，避免伪装成正常整理结果
 ```
 
-### GLM 模型降级
+### 双模型请求模式
 
 ```
-主模型（glm-4.7-flash）失败 → fallback 模型（glm-4-flash）
-流式：主模型已输出内容后失败 → 不降级，直接抛出
+fast：缺省模式，使用GLM独立简化路径；只支持知识库检索、文档清单和对话/长期记忆上下文回答，不支持联网搜索
+expert：使用DeepSeek完整LangGraph，保留classify、联网搜索、文档重排、reflect和上下文生成，不自动回退到GLM
+两种模式的单个模型环节都只调用一次，不做主备模型或跨tier重试
+非法mode由/chat和/chat/stream返回400
+搜索链路：query改写失败直接使用原query；整理失败返回原始Tavily摘要；总预算30s；search执行后跳过reflect
 ```
 
 ---

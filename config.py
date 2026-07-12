@@ -11,6 +11,13 @@ GLM_API_KEY = os.getenv("GLM_API_KEY", "")
 LLM_MODEL = os.getenv("GLM_MODEL", "glm-4.7-flash")
 FALLBACK_MODEL = os.getenv("GLM_FALLBACK_MODEL", "glm-4-flash")
 VISION_MODEL = os.getenv("GLM_VISION_MODEL", "glm-4.6v-flash")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))
+EXPERT_LLM_TIMEOUT = float(os.getenv("EXPERT_LLM_TIMEOUT", "25.0"))
+SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
+SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "4.0"))
 
 # 服务
 PORT = int(os.getenv("PORT", 8000))

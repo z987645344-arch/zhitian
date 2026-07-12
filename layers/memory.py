@@ -16,11 +16,16 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import chromadb
 from rank_bm25 import BM25Okapi
-from zhipuai import ZhipuAI
 import config
+from layers import llm_provider
 from utils.logger import get_logger
 
 logger = get_logger("memory")
+
+
+def _log_diag_timing(session_id: str, stage: str, elapsed_ms: int) -> None:
+    # 临时诊断代码：定位复杂查询超时瓶颈，仅记录环节耗时，不记录消息、query或chunk原文。
+    logger.info("临时诊断耗时：session_id=%s stage=%s elapsed_ms=%s", session_id, stage, elapsed_ms)
 
 COLLECTION_NAME = "zhitian_memory"
 DOCUMENT_COLLECTION_NAME = "zhitian_documents"
@@ -86,6 +91,8 @@ _document_bm25_entries = []
 _document_bm25_dirty = True
 _document_bm25_signature = None
 BM25_CANDIDATE_MULTIPLIER = 4
+TITLE_MATCH_SCORE_MARGIN = 0.02
+TITLE_MATCH_RERANK_SKIP_MAX_CANDIDATES = 3
 
 
 def init_db() -> None:
@@ -209,13 +216,17 @@ def get_session_history(session_id: str) -> list[dict]:
     ]
 
 
-def is_message_important(content: str) -> bool:
+def is_message_important(content: str, tier: str = "fast") -> bool:
     """两段式判断消息是否值得写入长期向量记忆，不记录原文。"""
-    is_important, _importance_level = _judge_message_importance(content)
+    is_important, _importance_level = _judge_message_importance(content, tier=tier)
     return is_important
 
 
-def _judge_message_importance(content: str) -> Tuple[bool, str]:
+def _judge_message_importance(
+    content: str,
+    tier: str = "fast",
+    allow_model_fallback: bool = True
+) -> Tuple[bool, str]:
     """返回是否重要及写入长期记忆的重要性等级。"""
     stripped = (content or "").strip()
     if len(stripped) < config.MEMORY_MIN_LENGTH:
@@ -235,14 +246,25 @@ def _judge_message_importance(content: str) -> Tuple[bool, str]:
     if _has_high_information_signal(stripped):
         return True, IMPORTANCE_LEVEL_HIGH
 
-    if _classify_importance_with_glm(stripped):
+    if allow_model_fallback and _classify_importance_with_glm(stripped, tier=tier):
         return True, IMPORTANCE_LEVEL_NORMAL
     return False, IMPORTANCE_LEVEL_NORMAL
 
 
-def maybe_save_to_vector(session_id: str, role: str, content: str) -> None:
+def maybe_save_to_vector(
+    session_id: str,
+    role: str,
+    content: str,
+    tier: str = "fast"
+) -> None:
     """按重要性过滤后写入Chroma长期向量记忆。"""
-    is_important, importance_level = _judge_message_importance(content)
+    started_at = time.perf_counter()
+    is_important, importance_level = _judge_message_importance(
+        content,
+        tier=tier,
+        allow_model_fallback=tier == "expert"
+    )
+    _log_diag_timing(session_id, "memory_importance_total_%s" % role, int((time.perf_counter() - started_at) * 1000))
     logger.info(
         "长期记忆重要性判断：session_id=%s role=%s message_len=%s is_important=%s importance_level=%s",
         session_id,
@@ -318,18 +340,11 @@ def _has_high_information_signal(content: str) -> bool:
     return any(pattern.search(normalized) for pattern in HIGH_INFORMATION_PATTERNS)
 
 
-def _classify_importance_with_glm(content: str) -> bool:
+def _classify_importance_with_glm(content: str, tier: str = "fast") -> bool:
     """用低成本模型兜底判断边界消息，异常时保守不写入。"""
+    started_at = time.perf_counter()
     try:
-        if not config.GLM_API_KEY:
-            raise ValueError("GLM_API_KEY未配置")
-        client = ZhipuAI(
-            api_key=config.GLM_API_KEY,
-            timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT,
-            max_retries=0
-        )
-        response = client.chat.completions.create(
-            model=config.FALLBACK_MODEL,
+        response = llm_provider.chat_completion(
             messages=[
                 {
                     "role": "system",
@@ -345,27 +360,16 @@ def _classify_importance_with_glm(content: str) -> bool:
                     "content": content
                 }
             ],
+            tier=tier,
             timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT
         )
-        result = _extract_importance_text(response).strip().lower()
+        result = llm_provider.extract_text(response).strip().lower()
+        _log_diag_timing("", "memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
         return result.startswith("important")
     except Exception as e:
+        _log_diag_timing("", "memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
         logger.warning("长期记忆GLM重要性判断失败：message_len=%s error_type=%s", len(content or ""), type(e).__name__)
         return False
-
-
-def _extract_importance_text(response) -> str:
-    """兼容zhipuai响应对象和字典响应。"""
-    try:
-        return response.choices[0].message.content or ""
-    except Exception:
-        pass
-    if isinstance(response, dict):
-        choices = response.get("choices") or []
-        if choices:
-            message = choices[0].get("message") or {}
-            return message.get("content") or ""
-    return ""
 
 
 SIMILARITY_DISTANCE_THRESHOLD = 0.8
@@ -469,7 +473,9 @@ def save_document(source: str, chunks: list[str], doc_id: str) -> int:
 def search_documents(
     query: str,
     top_k: int = 5,
-    verified_doc_ids: list[str] = None
+    verified_doc_ids: list[str] = None,
+    tier: str = "fast",
+    enable_rerank: bool = True
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，优先BM25粗筛再向量重排。"""
     if not query:
@@ -482,7 +488,10 @@ def search_documents(
 
     safe_top_k = max(1, int(top_k))
     started_at = time.perf_counter()
+    stage_started_at = time.perf_counter()
     bm25_candidates = _search_bm25_candidates(query, safe_top_k, allowed_doc_ids)
+    _log_diag_timing("", "documents_bm25", int((time.perf_counter() - stage_started_at) * 1000))
+    stage_started_at = time.perf_counter()
     with _chroma_lock:
         collection = _get_document_collection()
         if bm25_candidates:
@@ -494,6 +503,7 @@ def search_documents(
             )
         else:
             result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
+    _log_diag_timing("", "documents_vector", int((time.perf_counter() - stage_started_at) * 1000))
 
     candidate_keys = {
         (candidate["doc_id"], int(candidate["chunk_index"]))
@@ -501,14 +511,27 @@ def search_documents(
     }
     results = _build_document_search_results(result, allowed_doc_ids, candidate_keys or None)
     if bm25_candidates and len(results) < safe_top_k:
+        stage_started_at = time.perf_counter()
         with _chroma_lock:
             collection = _get_document_collection()
             fallback_result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
         fallback_results = _build_document_search_results(fallback_result, allowed_doc_ids, None)
         results = _merge_document_results(results, fallback_results)
+        _log_diag_timing("", "documents_vector_fallback", int((time.perf_counter() - stage_started_at) * 1000))
+
+    stage_started_at = time.perf_counter()
+    with _chroma_lock:
+        collection = _get_document_collection()
+        title_match_results = _find_title_match_document_results(collection, query, allowed_doc_ids)
+    if title_match_results:
+        results = _merge_document_results(results, title_match_results)
+    _log_diag_timing("", "documents_title_match", int((time.perf_counter() - stage_started_at) * 1000))
 
     results.sort(key=lambda item: item["score"], reverse=True)
-    results = _apply_document_rerank(query, results)
+    stage_started_at = time.perf_counter()
+    if enable_rerank:
+        results = _apply_document_rerank(query, results, tier=tier)
+    _log_diag_timing("", "documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     logger.info(
         "文档hybrid检索完成：query_len=%s bm25_candidates=%s result_count=%s elapsed_ms=%s",
@@ -555,39 +578,169 @@ def _build_document_search_results(
 
 
 def _merge_document_results(primary: list[dict], fallback: list[dict]) -> list[dict]:
-    merged = []
-    seen = set()
+    merged_by_key = {}
     for item in primary + fallback:
         key = (item.get("doc_id", ""), int(item.get("chunk_index", 0)))
-        if key in seen:
+        existing = merged_by_key.get(key)
+        if existing is None or float(item.get("score", 0.0)) > float(existing.get("score", 0.0)):
+            if existing and existing.get("title_source_match"):
+                item["title_source_match"] = True
+            merged_by_key[key] = item
+        elif item.get("title_source_match"):
+            existing["title_source_match"] = True
+    return list(merged_by_key.values())
+
+
+def _title_match_min_score() -> float:
+    """Title/source命中时的最低保证分，略高于RAG阈值但仍保留分数排序机制。"""
+    return round(max(0.0, float(config.RAG_SCORE_THRESHOLD)) + TITLE_MATCH_SCORE_MARGIN, 6)
+
+
+def _find_title_match_document_results(
+    collection,
+    query: str,
+    allowed_doc_ids: Optional[list[str]]
+) -> list[dict]:
+    """基于文档source/title元数据做事实性字符串匹配，补充短查询召回。"""
+    terms = _metadata_query_terms(query)
+    if not terms:
+        return []
+
+    kwargs = {"include": ["documents", "metadatas"]}
+    if allowed_doc_ids is not None:
+        if not allowed_doc_ids:
+            return []
+        kwargs["where"] = {"doc_id": {"$in": allowed_doc_ids}}
+
+    try:
+        result = collection.get(**kwargs)
+    except Exception as e:
+        logger.warning(
+            "文档title/source匹配失败：query_len=%s error_type=%s",
+            len(query or ""),
+            type(e).__name__
+        )
+        return []
+
+    boosted_score = _title_match_min_score()
+    matches = []
+    for doc, metadata in zip(result.get("documents", []) or [], result.get("metadatas", []) or []):
+        if not doc:
             continue
-        seen.add(key)
-        merged.append(item)
-    return merged
+        metadata = metadata or {}
+        source = str(metadata.get("source", ""))
+        title = str(metadata.get("title", ""))
+        doc_id = str(metadata.get("doc_id", ""))
+        if allowed_doc_ids is not None and doc_id not in allowed_doc_ids:
+            continue
+        if not _metadata_matches_terms(source, title, terms):
+            continue
+        matches.append({
+            "content": doc,
+            "source": source,
+            "doc_id": doc_id,
+            "chunk_index": int(metadata.get("chunk_index", 0)),
+            "score": boosted_score,
+            "title_source_match": True
+        })
+
+    if matches:
+        logger.info(
+            "文档title/source匹配命中：query_len=%s match_count=%s",
+            len(query or ""),
+            len(matches)
+        )
+    return matches
 
 
-def _apply_document_rerank(query: str, candidates: list[dict]) -> list[dict]:
+def _metadata_query_terms(query: str) -> list[str]:
+    raw_query = query or ""
+    normalized = _normalize_metadata_match_text(raw_query)
+    if len(normalized) < 2:
+        return []
+    terms = set()
+
+    if len(normalized) <= 12 and _is_metadata_query_term(normalized):
+        terms.add(normalized)
+
+    code_tokens = re.findall(r"[A-Za-z]+[-_]?\d[A-Za-z0-9_-]*|\d{3,}[A-Za-z0-9_-]*", raw_query)
+    for token in code_tokens:
+        term = _normalize_metadata_match_text(token)
+        if _is_metadata_query_term(term):
+            terms.add(term)
+
+    max_size = min(6, len(normalized))
+    for size in range(max_size, 1, -1):
+        for index in range(0, len(normalized) - size + 1):
+            term = normalized[index:index + size]
+            if _contains_cjk(term) and _is_metadata_query_term(term):
+                terms.add(term)
+
+    return sorted(terms, key=len, reverse=True)
+
+
+def _metadata_matches_terms(source: str, title: str, terms: list[str]) -> bool:
+    target = _normalize_metadata_match_text("%s %s" % (source, title))
+    if not target:
+        return False
+    return any(term in target for term in terms)
+
+
+def _normalize_metadata_match_text(text: str) -> str:
+    normalized = (text or "").lower()
+    normalized = re.sub(r"manual_input[:：]", "", normalized)
+    return re.sub(r"[\s，。！？,.!?；;：:、（）()\[\]【】《》<>\"'“”‘’_-]+", "", normalized)
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text or "")
+
+
+def _is_metadata_query_term(term: str) -> bool:
+    if len(term) < 2:
+        return False
+    if term in {"是什么", "什么", "哪些", "有哪些", "文件", "文档", "资料", "介绍", "一下"}:
+        return False
+    return True
+
+
+def _apply_document_rerank(
+    query: str,
+    candidates: list[dict],
+    tier: str = "fast"
+) -> list[dict]:
     if not config.RERANK_ENABLED:
         return candidates
     if not candidates:
+        return candidates
+    if _has_title_source_match(candidates) and len(candidates) <= TITLE_MATCH_RERANK_SKIP_MAX_CANDIDATES:
+        logger.info(
+            "文档GLM重排序跳过：reason=title_source_match candidate_count=%s",
+            len(candidates)
+        )
         return candidates
 
     rerank_count = max(1, int(config.RERANK_CANDIDATE_COUNT))
     head = candidates[:rerank_count]
     tail = candidates[rerank_count:]
-    return _rerank_with_glm(query, head) + tail
+    return _rerank_with_glm(query, head, tier=tier) + tail
 
 
-def _rerank_with_glm(query: str, candidates: list[dict]) -> list[dict]:
-    """用GLM一次性批量重排候选chunk，失败时返回原顺序。"""
+def _has_title_source_match(candidates: list[dict]) -> bool:
+    return any(bool(candidate.get("title_source_match")) for candidate in candidates or [])
+
+
+def _rerank_with_glm(
+    query: str,
+    candidates: list[dict],
+    tier: str = "fast"
+) -> list[dict]:
+    """用expert tier一次性批量重排候选chunk，失败时返回原顺序。"""
     if not candidates:
         return candidates
 
     started_at = time.perf_counter()
     try:
-        if not config.GLM_API_KEY:
-            raise ValueError("GLM_API_KEY未配置")
-
         payload = [
             {
                 "index": index,
@@ -598,13 +751,7 @@ def _rerank_with_glm(query: str, candidates: list[dict]) -> list[dict]:
             }
             for index, candidate in enumerate(candidates)
         ]
-        client = ZhipuAI(
-            api_key=config.GLM_API_KEY,
-            timeout=config.RERANK_TIMEOUT,
-            max_retries=0
-        )
-        response = client.chat.completions.create(
-            model=config.FALLBACK_MODEL,
+        response = llm_provider.chat_completion(
             messages=[
                 {
                     "role": "system",
@@ -626,9 +773,11 @@ def _rerank_with_glm(query: str, candidates: list[dict]) -> list[dict]:
                     )
                 }
             ],
+            tier=tier,
+            response_format={"type": "json_object"} if tier == "expert" else None,
             timeout=config.RERANK_TIMEOUT
         )
-        score_map = _parse_rerank_scores(_extract_importance_text(response), len(candidates))
+        score_map = _parse_rerank_scores(llm_provider.extract_text(response), len(candidates))
         reranked = sorted(
             enumerate(candidates),
             key=lambda item: (score_map.get(item[0], 0.0), float(item[1].get("score", 0.0))),

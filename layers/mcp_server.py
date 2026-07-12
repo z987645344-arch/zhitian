@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # MCP工具服务端：将执行层工具封装为MCP标准工具
 
+from typing import Optional
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.fastmcp import FastMCP
@@ -20,24 +22,31 @@ server = _create_server()
 
 
 @server.tool()
-async def search_web(query: str, session_id: str = "") -> str:
+async def search_web(query: str, session_id: str = "", tier: str = "fast") -> str:
     """联网搜索工具"""
     result = execution.run(
         "search_web",
         {
             "query": query,
-            "session_id": session_id
+            "session_id": session_id,
+            "tier": tier
         }
     )
     return result.data if result.status == "success" else result.error_msg
 
 
 @server.tool()
-async def llm_chat(message: str, session_id: str = "", context: list | None = None) -> str:
+async def llm_chat(
+    message: str,
+    session_id: str = "",
+    context: Optional[list] = None,
+    tier: str = "fast"
+) -> str:
     """LLM对话工具"""
     params = {
         "message": message,
-        "session_id": session_id
+        "session_id": session_id,
+        "tier": tier
     }
     if context:
         params["system_prompt"] = _build_context_system_prompt(context)
@@ -47,9 +56,9 @@ async def llm_chat(message: str, session_id: str = "", context: list | None = No
 
 
 @server.tool()
-async def search_documents(query: str) -> str:
+async def search_documents(query: str, tier: str = "fast") -> str:
     """本地文档检索工具"""
-    result = execution.run("search_documents", {"query": query})
+    result = execution.run("search_documents", {"query": query, "tier": tier})
     return result.data if result.status == "success" else result.error_msg
 
 

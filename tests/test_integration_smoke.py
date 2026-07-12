@@ -12,8 +12,7 @@ def test_real_chat_smoke_returns_non_error(client, auth_headers, test_session_id
         headers=headers,
         json={
             "session_id": test_session_id,
-            "message": "你好，请用一句话回复。",
-            "mode": "chat"
+            "message": "你好，请用一句话回复。"
         },
         timeout=60
     )
