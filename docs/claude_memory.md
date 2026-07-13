@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-07-13**
+> **最后更新：2026-07-14**
 
 ---
 
@@ -38,24 +38,24 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ fast/expert已按能力范围分层：fast本地知识库最简路径，expert完整Agent路径 |
-| 上一轮完成 | 2026-07-13：文档上传新增20MB可配置上限、扩展名白名单和基础文件特征校验 |
-| 当前等待 | CI 配置及本轮生产就绪改动需 commit/push 后观察首次 Actions 运行；当前 GLM 上游失败导致真实 fast success 路径待服务恢复后补测 |
+| 状态 | ✅ expert已具备基础线性任务分解，fast继续保持本地知识库最简路径 |
+| 上一轮完成 | 2026-07-14：expert新增complex_task线性任务链、一次整体重规划和逐任务局部调整 |
+| 当前等待 | 内测观察复杂任务分类稳定性、86秒级串行延迟和DeepSeek超时率；fast真实success路径仍待GLM服务稳定后补测 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
-| 下一步 | 先确认 GitHub Actions 首次运行通过；内测观察优雅关闭和P95/P99样本稳定性；随后继续“Agent能力提升” |
+| 下一步 | 扩展Agent工具集；根据内测数据评估复杂任务DAG依赖与并行执行，降低线性链路累计延迟 |
 
-> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，首次GLM Function Call只暴露search_documents/list_documents，无工具时1次模型调用、有工具时2次，不支持联网或reflect。expert使用DeepSeek完整LangGraph，保留classify、search_web、文档精排和ReAct。长期记忆已接入重要性判断、时间衰减、淡出和物理删除；文档检索已接入BM25+向量、title/source补充召回和批量重排序。下一步进入“Agent能力提升”。
+> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，无工具时1次模型调用、有工具时2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
 ---
 
 ## 大问题总结
 
-### 1. Agent 能力仍处初级阶段
+### 1. Agent 已具备基础任务分解，编排能力仍待深化
 
 当前 ReAct 循环可工作（GLM 能自主判断"文档缺依据时转联网搜索"），但：
-- 工具只有 4 个（search_web / search_documents / list_documents / llm_chat），不能组合编排
-- 无任务分解能力（"调研竞品并写报告"无法拆成搜索→分析→写作）
-- 无并行工具调用（3 轮全串行）
+- expert可将复杂目标拆成最多10项线性任务，顺序执行并综合汇总；支持整体重规划1次和每任务局部调整1次
+- 当前仅线性任务链，不支持DAG依赖图和并行执行，真实2任务搜索+汇总耗时86.21秒
+- 工具仍只有4个（search_web / search_documents / list_documents / llm_chat）
 - reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
 - ReAct仅保留在document路径；普通chat和search均单轮respond，避免重复联网搜索放大延迟
 
@@ -81,7 +81,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 审计日志 | ✅ 基础 trace_id 阶段日志，按请求串联耗时且遵守消息脱敏 |
 | 监控 | ✅ 基础进程内 metrics/tracing，支持fast/expert独立P50/P95/P99；reviewer可手动查看，重启清零且不跨实例聚合 |
 | 生产部署 | ✅ 已接入FastAPI lifespan/Uvicorn优雅关闭，默认最多等待在途请求30秒并释放Chroma资源 |
-| 测试 | ✅ 认证模块+规划层状态机+记忆系统（重要性评估/遗忘机制/hybrid search/重排序）+ execution搜索链路+可观测性+生命周期+上传安全测试覆盖已上线（74项） |
+| 测试 | ✅ 认证、规划/ReAct/复杂任务、记忆、execution搜索、可观测性、生命周期和上传安全测试覆盖已上线（84项） |
 | CI | ✅ GitHub Actions 基础流水线：Python 3.10、敏感检查、py_compile、非 integration pytest |
 | 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
 | 水平扩展 | 不支持 |
@@ -113,7 +113,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 ### 第二优先：Agent 能力提升
 - 扩展工具集（数据库查询、API 调用、文件操作）
-- 任务分解（复杂任务拆子任务）
+- 任务分解基础版已完成；后续扩展DAG依赖图和并行执行
 - 思考链输出（用户可见 Agent 推理过程）
 
 ### 第三优先：工程化
@@ -129,6 +129,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 |------|------|
 | 双模型mode | `/chat`与`/chat/stream`缺省`mode=fast`走GLM本地简化路径；`mode=expert`走DeepSeek完整Agent路径，不跨tier fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
 | tier划分依据 | fast/expert不仅模型不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次GLM调用；expert保留完整分类、联网、精排和ReAct能力 |
+| expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；真实2项搜索汇总约86秒，延迟和上游超时风险高于普通expert |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
 | zhipuai SDK | 不支持 parallel_tool_calls，已做兼容 |
 | mcp 版本 | 固定 1.9.4，新版与 FastAPI 不兼容 |

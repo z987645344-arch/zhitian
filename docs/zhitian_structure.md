@@ -90,8 +90,9 @@ D:\zhiliao\zhitian\
    ↓
 [规划层] planning.py — fast简化路径 + expert LangGraph ReAct状态机
    fast       retrieve → GLM Function Call（仅search_documents/list_documents）→ 可选本地工具 → 最终回答
-   expert     classify → retrieve → plan → execute → reflect/respond，保留完整工具集和联网能力
+   expert     classify → 普通ReAct路径或complex_task线性任务链，保留完整工具集和联网能力
       ├── clarify → 直接 respond
+      ├── complex_task → complex_plan → execute_complex ↔ checkpoint → complex_respond
       └── 其他 → retrieve
    retrieve   Chroma 长期记忆检索（strict_session=True，隔离用户）
    plan       根据意图生成 Task
@@ -140,12 +141,22 @@ class Task(BaseModel):
     tool: str             # search_web | search_documents | list_documents | llm_chat
     params: dict
     order: int
+    task_index: int = 0
+    status: str = "pending"        # pending | success | error
+    adjusted: bool = False
+
+class ComplexTaskResult(BaseModel):
+    task_index: int
+    tool: str
+    status: str
+    result_summary: str
+    citations: list[Citation]
 
 class AgentState(TypedDict):
     session_id: str
     message: str
     mode: str                      # fast | expert，本次请求全链路统一tier
-    intent: str                    # chat | search | document | clarify
+    intent: str                    # chat | search | document | document_list | clarify | complex_task
     context: list[str]             # Chroma 检索的历史上下文
     tasks: list[Task]
     results: list[ToolResult]
@@ -158,6 +169,12 @@ class AgentState(TypedDict):
     error: str
     clarification: str
     city: str                       # 用户城市
+    is_complex_task: bool
+    complex_task_list: list[Task]
+    complex_task_results: list[ComplexTaskResult]
+    full_replan_used: bool
+    current_task_pointer: int
+    complex_task_created_count: int # 历史累计生成/替换任务数，硬限制MAX_COMPLEX_TASKS
 ```
 
 ### 执行层 → 规划层/输出层
@@ -354,7 +371,7 @@ expert（DeepSeek，完整LangGraph）
   保留search_web、search_documents、list_documents、llm_chat及多工具流转能力
 ```
 
-### Expert LangGraph六节点
+### Expert LangGraph节点
 
 ```
 classify   DeepSeek Function Call，一次调用完成意图分类 + 城市提取 + 澄清判断
@@ -363,6 +380,10 @@ plan       根据 intent 生成 Task
 execute    mcp_client.call_tool 执行，返回 ToolResult + citations
 reflect    DeepSeek判断当前结果是否足够，决定continue或respond
 respond    结合上下文生成最终回复
+complex_plan      一次生成有序线性任务清单，默认最多10项
+execute_complex   顺序执行一个子任务并记录结构化摘要
+checkpoint        判断整体路线或下一个任务是否需调整
+complex_respond   汇总全部子任务结果和去重citations
 ```
 
 ### Expert流转逻辑
@@ -370,6 +391,10 @@ respond    结合上下文生成最终回复
 ```
 classify
   ├── clarify → respond（跳过 retrieve/plan/execute）
+  ├── complex_task → complex_plan → execute_complex → checkpoint
+  │                                      ↑               │
+  │                                      └──── execute ──┤
+  │                                                      └── complex_respond → END
   └── 其他 → retrieve → plan → execute
                                   ├── chat/document_list → respond
                                   └── search/document → reflect
@@ -395,6 +420,10 @@ classify
 - 多轮 citations 按 `doc_id + chunk_index` 去重
 - fast模式不进入classify、plan或reflect，不提供search_web，也不支持追加检索；search_documents在工具阶段关闭内部模型重排和回答生成，确保整条fast请求最多2次模型调用
 - fast保留retrieve节点的Chroma长期记忆读取，为低成本上下文回答提供依据
+- complex_task仅expert可用，复杂度完全由DeepSeek Function Call语义判断，不使用关键词/正则兜底
+- 复杂任务是线性顺序链，不是DAG；不支持并行。整体重规划最多1次，每个任务位置的局部调整判断最多1次
+- `config.MAX_COMPLEX_TASKS=10`按历史累计创建数计数，初始规划、重规划新增和局部替换均消耗额度
+- 单任务失败继续进入checkpoint；连续2次失败提前汇总并标记degraded
 
 ---
 

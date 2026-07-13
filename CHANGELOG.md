@@ -406,3 +406,11 @@
 - 大小限制先使用Starlette已解析的 `UploadFile.size` 在项目临时文件写入前拒绝，并在按1MB块复制时继续累计校验；超限或写入异常会立即删除部分临时文件。multipart在进入端点前仍可能使用框架spool临时存储，这是当前FastAPI接收模型的边界。
 - 新增轻量文件特征校验：PDF校验 `%PDF-` 文件头，DOCX校验ZIP结构及 `word/document.xml`，TXT/Markdown拒绝NUL和无法按UTF-8/UTF-8 BOM/GBK解码的二进制样本，缓解伪造扩展名直接进入解析器的问题。
 - 验证：新增5项离线上传测试，覆盖 `.xlsx`、伪装为TXT的可执行内容、已知/未知size超限文件及部分文件清理；TXT/Markdown/PDF/DOCX均使用真实解析器验证通过。完整测试总数增至74项。
+
+## 2026-07-14
+- expert分类Function Call新增 `declare_complex_task`，由DeepSeek语义判断单一工具是否足以完成目标；fast路径的工具集保持仅 `search_documents/list_documents`，不暴露复杂任务能力。
+- `Task`新增task_index/status/adjusted，`AgentState`新增复杂任务清单、Pydantic结果摘要、执行指针、整体重规划标记和历史累计任务计数；`MAX_COMPLEX_TASKS`默认10，初始规划、重规划新增和局部替换统一计入硬上限。
+- LangGraph新增 `complex_plan → execute_complex ↔ checkpoint → complex_respond` 线性任务链：顺序复用现有MCP/TOOL_REGISTRY工具，单任务失败不中断；checkpoint由DeepSeek先判断整体路线（最多重规划1次），无需重规划时再判断下一任务局部调整（每个位置最多1次）；连续2次失败提前degraded汇总。
+- 复杂汇总统一基于原始目标和结构化子任务摘要生成，citations按doc_id+chunk_index去重；`/chat` layer_trace会附加complex节点，规划、执行、路线判断、局部调整、重规划和汇总均接入现有trace耗时日志，且不记录消息或任务参数原文。
+- 新增10项全mock复杂任务测试，覆盖意图、清单截断、路线保持/重规划、局部调整单次机会、重规划单次上限、checkpoint模型异常保守继续、整图汇总和fast隔离；完整pytest `84 passed`。
+- 真实DeepSeek/Tavily验证：初版规划过度生成7项并在连续2次模型超时后按规则degraded（165.02秒）；收紧最小非冗余规划prompt后，最终请求生成2个search_web任务，2项均success、未重规划、综合回复成功，总耗时86.21秒。期间1次query改写超时按既有规则使用原query继续。

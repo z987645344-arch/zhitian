@@ -288,6 +288,8 @@ async def chat(
             perception_output.message,
             mode=mode
         )
+        layer_trace.extend(final_state.get("layer_trace", []))
+        layer_trace = list(dict.fromkeys(layer_trace))
         final_data = final_state["response"]
         citations = _serialize_citations(final_state.get("citations", []))
         has_error = bool(final_state.get("error"))
@@ -930,24 +932,7 @@ def _prepare_stream_state(
     message: str,
     mode: str = "fast"
 ) -> planning.AgentState:
-    state = planning.AgentState(
-        session_id=session_id,
-        message=message,
-        mode=mode,
-        intent="",
-        context=[],
-        tasks=[],
-        results=[],
-        citations=[],
-        round_count=0,
-        tool_call_history=[],
-        react_action="",
-        react_limit_reached=False,
-        response="",
-        error="",
-        clarification="",
-        city=""
-    )
+    state = planning._new_agent_state(session_id, message, mode)
     try:
         state = planning.classify_node(state)
         state = planning.retrieve_node(state)

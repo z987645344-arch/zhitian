@@ -3,10 +3,10 @@
 
 import json
 import time
-from typing import Optional, TypedDict
+from typing import Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import config
 from layers import execution, llm_provider, memory
 from layers.execution import Citation, ToolResult
@@ -22,6 +22,17 @@ class Task(BaseModel):
     tool: str
     params: dict
     order: int
+    task_index: int = 0
+    status: Literal["pending", "success", "error"] = "pending"
+    adjusted: bool = False
+
+
+class ComplexTaskResult(BaseModel):
+    task_index: int
+    tool: str
+    status: Literal["success", "error"]
+    result_summary: str = ""
+    citations: list[Citation] = Field(default_factory=list)
 
 
 class AgentState(TypedDict):
@@ -41,15 +52,48 @@ class AgentState(TypedDict):
     error: str
     clarification: str
     city: str
+    is_complex_task: bool
+    complex_task_list: list[Task]
+    complex_task_results: list[ComplexTaskResult]
+    full_replan_used: bool
+    current_task_pointer: int
+    complex_task_created_count: int
+    complex_action: str
+    layer_trace: list[str]
 
 
 INTENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "declare_complex_task",
+            "description": (
+                "仅当用户目标必须拆成多个有顺序的独立步骤才能完成时调用。"
+                "典型场景包括多个独立信息源或对象的检索与对比、先检索再分析汇总、"
+                "或单一工具调用无法覆盖完整目标。简单单问、单次搜索、单份文档查询、"
+                "文件清单和普通对话不得调用。用户要求‘分别搜索A和B并对比’、‘先查A再结合B给建议’"
+                "时必须调用本工具，不能用一次search_web或direct_answer代替。"
+                "该工具只声明需要任务分解，不执行实际工作。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "需要多步骤完成的简短原因，不包含任务清单"
+                    }
+                },
+                "required": ["reason"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_web",
             "description": (
                 "当用户问题完整清晰，且需要实时信息、联网搜索、天气、新闻、价格、最新状态或外部事实核验时调用。"
+                "本工具只表示一个单一搜索目标；如果用户要求分别检索多个对象后比较或汇总，应调用declare_complex_task。"
                 "query_hint是搜索方向提示，不必重写完整query。"
                 "如果问题是天气/出行且消息中有城市或上下文已有用户城市，直接调用本工具。"
                 "如果用户同时明确提供了自己的城市，优先在city参数中带出城市。"
@@ -226,6 +270,8 @@ FAST_TOOLS = [
     }
 ]
 
+COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_chat"}
+
 
 def classify_node(state: AgentState) -> AgentState:
     """classify节点：调用GLM Function Call判断意图"""
@@ -236,6 +282,7 @@ def classify_node(state: AgentState) -> AgentState:
     decision = _classify_with_glm(state["message"], state["context"], tier=state["mode"])
     observability.log_stage("classify_glm", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
+    state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
     city = decision.get("city", "")
     state["city"] = city
@@ -303,6 +350,158 @@ def reflect_node(state: AgentState) -> AgentState:
     next_task = decision.get("task")
     if state["react_action"] == "continue" and next_task:
         state["tasks"].append(next_task)
+    return state
+
+
+def complex_plan_node(state: AgentState) -> AgentState:
+    """Generate the initial bounded linear task list for an expert request."""
+    started_at = time.perf_counter()
+    tasks = _generate_complex_tasks(state, config.MAX_COMPLEX_TASKS)
+    observability.log_stage("complex_plan_glm", int((time.perf_counter() - started_at) * 1000))
+    state["complex_task_list"] = tasks
+    state["complex_task_created_count"] = len(tasks)
+    state["current_task_pointer"] = 0
+    state["complex_action"] = "execute" if tasks else "respond"
+    _append_layer_trace(state, "complex_plan")
+    if not tasks:
+        state["error"] = "complex_plan_failed"
+    logger.info("复杂任务规划完成：session_id=%s task_count=%s", state["session_id"], len(tasks))
+    return state
+
+
+def execute_complex_node(state: AgentState) -> AgentState:
+    """Execute exactly one task from the expert linear plan."""
+    pointer = state["current_task_pointer"]
+    if pointer >= len(state["complex_task_list"]):
+        state["complex_action"] = "respond"
+        return state
+
+    task = state["complex_task_list"][pointer]
+    started_at = time.perf_counter()
+    result = mcp_client.call_tool(task.tool, task.params)
+    observability.log_stage(
+        "complex_execute_%s" % task.tool,
+        int((time.perf_counter() - started_at) * 1000),
+    )
+    task.status = "success" if result.status == "success" else "error"
+    state["complex_task_list"][pointer] = task
+    state["complex_task_results"].append(
+        ComplexTaskResult(
+            task_index=task.task_index,
+            tool=task.tool,
+            status=task.status,
+            result_summary=_summarize_complex_result(result),
+            citations=_dedupe_citations(result.citations or []),
+        )
+    )
+    state["results"].append(result)
+    state["tool_call_history"].append(_tool_history_item(task))
+    state["citations"] = _dedupe_citations(state["citations"] + (result.citations or []))
+    state["current_task_pointer"] += 1
+    state["round_count"] += 1
+    state["complex_action"] = "checkpoint"
+    _append_layer_trace(state, "execute_complex")
+    return state
+
+
+def checkpoint_node(state: AgentState) -> AgentState:
+    """Apply one global replan opportunity and one local adjustment per task position."""
+    _append_layer_trace(state, "checkpoint")
+    if state["current_task_pointer"] >= len(state["complex_task_list"]):
+        state["complex_action"] = "respond"
+        return state
+    if _consecutive_complex_failures(state["complex_task_results"]) >= 2:
+        state["error"] = "complex_task_multiple_failures"
+        state["complex_action"] = "respond"
+        return state
+
+    if not state["full_replan_used"]:
+        started_at = time.perf_counter()
+        try:
+            route = _check_complex_route_with_glm(state)
+        except Exception as e:
+            logger.warning("复杂任务路线判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
+            route = "keep"
+        observability.log_stage("complex_checkpoint_route_glm", int((time.perf_counter() - started_at) * 1000))
+        if route == "replan":
+            state["full_replan_used"] = True
+            remaining_budget = max(0, config.MAX_COMPLEX_TASKS - state["complex_task_created_count"])
+            if remaining_budget:
+                started_at = time.perf_counter()
+                try:
+                    replacement = _generate_complex_tasks(state, remaining_budget, remaining_only=True)
+                except Exception as e:
+                    logger.warning("复杂任务重规划失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
+                    replacement = []
+                observability.log_stage("complex_replan_glm", int((time.perf_counter() - started_at) * 1000))
+                if replacement:
+                    completed = state["complex_task_list"][:state["current_task_pointer"]]
+                    state["complex_task_list"] = completed + replacement
+                    state["complex_task_created_count"] += len(replacement)
+            state["complex_action"] = (
+                "checkpoint"
+                if state["current_task_pointer"] < len(state["complex_task_list"])
+                else "respond"
+            )
+            return state
+
+    next_task = state["complex_task_list"][state["current_task_pointer"]]
+    remaining_budget = max(0, config.MAX_COMPLEX_TASKS - state["complex_task_created_count"])
+    if not next_task.adjusted and remaining_budget:
+        started_at = time.perf_counter()
+        try:
+            adjusted_task = _adjust_complex_task_with_glm(state, next_task)
+            next_task.adjusted = True
+            state["complex_task_list"][state["current_task_pointer"]] = next_task
+        except Exception as e:
+            logger.warning("复杂任务局部调整失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
+            adjusted_task = None
+        observability.log_stage("complex_checkpoint_adjust_glm", int((time.perf_counter() - started_at) * 1000))
+        if adjusted_task is not None:
+            adjusted_task.adjusted = True
+            state["complex_task_list"][state["current_task_pointer"]] = adjusted_task
+            state["complex_task_created_count"] += 1
+    state["complex_action"] = "execute"
+    return state
+
+
+def complex_respond_node(state: AgentState) -> AgentState:
+    """Synthesize all expert subtask results into one response."""
+    started_at = time.perf_counter()
+    state["citations"] = _dedupe_citations(state["citations"])
+    try:
+        response = llm_provider.chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        current_date_prompt()
+                        + "\n\n你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
+                        "明确说明失败或证据不足的部分，不得编造未提供的信息。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "goal": state["message"],
+                            "task_results": _complex_results_payload(state["complex_task_results"]),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            tier="expert",
+        )
+        state["response"] = llm_provider.extract_text(response)
+        if not state["response"]:
+            raise ValueError("empty complex response")
+    except Exception as e:
+        logger.error("复杂任务汇总失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
+        state["error"] = state["error"] or "complex_respond_failed"
+        state["response"] = _fallback_complex_response(state["complex_task_results"])
+    observability.log_stage("complex_respond_glm", int((time.perf_counter() - started_at) * 1000))
+    _append_layer_trace(state, "complex_respond")
     return state
 
 def respond_node(state: AgentState) -> AgentState:
@@ -405,7 +604,15 @@ def _new_agent_state(session_id: str, message: str, mode: str) -> AgentState:
         response="",
         error="",
         clarification="",
-        city=""
+        city="",
+        is_complex_task=False,
+        complex_task_list=[],
+        complex_task_results=[],
+        full_replan_used=False,
+        current_task_pointer=0,
+        complex_task_created_count=0,
+        complex_action="",
+        layer_trace=[]
     )
 
 
@@ -522,6 +729,213 @@ def _select_fast_tool_call(tool_calls: list[dict]) -> Optional[dict]:
         if tool_call.get("name") in {"search_documents", "list_documents"}:
             return tool_call
     return None
+
+
+def _generate_complex_tasks(
+    state: AgentState,
+    max_new_tasks: int,
+    remaining_only: bool = False,
+) -> list[Task]:
+    if max_new_tasks <= 0:
+        return []
+    scope = "只规划尚未完成的剩余步骤" if remaining_only else "规划完成目标所需的全部步骤"
+    response = llm_provider.chat_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    current_date_prompt()
+                    + "\n\n你是复杂任务规划器。%s，生成线性、有顺序、可逐项执行的任务清单。" % scope
+                    + "只能使用search_web、search_documents、list_documents、llm_chat。"
+                    + "最多生成%d项。每项格式为{\"tool\":工具名,\"params\":{...}}。" % max_new_tasks
+                    + "search_web/search_documents使用query参数，llm_chat使用message参数，list_documents参数为空。"
+                    + "任务必须最小、非冗余，通常2到4项足够：比较两个对象时通常每个对象各检索一次，"
+                    + "不要按价值、局限、场景等比较维度重复搜索同一对象。最终比较和综合回答由后续汇总节点完成，"
+                    + "不要为最终汇总额外生成llm_chat。只有用户明确要求查询本地文件清单时才使用list_documents。"
+                    + "返回严格JSON：{\"tasks\":[...]}，不要解释。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "goal": state["message"],
+                        "completed_results": _complex_results_payload(state["complex_task_results"]),
+                        "remaining_tasks": _complex_tasks_payload(
+                            state["complex_task_list"][state["current_task_pointer"]:]
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        tier="expert",
+        response_format={"type": "json_object"},
+    )
+    data = _parse_json_object(llm_provider.extract_text(response))
+    raw_tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+    if len(raw_tasks) > max_new_tasks:
+        logger.warning(
+            "复杂任务清单超限已截断：session_id=%s generated=%s limit=%s",
+            state["session_id"],
+            len(raw_tasks),
+            max_new_tasks,
+        )
+    start_index = state["current_task_pointer"] if remaining_only else 0
+    tasks = []
+    for raw_task in raw_tasks[:max_new_tasks]:
+        task = _normalize_complex_task(state, raw_task, start_index + len(tasks))
+        if task is not None:
+            tasks.append(task)
+    return tasks
+
+
+def _check_complex_route_with_glm(state: AgentState) -> str:
+    response = llm_provider.chat_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "判断剩余线性任务清单是否仍能达成原始目标。"
+                    "返回严格JSON：{\"action\":\"keep\"}或{\"action\":\"replan\"}。"
+                    "只有已完成结果（包括失败）使原路线明显不再成立时才replan，不要解释。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "goal": state["message"],
+                        "completed_results": _complex_results_payload(state["complex_task_results"]),
+                        "remaining_tasks": _complex_tasks_payload(
+                            state["complex_task_list"][state["current_task_pointer"]:]
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        tier="expert",
+        response_format={"type": "json_object"},
+    )
+    data = _parse_json_object(llm_provider.extract_text(response))
+    return "replan" if data.get("action") == "replan" else "keep"
+
+
+def _adjust_complex_task_with_glm(state: AgentState, task: Task) -> Optional[Task]:
+    response = llm_provider.chat_completion(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "判断下一个任务是否应根据已完成结果调整工具或参数。"
+                    "只能使用search_web、search_documents、list_documents、llm_chat。"
+                    "无需调整返回{\"action\":\"keep\"}；需要调整返回"
+                    "{\"action\":\"adjust\",\"task\":{\"tool\":...,\"params\":{...}}}。"
+                    "只返回严格JSON。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "goal": state["message"],
+                        "completed_results": _complex_results_payload(state["complex_task_results"]),
+                        "next_task": task.model_dump(),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        tier="expert",
+        response_format={"type": "json_object"},
+    )
+    data = _parse_json_object(llm_provider.extract_text(response))
+    if data.get("action") != "adjust" or not isinstance(data.get("task"), dict):
+        return None
+    return _normalize_complex_task(state, data["task"], task.task_index)
+
+
+def _normalize_complex_task(state: AgentState, raw_task: dict, task_index: int) -> Optional[Task]:
+    if not isinstance(raw_task, dict):
+        return None
+    tool = str(raw_task.get("tool") or "").strip()
+    if tool not in COMPLEX_TOOL_NAMES:
+        return None
+    raw_params = raw_task.get("params") if isinstance(raw_task.get("params"), dict) else {}
+    query = str(raw_params.get("query") or raw_params.get("message") or state["message"]).strip()
+    if tool == "search_web":
+        params = {
+            "query": query,
+            "context": state["context"],
+            "session_id": state["session_id"],
+            "tier": "expert",
+        }
+    elif tool == "search_documents":
+        params = {"query": query, "tier": "expert"}
+    elif tool == "llm_chat":
+        params = {"message": query, "session_id": state["session_id"], "tier": "expert"}
+    else:
+        params = {}
+    return Task(tool=tool, params=params, order=task_index, task_index=task_index)
+
+
+def _parse_json_object(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _summarize_complex_result(result: ToolResult) -> str:
+    if result.status == "success":
+        return str(result.data or "")[:2000]
+    return ("执行失败：" + str(result.error_msg or "工具调用失败"))[:500]
+
+
+def _complex_results_payload(results: list[ComplexTaskResult]) -> list[dict]:
+    return [item.model_dump() for item in results]
+
+
+def _complex_tasks_payload(tasks: list[Task]) -> list[dict]:
+    return [
+        {
+            "task_index": item.task_index,
+            "tool": item.tool,
+            "status": item.status,
+            "adjusted": item.adjusted,
+        }
+        for item in tasks
+    ]
+
+
+def _fallback_complex_response(results: list[ComplexTaskResult]) -> str:
+    if not results:
+        return "复杂任务未能生成可执行步骤，请稍后重试。"
+    lines = ["复杂任务未能完成最终汇总，以下为已执行步骤摘要："]
+    for item in results:
+        lines.append("%s. [%s] %s" % (item.task_index + 1, item.status, item.result_summary))
+    return "\n".join(lines)
+
+
+def _consecutive_complex_failures(results: list[ComplexTaskResult]) -> int:
+    count = 0
+    for item in reversed(results):
+        if item.status != "error":
+            break
+        count += 1
+    return count
+
+
+def _append_layer_trace(state: AgentState, node_name: str) -> None:
+    if node_name not in state["layer_trace"]:
+        state["layer_trace"].append(node_name)
 
 
 def _fast_task_from_tool_call(state: AgentState, tool_call: dict) -> Task:
@@ -803,7 +1217,14 @@ def _classify_with_glm(
                 "role": "system",
                 "content": (
                     "你只负责一次性完成工具选择、澄清判断和城市提取。"
-                    "每次必须调用一个且仅一个主意图工具：search_web、search_documents、list_documents、direct_answer、ask_clarification。"
+                    "每次必须调用一个且仅一个主意图工具：declare_complex_task、search_web、search_documents、list_documents、direct_answer、ask_clarification。"
+                    "如果请求必须顺序完成多个独立检索、比较、分析或操作，且单一工具无法覆盖完整目标，调用declare_complex_task；"
+                    "例如分别检索两个主题后比较、先查企业文档再查外部资料并汇总。简单单问、单次搜索、单份文档查询或普通对话不要声明复杂任务。"
+                    "强制few-shot：‘分别搜索A和B两个话题并对比’=>declare_complex_task；"
+                    "‘先查A的最新情况，再结合B给出建议’=>declare_complex_task；"
+                    "‘搜索A的最新消息’=>search_web。复杂请求禁止选择direct_answer或单次search_web。"
+                    "当多个检索对象和比较/汇总目标已经明确时，问题就是完整的；不要因为‘近期’‘最新’"
+                    "没有指定精确日期范围而ask_clarification，应结合当前日期直接declare_complex_task。"
                     "如果用户明确提供自己的当前城市或所在地，优先写入主意图工具的city参数；模型能力支持多个工具时，可额外同时调用save_city。"
                     "save_city是附加工具，禁止单独调用；如果需要保存城市，也必须同时选择一个主意图工具，或将city写入主意图工具参数。"
                     "如果模型能力限制导致一次只能调用一个工具，禁止调用save_city，必须优先调用主意图工具并在city参数中带出城市。"
@@ -920,6 +1341,9 @@ def _extract_tool_calls(response) -> list[dict]:
 def _build_classify_decision(tool_calls: list[dict]) -> dict:
     """根据一次Function Call返回的多个工具调用合成规划决策"""
     decision = {"intent": "chat", "clarification": "", "city": ""}
+    if any(tool_call.get("name") == "declare_complex_task" for tool_call in tool_calls):
+        decision["intent"] = "complex_task"
+        return decision
     has_save_city = False
     for tool_call in tool_calls:
         name = tool_call["name"]
@@ -1011,12 +1435,23 @@ builder.add_node("plan", plan_node)
 builder.add_node("execute", execute_node)
 builder.add_node("reflect", reflect_node)
 builder.add_node("respond", respond_node)
+builder.add_node("complex_plan", complex_plan_node)
+builder.add_node("execute_complex", execute_complex_node)
+builder.add_node("checkpoint", checkpoint_node)
+builder.add_node("complex_respond", complex_respond_node)
 builder.set_entry_point("classify")
 builder.add_conditional_edges(
     "classify",
-    lambda state: "clarify" if state["intent"] == "clarify" else "continue",
+    lambda state: (
+        "clarify"
+        if state["intent"] == "clarify"
+        else "complex"
+        if state["intent"] == "complex_task"
+        else "continue"
+    ),
     {
         "clarify": "respond",
+        "complex": "complex_plan",
         "continue": "retrieve"
     }
 )
@@ -1039,6 +1474,22 @@ builder.add_conditional_edges(
     }
 )
 builder.add_edge("respond", END)
+builder.add_conditional_edges(
+    "complex_plan",
+    lambda state: "execute" if state["complex_action"] == "execute" else "respond",
+    {"execute": "execute_complex", "respond": "complex_respond"},
+)
+builder.add_edge("execute_complex", "checkpoint")
+builder.add_conditional_edges(
+    "checkpoint",
+    lambda state: state["complex_action"],
+    {
+        "checkpoint": "checkpoint",
+        "execute": "execute_complex",
+        "respond": "complex_respond",
+    },
+)
+builder.add_edge("complex_respond", END)
 graph = builder.compile()
 
 
