@@ -12,14 +12,10 @@ from layers import execution, llm_provider, memory
 from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
+from utils import observability
 from utils.time_context import current_date_prompt
 
 logger = get_logger("planning")
-
-
-def _log_diag_timing(session_id: str, stage: str, elapsed_ms: int) -> None:
-    # 临时诊断代码：定位复杂查询超时瓶颈，仅记录环节耗时，不记录用户原文或响应内容。
-    logger.info("临时诊断耗时：session_id=%s stage=%s elapsed_ms=%s", session_id, stage, elapsed_ms)
 
 
 class Task(BaseModel):
@@ -235,10 +231,10 @@ def classify_node(state: AgentState) -> AgentState:
     """classify节点：调用GLM Function Call判断意图"""
     started_at = time.perf_counter()
     state["context"] = _load_classify_context(state["session_id"], state["message"])
-    _log_diag_timing(state["session_id"], "classify_context", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("classify_context", int((time.perf_counter() - started_at) * 1000))
     started_at = time.perf_counter()
     decision = _classify_with_glm(state["message"], state["context"], tier=state["mode"])
-    _log_diag_timing(state["session_id"], "classify_glm", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("classify_glm", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
     state["clarification"] = decision.get("clarification", "")
     city = decision.get("city", "")
@@ -262,7 +258,7 @@ def retrieve_node(state: AgentState) -> AgentState:
         state["context"] = _merge_context(state["context"], retrieved_context)
     except Exception:
         state["context"] = state["context"] or []
-    _log_diag_timing(state["session_id"], "retrieve_chroma", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("retrieve_chroma", int((time.perf_counter() - started_at) * 1000))
     return state
 
 
@@ -284,8 +280,7 @@ def execute_node(state: AgentState) -> AgentState:
     task = state["tasks"][state["round_count"]]
     started_at = time.perf_counter()
     result = mcp_client.call_tool(task.tool, task.params)
-    _log_diag_timing(
-        state["session_id"],
+    observability.log_stage(
         "execute_%s" % task.tool,
         int((time.perf_counter() - started_at) * 1000)
     )
@@ -302,7 +297,7 @@ def reflect_node(state: AgentState) -> AgentState:
     """reflect node: decide whether another bounded tool round is needed."""
     started_at = time.perf_counter()
     decision = should_continue_react(state)
-    _log_diag_timing(state["session_id"], "reflect_glm", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("reflect_glm", int((time.perf_counter() - started_at) * 1000))
     state["react_action"] = decision["action"]
     state["react_limit_reached"] = bool(decision.get("limit_reached", False))
     next_task = decision.get("task")
@@ -316,7 +311,7 @@ def respond_node(state: AgentState) -> AgentState:
     if state["intent"] == "clarify":
         state["response"] = state["clarification"]
         state["citations"] = []
-        _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
     failed_results = [result for result in state["results"] if result.status == "error"]
@@ -324,19 +319,19 @@ def respond_node(state: AgentState) -> AgentState:
         state["error"] = failed_results[0].error_msg or "工具调用失败"
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
         state["citations"] = []
-        _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
     if state["error"]:
         state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
         state["citations"] = []
-        _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
     if not state["results"]:
         state["response"] = ""
         state["citations"] = []
-        _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
     latest_result = state["results"][-1]
@@ -344,13 +339,13 @@ def respond_node(state: AgentState) -> AgentState:
     state["citations"] = _dedupe_citations(state["citations"])
     if latest_result.tool == "search_documents":
         state["response"] = _with_react_limit_notice(state, base_response)
-        _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
     if state["context"]:
         state["response"] = _with_react_limit_notice(state, _respond_with_context(state, base_response))
     else:
         state["response"] = _with_react_limit_notice(state, base_response)
-    _log_diag_timing(state["session_id"], "respond_total", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
     return state
 
 
@@ -418,23 +413,32 @@ def _run_fast_state(state: AgentState) -> AgentState:
     """Run the independent fast path: retrieve, select an optional local tool, then answer."""
     try:
         state = retrieve_node(state)
+        selection_started_at = time.perf_counter()
         first_response = llm_provider.chat_completion(
             _build_fast_messages(state),
             tier="fast",
             tools=FAST_TOOLS,
             tool_choice="auto"
         )
+        selection_elapsed_ms = int((time.perf_counter() - selection_started_at) * 1000)
         tool_call = _select_fast_tool_call(_extract_tool_calls(first_response))
         if tool_call is None:
+            observability.log_stage("fast_respond", selection_elapsed_ms)
             state["intent"] = "chat"
             state["response"] = llm_provider.extract_text(first_response)
             logger.info("fast路径完成：session_id=%s model_calls=1 tool=none", state["session_id"])
             return state
 
         task = _fast_task_from_tool_call(state, tool_call)
+        observability.log_stage("fast_select_tool", selection_elapsed_ms)
         state["intent"] = "document" if task.tool == "search_documents" else "document_list"
         state["tasks"] = [task]
+        tool_started_at = time.perf_counter()
         result = mcp_client.call_tool(task.tool, task.params)
+        observability.log_stage(
+            "execute_%s" % task.tool,
+            int((time.perf_counter() - tool_started_at) * 1000),
+        )
         state["results"] = [result]
         state["round_count"] = 1
         state["tool_call_history"] = [_tool_history_item(task)]
@@ -444,10 +448,12 @@ def _run_fast_state(state: AgentState) -> AgentState:
             state["response"] = "抱歉，知识库处理失败，请稍后重试"
             return state
 
+        response_started_at = time.perf_counter()
         final_response = llm_provider.chat_completion(
             _build_fast_result_messages(state, result),
             tier="fast"
         )
+        observability.log_stage("fast_respond", int((time.perf_counter() - response_started_at) * 1000))
         state["response"] = llm_provider.extract_text(final_response) or result.data
         logger.info(
             "fast路径完成：session_id=%s model_calls=2 tool=%s",
@@ -868,7 +874,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         response = llm_provider.extract_text(
             llm_provider.chat_completion(messages, tier=state["mode"])
         )
-        _log_diag_timing(state["session_id"], "respond_context_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_context_glm", int((time.perf_counter() - started_at) * 1000))
         return response
     except Exception:
         return base_response

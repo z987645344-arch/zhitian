@@ -19,13 +19,10 @@ from rank_bm25 import BM25Okapi
 import config
 from layers import llm_provider
 from utils.logger import get_logger
+from utils import observability
 
 logger = get_logger("memory")
 
-
-def _log_diag_timing(session_id: str, stage: str, elapsed_ms: int) -> None:
-    # 临时诊断代码：定位复杂查询超时瓶颈，仅记录环节耗时，不记录消息、query或chunk原文。
-    logger.info("临时诊断耗时：session_id=%s stage=%s elapsed_ms=%s", session_id, stage, elapsed_ms)
 
 COLLECTION_NAME = "zhitian_memory"
 DOCUMENT_COLLECTION_NAME = "zhitian_documents"
@@ -264,7 +261,7 @@ def maybe_save_to_vector(
         tier=tier,
         allow_model_fallback=tier == "expert"
     )
-    _log_diag_timing(session_id, "memory_importance_total_%s" % role, int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("memory_importance_total_%s" % role, int((time.perf_counter() - started_at) * 1000))
     logger.info(
         "长期记忆重要性判断：session_id=%s role=%s message_len=%s is_important=%s importance_level=%s",
         session_id,
@@ -364,10 +361,10 @@ def _classify_importance_with_glm(content: str, tier: str = "fast") -> bool:
             timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT
         )
         result = llm_provider.extract_text(response).strip().lower()
-        _log_diag_timing("", "memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
         return result.startswith("important")
     except Exception as e:
-        _log_diag_timing("", "memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
         logger.warning("长期记忆GLM重要性判断失败：message_len=%s error_type=%s", len(content or ""), type(e).__name__)
         return False
 
@@ -490,7 +487,7 @@ def search_documents(
     started_at = time.perf_counter()
     stage_started_at = time.perf_counter()
     bm25_candidates = _search_bm25_candidates(query, safe_top_k, allowed_doc_ids)
-    _log_diag_timing("", "documents_bm25", int((time.perf_counter() - stage_started_at) * 1000))
+    observability.log_stage("documents_bm25", int((time.perf_counter() - stage_started_at) * 1000))
     stage_started_at = time.perf_counter()
     with _chroma_lock:
         collection = _get_document_collection()
@@ -503,7 +500,7 @@ def search_documents(
             )
         else:
             result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
-    _log_diag_timing("", "documents_vector", int((time.perf_counter() - stage_started_at) * 1000))
+    observability.log_stage("documents_vector", int((time.perf_counter() - stage_started_at) * 1000))
 
     candidate_keys = {
         (candidate["doc_id"], int(candidate["chunk_index"]))
@@ -517,7 +514,7 @@ def search_documents(
             fallback_result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
         fallback_results = _build_document_search_results(fallback_result, allowed_doc_ids, None)
         results = _merge_document_results(results, fallback_results)
-        _log_diag_timing("", "documents_vector_fallback", int((time.perf_counter() - stage_started_at) * 1000))
+        observability.log_stage("documents_vector_fallback", int((time.perf_counter() - stage_started_at) * 1000))
 
     stage_started_at = time.perf_counter()
     with _chroma_lock:
@@ -525,13 +522,13 @@ def search_documents(
         title_match_results = _find_title_match_document_results(collection, query, allowed_doc_ids)
     if title_match_results:
         results = _merge_document_results(results, title_match_results)
-    _log_diag_timing("", "documents_title_match", int((time.perf_counter() - stage_started_at) * 1000))
+    observability.log_stage("documents_title_match", int((time.perf_counter() - stage_started_at) * 1000))
 
     results.sort(key=lambda item: item["score"], reverse=True)
     stage_started_at = time.perf_counter()
     if enable_rerank:
         results = _apply_document_rerank(query, results, tier=tier)
-    _log_diag_timing("", "documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
+    observability.log_stage("documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     logger.info(
         "文档hybrid检索完成：query_len=%s bm25_candidates=%s result_count=%s elapsed_ms=%s",

@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-07-12**
+> **最后追加：2026-07-13**
 
 ## 2026-06-28
 - 初始化项目完整目录结构
@@ -363,3 +363,28 @@
 - expert真实回归保持完整能力：Function Call工具集合包含search_web等完整工具，实时热点请求执行search_web，3次DeepSeek调用约30.01秒成功返回。
 - Flutter客户端聊天页新增“快速/专家”分段切换控件，默认fast并在应用运行期间保持选择；ApiService不再发送旧`mode=chat`，而是将当前选择映射为`fast`或`expert`写入`/chat/stream`请求体。
 - Flutter验证通过：`flutter analyze`无问题，8项测试全部通过；内存HTTP客户端确认fast/expert请求体序列化正确，真实本地后端SSE验证两种模式均返回HTTP 200和`[DONE]`，登录、历史和citations既有测试保持通过。
+
+## 2026-07-12
+- 新增 `utils/observability.py` 进程内基础可观测性：`ContextVar` trace_id 贯穿 `/chat`、`/chat/stream`、规划、执行、记忆和模型适配调用；原临时 `_log_diag_timing` 已移除，统一输出 `trace_id/stage/elapsed_ms` 脱敏阶段日志。
+- `llm_provider.py` 新增 fast(GLM) 与 expert(DeepSeek) 的独立调用次数、平均耗时及 timeout/rate_limit/other 错误分类计数；计数器由线程锁保护，不记录提示词、消息原文或 API Key。
+- 搜索结果整理失败并降级为 Tavily 原始摘要时计入搜索降级次数；新增 reviewer 专用 `GET /reviewer/metrics`，明确返回进程启动以来的内存统计，服务重启清零且不跨 worker/实例聚合。
+- 新增 `/ready`，独立检查 SQLite 与 Chroma 可用性；`/health` 继续承担应用健康概览。
+- `zhitian_admin` 审核员页新增开发者视图，支持手动查看统计快照、统计起始时间、模型调用和错误分类，不增加新的权限体系。
+- `utils/logger.py` 将 `observability` 与 `llm_provider` 纳入项目日志过滤白名单，确保 trace 阶段和模型错误分类日志实际写入业务日志文件。
+- 验证：完整 pytest 49 项通过；真实 `/ready` 返回 200，依赖故障模拟返回 503；reviewer metrics 返回 200、customer 返回 403；真实 expert 请求日志可按同一 trace_id 串联 classify、retrieve、execute 和 respond 阶段。
+
+## 2026-07-13
+- 补齐 WorkBuddy F13：新增 `tests/test_execution_search.py`，离线覆盖 query 改写超时后使用原 query、Tavily 成功整理、整理失败原始摘要与降级计数、Tavily 失败/空结果降级及搜索总时间预算。
+- 补齐 WorkBuddy F15：新增 `tests/test_observability.py`，覆盖 ContextVar trace 传播、timeout/rate_limit/other 错误分类、12 线程计数原子性、fast/expert 独立统计、reviewer metrics 结构与权限、`/ready` 的 200/503 依赖状态。
+- 验证：新增的 13 项测试全部通过且未发起真实 GLM/Tavily/DeepSeek 调用；完整 pytest 从 49 项增加至 62 项，结果为 `62 passed, 1 warning`（保留既有 integration smoke 用例）。
+
+## 2026-07-13
+- `observability.py` 新增受同一线程锁保护的最近请求环形缓冲区（最多 100 条）：请求完成时按 trace_id 汇总 classify/retrieve/execute/respond 等阶段耗时、mode、总耗时、状态、错误类型和时间戳；`/reviewer/metrics` 在原累计统计基础上新增时间正序的 `recent_requests`。
+- 修复 LangGraph 派生 ContextVar 不回传阶段字典的问题：改为按 trace_id 的锁保护临时聚合表，确保 recent_requests 的阶段耗时与同 trace_id 日志一致。
+- 审核员后台开发者视图改为与审核工作台互斥：开发者模式隐藏四个审核区，基于 `recent_requests` 展示阶段平均耗时、trace_id 明细和原生 SVG 请求耗时趋势。
+- 验证：真实 expert `/chat` 请求的 recent record 为 classify=13301ms、retrieve=19ms、execute=17654ms、respond=0ms，与同 trace_id 阶段日志一致；环形缓冲区 101 条测试保持最新 100 条；完整 pytest `62 passed, 1 warning`。
+
+## 2026-07-13
+- 修复 fast 模式 recent_requests 阶段和总耗时缺失：请求状态由仅 ContextVar 保存改为按 trace_id 的锁保护共享请求状态，入口在 `/chat` 与 `/chat/stream` 完成时显式传入 trace_id/mode 组装记录，避免流式或派生执行上下文丢失起始时间与聚合数据。
+- fast 独立路径新增 `select_tool` 与 `respond` 阶段打点；retrieve 与工具 execute 继续复用统一阶段日志。该问题与此前 expert/LangGraph 的阶段数据回传缺失同属跨执行上下文的请求状态丢失，但 fast 同时暴露了 total_elapsed_ms 依赖 ContextVar 的问题。
+- 验证：3 次真实 fast 请求均因当前 GLM 上游失败返回 degraded，但 recent_requests 均有非零总耗时和非空阶段数据；真实 expert 请求仍返回 success，total_elapsed_ms=9788ms 且阶段数据正常。fast 成功状态的 recent_requests 组装由离线路由测试覆盖；完整 pytest `63 passed, 1 warning`。

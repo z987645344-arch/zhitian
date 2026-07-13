@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Thin fast/expert model adapter for GLM and DeepSeek."""
 
+import time
 from typing import Any, Iterator, Optional
 
 from openai import OpenAI
@@ -8,6 +9,7 @@ from zhipuai import ZhipuAI
 
 import config
 from utils.logger import get_logger
+from utils import observability
 
 
 logger = get_logger("llm_provider")
@@ -34,6 +36,7 @@ def chat_completion(
     if response_format is not None:
         request_kwargs["response_format"] = response_format
 
+    started_at = time.perf_counter()
     try:
         if tier == "fast":
             if not config.GLM_API_KEY:
@@ -44,7 +47,10 @@ def chat_completion(
                 max_retries=0,
             )
             request_kwargs["model"] = config.LLM_MODEL
-            return client.chat.completions.create(**request_kwargs)
+            response = client.chat.completions.create(**request_kwargs)
+            observability.record_model_call(tier, int((time.perf_counter() - started_at) * 1000))
+            observability.log_stage("llm_fast", int((time.perf_counter() - started_at) * 1000))
+            return response
 
         if not config.DEEPSEEK_API_KEY:
             raise ValueError("DEEPSEEK_API_KEY未配置")
@@ -55,12 +61,22 @@ def chat_completion(
             max_retries=0,
         )
         request_kwargs["model"] = config.DEEPSEEK_MODEL
-        return client.chat.completions.create(**request_kwargs)
+        response = client.chat.completions.create(**request_kwargs)
+        observability.record_model_call(tier, int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("llm_expert", int((time.perf_counter() - started_at) * 1000))
+        return response
     except Exception as exc:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        error_kind = observability.classify_provider_error(exc)
+        observability.record_model_call(tier, elapsed_ms)
+        observability.record_provider_error(_provider_name(tier), error_kind)
+        observability.log_stage("llm_%s_%s" % (tier, error_kind), elapsed_ms)
         logger.warning(
-            "模型调用失败：tier=%s provider=%s error_type=%s",
+            "模型调用失败：trace_id=%s tier=%s provider=%s error_kind=%s error_type=%s",
+            observability.get_trace_id() or "none",
             tier,
             _provider_name(tier),
+            error_kind,
             type(exc).__name__,
         )
         raise

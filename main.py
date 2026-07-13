@@ -21,6 +21,7 @@ import uvicorn
 import config
 from layers import auth, document_loader, execution, memory, output, perception, planning
 from utils.logger import get_logger
+from utils import observability
 
 logger = get_logger("main")
 
@@ -149,6 +150,19 @@ async def health():
     }
 
 
+@app.get("/ready")
+async def ready():
+    """Check request-serving dependencies, distinct from the process liveness /health endpoint."""
+    sqlite_ok = _check_sqlite_health()
+    chroma_ok = _check_chroma_health()
+    payload = {
+        "status": "ready" if sqlite_ok and chroma_ok else "not_ready",
+        "dependencies": {"sqlite": sqlite_ok, "chroma": chroma_ok},
+        "timestamp": datetime.now().isoformat(),
+    }
+    return JSONResponse(status_code=200 if sqlite_ok and chroma_ok else 503, content=payload)
+
+
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
     try:
@@ -199,9 +213,12 @@ async def chat(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    trace_id = str(uuid.uuid4())
+    trace_token = observability.set_trace_id(trace_id, mode=mode)
     layer_trace = ["perception", "planning", "execution", "output"]
     logger.info(
-        "收到/chat请求：session_id=%s message_len=%s mode=%s",
+        "收到/chat请求：trace_id=%s session_id=%s message_len=%s mode=%s",
+        observability.get_trace_id(),
         chat_request.session_id,
         len(chat_request.message or ""),
         mode
@@ -252,15 +269,24 @@ async def chat(
             status=status,
             citations=citations
         )
+        observability.record_request(
+            status,
+            error_type=str(final_state.get("error") or ""),
+            trace_id=trace_id,
+            mode=mode,
+        )
         return ChatResponse(**response_data)
     except Exception as e:
-        logger.error("/chat未捕获异常：session_id=%s error_type=%s", chat_request.session_id, type(e).__name__)
+        logger.error("/chat未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), chat_request.session_id, type(e).__name__)
         response_data = output.format_error(
             session_id=chat_request.session_id,
             error_msg="服务异常",
             layer_trace=layer_trace
         )
+        observability.record_request("error", error_type=type(e).__name__, trace_id=trace_id, mode=mode)
         return ChatResponse(**response_data)
+    finally:
+        observability.reset_trace_id(trace_token)
 
 
 @app.post("/chat/stream")
@@ -272,15 +298,17 @@ async def chat_stream(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    trace_id = str(uuid.uuid4())
     logger.info(
-        "收到/chat/stream请求：session_id=%s message_len=%s mode=%s",
+        "收到/chat/stream请求：trace_id=%s session_id=%s message_len=%s mode=%s",
+        trace_id,
         chat_request.session_id,
         len(chat_request.message or ""),
         mode
     )
     chat_request.mode = mode
     return StreamingResponse(
-        _chat_stream_events(chat_request, current_user, background_tasks),
+        _chat_stream_events(chat_request, current_user, background_tasks, trace_id),
         background=background_tasks,
         media_type="text/event-stream"
     )
@@ -502,6 +530,12 @@ async def pending(current_user: dict = Depends(require_reviewer)):
     }
 
 
+@app.get("/reviewer/metrics")
+async def reviewer_metrics(current_user: dict = Depends(require_reviewer)):
+    """Process-memory metrics; counters reset on restart and are not multi-worker aggregated."""
+    return observability.metrics_snapshot()
+
+
 @app.post("/approve/{doc_id}")
 async def approve_document(doc_id: str, current_user: dict = Depends(require_reviewer)):
     approved = auth.approve_document(doc_id, current_user["user_id"])
@@ -622,12 +656,20 @@ def _remove_temp_upload(temp_path: str) -> None:
         logger.warning("临时上传文件删除失败：path_len=%s error_type=%s", len(temp_path), type(e).__name__)
 
 
-def _chat_stream_events(request: ChatRequest, current_user: dict, background_tasks: BackgroundTasks):
+def _chat_stream_events(
+    request: ChatRequest,
+    current_user: dict,
+    background_tasks: BackgroundTasks,
+    trace_id: str,
+):
+    trace_token = observability.set_trace_id(trace_id, mode=request.mode)
     layer_trace = ["perception", "planning", "execution", "output"]
     chunks = []
     citations = []
     perception_output = None
     has_error = False
+    request_status = "error"
+    request_error_type = ""
     try:
         perception_input = perception.PerceptionInput(
             session_id=request.session_id,
@@ -666,6 +708,7 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                         final_data,
                         "fast"
                     )
+            request_status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
             return
 
         state = _prepare_stream_state(
@@ -729,12 +772,15 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
             yield _sse_data({"chunk": final_data})
             if final_state.get("error"):
                 has_error = True
+                request_status = "degraded"
+                request_error_type = str(final_state.get("error") or "")
                 yield _sse_data({"type": "citations", "citations": citations})
                 yield _sse_data({"chunk": "[DONE]"})
                 return
 
         final_data = "".join(chunks)
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
+        request_status = status
         if not has_error:
             memory.save_message(perception_output.session_id, "user", perception_output.message)
             memory.save_message(perception_output.session_id, "assistant", final_data)
@@ -758,8 +804,17 @@ def _chat_stream_events(request: ChatRequest, current_user: dict, background_tas
                 perception_output.mode
             )
     except Exception as e:
-        logger.error("/chat/stream未捕获异常：session_id=%s error_type=%s", request.session_id, type(e).__name__)
+        logger.error("/chat/stream未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), request.session_id, type(e).__name__)
         yield _sse_data({"error": "服务暂时异常，请重试"})
+        request_error_type = type(e).__name__
+    finally:
+        observability.record_request(
+            request_status,
+            error_type=request_error_type,
+            trace_id=trace_id,
+            mode=request.mode,
+        )
+        observability.reset_trace_id(trace_token)
 
 
 def _prepare_stream_state(

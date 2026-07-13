@@ -12,6 +12,7 @@ from tavily import TavilyClient
 import config
 from layers import auth, llm_provider, memory
 from utils.logger import get_logger
+from utils import observability
 from utils.time_context import current_date_prompt
 
 logger = get_logger("execution")
@@ -134,6 +135,7 @@ def _search_web(
 
     remaining = _remaining_budget(deadline)
     if remaining <= 0:
+        observability.record_search_fallback()
         return _format_raw_search_results(
             results,
             prefix="（搜索链路已达到时间预算，以下为原始搜索结果摘要）"
@@ -154,6 +156,7 @@ def _search_web(
             len(optimized_query or ""),
             type(e).__name__
         )
+        observability.record_search_fallback()
         return _format_raw_search_results(
             results,
             prefix="（搜索结果整理失败，以下为原始搜索结果摘要）"
@@ -250,6 +253,7 @@ def stream_search_result(
         )
         if emitted:
             return
+        observability.record_search_fallback()
         yield _format_raw_search_results(
             results,
             prefix="（搜索结果整理失败，以下为原始搜索结果摘要）"
