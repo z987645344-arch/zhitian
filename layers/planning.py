@@ -1004,19 +1004,6 @@ def _save_city_memory(session_id: str, city: str) -> None:
         pass
 
 
-def _extract_glm_text(response) -> str:
-    """从GLM响应中提取文本内容"""
-    choices = getattr(response, "choices", None)
-    if not choices:
-        return str(response)
-
-    message = getattr(choices[0], "message", None)
-    content = getattr(message, "content", None)
-    if content is None and isinstance(message, dict):
-        content = message.get("content")
-    return str(content or response)
-
-
 builder = StateGraph(AgentState)
 builder.add_node("classify", classify_node)
 builder.add_node("retrieve", retrieve_node)

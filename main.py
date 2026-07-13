@@ -1,11 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 # 知天（zhitian）FastAPI主入口
 
+import asyncio
 import json
 import os
 import sqlite3
+import threading
 import uuid
 import time
+import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 from urllib.parse import unquote
@@ -25,7 +29,55 @@ from utils import observability
 
 logger = get_logger("main")
 
-app = FastAPI(title="知天 Agent API", version="0.1.0")
+_request_gate_lock = threading.Lock()
+_active_http_requests = 0
+_accepting_requests = True
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _accepting_requests
+    with _request_gate_lock:
+        _accepting_requests = True
+    try:
+        yield
+    finally:
+        with _request_gate_lock:
+            _accepting_requests = False
+        deadline = time.monotonic() + max(0.0, config.SHUTDOWN_GRACE_PERIOD_SECONDS)
+        while _active_request_count() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        remaining = _active_request_count()
+        if remaining:
+            logger.warning("优雅关闭等待超时：active_requests=%s", remaining)
+        else:
+            logger.info("优雅关闭完成：active_requests=0")
+        try:
+            memory.close_resources()
+        except Exception as e:
+            logger.warning("关闭Chroma资源失败：error_type=%s", type(e).__name__)
+
+
+app = FastAPI(title="知天 Agent API", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def graceful_shutdown_gate(request: Request, call_next):
+    global _active_http_requests
+    with _request_gate_lock:
+        if not _accepting_requests:
+            return JSONResponse(status_code=503, content={"detail": "服务正在关闭，请稍后重试"})
+        _active_http_requests += 1
+    try:
+        return await call_next(request)
+    finally:
+        with _request_gate_lock:
+            _active_http_requests = max(0, _active_http_requests - 1)
+
+
+def _active_request_count() -> int:
+    with _request_gate_lock:
+        return _active_http_requests
 
 def _rate_limit_key(request: Request) -> str:
     authorization = request.headers.get("Authorization", "")
@@ -215,15 +267,15 @@ async def chat(
     mode = _validate_chat_mode(chat_request.mode)
     trace_id = str(uuid.uuid4())
     trace_token = observability.set_trace_id(trace_id, mode=mode)
-    layer_trace = ["perception", "planning", "execution", "output"]
-    logger.info(
-        "收到/chat请求：trace_id=%s session_id=%s message_len=%s mode=%s",
-        observability.get_trace_id(),
-        chat_request.session_id,
-        len(chat_request.message or ""),
-        mode
-    )
     try:
+        layer_trace = ["perception", "planning", "execution", "output"]
+        logger.info(
+            "收到/chat请求：trace_id=%s session_id=%s message_len=%s mode=%s",
+            observability.get_trace_id(),
+            chat_request.session_id,
+            len(chat_request.message or ""),
+            mode
+        )
         perception_input = perception.PerceptionInput(
             session_id=chat_request.session_id,
             raw_message=chat_request.message,
@@ -364,6 +416,16 @@ async def upload_document(
     logger.info("收到/documents/upload请求：filename_len=%s", len(filename))
     if not filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
+    suffix = os.path.splitext(filename)[1].lower()
+    if suffix not in config.ALLOWED_UPLOAD_EXTENSIONS:
+        supported = "、".join(sorted(config.ALLOWED_UPLOAD_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"不支持的文件格式，支持：{supported}")
+    max_upload_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+    if file.size is not None and file.size > max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件大小不能超过{config.MAX_UPLOAD_SIZE_MB}MB",
+        )
 
     doc_id = str(uuid.uuid4())
     temp_path = ""
@@ -636,14 +698,60 @@ def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
     os.makedirs(temp_dir, exist_ok=True)
     suffix = os.path.splitext(filename)[1].lower()
     temp_path = os.path.join(temp_dir, f"{doc_id}{suffix}")
+    max_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
     file.file.seek(0)
-    with open(temp_path, "wb") as f:
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            f.write(chunk)
+    _validate_upload_content(file, suffix)
+    total_bytes = 0
+    try:
+        with open(temp_path, "wb") as f:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件大小不能超过{config.MAX_UPLOAD_SIZE_MB}MB",
+                    )
+                f.write(chunk)
+    except Exception:
+        _remove_temp_upload(temp_path)
+        raise
     return temp_path
+
+
+def _validate_upload_content(file: UploadFile, suffix: str) -> None:
+    """Reject obvious extension spoofing without retaining or logging file content."""
+    file.file.seek(0)
+    header = file.file.read(8192)
+    file.file.seek(0)
+    if suffix == ".pdf" and not header.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="文件内容与PDF格式不匹配")
+    if suffix == ".docx":
+        try:
+            with zipfile.ZipFile(file.file) as archive:
+                if "word/document.xml" not in archive.namelist():
+                    raise HTTPException(status_code=400, detail="文件内容与DOCX格式不匹配")
+        except (zipfile.BadZipFile, OSError):
+            raise HTTPException(status_code=400, detail="文件内容与DOCX格式不匹配")
+        finally:
+            file.file.seek(0)
+    if suffix in {".txt", ".md"}:
+        if b"\x00" in header or not _is_supported_text_sample(header):
+            raise HTTPException(status_code=400, detail="文件内容不是支持的文本格式")
+
+
+def _is_supported_text_sample(content: bytes) -> bool:
+    if not content:
+        return True
+    for encoding in ("utf-8", "utf-8-sig", "gbk"):
+        try:
+            content.decode(encoding)
+            return True
+        except UnicodeDecodeError:
+            continue
+    return False
 
 
 def _remove_temp_upload(temp_path: str) -> None:
@@ -991,6 +1099,12 @@ def _overall_health_status(layers: dict) -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=config.HOST,
+        port=config.PORT,
+        reload=True,
+        timeout_graceful_shutdown=config.SHUTDOWN_GRACE_PERIOD_SECONDS,
+    )
 
 

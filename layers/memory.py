@@ -1248,4 +1248,17 @@ def _get_document_collection():
     return _document_collection
 
 
+def close_resources() -> None:
+    """Release process-local Chroma references during application shutdown."""
+    global _chroma_client, _chroma_collection, _document_collection
+    with _chroma_lock:
+        client = _chroma_client
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+        _chroma_collection = None
+        _document_collection = None
+        _chroma_client = None
+
+
 init_db()

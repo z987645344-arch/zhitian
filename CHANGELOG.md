@@ -393,3 +393,16 @@
 - 新增 `.github/workflows/ci.yml` 基础持续集成：push 到 master 及面向 master 的 pull request 自动使用 Python 3.10 安装 requirements、检查敏感文件、编译全部 Python 源码并运行排除 integration 标记的离线测试。
 - CI 使用占位 `JWT_SECRET_KEY`，显式清空 GLM/DeepSeek/Tavily Key；敏感检查拒绝跟踪 `.env` 及常见 `sk-`/`tvly-` 长密钥格式，不在流水线中写入真实凭据。
 - requirements.txt 未发现 Windows 专属依赖，当前依赖均提供 Linux 安装路径；本地等价验证通过：YAML 解析成功、py_compile 成功、离线测试 `62 passed, 1 deselected`、敏感文件检查通过。实际 GitHub Actions 运行待 commit/push 后确认。
+
+## 2026-07-13
+- 新增 FastAPI lifespan 优雅关闭：收到 Uvicorn/SIGTERM 关闭流程后停止接收新请求，按 `SHUTDOWN_GRACE_PERIOD_SECONDS`（默认30秒）等待在途请求，超时后记录剩余请求数并继续退出；SQLite保持短连接模式，关闭阶段释放Chroma客户端与collection引用。
+- `/reviewer/metrics` 基于最近100条 `recent_requests` 新增 fast/expert 独立的P50/P95/P99延迟和样本数，使用nearest-rank算法，不引入统计依赖。
+- 修复F17：将 `_active_requests` 清理收口为幂等 `discard_active_request()`，并继续由 `/chat`、`/chat/stream` 的 `finally -> reset_trace_id()` 保证正常、异常和连接中断路径均释放临时trace状态；确认此前入口已有部分兜底，本轮补充显式接口和异常测试锁定行为。
+- 清理F12：删除planning.py和execution.py中已被 `llm_provider.extract_text` 替代的 `_extract_glm_text` 死代码。F18诊断确认 `python-multipart` 已声明，warning来自FastAPI 0.115.0兼容范围内Starlette 0.38.6的旧导入方式；pytest仅精确过滤该上游PendingDeprecationWarning，未降级multipart依赖。
+- 验证：py_compile通过；lifespan覆盖等待完成、30秒配置上限和应用异常仍释放资源；分位数、trace启动后立即异常及通用异常清理测试通过；完整pytest `69 passed`，无warning。
+
+## 2026-07-13
+- `/documents/upload` 新增基础输入安全校验：`ALLOWED_UPLOAD_EXTENSIONS`仅允许 `.txt/.md/.pdf/.docx`，`MAX_UPLOAD_SIZE_MB`默认20MB；不支持扩展名在保存和解析前返回400，超限文件返回413。
+- 大小限制先使用Starlette已解析的 `UploadFile.size` 在项目临时文件写入前拒绝，并在按1MB块复制时继续累计校验；超限或写入异常会立即删除部分临时文件。multipart在进入端点前仍可能使用框架spool临时存储，这是当前FastAPI接收模型的边界。
+- 新增轻量文件特征校验：PDF校验 `%PDF-` 文件头，DOCX校验ZIP结构及 `word/document.xml`，TXT/Markdown拒绝NUL和无法按UTF-8/UTF-8 BOM/GBK解码的二进制样本，缓解伪造扩展名直接进入解析器的问题。
+- 验证：新增5项离线上传测试，覆盖 `.xlsx`、伪装为TXT的可执行内容、已知/未知size超限文件及部分文件清理；TXT/Markdown/PDF/DOCX均使用真实解析器验证通过。完整测试总数增至74项。

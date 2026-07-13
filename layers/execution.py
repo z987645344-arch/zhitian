@@ -641,19 +641,6 @@ def _clean_search_query(query: str) -> str:
     return " ".join(first_line.split())[:15]
 
 
-def _extract_glm_text(response) -> str:
-    """从GLM响应中提取文本内容"""
-    choices = getattr(response, "choices", None)
-    if not choices:
-        return str(response)
-
-    message = getattr(choices[0], "message", None)
-    content = getattr(message, "content", None)
-    if content is None and isinstance(message, dict):
-        content = message.get("content")
-    return str(content or response)
-
-
 def _extract_glm_delta(chunk) -> str:
     """从GLM流式chunk中提取增量文本"""
     choices = getattr(chunk, "choices", None)

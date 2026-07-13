@@ -112,6 +112,52 @@ def test_explicit_trace_id_uses_shared_request_state_across_contexts(monkeypatch
     assert record["total_elapsed_ms"] == 500
 
 
+def test_latency_percentiles_are_separate_by_mode(monkeypatch):
+    _reset_metrics(monkeypatch)
+    for elapsed_ms in (10, 20, 30, 40):
+        observability._recent_requests.append({"mode": "fast", "total_elapsed_ms": elapsed_ms})
+    for elapsed_ms in (100, 200):
+        observability._recent_requests.append({"mode": "expert", "total_elapsed_ms": elapsed_ms})
+
+    percentiles = observability.metrics_snapshot()["latency_percentiles_ms"]
+
+    assert percentiles["fast"] == {"count": 4, "p50": 20, "p95": 40, "p99": 40}
+    assert percentiles["expert"] == {"count": 2, "p50": 100, "p95": 200, "p99": 200}
+
+
+def test_exception_finally_discards_active_request(monkeypatch):
+    _reset_metrics(monkeypatch)
+    token = observability.set_trace_id("failed-trace", mode="fast")
+    try:
+        raise RuntimeError("simulated failure")
+    except RuntimeError:
+        pass
+    finally:
+        observability.reset_trace_id(token)
+
+    assert "failed-trace" not in observability._active_requests
+
+
+def test_chat_cleans_trace_when_failure_occurs_immediately_after_trace_start(
+    client,
+    auth_headers,
+    test_session_id,
+    monkeypatch,
+):
+    _reset_metrics(monkeypatch)
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr("main.logger.info", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()))
+
+    response = client.post(
+        "/chat",
+        headers=headers,
+        json={"session_id": test_session_id, "message": "test", "mode": "fast"},
+    )
+
+    assert response.status_code == 200
+    assert observability._active_requests == {}
+
+
 def test_reviewer_metrics_has_expected_structure(client, auth_headers, monkeypatch):
     _reset_metrics(monkeypatch)
     headers, _ = auth_headers("reviewer")
@@ -127,6 +173,7 @@ def test_reviewer_metrics_has_expected_structure(client, auth_headers, monkeypat
     assert data["requests"]["degraded"] == 1
     assert data["model_calls"]["fast"]["calls"] == 1
     assert set(data["provider_errors"]["glm"]) == {"timeout", "rate_limit", "other"}
+    assert set(data["latency_percentiles_ms"]) == {"fast", "expert"}
 
 
 def test_reviewer_metrics_rejects_non_reviewer(client, auth_headers):

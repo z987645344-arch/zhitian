@@ -4,6 +4,7 @@
 from contextvars import ContextVar, Token
 from collections import deque
 from datetime import datetime
+import math
 import threading
 import time
 from typing import Any, Optional
@@ -48,13 +49,19 @@ def set_trace_id(trace_id: str, mode: str = "fast") -> Token:
 
 def reset_trace_id(token: Token) -> None:
     trace_id = get_trace_id()
-    if trace_id:
-        with _stats_lock:
-            _active_requests.pop(trace_id, None)
+    discard_active_request(trace_id)
     _trace_id.reset(token)
     _request_mode.set("fast")
     _request_started_at.set(None)
     _stage_timings.set(None)
+
+
+def discard_active_request(trace_id: str) -> None:
+    """Idempotently release temporary trace state after any request outcome."""
+    if not trace_id:
+        return
+    with _stats_lock:
+        _active_requests.pop(trace_id, None)
 
 
 def get_trace_id() -> str:
@@ -140,6 +147,7 @@ def metrics_snapshot() -> dict[str, Any]:
                 "calls": calls,
                 "average_elapsed_ms": round(values["elapsed_ms_total"] / calls, 2) if calls else 0,
             }
+        recent_requests = list(_recent_requests)
         return {
             "stats_since": _stats_since,
             "scope": "process_memory_single_instance",
@@ -147,7 +155,8 @@ def metrics_snapshot() -> dict[str, Any]:
             "model_calls": tiers,
             "search_fallback_count": _search_fallback_count,
             "provider_errors": {name: dict(values) for name, values in _provider_errors.items()},
-            "recent_requests": list(_recent_requests),
+            "latency_percentiles_ms": _latency_percentiles_by_mode(recent_requests),
+            "recent_requests": recent_requests,
         }
 
 
@@ -188,3 +197,28 @@ def _request_stage_name(stage: str) -> Optional[str]:
     if stage.startswith("memory_"):
         return "memory"
     return stage
+
+
+def _latency_percentiles_by_mode(requests: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Calculate nearest-rank latency percentiles from the bounded request window."""
+    result = {}
+    for mode in ("fast", "expert"):
+        values = sorted(
+            max(0, int(item.get("total_elapsed_ms") or 0))
+            for item in requests
+            if item.get("mode") == mode
+        )
+        result[mode] = {
+            "count": len(values),
+            "p50": _nearest_rank(values, 0.50),
+            "p95": _nearest_rank(values, 0.95),
+            "p99": _nearest_rank(values, 0.99),
+        }
+    return result
+
+
+def _nearest_rank(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    index = max(0, min(len(values) - 1, math.ceil(percentile * len(values)) - 1))
+    return values[index]

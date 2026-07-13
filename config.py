@@ -18,6 +18,7 @@ FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))
 EXPERT_LLM_TIMEOUT = float(os.getenv("EXPERT_LLM_TIMEOUT", "25.0"))
 SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
 SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "4.0"))
+SHUTDOWN_GRACE_PERIOD_SECONDS = float(os.getenv("SHUTDOWN_GRACE_PERIOD_SECONDS", "30.0"))
 
 # 服务
 PORT = int(os.getenv("PORT", 8000))
@@ -29,6 +30,8 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
+ALLOWED_UPLOAD_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
 
 # 认证
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
