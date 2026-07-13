@@ -388,3 +388,8 @@
 - 修复 fast 模式 recent_requests 阶段和总耗时缺失：请求状态由仅 ContextVar 保存改为按 trace_id 的锁保护共享请求状态，入口在 `/chat` 与 `/chat/stream` 完成时显式传入 trace_id/mode 组装记录，避免流式或派生执行上下文丢失起始时间与聚合数据。
 - fast 独立路径新增 `select_tool` 与 `respond` 阶段打点；retrieve 与工具 execute 继续复用统一阶段日志。该问题与此前 expert/LangGraph 的阶段数据回传缺失同属跨执行上下文的请求状态丢失，但 fast 同时暴露了 total_elapsed_ms 依赖 ContextVar 的问题。
 - 验证：3 次真实 fast 请求均因当前 GLM 上游失败返回 degraded，但 recent_requests 均有非零总耗时和非空阶段数据；真实 expert 请求仍返回 success，total_elapsed_ms=9788ms 且阶段数据正常。fast 成功状态的 recent_requests 组装由离线路由测试覆盖；完整 pytest `63 passed, 1 warning`。
+
+## 2026-07-13
+- 新增 `.github/workflows/ci.yml` 基础持续集成：push 到 master 及面向 master 的 pull request 自动使用 Python 3.10 安装 requirements、检查敏感文件、编译全部 Python 源码并运行排除 integration 标记的离线测试。
+- CI 使用占位 `JWT_SECRET_KEY`，显式清空 GLM/DeepSeek/Tavily Key；敏感检查拒绝跟踪 `.env` 及常见 `sk-`/`tvly-` 长密钥格式，不在流水线中写入真实凭据。
+- requirements.txt 未发现 Windows 专属依赖，当前依赖均提供 Linux 安装路径；本地等价验证通过：YAML 解析成功、py_compile 成功、离线测试 `62 passed, 1 deselected`、敏感文件检查通过。实际 GitHub Actions 运行待 commit/push 后确认。

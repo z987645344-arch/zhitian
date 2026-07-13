@@ -39,10 +39,10 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | ✅ fast/expert已按能力范围分层：fast本地知识库最简路径，expert完整Agent路径 |
-| 上一轮完成 | 2026-07-13：修复 fast 模式 recent_requests 阶段/总耗时缺失，改为 trace_id 共享请求状态聚合 |
-| 当前等待 | 观察单实例内存统计及最近 100 条请求缓冲区在日常请求与模型异常场景下的可用性；当前 GLM 上游失败导致真实 fast success 路径待服务恢复后补测 |
+| 上一轮完成 | 2026-07-13：新增 GitHub Actions 后端 CI，自动执行敏感检查、py_compile 和非 integration pytest |
+| 当前等待 | CI 配置需 commit/push 到 GitHub 后观察首次 Actions 运行；当前 GLM 上游失败导致真实 fast success 路径待服务恢复后补测 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
-| 下一步 | GLM 服务稳定后补测真实 fast success 的 recent_requests；随后继续“Agent能力提升”，优先讨论expert工具扩展和任务分解 |
+| 下一步 | 先确认 GitHub Actions 首次运行通过；GLM 服务稳定后补测真实 fast success 的 recent_requests；随后继续“Agent能力提升” |
 
 > 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，首次GLM Function Call只暴露search_documents/list_documents，无工具时1次模型调用、有工具时2次，不支持联网或reflect。expert使用DeepSeek完整LangGraph，保留classify、search_web、文档精排和ReAct。长期记忆已接入重要性判断、时间衰减、淡出和物理删除；文档检索已接入BM25+向量、title/source补充召回和批量重排序。下一步进入“Agent能力提升”。
 
@@ -81,6 +81,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 审计日志 | ✅ 基础 trace_id 阶段日志，按请求串联耗时且遵守消息脱敏 |
 | 监控 | ✅ 基础进程内 metrics/tracing，reviewer 可手动查看；重启清零且不跨实例聚合 |
 | 测试 | ✅ 认证模块+规划层状态机+记忆系统（重要性评估/遗忘机制/hybrid search/重排序）+ execution 搜索链路 + 可观测性测试覆盖已上线（62项） |
+| CI | ✅ GitHub Actions 基础流水线：Python 3.10、敏感检查、py_compile、非 integration pytest |
 | 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
 | 水平扩展 | 不支持 |
 
@@ -117,7 +118,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 ### 第三优先：工程化
 - PostgreSQL 迁移
 - Docker Compose 部署
-- CI/CD
+- CI 已完成基础接入；后续按实际部署需要再补 CD
 
 ---
 
