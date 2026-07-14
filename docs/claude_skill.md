@@ -139,14 +139,12 @@
 
 | 约束 | 影响 | 注意事项 |
 |------|------|---------|
-| zhipuai SDK 不支持 parallel_tool_calls | classify 只能一次调一个主意图工具 | save_city 不能单独调用，城市写入主意图工具的 city 参数 |
 | mcp 1.9.4 固定版本 | 新版与 FastAPI 不兼容 | 不要升级 mcp 版本 |
 | Chroma 0.5.0 全局变量 | 非线程安全 | 多请求并发可能竞态，如果要改需要加锁 |
-| .env BOM 污染 | python-dotenv 读到 \ufeffGLM_API_KEY | .env 改动后确认无 BOM |
+| .env BOM 污染 | python-dotenv 无法识别首行变量名 | .env 改动后确认无 BOM |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |
 | Codex 沙盒 PATH | 与本机不一致 | 运行时验证需用提权方式调 .venv\Scripts\python.exe |
 | Python 3.10 | 不支持 `X | Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
-| DeepSeek 已回退 | git revert 恢复 GLM 固定模型 | 后续模型切换需重新拆分为独立任务，不能直接改 config |
 
 ---
 
@@ -159,8 +157,8 @@
 | 新增/修改 API 接口 | main.py |
 | 新增/修改配置项 | config.py + .env |
 | 新增工具 | execution.py（TOOL_REGISTRY + 实现函数）+ planning.py（INTENT_TOOLS + _task_from_intent） |
-| 改意图分类逻辑 | planning.py（classify_node / _classify_with_glm / INTENT_TOOLS） |
-| 改 ReAct 循环 | planning.py（should_continue_react / _reflect_with_glm / reflect_node） |
+| 改意图分类逻辑 | planning.py（classify_node / _classify_with_model / INTENT_TOOLS） |
+| 改 ReAct 循环 | planning.py（should_continue_react / _reflect_with_model / reflect_node） |
 | 改记忆存储/检索 | memory.py |
 | 改认证/权限 | auth.py + main.py（require_* 依赖） |
 | 改文档解析/切片 | document_loader.py |

@@ -274,13 +274,13 @@ COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_c
 
 
 def classify_node(state: AgentState) -> AgentState:
-    """classify节点：调用GLM Function Call判断意图"""
+    """classify节点：调用所选模型的 Function Call 判断意图。"""
     started_at = time.perf_counter()
     state["context"] = _load_classify_context(state["session_id"], state["message"])
     observability.log_stage("classify_context", int((time.perf_counter() - started_at) * 1000))
     started_at = time.perf_counter()
-    decision = _classify_with_glm(state["message"], state["context"], tier=state["mode"])
-    observability.log_stage("classify_glm", int((time.perf_counter() - started_at) * 1000))
+    decision = _classify_with_model(state["message"], state["context"], tier=state["mode"])
+    observability.log_stage("classify_model", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
     state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
@@ -344,7 +344,7 @@ def reflect_node(state: AgentState) -> AgentState:
     """reflect node: decide whether another bounded tool round is needed."""
     started_at = time.perf_counter()
     decision = should_continue_react(state)
-    observability.log_stage("reflect_glm", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("reflect_model", int((time.perf_counter() - started_at) * 1000))
     state["react_action"] = decision["action"]
     state["react_limit_reached"] = bool(decision.get("limit_reached", False))
     next_task = decision.get("task")
@@ -357,7 +357,7 @@ def complex_plan_node(state: AgentState) -> AgentState:
     """Generate the initial bounded linear task list for an expert request."""
     started_at = time.perf_counter()
     tasks = _generate_complex_tasks(state, config.MAX_COMPLEX_TASKS)
-    observability.log_stage("complex_plan_glm", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
     state["complex_task_list"] = tasks
     state["complex_task_created_count"] = len(tasks)
     state["current_task_pointer"] = 0
@@ -418,11 +418,11 @@ def checkpoint_node(state: AgentState) -> AgentState:
     if not state["full_replan_used"]:
         started_at = time.perf_counter()
         try:
-            route = _check_complex_route_with_glm(state)
+            route = _check_complex_route_with_model(state)
         except Exception as e:
             logger.warning("复杂任务路线判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
             route = "keep"
-        observability.log_stage("complex_checkpoint_route_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("complex_checkpoint_route_model", int((time.perf_counter() - started_at) * 1000))
         if route == "replan":
             state["full_replan_used"] = True
             remaining_budget = max(0, config.MAX_COMPLEX_TASKS - state["complex_task_created_count"])
@@ -433,7 +433,7 @@ def checkpoint_node(state: AgentState) -> AgentState:
                 except Exception as e:
                     logger.warning("复杂任务重规划失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
                     replacement = []
-                observability.log_stage("complex_replan_glm", int((time.perf_counter() - started_at) * 1000))
+                observability.log_stage("complex_replan_model", int((time.perf_counter() - started_at) * 1000))
                 if replacement:
                     completed = state["complex_task_list"][:state["current_task_pointer"]]
                     state["complex_task_list"] = completed + replacement
@@ -450,13 +450,13 @@ def checkpoint_node(state: AgentState) -> AgentState:
     if not next_task.adjusted and remaining_budget:
         started_at = time.perf_counter()
         try:
-            adjusted_task = _adjust_complex_task_with_glm(state, next_task)
+            adjusted_task = _adjust_complex_task_with_model(state, next_task)
             next_task.adjusted = True
             state["complex_task_list"][state["current_task_pointer"]] = next_task
         except Exception as e:
             logger.warning("复杂任务局部调整失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
             adjusted_task = None
-        observability.log_stage("complex_checkpoint_adjust_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("complex_checkpoint_adjust_model", int((time.perf_counter() - started_at) * 1000))
         if adjusted_task is not None:
             adjusted_task.adjusted = True
             state["complex_task_list"][state["current_task_pointer"]] = adjusted_task
@@ -500,7 +500,7 @@ def complex_respond_node(state: AgentState) -> AgentState:
         logger.error("复杂任务汇总失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
         state["error"] = state["error"] or "complex_respond_failed"
         state["response"] = _fallback_complex_response(state["complex_task_results"])
-    observability.log_stage("complex_respond_glm", int((time.perf_counter() - started_at) * 1000))
+    observability.log_stage("complex_respond_model", int((time.perf_counter() - started_at) * 1000))
     _append_layer_trace(state, "complex_respond")
     return state
 
@@ -618,6 +618,7 @@ def _new_agent_state(session_id: str, message: str, mode: str) -> AgentState:
 
 def _run_fast_state(state: AgentState) -> AgentState:
     """Run the independent fast path: retrieve, select an optional local tool, then answer."""
+    deadline = time.perf_counter() + config.FAST_REQUEST_TIMEOUT
     try:
         state = retrieve_node(state)
         selection_started_at = time.perf_counter()
@@ -625,7 +626,9 @@ def _run_fast_state(state: AgentState) -> AgentState:
             _build_fast_messages(state),
             tier="fast",
             tools=FAST_TOOLS,
-            tool_choice="auto"
+            tool_choice="auto",
+            timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
+            total_budget=_remaining_fast_budget(deadline),
         )
         selection_elapsed_ms = int((time.perf_counter() - selection_started_at) * 1000)
         tool_call = _select_fast_tool_call(_extract_tool_calls(first_response))
@@ -656,12 +659,26 @@ def _run_fast_state(state: AgentState) -> AgentState:
             return state
 
         response_started_at = time.perf_counter()
-        final_response = llm_provider.chat_completion(
-            _build_fast_result_messages(state, result),
-            tier="fast"
-        )
+        try:
+            final_response = llm_provider.chat_completion(
+                _build_fast_result_messages(state, result),
+                tier="fast",
+                timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
+                total_budget=_remaining_fast_budget(deadline),
+            )
+            state["response"] = llm_provider.extract_text(final_response) or result.data
+        except Exception as exc:
+            state["error"] = "fast_final_generation_failed"
+            state["response"] = (
+                "（模型生成失败，以下为本地检索结果摘要）\n" + str(result.data or "")
+            ).strip()
+            logger.warning(
+                "fast最终生成降级：session_id=%s tool=%s error_type=%s",
+                state["session_id"],
+                task.tool,
+                type(exc).__name__,
+            )
         observability.log_stage("fast_respond", int((time.perf_counter() - response_started_at) * 1000))
-        state["response"] = llm_provider.extract_text(final_response) or result.data
         logger.info(
             "fast路径完成：session_id=%s model_calls=2 tool=%s",
             state["session_id"],
@@ -674,6 +691,13 @@ def _run_fast_state(state: AgentState) -> AgentState:
         state["response"] = "抱歉，快速模式暂时不可用，请稍后重试"
         state["citations"] = []
         return state
+
+
+def _remaining_fast_budget(deadline: float) -> float:
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise TimeoutError("fast request budget exhausted")
+    return remaining
 
 
 def _build_fast_messages(state: AgentState) -> list[dict]:
@@ -790,7 +814,7 @@ def _generate_complex_tasks(
     return tasks
 
 
-def _check_complex_route_with_glm(state: AgentState) -> str:
+def _check_complex_route_with_model(state: AgentState) -> str:
     response = llm_provider.chat_completion(
         [
             {
@@ -822,7 +846,7 @@ def _check_complex_route_with_glm(state: AgentState) -> str:
     return "replan" if data.get("action") == "replan" else "keep"
 
 
-def _adjust_complex_task_with_glm(state: AgentState, task: Task) -> Optional[Task]:
+def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[Task]:
     response = llm_provider.chat_completion(
         [
             {
@@ -963,7 +987,7 @@ def should_continue_react(state: AgentState) -> dict:
     if state["error"] or not state["results"]:
         return {"action": "respond"}
 
-    reflection = _reflect_with_glm(state)
+    reflection = _reflect_with_model(state)
     if state["round_count"] >= max_total_rounds:
         return {
             "action": "respond",
@@ -1003,8 +1027,8 @@ def _should_skip_reflect_for_title_match(state: AgentState) -> bool:
     return candidate_count <= 3 and trusted_count <= 3
 
 
-def _reflect_with_glm(state: AgentState) -> dict:
-    """Ask GLM whether current tool results are enough, without hard-coded semantic branching."""
+def _reflect_with_model(state: AgentState) -> dict:
+    """Ask the selected model whether current tool results are enough."""
     messages = [
         {
             "role": "system",
@@ -1204,12 +1228,12 @@ def _with_react_limit_notice(state: AgentState, response: str) -> str:
         return response
     return f"{notice}\n\n{response or ''}".strip()
 
-def _classify_with_glm(
+def _classify_with_model(
     message: str,
     context: list[str] = None,
     tier: str = "fast"
 ) -> dict:
-    """使用GLM Function Call选择搜索或直接回答"""
+    """使用所选模型的 Function Call 选择搜索或直接回答。"""
     context_text = "\n".join(context or [])
     response = llm_provider.chat_completion(
         messages=[
@@ -1269,7 +1293,7 @@ def _classify_with_glm(
 
 
 def _respond_with_context(state: AgentState, base_response: str) -> str:
-    """在有长期记忆上下文时，让GLM结合上下文生成最终回复"""
+    """在有长期记忆上下文时，让所选模型生成最终回复。"""
     context_text = "\n".join(state["context"])
     system_prompt = (
         f"{current_date_prompt()}\n\n"
@@ -1295,14 +1319,14 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         response = llm_provider.extract_text(
             llm_provider.chat_completion(messages, tier=state["mode"])
         )
-        observability.log_stage("respond_context_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("respond_context_model", int((time.perf_counter() - started_at) * 1000))
         return response
     except Exception:
         return base_response
 
 
 def _extract_tool_calls(response) -> list[dict]:
-    """从GLM Function Call响应中提取所有工具名和参数"""
+    """从 OpenAI 兼容 Function Call 响应中提取工具名和参数。"""
     choices = getattr(response, "choices", None)
     if not choices and isinstance(response, dict):
         choices = response.get("choices") or []

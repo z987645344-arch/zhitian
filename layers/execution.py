@@ -169,7 +169,7 @@ def stream_search_result(
     session_id: str = None,
     tier: str = "fast"
 ) -> Iterator[str]:
-    """流式联网搜索：Tavily完成后用GLM stream逐chunk整理搜索结果。"""
+    """流式联网搜索：Tavily完成后用所选模型逐chunk整理搜索结果。"""
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
         raise ValueError("TAVILY_API_KEY未配置")
 
@@ -540,7 +540,7 @@ def _llm_chat(
             search_results
         )
     else:
-        messages = _build_glm_messages(session_id, message, system_prompt)
+        messages = _build_model_messages(session_id, message, system_prompt)
 
     if stream:
         response = llm_provider.chat_completion(
@@ -555,7 +555,7 @@ def _llm_chat(
     return llm_provider.extract_text(response)
 
 
-def _build_glm_messages(session_id: str, message: str, system_prompt: str = "") -> list[dict]:
+def _build_model_messages(session_id: str, message: str, system_prompt: str = "") -> list[dict]:
     """读取会话历史并追加本轮用户消息"""
     history = memory.get_history(session_id, limit=10) if session_id else []
     system_parts = [current_date_prompt()]
@@ -572,7 +572,7 @@ def _build_glm_messages(session_id: str, message: str, system_prompt: str = "") 
 
 
 def _build_search_answer_messages(original_question: str, search_results: str) -> list[dict]:
-    """将搜索结果和原始问题拼成GLM自然语言回答上下文"""
+    """将搜索结果和原始问题拼成模型自然语言回答上下文。"""
     return [
         {
             "role": "system",
@@ -596,7 +596,7 @@ def _rewrite_search_query(
     timeout: Optional[float] = None,
     tier: str = "fast"
 ) -> str:
-    """调用GLM将用户原话改写成更适合搜索引擎的query"""
+    """调用所选模型将用户原话改写成更适合搜索引擎的query。"""
     context_text = "\n".join(context or [])
     prompt = (
         current_date_prompt()
@@ -634,15 +634,15 @@ def _rewrite_search_query(
 
 
 def _clean_search_query(query: str) -> str:
-    """清理GLM改写结果，避免解释性文字或标点进入搜索"""
+    """清理模型改写结果，避免解释性文字或标点进入搜索。"""
     first_line = str(query).strip().splitlines()[0].strip()
     for char in "，。！？；：,.!?;:\"'`“”‘’（）()[]【】{}":
         first_line = first_line.replace(char, " ")
     return " ".join(first_line.split())[:15]
 
 
-def _extract_glm_delta(chunk) -> str:
-    """从GLM流式chunk中提取增量文本"""
+def _extract_model_delta(chunk) -> str:
+    """从流式chunk中提取增量文本。"""
     choices = getattr(chunk, "choices", None)
     if not choices:
         return ""

@@ -25,7 +25,6 @@ _model_stats = {
     "expert": {"calls": 0, "elapsed_ms_total": 0},
 }
 _provider_errors = {
-    "glm": {"timeout": 0, "rate_limit": 0, "other": 0},
     "deepseek": {"timeout": 0, "rate_limit": 0, "other": 0},
 }
 _search_fallback_count = 0

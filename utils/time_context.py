@@ -4,7 +4,7 @@ from datetime import datetime
 
 
 def current_date_text() -> str:
-    """Return the local system date used in GLM prompts."""
+    """Return the local system date used in model prompts."""
     return datetime.now().strftime("%Y-%m-%d")
 
 

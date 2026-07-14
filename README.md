@@ -15,7 +15,9 @@
 打开 `.env` 文件，填写：
 
 ```env
-GLM_API_KEY=你的GLM API Key
+DEEPSEEK_API_KEY=你的DeepSeek API Key
+DEEPSEEK_FAST_MODEL=deepseek-v4-flash
+DEEPSEEK_EXPERT_MODEL=deepseek-v4-pro
 TAVILY_API_KEY=你的Tavily API Key
 JWT_SECRET_KEY=随机强密钥（建议32位以上随机字符串）
 ```

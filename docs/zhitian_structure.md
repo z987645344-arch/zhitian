@@ -12,7 +12,7 @@ D:\zhiliao\zhitian\
 ├── config.py                   ← 配置中心（37行）
 ├── requirements.txt            ← 依赖列表（19项）
 ├── Dockerfile                  ← Docker 打包配置
-├── .env                        ← 敏感信息（GLM/Tavily/JWT Key，禁止上传 git）
+├── .env                        ← 敏感信息（DeepSeek/Tavily/JWT Key，禁止上传 git）
 ├── .gitignore
 ├── README.md                   ← 项目说明与启动指南
 ├── 启动后端.bat                ← 一键启动后端
@@ -69,10 +69,10 @@ D:\zhiliao\zhitian\
 |------|---------|
 | 语言 | Python 3.10.11 / UTF-8 |
 | 后端框架 | FastAPI 0.115.0 + Uvicorn 0.30.0 |
-| LLM | GLM API：主模型 glm-4.7-flash，fallback glm-4-flash，视觉 glm-4.6v-flash |
+| LLM | DeepSeek OpenAI兼容API：fast使用deepseek-v4-flash，expert使用deepseek-v4-pro |
 | 记忆层 | SQLite（短期对话）+ Chroma 0.5.0（长期向量 + 文档向量） |
 | 规划层 | LangGraph 0.1.1（六节点 ReAct 状态机） |
-| 执行层 | MCP 1.9.4 协议壳 + Tavily 搜索 + GLM 对话 + 文档检索 |
+| 执行层 | MCP 1.9.4 协议壳 + Tavily 搜索 + DeepSeek 对话 + 文档检索 |
 | 认证 | bcrypt 密码哈希 + JWT（HS256，24小时过期） |
 | 前端 | Flutter Windows 桌面端（Provider 状态管理，SSE 流式） |
 | 管理后台 | 纯静态 HTML/CSS/JS |
@@ -89,7 +89,7 @@ D:\zhiliao\zhitian\
    strip() 清洗 + 封装 PerceptionOutput
    ↓
 [规划层] planning.py — fast简化路径 + expert LangGraph ReAct状态机
-   fast       retrieve → GLM Function Call（仅search_documents/list_documents）→ 可选本地工具 → 最终回答
+   fast       retrieve → DeepSeek Function Call（仅search_documents/list_documents）→ 可选本地工具 → 最终回答
    expert     classify → 普通ReAct路径或complex_task线性任务链，保留完整工具集和联网能力
       ├── clarify → 直接 respond
       ├── complex_task → complex_plan → execute_complex ↔ checkpoint → complex_respond
@@ -280,8 +280,8 @@ class ChatResponse(BaseModel):
   Collection: zhitian_documents — 企业文档向量
   写入：成功响应后按两段式重要性评估写入 user 消息和 assistant 回复；文档切片写入 zhitian_documents
   文档切片：段落优先、句子兜底的语义切分，目标长度 500 字符；极端无边界长文本硬切兜底
-  文档检索：BM25 字符 bigram 粗筛 verified chunk，再用 Chroma 向量重排；短查询命中文档source/title时以元数据精确匹配补充召回并小幅提升到RAG阈值上方；候选阶段可用 GLM 批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
-  重要性：低信息/高信息规则速判，边界消息调用 GLM fallback 二分类；异常时保守不写入
+  文档检索：BM25 字符 bigram 粗筛 verified chunk，再用 Chroma 向量重排；短查询命中文档source/title时以元数据精确匹配补充召回并小幅提升到RAG阈值上方；候选阶段可用 DeepSeek 批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
+  重要性：低信息/高信息规则速判，边界消息调用当前DeepSeek档位二分类；异常时保守不写入
   遗忘：按 importance_level=high/normal 设置半衰期、淡出阈值和硬删除阈值
   检索：L2 距离 < 0.8 才采纳，再按 age_days 做时间衰减重排；超过淡出天数的候选不返回
   物理删除：scripts/forget_memory.py 仅清理 zhitian_memory 过期对话记忆，不删除 zhitian_documents
@@ -359,10 +359,10 @@ data/users.db
 ### 两种模式
 
 ```
-fast（GLM，独立简化路径，不进入LangGraph）
+fast（DeepSeek v4 flash，独立简化路径，不进入LangGraph）
   retrieve（Chroma长期记忆，不调用模型）
      ↓
-  GLM Function Call，只暴露search_documents和list_documents
+  DeepSeek Function Call，只暴露search_documents和list_documents
      ├── 无工具调用 → 直接回答（共1次模型调用）
      └── 本地工具调用 → 执行一次工具 → 结合工具结果生成回答（共2次模型调用）
 
@@ -435,7 +435,7 @@ Level 1 · 工具错误（执行层 execution.py）
   超时：10s（ThreadPoolExecutor）
 
 Level 2 · 规划错误（规划层 planning.py）
-  处理：降级为普通 llm_chat 模式，直接 GLM 回复
+  处理：降级为普通 llm_chat 模式，使用当前DeepSeek档位回复
   响应：status="degraded"，不写入记忆库
 
 Level 3 · 服务错误（main.py）
@@ -449,14 +449,14 @@ Level 3 · 服务错误（main.py）
 Tavily 异常 → 降级为模型知识回答 + 前缀"搜索服务暂时不可用"
 Tavily 空结果 → 降级为模型知识回答 + 前缀"网络搜索无结果"
 Tavily 全部 score < 0.3 → 降级为模型知识回答 + 前缀"搜索结果相关性不足"
-GLM 整理失败 → 返回原始搜索结果摘要 + 前缀"搜索结果整理失败"，避免伪装成正常整理结果
+DeepSeek 整理失败 → 返回原始搜索结果摘要 + 前缀"搜索结果整理失败"，避免伪装成正常整理结果
 ```
 
 ### 双模型请求模式
 
 ```
-fast：缺省模式，使用GLM独立简化路径；只支持知识库检索、文档清单和对话/长期记忆上下文回答，不支持联网搜索
-expert：使用DeepSeek完整LangGraph，保留classify、联网搜索、文档重排、reflect和上下文生成，不自动回退到GLM
+fast：缺省模式，使用deepseek-v4-flash独立简化路径；只支持知识库检索、文档清单和对话/长期记忆上下文回答，不支持联网搜索
+expert：使用deepseek-v4-pro完整LangGraph，保留classify、联网搜索、文档重排、reflect和上下文生成，不跨档位回退
 两种模式的单个模型环节都只调用一次，不做主备模型或跨tier重试
 非法mode由/chat和/chat/stream返回400
 搜索链路：query改写失败直接使用原query；整理失败返回原始Tavily摘要；总预算30s；search执行后跳过reflect

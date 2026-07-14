@@ -414,3 +414,8 @@
 - 复杂汇总统一基于原始目标和结构化子任务摘要生成，citations按doc_id+chunk_index去重；`/chat` layer_trace会附加complex节点，规划、执行、路线判断、局部调整、重规划和汇总均接入现有trace耗时日志，且不记录消息或任务参数原文。
 - 新增10项全mock复杂任务测试，覆盖意图、清单截断、路线保持/重规划、局部调整单次机会、重规划单次上限、checkpoint模型异常保守继续、整图汇总和fast隔离；完整pytest `84 passed`。
 - 真实DeepSeek/Tavily验证：初版规划过度生成7项并在连续2次模型超时后按规则degraded（165.02秒）；收紧最小非冗余规划prompt后，最终请求生成2个search_web任务，2项均success、未重规划、综合回复成功，总耗时86.21秒。期间1次query改写超时按既有规则使用原query继续。
+- 完全移除GLM与zhipuai依赖：删除GLM Key/主备/视觉模型配置及zhipuai包，`llm_provider.py`统一使用DeepSeek OpenAI兼容接口；fast使用`deepseek-v4-flash`，expert继续使用`deepseek-v4-pro`，两档能力边界保持不变。
+- 清理记忆重要性判断、文档重排序、规划分类/反思及执行层中的供应商专属函数名和日志阶段名；健康检查、可观测性、CI与README统一改为DeepSeek配置和错误统计。
+- fast模型超时仅轻量重试1次、间隔默认0.75秒，限流错误不重试；新增25秒整次fast请求预算。知识库/文件清单工具已成功而最终生成失败时，保留citations并返回带明确降级前缀的本地结果摘要。
+- 测试新增统一provider的fast超时重试、限流不重试、模型档位选择和本地检索结果降级覆盖；迁移后完整离线套件`87 passed, 1 deselected`。
+- 真实DeepSeek对照验证：fast模型`deepseek-v4-flash` 3/3成功、平均6.04秒，expert模型`deepseek-v4-pro` 3/3成功、平均6.07秒；真实规划链路fast 1/1成功（5.09秒）、expert 1/1成功（9.87秒）。相较迁移前同轮GLM隔离诊断2/22成功（9.1%），当前小样本稳定性明显改善。

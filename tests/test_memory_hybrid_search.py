@@ -89,7 +89,7 @@ def test_bm25_dirty_triggers_lazy_rebuild(monkeypatch):
     rebuild.assert_called_once_with(["doc-a"])
 
 
-def test_glm_rerank_reorders_candidates(monkeypatch):
+def test_model_rerank_reorders_candidates(monkeypatch):
     candidates = [
         {"doc_id": "doc-a", "chunk_index": 0, "content": "弱相关", "score": 0.9},
         {"doc_id": "doc-b", "chunk_index": 0, "content": "强相关", "score": 0.5},
@@ -101,16 +101,16 @@ def test_glm_rerank_reorders_candidates(monkeypatch):
         lambda response: '{"scores":[{"index":0,"score":2},{"index":1,"score":9}]}'
     )
 
-    reranked = memory._rerank_with_glm("query", candidates)
+    reranked = memory._rerank_candidates("query", candidates)
 
     assert [item["doc_id"] for item in reranked] == ["doc-b", "doc-a"]
 
 
-def test_rerank_disabled_does_not_call_glm(monkeypatch):
+def test_rerank_disabled_does_not_call_model(monkeypatch):
     candidates = [{"doc_id": "doc-a", "chunk_index": 0, "content": "a", "score": 0.9}]
     rerank = Mock(side_effect=AssertionError("rerank should not be called"))
     monkeypatch.setattr(memory.config, "RERANK_ENABLED", False)
-    monkeypatch.setattr(memory, "_rerank_with_glm", rerank)
+    monkeypatch.setattr(memory, "_rerank_candidates", rerank)
 
     assert memory._apply_document_rerank("query", candidates) == candidates
     rerank.assert_not_called()
@@ -128,4 +128,4 @@ def test_rerank_exception_keeps_original_order(monkeypatch):
         Mock(side_effect=TimeoutError("simulated timeout"))
     )
 
-    assert memory._rerank_with_glm("query", candidates) == candidates
+    assert memory._rerank_candidates("query", candidates) == candidates

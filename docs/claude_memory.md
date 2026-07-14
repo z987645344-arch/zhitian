@@ -38,9 +38,9 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ expert已具备基础线性任务分解，fast继续保持本地知识库最简路径 |
-| 上一轮完成 | 2026-07-14：expert新增complex_task线性任务链、一次整体重规划和逐任务局部调整 |
-| 当前等待 | 内测观察复杂任务分类稳定性、86秒级串行延迟和DeepSeek超时率；fast真实success路径仍待GLM服务稳定后补测 |
+| 状态 | ✅ fast/expert已统一迁移到DeepSeek两档模型，能力边界保持不变 |
+| 上一轮完成 | 2026-07-14：移除旧模型供应商依赖，fast改用deepseek-v4-flash，expert继续使用deepseek-v4-pro |
+| 当前等待 | 扩大DeepSeek两档模型稳定性样本；继续观察fast轻量超时重试效果及expert复杂任务86秒级串行延迟 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
 | 下一步 | 扩展Agent工具集；根据内测数据评估复杂任务DAG依赖与并行执行，降低线性链路累计延迟 |
 
@@ -52,7 +52,7 @@
 
 ### 1. Agent 已具备基础任务分解，编排能力仍待深化
 
-当前 ReAct 循环可工作（GLM 能自主判断"文档缺依据时转联网搜索"），但：
+当前 ReAct 循环可工作（DeepSeek 能自主判断"文档缺依据时转联网搜索"），但：
 - expert可将复杂目标拆成最多10项线性任务，顺序执行并综合汇总；支持整体重规划1次和每任务局部调整1次
 - 当前仅线性任务链，不支持DAG依赖图和并行执行，真实2任务搜索+汇总耗时86.21秒
 - 工具仍只有4个（search_web / search_documents / list_documents / llm_chat）
@@ -66,7 +66,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 ### 3. 记忆系统仍处基础阶段
 
 - user 消息和 assistant 回复已按重要性过滤后写入向量库
-- 重要性评估已升级为两段式：低信息短语/高信息特征先规则速判，边界消息调用 GLM fallback 模型二分类
+- 重要性评估已升级为两段式：低信息短语/高信息特征先规则速判，边界消息调用当前DeepSeek档位二分类
 - 长期记忆已按 high/normal 两档设置半衰期、淡出阈值和硬删除阈值；检索时懒惰衰减重排，`scripts/forget_memory.py` 可物理删除过期对话记忆
 - Chroma 初始化、读写、删除已用全局 RLock 串行化，避免懒加载和并发读写竞态
 - 检索用 Chroma 默认 embedding，无重排序
@@ -88,8 +88,8 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 ### 5. 检索质量基础水平
 
-- 已接入 BM25+向量两阶段 hybrid search，短查询可通过 verified 文档 title/source 元数据命中补充分数，并在候选阶段接入 GLM 批量重排序精排
-- document 意图已区分内容检索和清单列举两种子场景：search_documents 查内容，list_documents 列 verified 文档 source 清单；清单类路由不再依赖关键词/正则兜底，改由GLM Function Call分类
+- 已接入 BM25+向量两阶段 hybrid search，短查询可通过 verified 文档 title/source 元数据命中补充分数，并在候选阶段接入 DeepSeek 批量重排序精排
+- document 意图已区分内容检索和清单列举两种子场景：search_documents 查内容，list_documents 列 verified 文档 source 清单；清单类路由不再依赖关键词/正则兜底，改由DeepSeek Function Call分类
 - 切片已升级为段落优先+句子兜底的语义切分，目标长度仍为 500 字符
 - PDF 无 OCR
 
@@ -109,7 +109,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 按优先级排序，具体由用户和指挥师讨论后决定：
 
 ### 第一优先：记忆与检索质量改进
-- 重要性评估、遗忘机制、hybrid search 和 GLM 重排序已完成
+- 重要性评估、遗忘机制、hybrid search 和 DeepSeek 重排序已完成
 
 ### 第二优先：Agent 能力提升
 - 扩展工具集（数据库查询、API 调用、文件操作）
@@ -127,17 +127,16 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 | 约束 | 说明 |
 |------|------|
-| 双模型mode | `/chat`与`/chat/stream`缺省`mode=fast`走GLM本地简化路径；`mode=expert`走DeepSeek完整Agent路径，不跨tier fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
-| tier划分依据 | fast/expert不仅模型不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次GLM调用；expert保留完整分类、联网、精排和ReAct能力 |
+| DeepSeek双档mode | `/chat`与`/chat/stream`缺省`mode=fast`使用deepseek-v4-flash本地简化路径；`mode=expert`使用deepseek-v4-pro完整Agent路径，不跨档位fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
+| tier划分依据 | fast/expert不仅模型档位不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次模型调用；expert保留完整分类、联网、精排、ReAct和complex_task能力 |
 | expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；真实2项搜索汇总约86秒，延迟和上游超时风险高于普通expert |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
-| zhipuai SDK | 不支持 parallel_tool_calls，已做兼容 |
 | mcp 版本 | 固定 1.9.4，新版与 FastAPI 不兼容 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
 | RAG阈值 | 极短文档/极短查询的纯向量score仍可能低于`RAG_SCORE_THRESHOLD=0.55`；已通过title/source元数据补充召回缓解“查询主体命中文档标题/source”的场景（如“知了是什么”命中`知了简介`后提升到0.57），但短查询不命中任何文档标题/source时仍需后续评估query扩展或阈值策略 |
 | 搜索链路 | query改写失败直接使用原query，整理只调用当前mode模型一次，总预算30秒；search执行后直接respond，失败透明返回带前缀的Tavily原始摘要。最终实测expert平均27.84秒，较历史87.6秒下降约68% |
-| .env | 必须保持无 BOM UTF-8，否则 python-dotenv 把第一行解析为 \ufeffGLM_API_KEY |
+| .env | 必须保持无 BOM UTF-8，否则 python-dotenv 无法正确识别首行环境变量名 |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
 | Codex 环境 | 运行时验证需用提权方式调用 .venv\Scripts\python.exe |
 | .venv | Python 3.10.11，可正常 import fastapi，环境状态正常 |
@@ -154,7 +153,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | RAG 知识库 | ✅ 基础链路完整（上传→审核→检索→可信回答→引用→调试） |
 | 用户认证 | ✅ JWT + bcrypt + 三档角色 + session 归属 |
 | 文档审核 | ✅ pending/verified/rejected 完整审核流 |
-| 流式输出 | ✅ SSE 真流式（clarify 逐字 / search GLM流式整理 / chat 流式） |
+| 流式输出 | ✅ SSE 真流式（clarify 逐字 / search DeepSeek流式整理 / chat 流式） |
 | 日志脱敏 | ✅ 用户消息/文档内容/搜索结果不进日志 |
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |

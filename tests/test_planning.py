@@ -47,7 +47,7 @@ def _result(tool="search_web", data="工具结果", status="success"):
 )
 def test_classify_node_parses_intents(monkeypatch, decision, expected_intent):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_glm", lambda message, context, tier="fast": decision)
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": decision)
     monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: None)
 
     state = planning.classify_node(_state(""))
@@ -62,7 +62,7 @@ def test_classify_node_saves_city_to_state(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
     monkeypatch.setattr(
         planning,
-        "_classify_with_glm",
+        "_classify_with_model",
         lambda message, context, tier="fast": {"intent": "chat", "city": "杭州"}
     )
     monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: saved.append((session_id, city)))
@@ -81,7 +81,7 @@ def test_classify_node_uses_request_mode(monkeypatch):
         tiers.append(tier)
         return {"intent": "chat"}
 
-    monkeypatch.setattr(planning, "_classify_with_glm", classify)
+    monkeypatch.setattr(planning, "_classify_with_model", classify)
     state = _state("")
     state["mode"] = "expert"
 
@@ -117,7 +117,7 @@ def test_clarify_intent_skips_retrieve_plan_execute(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
     monkeypatch.setattr(
         planning,
-        "_classify_with_glm",
+        "_classify_with_model",
         lambda message, context, tier="fast": {"intent": "clarify", "clarification": "你在哪个城市？"}
     )
     monkeypatch.setattr(planning.memory, "search_memory", Mock(side_effect=AssertionError("retrieve should be skipped")))
@@ -138,7 +138,7 @@ def test_react_continue_returns_to_plan_and_increments_round(monkeypatch):
     ])
     calls = []
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_glm", lambda message, context, tier="fast": {"intent": "document"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", lambda state: next(decisions))
 
@@ -158,7 +158,7 @@ def test_react_continue_returns_to_plan_and_increments_round(monkeypatch):
 
 def test_react_respond_stops_after_first_round(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_glm", lambda message, context, tier="fast": {"intent": "document"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", lambda state: {"action": "respond"})
     call_tool = Mock(return_value=_result(tool="search_documents", data="首轮结果"))
@@ -174,7 +174,7 @@ def test_react_respond_stops_after_first_round(monkeypatch):
 def test_react_limit_forces_respond_with_notice(monkeypatch):
     old_limit = config.MAX_REACT_ROUNDS
     monkeypatch.setattr(config, "MAX_REACT_ROUNDS", 0)
-    monkeypatch.setattr(planning, "_reflect_with_glm", lambda state: {"action": "continue", "tool": "search_web", "query": "继续查"})
+    monkeypatch.setattr(planning, "_reflect_with_model", lambda state: {"action": "continue", "tool": "search_web", "query": "继续查"})
 
     try:
         state = _state("search")
@@ -193,7 +193,7 @@ def test_react_limit_forces_respond_with_notice(monkeypatch):
 
 def test_chat_intent_skips_reflect(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_glm", lambda message, context, tier="fast": {"intent": "chat"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "chat"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", Mock(side_effect=AssertionError("chat should skip reflect")))
     call_tool = Mock(return_value=_result(tool="llm_chat", data="聊天回复"))
@@ -211,7 +211,7 @@ def test_search_intent_skips_reflect_after_single_search(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
     monkeypatch.setattr(
         planning,
-        "_classify_with_glm",
+        "_classify_with_model",
         lambda message, context, tier="fast": {"intent": "search"}
     )
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
@@ -232,7 +232,7 @@ def test_search_intent_skips_reflect_after_single_search(monkeypatch):
 
 def test_document_list_intent_uses_list_tool_and_skips_reflect(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_glm", lambda message, context, tier="fast": {"intent": "document_list"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document_list"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", Mock(side_effect=AssertionError("document list should skip reflect")))
     call_tool = Mock(return_value=_result(tool="list_documents", data="当前企业信息库包含以下文件：\n1. a.txt"))
@@ -250,7 +250,7 @@ def test_document_list_intent_uses_list_tool_and_skips_reflect(monkeypatch):
 def test_duplicate_tool_call_is_blocked(monkeypatch):
     monkeypatch.setattr(
         planning,
-        "_reflect_with_glm",
+        "_reflect_with_model",
         lambda state: {"action": "continue", "tool": "search_web", "query": "重复查询"}
     )
     state = _state("search")
@@ -279,7 +279,7 @@ def test_reflect_uses_request_tier_once(monkeypatch):
     state["mode"] = "expert"
     state["results"] = [_result()]
 
-    assert planning._reflect_with_glm(state) == {"action": "respond"}
+    assert planning._reflect_with_model(state) == {"action": "respond"}
     assert calls == ["expert"]
 
 
@@ -384,6 +384,33 @@ def test_fast_document_uses_two_model_calls_and_local_retrieval(monkeypatch):
     params = tool_call.call_args[0][1]
     assert params["generate_answer"] is False
     assert params["rerank_enabled"] is False
+
+
+def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
+    _prepare_fast_mocks(monkeypatch)
+    responses = iter([
+        _fast_response(tool_name="search_documents", arguments={"query": "local topic"}),
+        TimeoutError("simulated timeout"),
+    ])
+
+    def chat(*args, **kwargs):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    monkeypatch.setattr(
+        planning.mcp_client,
+        "call_tool",
+        Mock(return_value=_result(tool="search_documents", data="local evidence summary")),
+    )
+
+    state = planning.run_graph_state("fast-document-fallback", "local topic", mode="fast")
+
+    assert state["error"] == "fast_final_generation_failed"
+    assert state["response"].startswith("（模型生成失败，以下为本地检索结果摘要）")
+    assert "local evidence summary" in state["response"]
 
 
 def test_fast_document_list_uses_two_model_calls(monkeypatch):

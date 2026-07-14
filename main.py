@@ -1049,27 +1049,27 @@ def _count_document_chunks() -> int:
 
 
 def _check_planning_health() -> dict:
-    glm_key = bool(config.GLM_API_KEY)
+    deepseek_key = bool(config.DEEPSEEK_API_KEY)
     graph_ready = getattr(planning, "graph", None) is not None
     return {
-        "status": "healthy" if glm_key and graph_ready else "error",
-        "glm_key": glm_key,
+        "status": "healthy" if deepseek_key and graph_ready else "error",
+        "deepseek_key": deepseek_key,
         "graph": graph_ready
     }
 
 
 def _check_execution_health() -> dict:
-    glm_key = bool(config.GLM_API_KEY)
+    deepseek_key = bool(config.DEEPSEEK_API_KEY)
     tavily_key = bool(config.TAVILY_API_KEY)
-    if glm_key and tavily_key:
+    if deepseek_key and tavily_key:
         status = "healthy"
-    elif glm_key:
+    elif deepseek_key:
         status = "degraded"
     else:
         status = "error"
     return {
         "status": status,
-        "glm_key": glm_key,
+        "deepseek_key": deepseek_key,
         "tavily_key": tavily_key
     }
 

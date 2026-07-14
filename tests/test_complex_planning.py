@@ -57,7 +57,7 @@ def test_classify_with_mocked_deepseek_declares_complex_task(monkeypatch):
 
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
 
-    decision = planning._classify_with_glm("分别检索两个主题并对比", [], tier="expert")
+    decision = planning._classify_with_model("分别检索两个主题并对比", [], tier="expert")
 
     assert decision["intent"] == "complex_task"
     assert observed["tier"] == "expert"
@@ -90,8 +90,8 @@ def test_checkpoint_keeps_valid_route(monkeypatch):
     state["complex_task_list"] = [_task(0), _task(1)]
     state["current_task_pointer"] = 1
     state["complex_task_created_count"] = 2
-    monkeypatch.setattr(planning, "_check_complex_route_with_glm", lambda current: "keep")
-    monkeypatch.setattr(planning, "_adjust_complex_task_with_glm", lambda current, task: None)
+    monkeypatch.setattr(planning, "_check_complex_route_with_model", lambda current: "keep")
+    monkeypatch.setattr(planning, "_adjust_complex_task_with_model", lambda current, task: None)
 
     planning.checkpoint_node(state)
 
@@ -106,7 +106,7 @@ def test_checkpoint_replans_remaining_route_once(monkeypatch):
     state["current_task_pointer"] = 1
     state["complex_task_created_count"] = 2
     replacement = [_task(1, tool="search_documents", query="new")]
-    monkeypatch.setattr(planning, "_check_complex_route_with_glm", lambda current: "replan")
+    monkeypatch.setattr(planning, "_check_complex_route_with_model", lambda current: "replan")
     monkeypatch.setattr(
         planning,
         "_generate_complex_tasks",
@@ -128,7 +128,7 @@ def test_local_adjustment_is_available_only_once_per_position(monkeypatch):
     state["complex_task_created_count"] = 1
     adjusted = _task(0, tool="search_documents", query="adjusted")
     adjust = Mock(return_value=adjusted)
-    monkeypatch.setattr(planning, "_adjust_complex_task_with_glm", adjust)
+    monkeypatch.setattr(planning, "_adjust_complex_task_with_model", adjust)
 
     planning.checkpoint_node(state)
     planning.checkpoint_node(state)
@@ -144,8 +144,8 @@ def test_full_replan_check_is_skipped_after_it_was_used(monkeypatch):
     state["complex_task_list"] = [_task(0)]
     state["complex_task_created_count"] = 1
     route = Mock(side_effect=AssertionError("full route must not be checked twice"))
-    monkeypatch.setattr(planning, "_check_complex_route_with_glm", route)
-    monkeypatch.setattr(planning, "_adjust_complex_task_with_glm", lambda current, task: None)
+    monkeypatch.setattr(planning, "_check_complex_route_with_model", route)
+    monkeypatch.setattr(planning, "_adjust_complex_task_with_model", lambda current, task: None)
 
     planning.checkpoint_node(state)
 
@@ -159,12 +159,12 @@ def test_checkpoint_model_failure_keeps_remaining_plan(monkeypatch):
     state["complex_task_created_count"] = 1
     monkeypatch.setattr(
         planning,
-        "_check_complex_route_with_glm",
+        "_check_complex_route_with_model",
         Mock(side_effect=TimeoutError()),
     )
     monkeypatch.setattr(
         planning,
-        "_adjust_complex_task_with_glm",
+        "_adjust_complex_task_with_model",
         Mock(side_effect=TimeoutError()),
     )
 
@@ -179,12 +179,12 @@ def test_complex_graph_executes_all_tasks_and_summarizes(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda *args: [])
     monkeypatch.setattr(
         planning,
-        "_classify_with_glm",
+        "_classify_with_model",
         lambda *args, **kwargs: {"intent": "complex_task"},
     )
     monkeypatch.setattr(planning, "_generate_complex_tasks", lambda *args, **kwargs: tasks)
-    monkeypatch.setattr(planning, "_check_complex_route_with_glm", lambda state: "keep")
-    monkeypatch.setattr(planning, "_adjust_complex_task_with_glm", lambda state, task: None)
+    monkeypatch.setattr(planning, "_check_complex_route_with_model", lambda state: "keep")
+    monkeypatch.setattr(planning, "_adjust_complex_task_with_model", lambda state, task: None)
     monkeypatch.setattr(
         planning.mcp_client,
         "call_tool",

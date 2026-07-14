@@ -243,7 +243,7 @@ def _judge_message_importance(
     if _has_high_information_signal(stripped):
         return True, IMPORTANCE_LEVEL_HIGH
 
-    if allow_model_fallback and _classify_importance_with_glm(stripped, tier=tier):
+    if allow_model_fallback and _classify_importance_boundary(stripped, tier=tier):
         return True, IMPORTANCE_LEVEL_NORMAL
     return False, IMPORTANCE_LEVEL_NORMAL
 
@@ -337,7 +337,7 @@ def _has_high_information_signal(content: str) -> bool:
     return any(pattern.search(normalized) for pattern in HIGH_INFORMATION_PATTERNS)
 
 
-def _classify_importance_with_glm(content: str, tier: str = "fast") -> bool:
+def _classify_importance_boundary(content: str, tier: str = "fast") -> bool:
     """用低成本模型兜底判断边界消息，异常时保守不写入。"""
     started_at = time.perf_counter()
     try:
@@ -358,14 +358,14 @@ def _classify_importance_with_glm(content: str, tier: str = "fast") -> bool:
                 }
             ],
             tier=tier,
-            timeout=config.MEMORY_IMPORTANCE_GLM_TIMEOUT
+            timeout=config.MEMORY_IMPORTANCE_TIMEOUT
         )
         result = llm_provider.extract_text(response).strip().lower()
-        observability.log_stage("memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
+        observability.log_stage("memory_importance_model", int((time.perf_counter() - started_at) * 1000))
         return result.startswith("important")
     except Exception as e:
-        observability.log_stage("memory_importance_glm", int((time.perf_counter() - started_at) * 1000))
-        logger.warning("长期记忆GLM重要性判断失败：message_len=%s error_type=%s", len(content or ""), type(e).__name__)
+        observability.log_stage("memory_importance_model", int((time.perf_counter() - started_at) * 1000))
+        logger.warning("长期记忆模型重要性判断失败：message_len=%s error_type=%s", len(content or ""), type(e).__name__)
         return False
 
 
@@ -712,7 +712,7 @@ def _apply_document_rerank(
         return candidates
     if _has_title_source_match(candidates) and len(candidates) <= TITLE_MATCH_RERANK_SKIP_MAX_CANDIDATES:
         logger.info(
-            "文档GLM重排序跳过：reason=title_source_match candidate_count=%s",
+            "文档模型重排序跳过：reason=title_source_match candidate_count=%s",
             len(candidates)
         )
         return candidates
@@ -720,14 +720,14 @@ def _apply_document_rerank(
     rerank_count = max(1, int(config.RERANK_CANDIDATE_COUNT))
     head = candidates[:rerank_count]
     tail = candidates[rerank_count:]
-    return _rerank_with_glm(query, head, tier=tier) + tail
+    return _rerank_candidates(query, head, tier=tier) + tail
 
 
 def _has_title_source_match(candidates: list[dict]) -> bool:
     return any(bool(candidate.get("title_source_match")) for candidate in candidates or [])
 
 
-def _rerank_with_glm(
+def _rerank_candidates(
     query: str,
     candidates: list[dict],
     tier: str = "fast"
@@ -782,7 +782,7 @@ def _rerank_with_glm(
         )
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logger.info(
-            "文档GLM重排序完成：candidate_count=%s elapsed_ms=%s",
+            "文档模型重排序完成：candidate_count=%s elapsed_ms=%s",
             len(candidates),
             elapsed_ms
         )
@@ -790,7 +790,7 @@ def _rerank_with_glm(
     except Exception as e:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logger.warning(
-            "文档GLM重排序失败，保留hybrid顺序：candidate_count=%s elapsed_ms=%s error_type=%s",
+            "文档模型重排序失败，保留hybrid顺序：candidate_count=%s elapsed_ms=%s error_type=%s",
             len(candidates),
             elapsed_ms,
             type(e).__name__
