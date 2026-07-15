@@ -191,7 +191,8 @@ def test_chat_requests_are_recorded_in_recent_requests(
     headers, _ = auth_headers("customer")
     monkeypatch.setattr(
         "main.planning.run_graph_state",
-        lambda session_id, message, mode: {
+        lambda session_id, message, mode, extra_context=None, owner_user_id="",
+        attachment_ids=None: {
             "response": "测试回复",
             "citations": [],
             "error": "",

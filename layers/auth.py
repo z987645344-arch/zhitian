@@ -55,10 +55,17 @@ def init_db() -> None:
                     uploaded_by TEXT NOT NULL,
                     uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     reviewed_by TEXT,
-                    reviewed_at DATETIME
+                    reviewed_at DATETIME,
+                    converted_from TEXT
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+            }
+            if "converted_from" not in columns:
+                conn.execute("ALTER TABLE documents ADD COLUMN converted_from TEXT")
     except Exception as e:
         logger.error("用户数据库初始化失败：error_type=%s", type(e).__name__)
         raise
@@ -197,7 +204,12 @@ def verify_session_owner(session_id: str, user_id: str) -> bool:
         raise
 
 
-def register_document(doc_id: str, source: str, uploaded_by: str) -> None:
+def register_document(
+    doc_id: str,
+    source: str,
+    uploaded_by: str,
+    converted_from: str = "",
+) -> None:
     """登记上传文档，默认进入pending审核状态。"""
     if not doc_id:
         raise ValueError("doc_id不能为空")
@@ -210,10 +222,12 @@ def register_document(doc_id: str, source: str, uploaded_by: str) -> None:
         with _connect() as conn:
             conn.execute(
                 """
-                INSERT INTO documents (doc_id, source, trust_level, uploaded_by)
-                VALUES (?, ?, 'pending', ?)
+                INSERT INTO documents (
+                    doc_id, source, trust_level, uploaded_by, converted_from
+                )
+                VALUES (?, ?, 'pending', ?, ?)
                 """,
-                (doc_id, source, uploaded_by)
+                (doc_id, source, uploaded_by, converted_from or None)
             )
     except Exception as e:
         logger.error(
@@ -231,7 +245,8 @@ def list_pending_documents() -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
+                       reviewed_by, reviewed_at, converted_from
                 FROM documents
                 WHERE trust_level = 'pending'
                 ORDER BY uploaded_at ASC
@@ -249,7 +264,8 @@ def list_documents() -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
+                       reviewed_by, reviewed_at, converted_from
                 FROM documents
                 ORDER BY uploaded_at DESC
                 """
@@ -266,7 +282,8 @@ def list_verified_documents() -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
+                       reviewed_by, reviewed_at, converted_from
                 FROM documents
                 WHERE trust_level = 'verified'
                 ORDER BY reviewed_at DESC
@@ -339,7 +356,8 @@ def get_document(doc_id: str) -> dict | None:
         with _connect() as conn:
             row = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
+                       reviewed_by, reviewed_at, converted_from
                 FROM documents
                 WHERE doc_id = ?
                 """,
@@ -359,7 +377,8 @@ def get_documents_by_source(source: str) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at, reviewed_by, reviewed_at
+                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
+                       reviewed_by, reviewed_at, converted_from
                 FROM documents
                 WHERE source = ?
                 ORDER BY uploaded_at DESC
@@ -451,7 +470,8 @@ def _document_row_to_dict(row: sqlite3.Row) -> dict:
         "uploaded_by": row["uploaded_by"],
         "uploaded_at": row["uploaded_at"],
         "reviewed_by": row["reviewed_by"],
-        "reviewed_at": row["reviewed_at"]
+        "reviewed_at": row["reviewed_at"],
+        "converted_from": row["converted_from"] or ""
     }
 
 

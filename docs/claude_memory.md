@@ -38,11 +38,11 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ fast/expert已统一迁移到DeepSeek两档模型，能力边界保持不变 |
-| 上一轮完成 | 2026-07-14：移除旧模型供应商依赖，fast改用deepseek-v4-flash，expert继续使用deepseek-v4-pro |
-| 当前等待 | 扩大DeepSeek两档模型稳定性样本；继续观察fast轻量超时重试效果及expert复杂任务86秒级串行延迟 |
+| 状态 | ✅ 已清理未接入主流程且真实解析持续超时的MinerU实验集成，保留MCP 1.28.1本地工具服务 |
+| 上一轮完成 | 2026-07-15：移除MinerU stdio/uvx客户端、专项测试和`uv`依赖，规划层本地工具调用接口保持兼容 |
+| 当前等待 | 无 |
 | 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
-| 下一步 | 扩展Agent工具集；根据内测数据评估复杂任务DAG依赖与并行执行，降低线性链路累计延迟 |
+| 下一步 | 继续扩展Agent工具集；新的MCP生态工具按实际价值和稳定性逐项验证 |
 
 > 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，无工具时1次模型调用、有工具时2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
@@ -54,14 +54,15 @@
 
 当前 ReAct 循环可工作（DeepSeek 能自主判断"文档缺依据时转联网搜索"），但：
 - expert可将复杂目标拆成最多10项线性任务，顺序执行并综合汇总；支持整体重规划1次和每任务局部调整1次
+- expert classify已支持展示模型原生的简短决策理由；fast无classify，因此不展示理由
 - 当前仅线性任务链，不支持DAG依赖图和并行执行，真实2任务搜索+汇总耗时86.21秒
-- 工具仍只有4个（search_web / search_documents / list_documents / llm_chat）
+  - expert的generate_file可生成Markdown/TXT/PDF/DOCX；convert_document已接入对话意图，仅允许转换当前session已上传且owner匹配的附件
 - reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
 - ReAct仅保留在document路径；普通chat和search均单轮respond，避免重复联网搜索放大延迟
 
-### 2. MCP 仍是协议壳
+### 2. MCP保留本地工具服务，MinerU实验集成已清理
 
-mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具发现、标准通信一个都没用。后期需替换为真实 MCP client 调用。
+项目保留`mcp==1.28.1`和本地`mcp_server.py`工具服务；规划层继续通过轻量`mcp_client.call_tool()`兼容调用`execution.run()`。MinerU实验客户端虽曾完成协议连接和工具发现，但未接入业务主流程，且真实PDF解析在30/90/180秒预算下持续超时，现已删除相关stdio/uvx代码和依赖，避免维护不可用能力。
 
 ### 3. 记忆系统仍处基础阶段
 
@@ -81,7 +82,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 审计日志 | ✅ 基础 trace_id 阶段日志，按请求串联耗时且遵守消息脱敏 |
 | 监控 | ✅ 基础进程内 metrics/tracing，支持fast/expert独立P50/P95/P99；reviewer可手动查看，重启清零且不跨实例聚合 |
 | 生产部署 | ✅ 已接入FastAPI lifespan/Uvicorn优雅关闭，默认最多等待在途请求30秒并释放Chroma资源 |
-| 测试 | ✅ 认证、规划/ReAct/复杂任务、记忆、execution搜索、可观测性、生命周期和上传安全测试覆盖已上线（84项） |
+| 测试 | ✅ 认证、规划/ReAct/复杂任务、记忆、execution搜索、可观测性、生命周期、上传安全和聊天附件测试已覆盖 |
 | CI | ✅ GitHub Actions 基础流水线：Python 3.10、敏感检查、py_compile、非 integration pytest |
 | 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
 | 水平扩展 | 不支持 |
@@ -99,8 +100,9 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 | 编号 | 问题 | 位置 | 严重度 |
 |------|------|------|--------|
-| L1 | MCP 协议壳未替换 | mcp_client.py | P2 |
+| L1 | ✅ 已解决：保留MCP 1.28.1本地工具服务；未接入且不稳定的MinerU实验客户端已清理，不再作为待交付能力 | mcp_server.py / mcp_client.py | - |
 | L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
+| L14 | ✅ 已解决：改为用户手动管理的持久化文件库，由owner通过“我的文件”主动下载和删除，而非自动清理策略 | layers/files_store.py / data/user_files | - |
 
 ---
 
@@ -113,13 +115,19 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 ### 第二优先：Agent 能力提升
 - 扩展工具集（数据库查询、API 调用、文件操作）
+- `generate_file`已完成：expert可生成并交付Markdown/TXT/PDF/DOCX；PDF/DOCX转换失败时保留并降级交付Markdown
+- 用户自助转换工具箱已完成：任意认证用户可上传受支持Office格式、转换并下载个人产物，不进入知识库和Agent路由
+- 文件转换第二阶段（3-B）已完成：expert可将当前会话已上传的DOC转DOCX、XLS/XLSX/PPT/PPTX转PDF，产物进入统一用户文件库
+- 聊天附件上传与阅读、用户端转换工具箱和统一“我的文件”管理入口均已完成
 - 任务分解基础版已完成；后续扩展DAG依赖图和并行执行
 - 思考链输出（用户可见 Agent 推理过程）
+- classify决策理由展示已完成；reflect和complex_task检查点/局部调整理由展示为可选后续
 
 ### 第三优先：工程化
 - PostgreSQL 迁移
 - Docker Compose 部署
 - CI 已完成基础接入；后续按实际部署需要再补 CD
+- MCP版本升级已完成；后续接入新的MCP生态工具时理论上不再需要预设`uvx`隔离等workaround，但每个server的依赖闭包和运行行为仍需真实验证
 
 ---
 
@@ -128,10 +136,13 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 | 约束 | 说明 |
 |------|------|
 | DeepSeek双档mode | `/chat`与`/chat/stream`缺省`mode=fast`使用deepseek-v4-flash本地简化路径；`mode=expert`使用deepseek-v4-pro完整Agent路径，不跨档位fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
+| DeepSeek prompt caching | expert新增调用点必须按“固定角色/规则/工具说明 → 当日日期（仅原prompt需要时）→ 用户问题/上下文/检索结果”组织；固定前缀不得混入trace_id、精确时间戳等逐请求动态值。缓存由服务端自动尽力匹配；本轮重复长前缀实测命中2304 tokens、未命中92 tokens（约96.2%） |
+| LibreOffice转换 | 员工上传的`.doc/.xls/.xlsx/.ppt/.pptx`依赖本机LibreOffice `soffice`；当前开发机已安装26.2.4.2并通过`.env`配置实际路径，转换串行执行且默认30秒超时。DOC→DOCX、XLSX/PPTX→PDF、SQLite/Chroma元数据和真实HTTP审核链路均已验证；CI继续排除integration测试 |
+| 聊天附件 | 附件正文仅保存在单进程内存中，按session隔离并默认30分钟懒惰过期；原始文件独立持久化到用户文件库，直到owner手动删除。正文不跨worker共享，不写入SQLite、Chroma或日志正文 |
 | tier划分依据 | fast/expert不仅模型档位不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次模型调用；expert保留完整分类、联网、精排、ReAct和complex_task能力 |
 | expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；真实2项搜索汇总约86秒，延迟和上游超时风险高于普通expert |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
-| mcp 版本 | 固定 1.9.4，新版与 FastAPI 不兼容 |
+| mcp 版本 | 已正式升级至`mcp==1.28.1`，并联动精确锁定`uvicorn==0.51.0`和`PyJWT==2.13.0`；FastAPI 0.115.0、Starlette 0.38.6、sse-starlette 3.0.3保持不变。主环境`pip check`、154项离线测试、真实Uvicorn `/health`、JWT登录/对话和HTTP SSE正文→citations→`[DONE]`均通过；测试统一使用独立的32字节以上HMAC密钥，无PyJWT短密钥警告 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
 | RAG阈值 | 极短文档/极短查询的纯向量score仍可能低于`RAG_SCORE_THRESHOLD=0.55`；已通过title/source元数据补充召回缓解“查询主体命中文档标题/source”的场景（如“知了是什么”命中`知了简介`后提升到0.57），但短查询不命中任何文档标题/source时仍需后续评估query扩展或阈值策略 |
@@ -148,7 +159,7 @@ mcp_client.py 19 行直接调用 execution.run()，MCP 的进程隔离、工具�
 
 | 维度 | 状态 |
 |------|------|
-| 五层架构 | ✅ 全部实现（感知/记忆/规划/执行/输出 + 认证 + MCP壳 + 文档解析） |
+| 五层架构 | ✅ 全部实现（感知/记忆/规划/执行/输出 + 认证 + MCP本地工具服务 + 文档解析） |
 | ReAct 循环 | ✅ 轻量 ReAct 可工作（search/document路径可reflect，chat路径单轮respond） |
 | RAG 知识库 | ✅ 基础链路完整（上传→审核→检索→可信回答→引用→调试） |
 | 用户认证 | ✅ JWT + bcrypt + 三档角色 + session 归属 |

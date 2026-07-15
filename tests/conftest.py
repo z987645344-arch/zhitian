@@ -6,8 +6,12 @@ created with a unique prefix and removed after each test, together with their
 session and document rows.
 """
 
+import os
 import sqlite3
 import uuid
+
+# Test-only key. Keep tests isolated from the production secret loaded from .env.
+os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-at-least-32-bytes-2026"
 
 import pytest
 from fastapi.testclient import TestClient

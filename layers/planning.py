@@ -13,7 +13,7 @@ from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
 from utils import observability
-from utils.time_context import current_date_prompt
+from utils.time_context import cache_friendly_messages, current_date_prompt
 
 logger = get_logger("planning")
 
@@ -37,10 +37,13 @@ class ComplexTaskResult(BaseModel):
 
 class AgentState(TypedDict):
     session_id: str
+    owner_user_id: str
     message: str
     mode: str
     intent: str
     context: list[str]
+    attachment_context: list[str]
+    attachment_ids: list[str]
     tasks: list[Task]
     results: list[ToolResult]
     citations: list[Citation]
@@ -52,6 +55,10 @@ class AgentState(TypedDict):
     error: str
     clarification: str
     city: str
+    filename_hint: str
+    output_format: str
+    conversion_target_format: str
+    decision_reasoning: Optional[str]
     is_complex_task: bool
     complex_task_list: list[Task]
     complex_task_results: list[ComplexTaskResult]
@@ -160,6 +167,59 @@ INTENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_file",
+            "description": (
+                "仅当用户明确要求把内容整理、导出或生成为一份可下载的文件、文档、清单或报告时调用。"
+                "本工具表示需要先生成完整正文，再保存为可交付文件；普通问答、只需在聊天中展示内容、"
+                "读取已有文件或转换已有文件格式时不要调用。支持md、txt、pdf、docx四种输出格式；"
+                "md适合结构化文本，txt适合纯文本，用户明确要求正式文档、报告或可打印材料时可选择pdf或docx。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename_hint": {
+                        "type": "string",
+                        "description": "简短、用户可读的建议文件名，不包含目录路径"
+                    },
+                    "output_format": {
+                        "type": "string",
+                        "enum": ["md", "txt", "pdf", "docx"],
+                        "description": "输出格式，默认md；正式文档、报告或可打印材料可选pdf/docx"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "convert_document",
+            "description": (
+                "仅当用户明确要求把本轮对话已经上传的一个附件转换为PDF或DOCX时调用。"
+                "这是格式转换，不是读取、总结附件，也不是生成新内容。"
+                "DOC附件只能转DOCX；XLS、XLSX、PPT、PPTX附件只能转PDF。"
+                "没有附件或同时存在多个附件时仍选择本工具，由系统提示用户上传或明确目标，禁止猜测附件。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "attachment_id": {
+                        "type": "string",
+                        "description": "本轮请求中唯一附件的attachment_id"
+                    },
+                    "target_format": {
+                        "type": "string",
+                        "enum": ["pdf", "docx"],
+                        "description": "用户明确要求的目标格式"
+                    }
+                },
+                "required": ["attachment_id", "target_format"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "direct_answer",
             "description": (
                 "当用户问题完整清晰，可以直接根据已有上下文或通用知识回答，不需要联网搜索时调用。"
@@ -232,6 +292,13 @@ INTENT_TOOLS = [
     }
 ]
 
+DECISION_REASONING_FALLBACK = "已根据问题内容选择处理路径"
+for _intent_tool in INTENT_TOOLS:
+    _intent_tool["function"]["parameters"]["properties"]["reasoning"] = {
+        "type": "string",
+        "description": "用一句话说明选择该工具的依据，控制在60字以内",
+    }
+
 
 FAST_TOOLS = [
     {
@@ -276,19 +343,47 @@ COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_c
 def classify_node(state: AgentState) -> AgentState:
     """classify节点：调用所选模型的 Function Call 判断意图。"""
     started_at = time.perf_counter()
-    state["context"] = _load_classify_context(state["session_id"], state["message"])
+    state["context"] = _merge_context(
+        state["context"],
+        _load_classify_context(state["session_id"], state["message"]),
+    )
     observability.log_stage("classify_context", int((time.perf_counter() - started_at) * 1000))
     started_at = time.perf_counter()
-    decision = _classify_with_model(state["message"], state["context"], tier=state["mode"])
+    decision = _classify_with_model(
+        state["message"],
+        state["context"],
+        tier=state["mode"],
+        attachment_ids=state.get("attachment_ids", []),
+    )
     observability.log_stage("classify_model", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
     state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
     city = decision.get("city", "")
     state["city"] = city
+    state["filename_hint"] = str(decision.get("filename_hint", "") or "")
+    state["output_format"] = str(decision.get("output_format", "md") or "md")
+    state["conversion_target_format"] = str(
+        decision.get("conversion_target_format", "") or ""
+    )
+    if state["intent"] == "convert_document":
+        current_attachment_ids = state.get("attachment_ids", [])
+        if not current_attachment_ids:
+            state["clarification"] = "请先上传需要转换的文件。"
+        elif len(current_attachment_ids) != 1:
+            state["clarification"] = "当前有多个附件，请明确指出要转换哪一个。"
+    state["decision_reasoning"] = _normalize_decision_reasoning(
+        decision.get("decision_reasoning")
+    )
     if city:
         _save_city_memory(state["session_id"], city)
-    logger.info("意图分类结果：session_id=%s intent=%s", state["session_id"], state["intent"])
+    logger.info(
+        "意图分类结果：session_id=%s intent=%s reasoning_present=%s reasoning_len=%s",
+        state["session_id"],
+        state["intent"],
+        bool(state["decision_reasoning"]),
+        len(state["decision_reasoning"] or ""),
+    )
     return state
 
 
@@ -327,6 +422,9 @@ def execute_node(state: AgentState) -> AgentState:
     task = state["tasks"][state["round_count"]]
     started_at = time.perf_counter()
     result = mcp_client.call_tool(task.tool, task.params)
+    if state["intent"] == "generate_file" and result.status == "success":
+        state["results"].append(result)
+        result = _save_generated_content(state, result.data)
     observability.log_stage(
         "execute_%s" % task.tool,
         int((time.perf_counter() - started_at) * 1000)
@@ -471,15 +569,10 @@ def complex_respond_node(state: AgentState) -> AgentState:
     state["citations"] = _dedupe_citations(state["citations"])
     try:
         response = llm_provider.chat_completion(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        current_date_prompt()
-                        + "\n\n你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
-                        "明确说明失败或证据不足的部分，不得编造未提供的信息。"
-                    ),
-                },
+            cache_friendly_messages(
+                "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
+                "明确说明失败或证据不足的部分，不得编造未提供的信息。",
+                [
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -489,8 +582,9 @@ def complex_respond_node(state: AgentState) -> AgentState:
                         },
                         ensure_ascii=False,
                     ),
-                },
-            ],
+                }],
+                include_date=True,
+            ),
             tier="expert",
         )
         state["response"] = llm_provider.extract_text(response)
@@ -510,6 +604,16 @@ def respond_node(state: AgentState) -> AgentState:
     if state["intent"] == "clarify":
         state["response"] = state["clarification"]
         state["citations"] = []
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
+        return state
+
+    if state["intent"] == "generate_file":
+        _respond_with_generated_file(state)
+        observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
+        return state
+
+    if state["intent"] == "convert_document":
+        _respond_with_converted_file(state)
         observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
@@ -548,14 +652,42 @@ def respond_node(state: AgentState) -> AgentState:
     return state
 
 
-def run_graph(session_id: str, message: str, mode: str = "fast") -> str:
+def run_graph(
+    session_id: str,
+    message: str,
+    mode: str = "fast",
+    extra_context: Optional[list[str]] = None,
+    owner_user_id: str = "",
+    attachment_ids: Optional[list[str]] = None,
+) -> str:
     """运行规划层状态机并返回最终响应"""
-    return run_graph_state(session_id, message, mode=mode)["response"]
+    return run_graph_state(
+        session_id,
+        message,
+        mode=mode,
+        extra_context=extra_context,
+        owner_user_id=owner_user_id,
+        attachment_ids=attachment_ids,
+    )["response"]
 
 
-def run_graph_state(session_id: str, message: str, mode: str = "fast") -> AgentState:
+def run_graph_state(
+    session_id: str,
+    message: str,
+    mode: str = "fast",
+    extra_context: Optional[list[str]] = None,
+    owner_user_id: str = "",
+    attachment_ids: Optional[list[str]] = None,
+) -> AgentState:
     """运行规划层状态机并返回完整状态，供接口层判断降级和记忆写入。"""
-    state = _new_agent_state(session_id, message, mode)
+    state = _new_agent_state(
+        session_id,
+        message,
+        mode,
+        extra_context=extra_context,
+        owner_user_id=owner_user_id,
+        attachment_ids=attachment_ids,
+    )
     if mode == "fast":
         return _run_fast_state(state)
     if mode != "expert":
@@ -587,13 +719,23 @@ def run_graph_state(session_id: str, message: str, mode: str = "fast") -> AgentS
         return state
 
 
-def _new_agent_state(session_id: str, message: str, mode: str) -> AgentState:
+def _new_agent_state(
+    session_id: str,
+    message: str,
+    mode: str,
+    extra_context: Optional[list[str]] = None,
+    owner_user_id: str = "",
+    attachment_ids: Optional[list[str]] = None,
+) -> AgentState:
     return AgentState(
         session_id=session_id,
+        owner_user_id=owner_user_id,
         message=message,
         mode=mode,
         intent="",
-        context=[],
+        context=list(extra_context or []),
+        attachment_context=list(extra_context or []),
+        attachment_ids=list(attachment_ids or []),
         tasks=[],
         results=[],
         citations=[],
@@ -605,6 +747,10 @@ def _new_agent_state(session_id: str, message: str, mode: str) -> AgentState:
         error="",
         clarification="",
         city="",
+        filename_hint="",
+        output_format="md",
+        conversion_target_format="",
+        decision_reasoning=None,
         is_complex_task=False,
         complex_task_list=[],
         complex_task_results=[],
@@ -764,20 +910,19 @@ def _generate_complex_tasks(
         return []
     scope = "只规划尚未完成的剩余步骤" if remaining_only else "规划完成目标所需的全部步骤"
     response = llm_provider.chat_completion(
-        [
+        cache_friendly_messages(
+            "你是复杂任务规划器，负责生成线性、有顺序、可逐项执行的任务清单。"
+            "只能使用search_web、search_documents、list_documents、llm_chat。"
+            "每项格式为{\"tool\":工具名,\"params\":{...}}。"
+            "search_web/search_documents使用query参数，llm_chat使用message参数，list_documents参数为空。"
+            "任务必须最小、非冗余，通常2到4项足够：比较两个对象时通常每个对象各检索一次，"
+            "不要按价值、局限、场景等比较维度重复搜索同一对象。最终比较和综合回答由后续汇总节点完成，"
+            "不要为最终汇总额外生成llm_chat。只有用户明确要求查询本地文件清单时才使用list_documents。"
+            "返回严格JSON：{\"tasks\":[...]}，不要解释。",
+            [
             {
                 "role": "system",
-                "content": (
-                    current_date_prompt()
-                    + "\n\n你是复杂任务规划器。%s，生成线性、有顺序、可逐项执行的任务清单。" % scope
-                    + "只能使用search_web、search_documents、list_documents、llm_chat。"
-                    + "最多生成%d项。每项格式为{\"tool\":工具名,\"params\":{...}}。" % max_new_tasks
-                    + "search_web/search_documents使用query参数，llm_chat使用message参数，list_documents参数为空。"
-                    + "任务必须最小、非冗余，通常2到4项足够：比较两个对象时通常每个对象各检索一次，"
-                    + "不要按价值、局限、场景等比较维度重复搜索同一对象。最终比较和综合回答由后续汇总节点完成，"
-                    + "不要为最终汇总额外生成llm_chat。只有用户明确要求查询本地文件清单时才使用list_documents。"
-                    + "返回严格JSON：{\"tasks\":[...]}，不要解释。"
-                ),
+                "content": "%s，最多生成%d项。" % (scope, max_new_tasks),
             },
             {
                 "role": "user",
@@ -791,8 +936,9 @@ def _generate_complex_tasks(
                     },
                     ensure_ascii=False,
                 ),
-            },
-        ],
+            }],
+            include_date=True,
+        ),
         tier="expert",
         response_format={"type": "json_object"},
     )
@@ -816,15 +962,11 @@ def _generate_complex_tasks(
 
 def _check_complex_route_with_model(state: AgentState) -> str:
     response = llm_provider.chat_completion(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "判断剩余线性任务清单是否仍能达成原始目标。"
-                    "返回严格JSON：{\"action\":\"keep\"}或{\"action\":\"replan\"}。"
-                    "只有已完成结果（包括失败）使原路线明显不再成立时才replan，不要解释。"
-                ),
-            },
+        cache_friendly_messages(
+            "判断剩余线性任务清单是否仍能达成原始目标。"
+            "返回严格JSON：{\"action\":\"keep\"}或{\"action\":\"replan\"}。"
+            "只有已完成结果（包括失败）使原路线明显不再成立时才replan，不要解释。",
+            [
             {
                 "role": "user",
                 "content": json.dumps(
@@ -837,8 +979,8 @@ def _check_complex_route_with_model(state: AgentState) -> str:
                     },
                     ensure_ascii=False,
                 ),
-            },
-        ],
+            }],
+        ),
         tier="expert",
         response_format={"type": "json_object"},
     )
@@ -848,17 +990,13 @@ def _check_complex_route_with_model(state: AgentState) -> str:
 
 def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[Task]:
     response = llm_provider.chat_completion(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "判断下一个任务是否应根据已完成结果调整工具或参数。"
-                    "只能使用search_web、search_documents、list_documents、llm_chat。"
-                    "无需调整返回{\"action\":\"keep\"}；需要调整返回"
-                    "{\"action\":\"adjust\",\"task\":{\"tool\":...,\"params\":{...}}}。"
-                    "只返回严格JSON。"
-                ),
-            },
+        cache_friendly_messages(
+            "判断下一个任务是否应根据已完成结果调整工具或参数。"
+            "只能使用search_web、search_documents、list_documents、llm_chat。"
+            "无需调整返回{\"action\":\"keep\"}；需要调整返回"
+            "{\"action\":\"adjust\",\"task\":{\"tool\":...,\"params\":{...}}}。"
+            "只返回严格JSON。",
+            [
             {
                 "role": "user",
                 "content": json.dumps(
@@ -869,8 +1007,8 @@ def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[T
                     },
                     ensure_ascii=False,
                 ),
-            },
-        ],
+            }],
+        ),
         tier="expert",
         response_format={"type": "json_object"},
     )
@@ -1006,7 +1144,9 @@ def should_continue_react(state: AgentState) -> dict:
 
 
 def next_after_execute(state: AgentState) -> str:
-    if state["intent"] in {"chat", "search", "document_list"}:
+    if state["intent"] in {
+        "chat", "search", "document_list", "generate_file", "convert_document"
+    }:
         return "respond"
     if _should_skip_reflect_for_title_match(state):
         return "respond"
@@ -1020,6 +1160,8 @@ def _should_skip_reflect_for_title_match(state: AgentState) -> bool:
     if latest_result.tool != "search_documents" or latest_result.status != "success":
         return False
     metadata = latest_result.metadata or {}
+    if metadata.get("supplied_context_answer"):
+        return True
     if not metadata.get("title_source_match"):
         return False
     candidate_count = int(metadata.get("candidate_count", 0) or 0)
@@ -1029,21 +1171,15 @@ def _should_skip_reflect_for_title_match(state: AgentState) -> bool:
 
 def _reflect_with_model(state: AgentState) -> dict:
     """Ask the selected model whether current tool results are enough."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                current_date_prompt()
-                + "\n\n"
-                "你是轻量ReAct反思调度器，只判断当前工具结果是否足够回答用户问题。"
-                "如果足够，返回JSON：{\"action\":\"respond\"}。"
-                "如果不够，且需要再调用一次工具，返回JSON："
-                "{\"action\":\"continue\",\"tool\":\"search_web|search_documents|llm_chat\",\"query\":\"下一轮查询或消息\"}。"
-                "只能选择search_web、search_documents、llm_chat三个工具。"
-                "判断时可以参考：文档citations是否为空或分数不足、搜索结果是否与问题相关、是否需要用另一类信息交叉验证。"
-                "不要重复调用历史里已经用过的同一工具和同一参数。只返回JSON，不要解释。"
-            )
-        },
+    messages = cache_friendly_messages(
+        "你是轻量ReAct反思调度器，只判断当前工具结果是否足够回答用户问题。"
+        "如果足够，返回JSON：{\"action\":\"respond\"}。"
+        "如果不够，且需要再调用一次工具，返回JSON："
+        "{\"action\":\"continue\",\"tool\":\"search_web|search_documents|llm_chat\",\"query\":\"下一轮查询或消息\"}。"
+        "只能选择search_web、search_documents、llm_chat三个工具。"
+        "判断时可以参考：文档citations是否为空或分数不足、搜索结果是否与问题相关、是否需要用另一类信息交叉验证。"
+        "不要重复调用历史里已经用过的同一工具和同一参数。只返回JSON，不要解释。",
+        [
         {
             "role": "user",
             "content": json.dumps(
@@ -1057,8 +1193,9 @@ def _reflect_with_model(state: AgentState) -> dict:
                 },
                 ensure_ascii=False
             )
-        }
-    ]
+        }],
+        include_date=True,
+    )
     try:
         response = llm_provider.chat_completion(messages, tier=state["mode"])
         raw = llm_provider.extract_text(response)
@@ -1089,6 +1226,40 @@ def _parse_reflection(raw: str) -> dict:
 
 
 def _task_from_intent(state: AgentState, order: int) -> Task:
+    if state["intent"] == "convert_document":
+        return Task(
+            tool="convert_document",
+            params={
+                "attachment_id": (
+                    state["attachment_ids"][0]
+                    if len(state["attachment_ids"]) == 1
+                    else ""
+                ),
+                "target_format": state["conversion_target_format"],
+                "session_id": state["session_id"],
+                "owner_user_id": state["owner_user_id"],
+            },
+            order=order,
+        )
+    if state["intent"] == "generate_file":
+        context_text = "\n".join(state["context"] or [])
+        system_prompt = (
+            "你负责生成可直接保存为文件的完整Markdown正文。只输出正文，不要解释生成过程，"
+            "不要添加下载链接或本地路径。根据用户要求组织清晰结构；如果提供了历史或检索上下文，"
+            "只使用相关内容，不得编造。可使用Markdown标题、加粗和列表组织内容，即使目标格式是PDF或DOCX也先输出Markdown。"
+        )
+        if context_text:
+            system_prompt += "\n\n可用上下文：\n" + context_text
+        return Task(
+            tool="llm_chat",
+            params={
+                "message": state["message"],
+                "session_id": state["session_id"],
+                "tier": "expert",
+                "system_prompt": system_prompt,
+            },
+            order=order,
+        )
     if state["intent"] == "document_list":
         return Task(
             tool="list_documents",
@@ -1111,7 +1282,8 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
             tool="search_documents",
             params={
                 "query": state["message"],
-                "tier": state["mode"]
+                "tier": state["mode"],
+                "context": state["attachment_context"],
             },
             order=order
         )
@@ -1124,6 +1296,92 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
         },
         order=order
     )
+
+
+def _save_generated_content(state: AgentState, content: str) -> ToolResult:
+    """Persist generated body through the registered execution tool."""
+    return mcp_client.call_tool(
+        "generate_file",
+        {
+            "content": str(content or ""),
+            "session_id": state["session_id"],
+            "owner_user_id": state["owner_user_id"],
+            "filename_hint": state["filename_hint"],
+            "output_format": state["output_format"],
+        },
+    )
+
+
+def _respond_with_generated_file(state: AgentState) -> None:
+    """Build a relative download response without exposing server filesystem paths."""
+    if not state["results"]:
+        state["error"] = state["error"] or "generate_file_failed"
+        state["response"] = "文件生成失败，请稍后重试。"
+        state["citations"] = []
+        return
+    result = state["results"][-1]
+    metadata = result.metadata or {}
+    if result.tool != "generate_file" or result.status != "success":
+        state["error"] = state["error"] or result.error_msg or "generate_file_failed"
+        state["response"] = "文件生成失败，请稍后重试。"
+        state["citations"] = []
+        return
+    file_id = str(metadata.get("file_id", ""))
+    download_filename = str(metadata.get("download_filename", ""))
+    if not file_id or not download_filename:
+        state["error"] = "generate_file_result_invalid"
+        state["response"] = "文件生成失败，请稍后重试。"
+        state["citations"] = []
+        return
+    relative_path = "/files/%s" % file_id
+    requested_format = str(metadata.get("requested_format", "") or "")
+    delivered_format = str(metadata.get("delivered_format", "") or "")
+    prefix = ""
+    if requested_format and delivered_format and requested_format != delivered_format:
+        prefix = "目标格式转换失败，已降级交付Markdown文件。\n"
+    state["response"] = "%s文件已生成：%s\n下载地址：%s" % (
+        prefix,
+        download_filename,
+        relative_path,
+    )
+    state["citations"] = []
+
+
+def _respond_with_converted_file(state: AgentState) -> None:
+    """将附件转换结果映射为明确、可操作的用户响应。"""
+    if state["clarification"]:
+        state["response"] = state["clarification"]
+        state["citations"] = []
+        return
+    result = state["results"][-1] if state["results"] else None
+    metadata = result.metadata if result and result.metadata else {}
+    if result and result.status == "success":
+        file_id = str(metadata.get("file_id", "") or "")
+        download_filename = str(metadata.get("download_filename", "") or "")
+        if file_id and download_filename:
+            state["response"] = "已生成 %s，可通过 /files/%s 下载" % (
+                download_filename,
+                file_id,
+            )
+            state["error"] = ""
+            state["citations"] = []
+            return
+    error_type = str(
+        metadata.get("error_type", "")
+        or (result.error_msg if result else "")
+        or "conversion_failed"
+    )
+    messages = {
+        "unsupported_conversion": "不支持将该附件转换为所选格式。",
+        "timeout": "附件转换超时，请稍后重试。",
+        "attachment_not_found": "附件已过期或不存在，请重新上传。",
+        "file_not_found": "附件原始文件不存在，请重新上传。",
+        "forbidden": "无权转换该附件。",
+        "session_mismatch": "该附件不属于当前会话，无法转换。",
+    }
+    state["error"] = error_type
+    state["response"] = messages.get(error_type, "附件转换失败，请稍后重试。")
+    state["citations"] = []
 
 
 def _task_from_reflection(state: AgentState, reflection: dict) -> Optional[Task]:
@@ -1146,7 +1404,8 @@ def _task_from_reflection(state: AgentState, reflection: dict) -> Optional[Task]
             tool="search_documents",
             params={
                 "query": query,
-                "tier": state["mode"]
+                "tier": state["mode"],
+                "context": state["attachment_context"],
             },
             order=order
         )
@@ -1231,17 +1490,15 @@ def _with_react_limit_notice(state: AgentState, response: str) -> str:
 def _classify_with_model(
     message: str,
     context: list[str] = None,
-    tier: str = "fast"
+    tier: str = "fast",
+    attachment_ids: Optional[list[str]] = None,
 ) -> dict:
     """使用所选模型的 Function Call 选择搜索或直接回答。"""
     context_text = "\n".join(context or [])
-    response = llm_provider.chat_completion(
-        messages=[
-            {
-                "role": "system",
-                "content": (
+    fixed_system_prompt = (
                     "你只负责一次性完成工具选择、澄清判断和城市提取。"
-                    "每次必须调用一个且仅一个主意图工具：declare_complex_task、search_web、search_documents、list_documents、direct_answer、ask_clarification。"
+                    "选择工具时必须在该工具的reasoning参数中用一句话说明依据，控制在60字以内。"
+                    "每次必须调用一个且仅一个主意图工具：declare_complex_task、search_web、search_documents、list_documents、generate_file、convert_document、direct_answer、ask_clarification。"
                     "如果请求必须顺序完成多个独立检索、比较、分析或操作，且单一工具无法覆盖完整目标，调用declare_complex_task；"
                     "例如分别检索两个主题后比较、先查企业文档再查外部资料并汇总。简单单问、单次搜索、单份文档查询或普通对话不要声明复杂任务。"
                     "强制few-shot：‘分别搜索A和B两个话题并对比’=>declare_complex_task；"
@@ -1253,6 +1510,9 @@ def _classify_with_model(
                     "save_city是附加工具，禁止单独调用；如果需要保存城市，也必须同时选择一个主意图工具，或将city写入主意图工具参数。"
                     "如果模型能力限制导致一次只能调用一个工具，禁止调用save_city，必须优先调用主意图工具并在city参数中带出城市。"
                     "需要实时信息或外部事实时选search_web；无需联网时选direct_answer；"
+                    "用户明确要求把内容整理、导出或生成为可下载文件、文档、清单或报告时选generate_file；"
+                    "generate_file用于生成新的md、txt、pdf或docx交付物，不用于读取或转换用户已有文件；"
+                    "用户明确要求把本轮已上传附件转换为PDF或DOCX时选convert_document；附件缺失或数量不唯一时仍选convert_document，由系统负责提示，不要改选ask_clarification或猜测附件；"
                     "当用户想知道企业信息库/知识库/已上传资料里“有哪些文件、哪些文档、哪些资料、上传了什么”时，必须选list_documents；"
                     "list_documents只列清单，不回答内容；"
                     "用户明确提到文档、资料、上传的文件、刚才的PDF、这份文件、这份文档等本地文档指代时选search_documents；"
@@ -1271,14 +1531,27 @@ def _classify_with_model(
                     "这类消息即使包含城市，也只在direct_answer.city中带出城市，不要选search_web，除非用户同时询问天气、出行、新闻、价格或实时信息。"
                     "附近推荐问题没有位置且上下文也没有位置时，必须选ask_clarification。"
                     "用户只是评价、喜欢/不喜欢、询问或提到某城市时，不要调用save_city。"
-                    f"\n\n可用历史上下文：\n{context_text or '无'}"
-                )
+    )
+    response = llm_provider.chat_completion(
+        messages=cache_friendly_messages(
+            fixed_system_prompt,
+            [
+            {
+                "role": "system",
+                "content": f"可用历史上下文：\n{context_text or '无'}",
+            },
+            {
+                "role": "system",
+                "content": "本轮attachment_ids：%s" % json.dumps(
+                    list(attachment_ids or []),
+                    ensure_ascii=False,
+                ),
             },
             {
                 "role": "user",
                 "content": message
-            }
-        ],
+            }],
+        ),
         tier=tier,
         tools=INTENT_TOOLS,
         tool_choice="auto",
@@ -1295,15 +1568,12 @@ def _classify_with_model(
 def _respond_with_context(state: AgentState, base_response: str) -> str:
     """在有长期记忆上下文时，让所选模型生成最终回复。"""
     context_text = "\n".join(state["context"])
-    system_prompt = (
-        f"{current_date_prompt()}\n\n"
-        f"以下是与当前问题相关的历史记录，供参考：\n{context_text}\n\n"
-        "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。"
-    )
-    messages = [
+    messages = cache_friendly_messages(
+        "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。",
+        [
         {
             "role": "system",
-            "content": system_prompt
+            "content": f"以下是与当前问题相关的历史记录，供参考：\n{context_text}",
         },
         {
             "role": "user",
@@ -1312,8 +1582,9 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
                 f"执行层初步回复：{base_response}\n\n"
                 "请结合历史记录和初步回复，生成自然、准确的最终回答。"
             )
-        }
-    ]
+        }],
+        include_date=True,
+    )
     try:
         started_at = time.perf_counter()
         response = llm_provider.extract_text(
@@ -1364,9 +1635,24 @@ def _extract_tool_calls(response) -> list[dict]:
 
 def _build_classify_decision(tool_calls: list[dict]) -> dict:
     """根据一次Function Call返回的多个工具调用合成规划决策"""
-    decision = {"intent": "chat", "clarification": "", "city": ""}
-    if any(tool_call.get("name") == "declare_complex_task" for tool_call in tool_calls):
+    decision = {
+        "intent": "chat",
+        "clarification": "",
+        "city": "",
+        "filename_hint": "",
+        "output_format": "md",
+        "conversion_target_format": "",
+        "decision_reasoning": DECISION_REASONING_FALLBACK,
+    }
+    complex_call = next(
+        (item for item in tool_calls if item.get("name") == "declare_complex_task"),
+        None,
+    )
+    if complex_call:
         decision["intent"] = "complex_task"
+        decision["decision_reasoning"] = _normalize_decision_reasoning(
+            complex_call.get("arguments", {}).get("reasoning")
+        )
         return decision
     has_save_city = False
     for tool_call in tool_calls:
@@ -1379,24 +1665,76 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
         if name == "ask_clarification":
             decision["intent"] = "clarify"
             decision["clarification"] = arguments.get("question", "请补充关键信息。")
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
             continue
         if name == "search_web" and decision["intent"] != "clarify":
             decision["intent"] = "search"
             decision["clarification"] = ""
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
             continue
         if name == "search_documents" and decision["intent"] != "clarify":
             decision["intent"] = "document"
             decision["clarification"] = ""
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
             continue
         if name == "list_documents" and decision["intent"] != "clarify":
             decision["intent"] = "document_list"
             decision["clarification"] = ""
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
             continue
-        if name == "direct_answer" and decision["intent"] not in {"search", "document", "document_list", "clarify"}:
+        if name == "generate_file" and decision["intent"] != "clarify":
+            decision["intent"] = "generate_file"
+            decision["filename_hint"] = str(arguments.get("filename_hint", "") or "")
+            requested_format = str(arguments.get("output_format", "md") or "md").lower()
+            decision["output_format"] = (
+                requested_format
+                if requested_format in {"md", "txt", "pdf", "docx"}
+                else "md"
+            )
+            decision["clarification"] = ""
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
+            continue
+        if name == "convert_document" and decision["intent"] != "clarify":
+            decision["intent"] = "convert_document"
+            requested_target = str(
+                arguments.get("target_format", "") or ""
+            ).lower()
+            decision["conversion_target_format"] = (
+                requested_target if requested_target in {"pdf", "docx"} else ""
+            )
+            decision["clarification"] = ""
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
+            continue
+        if name == "direct_answer" and decision["intent"] not in {
+            "search", "document", "document_list", "generate_file",
+            "convert_document", "clarify"
+        }:
             decision["intent"] = "chat"
+            decision["decision_reasoning"] = _normalize_decision_reasoning(
+                arguments.get("reasoning")
+            )
     if has_save_city and decision["intent"] == "chat" and len(tool_calls) == 1:
         decision["intent"] = "search"
     return decision
+
+
+def _normalize_decision_reasoning(value) -> str:
+    reasoning = str(value or "").strip()
+    if not reasoning:
+        return DECISION_REASONING_FALLBACK
+    return reasoning[:60]
 
 
 def _parse_tool_arguments(raw_arguments) -> dict:
@@ -1469,6 +1807,7 @@ builder.add_conditional_edges(
     lambda state: (
         "clarify"
         if state["intent"] == "clarify"
+        or (state["intent"] == "convert_document" and state["clarification"])
         else "complex"
         if state["intent"] == "complex_task"
         else "continue"

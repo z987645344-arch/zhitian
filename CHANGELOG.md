@@ -419,3 +419,77 @@
 - fast模型超时仅轻量重试1次、间隔默认0.75秒，限流错误不重试；新增25秒整次fast请求预算。知识库/文件清单工具已成功而最终生成失败时，保留citations并返回带明确降级前缀的本地结果摘要。
 - 测试新增统一provider的fast超时重试、限流不重试、模型档位选择和本地检索结果降级覆盖；迁移后完整离线套件`87 passed, 1 deselected`。
 - 真实DeepSeek对照验证：fast模型`deepseek-v4-flash` 3/3成功、平均6.04秒，expert模型`deepseek-v4-pro` 3/3成功、平均6.07秒；真实规划链路fast 1/1成功（5.09秒）、expert 1/1成功（9.87秒）。相较迁移前同轮GLM隔离诊断2/22成功（9.1%），当前小样本稳定性明显改善。
+- expert DeepSeek调用统一采用缓存友好的prompt顺序：固定角色、行为规范和工具说明置前；原本包含日期的调用将日期作为独立稳定段置中；用户问题、历史上下文、检索结果和候选内容置后。覆盖分类、反思、复杂任务规划/检查点/汇总、文档重排序、搜索整理和query改写，fast简化路径不变，未引入本地缓存或新依赖。
+- 新增prompt固定前缀确定性测试和DeepSeek缓存usage解析测试；完整pytest为`97 passed`。真实expert重复长前缀调用中，首次`prompt_cache_hit_tokens=0`、`prompt_cache_miss_tokens=2396`，后两次均命中2304 tokens、未命中92 tokens（约96.2%固定前缀命中率），说明服务端缓存已实际生效；缓存仍属于DeepSeek服务端尽力匹配能力，后续成本收益需结合实际用量持续观察。
+- 知识库上传新增LibreOffice本地转换第一阶段：支持`.doc/.xls/.xlsx/.ppt/.pptx`，其中DOC转DOCX，电子表格和演示文稿转PDF后复用现有解析、切片、Chroma写入和审核流程；`soffice`由进程级锁串行调用，默认30秒超时，失败/超时返回明确422且清理临时源文件与转换产物。
+- `documents`表和Chroma chunk metadata新增可空`converted_from`字段；SQLite启动时通过`PRAGMA table_info`进行幂等轻量迁移。员工页扩展文件选择范围并提示自动转换，审核员待审/已通过列表展示转换来源；原文件和转换产物仍不长期保存。
+- 新增转换成功/失败/超时及DOC/XLSX/PPTX上传成功、转换失败清理、伪造XLSX和非白名单扩展名测试；完整pytest为`105 passed`。本机未安装LibreOffice，真实soffice验证暂时跳过；需要安装后配置`LIBREOFFICE_PATH`再补测。
+
+## 2026-07-15
+- `generate_file`输出格式由Markdown/TXT扩展为Markdown/TXT/PDF/DOCX：expert先生成Markdown正文，PDF/DOCX请求复用现有LibreOffice转换器的进程锁和30秒超时；转换成功后删除中间Markdown，仅保留最终产物，转换失败或超时时不重试转换并降级交付可下载Markdown。
+- `GenerateFileResult`新增`requested_format`、`delivered_format`和`conversion_error_type`，下载接口按实际交付扩展名返回PDF/DOCX媒体类型；分类Function Call和固定系统提示同步声明四种格式，fast工具集合保持不变。
+- 技术前置验证通过：含一级/二级标题、粗体和无序列表的20行Markdown真实转换为PDF/DOCX后，标题样式、粗体和项目符号均被渲染，未原样保留`#`、`**`、`-`语法。真实expert请求正确选择PDF，完成正文生成、LibreOffice转换和认证下载；完整离线回归为`127 passed, 4 deselected`。
+- 完成LibreOffice真实验证：开发机安装版本26.2.4.2，`.env`新增无BOM的`LIBREOFFICE_PATH`本地配置；真实DOC→DOCX、XLSX→PDF、PPTX→PDF均成功通过`/documents/upload`解析、切片并写入隔离Chroma与SQLite，`converted_from`在两处元数据中一致。
+- 新增`tests/test_converter_integration.py`，真实覆盖DOC/XLSX/PPTX转换、上传、元数据和转换大小超限422清理路径；单独运行结果为`1 passed in 9.73s`。CI同口径离线套件为`105 passed, 2 deselected`，现有`pytest -m "not integration"`会自动排除该测试，不要求GitHub runner安装LibreOffice。
+- 启动临时无reload Uvicorn后通过真实HTTP上传DOC和PPTX，reviewer `/pending`命中2/2且转换来源匹配2/2；验证结束后已撤销文档、清理临时账号/样例并停止进程。
+- 转换模块原本已独立，未重复重构；`ConversionResult`补充`success/converted_from_format/converted_to_format/error_type`结构化字段，`execution.TOOL_REGISTRY`新增`convert_document`占位绑定，但未加入任何Function Call或意图路由，当前仍只供上传流程内部调用。
+- expert新增`generate_file`语义意图：复用现有`llm_chat`生成完整正文后，由执行层写入`data/generated_files/{session_id}`下的UTF-8无BOM Markdown/TXT文件；单文件正文上限20万字符，文件名、session和输出格式均执行白名单及路径安全校验，写入失败按Level1规则重试1次。
+- 新增认证下载接口`GET /files/generated/{session_id}/{file_id}`：会话所有者或reviewer可下载，越权返回403、缺失返回404；回复仅暴露相对下载路径，不泄露服务器绝对路径。fast工具集合保持`search_documents/list_documents`，不暴露生成文件能力。
+- 新增文件名清洗、路径穿越拒绝、正文超限、工具注册、expert两阶段执行、下载403/404/200和fast隔离测试；完整离线套件为`116 passed, 2 deselected`。真实DeepSeek expert请求成功生成并下载文件，下载内容命中指定校验正文；fast对照请求未返回下载路径且未创建生成目录，测试账号、session和生成文件已清理。
+- expert classify的全部Function Call工具新增可选`reasoning`参数，要求DeepSeek用不超过60字的一句话说明路径选择依据；`AgentState.decision_reasoning`保存模型原文，缺失或解析失败时统一使用固定兜底文案，不按工具名硬编码理由。fast继续绕过classify且reasoning固定为空。
+- `/chat`新增可选`reasoning`字段；`/chat/stream`在首个正文chunk前发送一次独立reasoning事件，原`{"chunk":"[DONE]"}`结束标志不变。日志仅记录reasoning是否存在和长度，SQLite/Chroma均不保存理由。
+- Flutter SSE解析新增reasoning事件，绑定到当前assistant消息的内存字段并在气泡内以浅色小字展示；空理由和fast请求不显示，不新增持久化字段。完整后端离线套件`121 passed, 2 deselected`，Flutter analyze无问题且客户端`10 tests passed`。
+- 真实expert三意图验证均成功且未使用兜底：search理由24字/总耗时61.89秒，document理由48字/25.67秒，chat理由32字/31.51秒。classify-only同输入单次配对A/B中，baseline均值7.31秒、reasoning均值10.03秒，表面增加2.72秒；单项差值为-0.34/-1.98/+10.49秒，受上游波动和小样本影响明显，只能确认本改动没有新增模型调用，不能据此认定稳定延迟增量。
+- 新增任意认证用户可用的独立转换工具箱：`POST /tools/convert`仅接受现有`.doc/.xls/.xlsx/.ppt/.pptx`并复用20MB上限及LibreOffice转换器，DOC转DOCX、其余转PDF；不经过解析、切片、Chroma、documents表或审核流程。
+- 转换产物保存到`data/tool_conversions/{user_id}/{file_id}`，源文件完成后立即删除；`GET /tools/convert/{file_id}`仅允许产物本人下载，非本人403、缺失404。接口返回统一Pydantic结构，日志只记录user_id长度、file_id、格式和大小。
+- Flutter聊天页新增独立工具箱入口和页面，支持文件选择、转换状态、失败提示及认证下载保存；ApiService新增普通multipart上传和GET下载封装，不复用SSE或消息气泡。离线后端完整测试`124 passed, 3 deselected`，Flutter analyze无问题且客户端`12 tests passed`。
+- 真实LibreOffice验证：XLSX通过`/tools/convert`成功转换并下载PDF，文件头正确，documents表前后未变化；对应integration测试单独运行`1 passed in 15.45s`。L14扩展为`generated_files/tool_conversions`统一保留与清理策略待办。
+
+## 2026-07-15 聊天附件上传与阅读
+- 新增认证接口`POST /chat/attachments`：按session归属接收multipart附件，直接解析`.txt/.md/.pdf/.docx`，对`.doc/.xls/.xlsx/.ppt/.pptx`复用LibreOffice串行转换后解析；沿用20MB上传限制和文件特征校验，解析后立即清理源文件及转换产物。
+- 新增进程内附件存储`layers/attachments.py`，按`session_id + attachment_id`隔离文本并用RLock保护读写；默认30分钟懒惰过期、单附件最多50000字符，重启即清空且不写入SQLite、Chroma或磁盘持久层。
+- `/chat`与`/chat/stream`请求体新增可选`attachment_ids`，附件上下文同时支持fast/expert且不新增意图。expert将“总结这个文件”分类为document时，document执行链可在知识库低置信度情况下使用附件上下文回答，并跳过无意义reflect追加检索。
+- 新增直接解析、转换解析、格式拒绝、字符上限、跨session隔离、TTL过期、document上下文回答及fast/expert与SSE注入测试；真实DOCX联调中fast/expert均准确返回附件内唯一项目代号、日期和负责人。完整离线回归为`136 passed, 5 deselected`。
+- 流式附件回归同时修复同步SSE生成器跨Context迭代时`ContextVar` token无法reset的问题：可观测性清理在同Context优先正常reset，跨Context时安全清空当前trace，避免响应结束阶段抛出`ValueError`。
+
+## 2026-07-15 统一持久化文件库
+- 新增`layers/files_store.py`和独立`data/files.db`：采用SQLite WAL、5秒busy timeout和进程内RLock统一管理attachment/generated/converted三类用户文件，文件落盘到`data/user_files/{owner_user_id}/{file_id}.{format}`。
+- 新增认证接口`GET /files`、`GET /files/{file_id}`和`DELETE /files/{file_id}`，仅文件owner可查看、下载和删除；移除旧`GET /files/generated/{session_id}/{file_id}`与`GET /tools/convert/{file_id}`，generate_file原有reviewer跨session下载权限已收回，文件库定位为用户个人文件，不再提供reviewer例外。
+- `generate_file`和`/tools/convert`统一通过files_store保存产物，回复下载地址统一为`/files/{file_id}`；旧`data/generated_files`和`data/tool_conversions`不迁移、不自动清理，保留人工后续处理。
+- 聊天附件解析后的文本继续保存在30分钟TTL内存上下文中，原始上传文件新增持久化保存并记录attachment来源与session_id；转换中间产物仍即时清理，原始文件和文本上下文拥有互相独立的生命周期。
+- Flutter新增“我的文件”入口和列表页面，支持认证下载、刷新及二次确认删除；工具箱下载同步切换到统一文件接口。
+- 验证：后端完整离线回归`139 passed, 5 deselected`；隔离环境真实执行生成TXT、LibreOffice XLSX→PDF转换和聊天TXT附件上传，`GET /files`同时返回三种source_type，3/3可下载，删除后列表减少且下载404，旧生成文件路由返回404；Flutter analyze无问题，客户端`14 tests passed`。
+
+## 2026-07-15 对话内附件格式转换（3-B）
+- `AttachmentRecord`新增持久化`file_id`映射：`attachment_id`继续作为当前session内的短期对话引用，`file_id`指向统一用户文件库；上传接口在保存原始附件后同步建立映射，不改变客户端现有附件响应字段。
+- `convert_document`由执行层占位升级为expert Agent工具，输入当前会话`attachment_id`和目标`pdf/docx`，执行前同时校验内存session映射、files_store owner及持久记录session；仅支持DOC→DOCX和XLS/XLSX/PPT/PPTX→PDF，不扩展格式矩阵。
+- 转换复用LibreOffice进程锁与30秒超时，失败按Level1在工具内部轻量重试1次；成功产物以`converted`来源写入统一文件库，回复返回`已生成 {filename}，可通过 /files/{file_id} 下载`。不支持、超时、附件缺失和权限错误均返回明确原因。
+- expert classify新增`convert_document` Function Call及reasoning参数，完全由DeepSeek语义选择；fast工具集合保持不变。无附件时提示先上传，多个附件时要求明确目标，不猜测选择。
+- 验证：新增7项离线测试覆盖ID映射、转换落库、重试、跨用户/跨session拒绝、格式矩阵、无/多附件提示、响应和fast隔离；完整离线回归`146 passed, 5 deselected`。真实expert请求将已上传XLSX正确分类为convert_document并生成可下载PDF，统一文件库同时存在attachment/converted记录；PDF文本可提取出原表格中的`BlueWhale`和`verified`标记。
+
+## 2026-07-15 MinerU真实MCP客户端
+- 将原19行本地转发壳升级为真实stdio MCP客户端：保留规划层`call_tool()`对`execution.run()`的兼容行为，同时新增MinerU动态工具发现和`call_mineru_parse()`结构化解析封装。
+- 真实连接官方`mineru-open-mcp`后，`list_tools`成功发现`parse_documents`与`get_ocr_languages`及其实际输入schema；Flash模式不设置`MINERU_API_TOKEN`，客户端前置执行10MB和20页限制校验，并对失败、空结果和超时返回结构化错误。
+- 官方server依赖`fastmcp>=3.1`及`mcp>=1.24`，与项目固定`mcp==1.9.4`和FastAPI依赖闭包冲突；因此未将server直接安装进后端环境，改用`uvx mineru-open-mcp`隔离运行，`requirements.txt`新增`uv`运行器并保留原MCP版本。
+- 修复Windows超时取消后uvx/MinerU子进程残留：自管stdio transport在退出时按PID终止整棵进程树。真实5秒超时验证返回`timeout`且残留进程数为0。
+- 真实103KB单页表格PDF分别以30、90、180秒预算调用`parse_documents`，均在官方Flash解析阶段超时，未取得Markdown正文；因此本轮确认“协议连接和工具发现通过”，不宣称“真实PDF解析通过”，也未接入现有文档上传或聊天附件主流程。
+- 新增8项离线测试覆盖会话启动/关闭、启动失败、真实工具发现结构映射、解析成功/失败/超时、Flash限制、现有工具兼容和进程树清理；完整离线回归`154 passed, 5 deselected`。
+
+## 2026-07-15 技术调查：MCP版本锁必要性
+- 历史记录仅说明初次接入时选择`mcp==1.9.4`及配套兼容版本并通过`pip check`，未保留“新版与FastAPI不兼容”的具体报错或失败用例，旧结论缺少可复核依据。
+- 在项目外一次性Python 3.10环境使用公开PyPI验证：保持当前全部锁定依赖并将`mcp`改为不锁版本时，pip最终只能选择`mcp==1.12.4`，不会安装当前最新版1.28.1。
+- 显式要求`mcp==1.28.1`与当前锁定组合时解析失败：MCP要求`uvicorn>=0.31.1`，而项目固定0.30.0；完整依赖清单还固定`PyJWT==2.8.0`，低于新版MCP要求的2.10.1。
+- 最小联动验证组合为MCP 1.28.1、Uvicorn 0.51.0、PyJWT 2.13.0，并保持FastAPI 0.115.0、Starlette 0.38.6、sse-starlette 3.0.3。该组合下`main.py`完整导入、真实Uvicorn `/health` 200、离线回归`154 passed, 5 deselected`均通过。
+- 真实HTTP `/chat/stream`探测返回3个SSE事件，顺序为正文、citations、`[DONE]`，流式协议未回归。PyJWT 2.13.0会对测试中不足32字节的HMAC密钥产生68条`InsecureKeyLengthWarning`，上线升级前需同步调整测试密钥。
+- 结论为“部分可行”：MCP可以升级到1.28.1，但不能在当前锁定组合中单独升级；本轮不修改requirements或主`.venv`，继续保留1.9.4，后续如升级需作为Uvicorn/PyJWT联动变更执行。
+
+## 2026-07-15 MCP 1.28.1正式升级
+- 将主环境依赖精确升级为`mcp==1.28.1`、`uvicorn==0.51.0`和`PyJWT==2.13.0`，FastAPI 0.115.0、Starlette 0.38.6及sse-starlette 3.0.3保持不变；移除主`.venv`中已无代码调用方且与新版PyJWT冲突的历史`zhipuai`残留包，`pip check`无冲突。
+- 测试初始化改用明确的测试专用长JWT密钥，并在导入应用配置前注入，避免读取生产`.env`密钥；完整离线回归为`154 passed, 5 deselected`，无PyJWT短密钥警告或新增warning。
+- 升级后的真实Uvicorn服务验证`/health` 200、注册/登录JWT签发校验、`/chat`和`/chat/stream`均正常；SSE事件顺序保持正文→citations→`[DONE]`。临时账号和session验证后已清理。
+- `layers.mcp_client`在MCP 1.28.1下可正常导入和实例化；MinerU现有`uvx`隔离server及Windows进程树清理workaround保持不变，本轮不调整业务逻辑。
+
+## 2026-07-15 清理MinerU实验集成
+- MinerU虽已完成stdio协议连接和工具发现，但从未接入文档上传、聊天附件或其他活跃业务路径，且真实PDF解析在30/90/180秒预算下持续超时；本轮将其判定为不可交付的实验能力并移除。
+- `layers/mcp_client.py`收缩为规划层到`execution.run()`的本地工具兼容适配器，保持现有`call_tool()`调用方不变；删除MinerU工具发现、解析封装、Flash限制、uvx子进程管理和对应专项测试。
+- `requirements.txt`移除仅用于MinerU隔离启动的`uv`依赖；保留`mcp==1.28.1`和`mcp_server.py`本地工具服务，后续MCP生态工具按实际业务价值与真实稳定性逐项评估。

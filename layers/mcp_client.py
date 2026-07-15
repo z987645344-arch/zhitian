@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
-# MCP工具客户端：规划层通过此接口调用执行层工具
+"""Compatibility adapter from the planning layer to local execution tools."""
 
 from layers.execution import ToolResult, run
 
 
 class MCPClient:
-    def call_tool(self, tool_name: str, params: dict) -> ToolResult:
-        """通过MCP协议调用工具。
+    """Preserve the planning layer's existing local tool dispatch interface."""
 
-        开发阶段先直连execution.run，保持ToolResult接口稳定。
-        后期可替换为真实MCP client调用，不影响规划层。
-        """
+    def call_tool(self, tool_name: str, params: dict) -> ToolResult:
         return run(tool_name, params)
 
 
 mcp_client = MCPClient()
-

@@ -31,7 +31,18 @@ CORS_ORIGINS = [
 ]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
-ALLOWED_UPLOAD_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}
+CHAT_ATTACHMENT_MAX_CHARS = int(os.getenv("CHAT_ATTACHMENT_MAX_CHARS", "50000"))
+CHAT_ATTACHMENT_TTL_MINUTES = int(os.getenv("CHAT_ATTACHMENT_TTL_MINUTES", "30"))
+CONVERTIBLE_EXTENSIONS = {".doc", ".xls", ".xlsx", ".ppt", ".pptx"}
+ALLOWED_UPLOAD_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}.union(
+    CONVERTIBLE_EXTENSIONS
+)
+CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT_SECONDS", "30"))
+MAX_CONVERSION_FILE_SIZE_MB = MAX_UPLOAD_SIZE_MB
+LIBREOFFICE_PATH = os.getenv(
+    "LIBREOFFICE_PATH",
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+)
 
 # 认证
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")

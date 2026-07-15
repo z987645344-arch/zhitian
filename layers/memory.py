@@ -20,6 +20,7 @@ import config
 from layers import llm_provider
 from utils.logger import get_logger
 from utils import observability
+from utils.time_context import cache_friendly_messages
 
 logger = get_logger("memory")
 
@@ -433,7 +434,12 @@ def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[s
     return _rank_memory_candidates(candidates, max(1, int(top_k)))
 
 
-def save_document(source: str, chunks: list[str], doc_id: str) -> int:
+def save_document(
+    source: str,
+    chunks: list[str],
+    doc_id: str,
+    converted_from: str = "",
+) -> int:
     """将文档切片写入独立Chroma Collection。"""
     if not source:
         raise ValueError("source不能为空")
@@ -456,6 +462,7 @@ def save_document(source: str, chunks: list[str], doc_id: str) -> int:
                 {
                     "source": source,
                     "doc_id": doc_id,
+                    "converted_from": converted_from,
                     "chunk_index": i,
                     "total_chunks": total_chunks,
                     "uploaded_at": uploaded_at
@@ -749,16 +756,12 @@ def _rerank_candidates(
             for index, candidate in enumerate(candidates)
         ]
         response = llm_provider.chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是文档检索重排序器。请根据query判断每个candidate与query的相关性，"
-                        "只返回严格JSON，不要解释。JSON格式："
-                        "{\"scores\":[{\"index\":0,\"score\":8.5},...]}"
-                        "score取0到10，越相关越高。"
-                    )
-                },
+            messages=cache_friendly_messages(
+                "你是文档检索重排序器。请根据query判断每个candidate与query的相关性，"
+                "只返回严格JSON，不要解释。JSON格式："
+                "{\"scores\":[{\"index\":0,\"score\":8.5},...]}"
+                "score取0到10，越相关越高。",
+                [
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -768,8 +771,8 @@ def _rerank_candidates(
                         },
                         ensure_ascii=False
                     )
-                }
-            ],
+                }],
+            ),
             tier=tier,
             response_format={"type": "json_object"} if tier == "expert" else None,
             timeout=config.RERANK_TIMEOUT

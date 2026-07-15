@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -11,19 +12,19 @@ import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import auth, document_loader, execution, memory, output, perception, planning
+from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, perception, planning
 from utils.logger import get_logger
 from utils import observability
 
@@ -116,6 +117,7 @@ class ChatRequest(BaseModel):
     session_id: str
     message: str
     mode: Optional[str] = "fast"
+    attachment_ids: List[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -124,6 +126,7 @@ class ChatResponse(BaseModel):
     layer_trace: list[str] = Field(default_factory=list)
     session_id: str
     citations: list[execution.Citation] = Field(default_factory=list)
+    reasoning: Optional[str] = None
 
 
 class KnowledgeInputRequest(BaseModel):
@@ -135,6 +138,33 @@ class DebugRetrieveRequest(BaseModel):
     query: str
     top_k: int = 5
     include_pending: bool = False
+
+
+class ToolConversionResponse(BaseModel):
+    success: bool
+    file_id: str = ""
+    download_filename: str = ""
+    converted_from_format: str = ""
+    converted_to_format: str = ""
+    error_type: str = ""
+    download_url: str = ""
+
+
+class ChatAttachmentResponse(BaseModel):
+    success: bool
+    attachment_id: str = ""
+    original_filename: str = ""
+    char_count: int = 0
+    error_type: str = ""
+
+
+class UserFileListItem(BaseModel):
+    file_id: str
+    original_filename: str
+    format: str
+    source_type: str
+    size_bytes: int
+    created_at: str
 
 
 class RegisterRequest(BaseModel):
@@ -179,6 +209,44 @@ def require_reviewer(current_user: dict = Depends(get_current_user)) -> dict:
 def _ensure_session_owner(session_id: str, current_user: dict) -> None:
     if not auth.verify_session_owner(session_id, current_user["user_id"]):
         raise HTTPException(status_code=403, detail="无权访问该session")
+
+
+def _bind_or_verify_session(session_id: str, current_user: dict) -> None:
+    auth.bind_session(session_id, current_user["user_id"])
+    _ensure_session_owner(session_id, current_user)
+
+
+def _resolve_attachment_context(
+    session_id: str,
+    attachment_ids: List[str],
+    current_user: dict,
+) -> List[str]:
+    if not attachment_ids:
+        return []
+    if not auth.verify_session_owner(session_id, current_user["user_id"]):
+        raise HTTPException(status_code=400, detail="附件已过期或不存在，请重新上传")
+
+    blocks = []
+    seen = set()
+    for attachment_id in attachment_ids:
+        normalized_id = str(attachment_id or "").strip()
+        if not normalized_id or normalized_id in seen:
+            continue
+        seen.add(normalized_id)
+        record = attachments.get_attachment(session_id, normalized_id)
+        if record is None:
+            raise HTTPException(status_code=400, detail="附件已过期或不存在，请重新上传")
+        blocks.append(
+            "附件名称：%s\n附件内容：\n%s"
+            % (record.filename, record.text)
+        )
+        logger.info(
+            "聊天请求加载附件：session_id_len=%s attachment_id=%s char_count=%s",
+            len(session_id),
+            record.attachment_id,
+            record.char_count,
+        )
+    return ["本轮用户提供的聊天附件：\n\n" + "\n\n---\n\n".join(blocks)] if blocks else []
 
 
 @app.get("/")
@@ -265,6 +333,11 @@ async def chat(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    attachment_context = _resolve_attachment_context(
+        chat_request.session_id,
+        chat_request.attachment_ids,
+        current_user,
+    )
     trace_id = str(uuid.uuid4())
     trace_token = observability.set_trace_id(trace_id, mode=mode)
     try:
@@ -286,7 +359,10 @@ async def chat(
         final_state = planning.run_graph_state(
             perception_output.session_id,
             perception_output.message,
-            mode=mode
+            mode=mode,
+            extra_context=attachment_context,
+            owner_user_id=current_user["user_id"],
+            attachment_ids=chat_request.attachment_ids,
         )
         layer_trace.extend(final_state.get("layer_trace", []))
         layer_trace = list(dict.fromkeys(layer_trace))
@@ -323,6 +399,14 @@ async def chat(
             status=status,
             citations=citations
         )
+        reasoning = final_state.get("decision_reasoning") if mode == "expert" else None
+        response_data["reasoning"] = reasoning
+        logger.info(
+            "/chat决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
+            trace_id,
+            bool(reasoning),
+            len(reasoning or ""),
+        )
         observability.record_request(
             status,
             error_type=str(final_state.get("error") or ""),
@@ -352,6 +436,11 @@ async def chat_stream(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    attachment_context = _resolve_attachment_context(
+        chat_request.session_id,
+        chat_request.attachment_ids,
+        current_user,
+    )
     trace_id = str(uuid.uuid4())
     logger.info(
         "收到/chat/stream请求：trace_id=%s session_id=%s message_len=%s mode=%s",
@@ -362,7 +451,14 @@ async def chat_stream(
     )
     chat_request.mode = mode
     return StreamingResponse(
-        _chat_stream_events(chat_request, current_user, background_tasks, trace_id),
+        _chat_stream_events(
+            chat_request,
+            current_user,
+            background_tasks,
+            trace_id,
+            attachment_context,
+            chat_request.attachment_ids,
+        ),
         background=background_tasks,
         media_type="text/event-stream"
     )
@@ -409,6 +505,321 @@ async def delete_memory(session_id: str, current_user: dict = Depends(get_curren
         raise
 
 
+@app.get("/files", response_model=List[UserFileListItem])
+async def list_user_files(current_user: dict = Depends(get_current_user)):
+    return [
+        UserFileListItem(
+            file_id=record.file_id,
+            original_filename=record.original_filename,
+            format=record.format,
+            source_type=record.source_type,
+            size_bytes=record.size_bytes,
+            created_at=record.created_at,
+        )
+        for record in files_store.list_files(current_user["user_id"])
+    ]
+
+
+@app.get("/files/{file_id}")
+async def download_user_file(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    record = files_store.get_file(file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if record.owner_user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="无权访问该文件")
+    file_path = files_store.get_file_path(record)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    logger.info(
+        "下载用户文件：user_id_len=%s file_id=%s source_type=%s format=%s file_size=%s",
+        len(current_user["user_id"] or ""),
+        file_id,
+        record.source_type,
+        record.format,
+        record.size_bytes,
+    )
+    return FileResponse(
+        path=file_path,
+        media_type=_file_media_type(record.format),
+        filename=record.original_filename,
+        content_disposition_type="attachment",
+    )
+
+
+@app.delete("/files/{file_id}")
+async def delete_user_file(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    record = files_store.get_file(file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if record.owner_user_id != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="无权删除该文件")
+    if not files_store.delete_file(file_id, current_user["user_id"]):
+        raise HTTPException(status_code=500, detail="文件删除失败")
+    logger.info(
+        "删除用户文件：user_id_len=%s file_id=%s source_type=%s format=%s file_size=%s",
+        len(current_user["user_id"] or ""),
+        file_id,
+        record.source_type,
+        record.format,
+        record.size_bytes,
+    )
+    return {"status": "deleted", "file_id": file_id}
+
+
+@app.post("/chat/attachments", response_model=ChatAttachmentResponse)
+async def upload_chat_attachment(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    filename = _safe_upload_filename(file.filename or "")
+    suffix = os.path.splitext(filename)[1].lower()
+    supported = {".txt", ".md", ".pdf", ".docx"}.union(
+        config.CONVERTIBLE_EXTENSIONS
+    )
+    if not session_id.strip():
+        await file.close()
+        raise HTTPException(status_code=400, detail="session_id不能为空")
+    _bind_or_verify_session(session_id, current_user)
+    if not filename or suffix not in supported:
+        await file.close()
+        return JSONResponse(
+            status_code=400,
+            content=ChatAttachmentResponse(
+                success=False,
+                original_filename=filename,
+                error_type="unsupported_format",
+            ).model_dump(),
+        )
+    max_upload_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+    if file.size is not None and file.size > max_upload_bytes:
+        await file.close()
+        return JSONResponse(
+            status_code=413,
+            content=ChatAttachmentResponse(
+                success=False,
+                original_filename=filename,
+                error_type="file_too_large",
+            ).model_dump(),
+        )
+
+    upload_id = str(uuid.uuid4())
+    temp_path = ""
+    converted_path = ""
+    try:
+        temp_path = _save_temp_upload(file, upload_id, filename)
+        parse_path = temp_path
+        if suffix in config.CONVERTIBLE_EXTENSIONS:
+            target_format = "docx" if suffix == ".doc" else "pdf"
+            conversion = await asyncio.to_thread(
+                converter.convert_file,
+                temp_path,
+                target_format,
+            )
+            if not conversion.success or not conversion.output_path:
+                return JSONResponse(
+                    status_code=422,
+                    content=ChatAttachmentResponse(
+                        success=False,
+                        original_filename=filename,
+                        error_type=conversion.error_type or "conversion_failed",
+                    ).model_dump(),
+                )
+            converted_path = conversion.output_path
+            parse_path = converted_path
+
+        text = document_loader.load_document(parse_path)
+        if text.startswith("错误："):
+            return JSONResponse(
+                status_code=422,
+                content=ChatAttachmentResponse(
+                    success=False,
+                    original_filename=filename,
+                    error_type="parse_failed",
+                ).model_dump(),
+            )
+        text = text.strip()
+        if not text:
+            return JSONResponse(
+                status_code=422,
+                content=ChatAttachmentResponse(
+                    success=False,
+                    original_filename=filename,
+                    error_type="empty_content",
+                ).model_dump(),
+            )
+        if len(text) > config.CHAT_ATTACHMENT_MAX_CHARS:
+            return JSONResponse(
+                status_code=422,
+                content=ChatAttachmentResponse(
+                    success=False,
+                    original_filename=filename,
+                    char_count=len(text),
+                    error_type="content_too_large",
+                ).model_dump(),
+            )
+
+        persistent_file_id = files_store.save_file(
+            current_user["user_id"],
+            "attachment",
+            filename,
+            temp_path,
+            suffix,
+            session_id=session_id,
+        )
+        record = attachments.save_attachment(
+            session_id,
+            text,
+            filename,
+            file_id=persistent_file_id,
+        )
+        logger.info(
+            "聊天附件解析完成：session_id_len=%s attachment_id=%s char_count=%s format=%s",
+            len(session_id),
+            record.attachment_id,
+            record.char_count,
+            suffix.lstrip("."),
+        )
+        return ChatAttachmentResponse(
+            success=True,
+            attachment_id=record.attachment_id,
+            original_filename=filename,
+            char_count=record.char_count,
+        )
+    except HTTPException as exc:
+        error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ChatAttachmentResponse(
+                success=False,
+                original_filename=filename,
+                error_type=error_type,
+            ).model_dump(),
+        )
+    finally:
+        await file.close()
+        converter.cleanup_conversion_output(converted_path)
+        _remove_temp_upload(temp_path)
+
+
+@app.post("/tools/convert", response_model=ToolConversionResponse)
+async def convert_tool_file(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    filename = _safe_upload_filename(file.filename or "")
+    suffix = os.path.splitext(filename)[1].lower()
+    source_format = suffix.lstrip(".")
+    target_format = _conversion_target_for_suffix(suffix)
+    if not filename or not target_format:
+        await file.close()
+        return JSONResponse(
+            status_code=400,
+            content=ToolConversionResponse(
+                success=False,
+                converted_from_format=source_format,
+                error_type="unsupported_format",
+            ).model_dump(),
+        )
+    max_upload_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+    if file.size is not None and file.size > max_upload_bytes:
+        await file.close()
+        return JSONResponse(
+            status_code=413,
+            content=ToolConversionResponse(
+                success=False,
+                converted_from_format=source_format,
+                converted_to_format=target_format,
+                error_type="file_too_large",
+            ).model_dump(),
+        )
+    file_id = str(uuid.uuid4())
+    temp_path = ""
+    converted_path = ""
+    try:
+        temp_path = _save_temp_upload(file, file_id, filename)
+        conversion = await asyncio.to_thread(
+            converter.convert_file,
+            temp_path,
+            target_format,
+        )
+        if not conversion.success or not conversion.output_path:
+            status_code = 422
+            return JSONResponse(
+                status_code=status_code,
+                content=ToolConversionResponse(
+                    success=False,
+                    converted_from_format=conversion.converted_from_format or source_format,
+                    converted_to_format=conversion.converted_to_format or target_format,
+                    error_type=conversion.error_type or "conversion_failed",
+                ).model_dump(),
+            )
+        converted_path = conversion.output_path
+        download_filename = _conversion_download_filename(filename, target_format)
+        file_id = files_store.save_file(
+            current_user["user_id"],
+            "converted",
+            download_filename,
+            converted_path,
+            target_format,
+        )
+        file_size = os.path.getsize(converted_path)
+        logger.info(
+            "工具箱转换完成：user_id_len=%s file_id=%s source_format=%s target_format=%s file_size=%s",
+            len(current_user["user_id"] or ""),
+            file_id,
+            source_format,
+            target_format,
+            file_size,
+        )
+        return ToolConversionResponse(
+            success=True,
+            file_id=file_id,
+            download_filename=download_filename,
+            converted_from_format=source_format,
+            converted_to_format=target_format,
+            download_url="/files/%s" % file_id,
+        )
+    except HTTPException as exc:
+        error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=ToolConversionResponse(
+                success=False,
+                converted_from_format=source_format,
+                converted_to_format=target_format,
+                error_type=error_type,
+            ).model_dump(),
+        )
+    except Exception as exc:
+        logger.error(
+            "工具箱转换异常：user_id_len=%s source_format=%s target_format=%s error_type=%s",
+            len(current_user["user_id"] or ""),
+            source_format,
+            target_format,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content=ToolConversionResponse(
+                success=False,
+                converted_from_format=source_format,
+                converted_to_format=target_format,
+                error_type="internal_error",
+            ).model_dump(),
+        )
+    finally:
+        await file.close()
+        converter.cleanup_conversion_output(converted_path)
+        _remove_temp_upload(temp_path)
+
+
 @app.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -431,9 +842,29 @@ async def upload_document(
 
     doc_id = str(uuid.uuid4())
     temp_path = ""
+    converted_path = ""
+    converted_from = ""
     try:
         temp_path = _save_temp_upload(file, doc_id, filename)
-        text = document_loader.load_document(temp_path)
+        parse_path = temp_path
+        if suffix in config.CONVERTIBLE_EXTENSIONS:
+            target_format = "docx" if suffix == ".doc" else "pdf"
+            conversion = await asyncio.to_thread(
+                converter.convert_file,
+                temp_path,
+                target_format,
+            )
+            if conversion.status != converter.ConversionStatus.SUCCESS or not conversion.output_path:
+                status_code = 422
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=conversion.error_msg or "文档转换失败",
+                )
+            converted_path = conversion.output_path
+            parse_path = converted_path
+            converted_from = filename
+
+        text = document_loader.load_document(parse_path)
         if text.startswith("错误："):
             return {
                 "status": "error",
@@ -445,17 +876,29 @@ async def upload_document(
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
 
-        count = memory.save_document(filename, chunks, doc_id=doc_id)
-        auth.register_document(doc_id, filename, current_user["user_id"])
+        count = memory.save_document(
+            filename,
+            chunks,
+            doc_id=doc_id,
+            converted_from=converted_from,
+        )
+        auth.register_document(
+            doc_id,
+            filename,
+            current_user["user_id"],
+            converted_from=converted_from,
+        )
         return {
             "status": "success",
             "doc_id": doc_id,
             "source": filename,
+            "converted_from": converted_from,
             "chunks": count,
             "trust_level": "pending"
         }
     finally:
         await file.close()
+        converter.cleanup_conversion_output(converted_path)
         _remove_temp_upload(temp_path)
 
 
@@ -695,6 +1138,35 @@ def _safe_upload_filename(filename: str) -> str:
     return os.path.basename(normalized).strip()
 
 
+def _conversion_target_for_suffix(suffix: str) -> str:
+    if suffix == ".doc":
+        return "docx"
+    if suffix in {".xls", ".xlsx", ".ppt", ".pptx"}:
+        return "pdf"
+    return ""
+
+
+def _conversion_download_filename(filename: str, target_format: str) -> str:
+    stem = os.path.splitext(_safe_upload_filename(filename))[0].strip()
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .")
+    stem = stem[:100] or "converted_file"
+    return "%s.%s" % (stem, target_format)
+
+
+def _file_media_type(file_format: str) -> str:
+    return {
+        "md": "text/markdown",
+        "txt": "text/plain",
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xls": "application/vnd.ms-excel",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt": "application/vnd.ms-powerpoint",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }.get(file_format.lower().lstrip("."), "application/octet-stream")
+
+
 def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
     temp_dir = os.path.join(config.BASE_DIR, "data", "tmp_uploads")
     os.makedirs(temp_dir, exist_ok=True)
@@ -739,6 +1211,20 @@ def _validate_upload_content(file: UploadFile, suffix: str) -> None:
             raise HTTPException(status_code=400, detail="文件内容与DOCX格式不匹配")
         finally:
             file.file.seek(0)
+    if suffix in {".xlsx", ".pptx"}:
+        required_entry = "xl/workbook.xml" if suffix == ".xlsx" else "ppt/presentation.xml"
+        try:
+            with zipfile.ZipFile(file.file) as archive:
+                if required_entry not in archive.namelist():
+                    raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+        except (zipfile.BadZipFile, OSError):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
+        finally:
+            file.file.seek(0)
+    if suffix in {".doc", ".xls", ".ppt"}:
+        ole_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        if not header.startswith(ole_header):
+            raise HTTPException(status_code=400, detail="文件内容与扩展名不匹配")
     if suffix in {".txt", ".md"}:
         if b"\x00" in header or not _is_supported_text_sample(header):
             raise HTTPException(status_code=400, detail="文件内容不是支持的文本格式")
@@ -771,6 +1257,8 @@ def _chat_stream_events(
     current_user: dict,
     background_tasks: BackgroundTasks,
     trace_id: str,
+    attachment_context: List[str],
+    attachment_ids: List[str],
 ):
     trace_token = observability.set_trace_id(trace_id, mode=request.mode)
     layer_trace = ["perception", "planning", "execution", "output"]
@@ -791,7 +1279,10 @@ def _chat_stream_events(
             final_state = planning.run_graph_state(
                 perception_output.session_id,
                 perception_output.message,
-                mode="fast"
+                mode="fast",
+                extra_context=attachment_context,
+                owner_user_id=current_user["user_id"],
+                attachment_ids=attachment_ids,
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
@@ -824,7 +1315,18 @@ def _chat_stream_events(
         state = _prepare_stream_state(
             perception_output.session_id,
             perception_output.message,
-            mode=perception_output.mode
+            mode=perception_output.mode,
+            extra_context=attachment_context,
+            owner_user_id=current_user["user_id"],
+            attachment_ids=attachment_ids,
+        )
+        reasoning = state.get("decision_reasoning")
+        yield _sse_data({"chunk": "", "reasoning": reasoning})
+        logger.info(
+            "/chat/stream决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
+            trace_id,
+            bool(reasoning),
+            len(reasoning or ""),
         )
 
         if state["intent"] == "clarify":
@@ -853,7 +1355,10 @@ def _chat_stream_events(
                     final_state = planning.run_graph_state(
                         perception_output.session_id,
                         perception_output.message,
-                        mode=perception_output.mode
+                        mode=perception_output.mode,
+                        extra_context=attachment_context,
+                        owner_user_id=current_user["user_id"],
+                        attachment_ids=attachment_ids,
                     )
                     final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
                     citations = _serialize_citations(final_state.get("citations", []))
@@ -874,7 +1379,10 @@ def _chat_stream_events(
             final_state = planning.run_graph_state(
                 perception_output.session_id,
                 perception_output.message,
-                mode=perception_output.mode
+                mode=perception_output.mode,
+                extra_context=attachment_context,
+                owner_user_id=current_user["user_id"],
+                attachment_ids=attachment_ids,
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
@@ -930,9 +1438,19 @@ def _chat_stream_events(
 def _prepare_stream_state(
     session_id: str,
     message: str,
-    mode: str = "fast"
+    mode: str = "fast",
+    extra_context: Optional[List[str]] = None,
+    owner_user_id: str = "",
+    attachment_ids: Optional[List[str]] = None,
 ) -> planning.AgentState:
-    state = planning._new_agent_state(session_id, message, mode)
+    state = planning._new_agent_state(
+        session_id,
+        message,
+        mode,
+        extra_context=extra_context,
+        owner_user_id=owner_user_id,
+        attachment_ids=attachment_ids,
+    )
     try:
         state = planning.classify_node(state)
         state = planning.retrieve_node(state)
@@ -940,6 +1458,7 @@ def _prepare_stream_state(
     except Exception:
         state["intent"] = "chat"
         state["context"] = []
+        state["decision_reasoning"] = planning.DECISION_REASONING_FALLBACK
         return state
 
 

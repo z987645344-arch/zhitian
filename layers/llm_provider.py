@@ -117,6 +117,24 @@ def iter_text(stream: Any) -> Iterator[str]:
             yield str(content)
 
 
+def extract_cache_usage(response: Any) -> dict[str, int]:
+    """Read DeepSeek cache token counters when the API exposes them."""
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage") or {}
+
+    def _value(name: str) -> int:
+        value = getattr(usage, name, None)
+        if value is None and isinstance(usage, dict):
+            value = usage.get(name)
+        return max(0, int(value or 0))
+
+    return {
+        "prompt_cache_hit_tokens": _value("prompt_cache_hit_tokens"),
+        "prompt_cache_miss_tokens": _value("prompt_cache_miss_tokens"),
+    }
+
+
 def _default_timeout(tier: str) -> float:
     if tier == "expert":
         return config.EXPERT_LLM_TIMEOUT

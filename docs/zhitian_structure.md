@@ -27,7 +27,7 @@ D:\zhiliao\zhitian\
 │   ├── auth.py                 ← 用户认证与权限（470行）
 │   ├── document_loader.py      ← 文档解析器（74行）
 │   ├── mcp_server.py           ← MCP 工具服务端（79行）
-│   └── mcp_client.py           ← MCP 工具客户端（19行，当前为直连壳）
+│   └── mcp_client.py           ← 规划层到本地执行工具的兼容适配器
 │
 ├── utils/
 │   ├── __init__.py
@@ -68,11 +68,11 @@ D:\zhiliao\zhitian\
 | 层级 | 当前方案 |
 |------|---------|
 | 语言 | Python 3.10.11 / UTF-8 |
-| 后端框架 | FastAPI 0.115.0 + Uvicorn 0.30.0 |
+| 后端框架 | FastAPI 0.115.0 + Uvicorn 0.51.0 |
 | LLM | DeepSeek OpenAI兼容API：fast使用deepseek-v4-flash，expert使用deepseek-v4-pro |
 | 记忆层 | SQLite（短期对话）+ Chroma 0.5.0（长期向量 + 文档向量） |
 | 规划层 | LangGraph 0.1.1（六节点 ReAct 状态机） |
-| 执行层 | MCP 1.9.4 协议壳 + Tavily 搜索 + DeepSeek 对话 + 文档检索 |
+| 执行层 | MCP 1.28.1 本地工具服务 + Tavily 搜索 + DeepSeek 对话 + 文档检索 |
 | 认证 | bcrypt 密码哈希 + JWT（HS256，24小时过期） |
 | 前端 | Flutter Windows 桌面端（Provider 状态管理，SSE 流式） |
 | 管理后台 | 纯静态 HTML/CSS/JS |

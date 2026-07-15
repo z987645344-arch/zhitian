@@ -63,3 +63,17 @@ def test_tiers_select_distinct_deepseek_models(monkeypatch):
     llm_provider.chat_completion([{"role": "user", "content": "test"}], tier="expert")
 
     assert models == ["fast-model", "expert-model"]
+
+
+def test_extract_cache_usage_supports_openai_compatible_response():
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_cache_hit_tokens=120,
+            prompt_cache_miss_tokens=30,
+        )
+    )
+
+    assert llm_provider.extract_cache_usage(response) == {
+        "prompt_cache_hit_tokens": 120,
+        "prompt_cache_miss_tokens": 30,
+    }

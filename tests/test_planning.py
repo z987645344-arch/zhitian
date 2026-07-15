@@ -47,7 +47,7 @@ def _result(tool="search_web", data="工具结果", status="success"):
 )
 def test_classify_node_parses_intents(monkeypatch, decision, expected_intent):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": decision)
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: decision)
     monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: None)
 
     state = planning.classify_node(_state(""))
@@ -63,7 +63,7 @@ def test_classify_node_saves_city_to_state(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_classify_with_model",
-        lambda message, context, tier="fast": {"intent": "chat", "city": "杭州"}
+        lambda message, context, tier="fast", **kwargs: {"intent": "chat", "city": "杭州"}
     )
     monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: saved.append((session_id, city)))
 
@@ -77,7 +77,7 @@ def test_classify_node_uses_request_mode(monkeypatch):
     tiers = []
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
 
-    def classify(message, context, tier="fast"):
+    def classify(message, context, tier="fast", **kwargs):
         tiers.append(tier)
         return {"intent": "chat"}
 
@@ -88,6 +88,54 @@ def test_classify_node_uses_request_mode(monkeypatch):
     planning.classify_node(state)
 
     assert tiers == ["expert"]
+
+
+def test_classify_reasoning_is_written_to_state(monkeypatch):
+    monkeypatch.setattr(planning, "_load_classify_context", lambda *args: [])
+    monkeypatch.setattr(
+        planning,
+        "_classify_with_model",
+        lambda *args, **kwargs: {
+            "intent": "document",
+            "decision_reasoning": "问题涉及企业内部资料，需要先检索知识库",
+        },
+    )
+
+    state = planning.classify_node(_state(""))
+
+    assert state["decision_reasoning"] == "问题涉及企业内部资料，需要先检索知识库"
+
+
+def test_classify_reasoning_uses_fixed_fallback_when_missing(monkeypatch):
+    monkeypatch.setattr(planning, "_load_classify_context", lambda *args: [])
+    monkeypatch.setattr(
+        planning,
+        "_classify_with_model",
+        lambda *args, **kwargs: {"intent": "chat"},
+    )
+
+    state = planning.classify_node(_state(""))
+
+    assert state["decision_reasoning"] == planning.DECISION_REASONING_FALLBACK
+
+
+def test_function_call_reasoning_is_parsed_without_tool_specific_fallback():
+    decision = planning._build_classify_decision([
+        {
+            "name": "search_web",
+            "arguments": {"query_hint": "news", "reasoning": "需要查询实时信息"},
+        }
+    ])
+    missing = planning._build_classify_decision([
+        {"name": "search_documents", "arguments": {"query_hint": "internal"}}
+    ])
+
+    assert decision["decision_reasoning"] == "需要查询实时信息"
+    assert missing["decision_reasoning"] == planning.DECISION_REASONING_FALLBACK
+    assert all(
+        "reasoning" in item["function"]["parameters"]["properties"]
+        for item in planning.INTENT_TOOLS
+    )
 
 
 def test_chat_request_defaults_to_fast_and_rejects_invalid_mode(client, auth_headers):
@@ -104,6 +152,70 @@ def test_chat_request_defaults_to_fast_and_rejects_invalid_mode(client, auth_hea
     assert response.json()["detail"] == "mode只支持fast或expert"
 
 
+def test_chat_response_exposes_reasoning_only_for_expert(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr(
+        main.planning,
+        "run_graph_state",
+        lambda session_id, message, mode, extra_context=None, owner_user_id="",
+        attachment_ids=None: {
+            "response": "ok",
+            "citations": [],
+            "error": "",
+            "layer_trace": [],
+            "decision_reasoning": "这是模型给出的决策理由",
+        },
+    )
+    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
+
+    expert = client.post(
+        "/chat",
+        headers=headers,
+        json={"session_id": "reason-expert", "message": "test", "mode": "expert"},
+    )
+    fast = client.post(
+        "/chat",
+        headers=headers,
+        json={"session_id": "reason-fast", "message": "test", "mode": "fast"},
+    )
+
+    assert expert.json()["reasoning"] == "这是模型给出的决策理由"
+    assert fast.json()["reasoning"] is None
+
+
+def test_chat_stream_sends_reasoning_before_body_and_preserves_done(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    state = _state("chat")
+    state["decision_reasoning"] = "适合直接结合上下文回答"
+    monkeypatch.setattr(main, "_prepare_stream_state", lambda *args, **kwargs: state)
+    monkeypatch.setattr(main.execution, "_llm_chat", lambda **kwargs: iter(["answer"]))
+    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
+    monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
+
+    response = client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"session_id": "reason-stream", "message": "test", "mode": "expert"},
+    )
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert events[0] == {"chunk": "", "reasoning": "适合直接结合上下文回答"}
+    assert events[1]["chunk"] == "answer"
+    assert events[-1] == {"chunk": "[DONE]"}
+
+
 def test_task_params_keep_request_mode():
     state = _state("search")
     state["mode"] = "expert"
@@ -118,7 +230,7 @@ def test_clarify_intent_skips_retrieve_plan_execute(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_classify_with_model",
-        lambda message, context, tier="fast": {"intent": "clarify", "clarification": "你在哪个城市？"}
+        lambda message, context, tier="fast", **kwargs: {"intent": "clarify", "clarification": "你在哪个城市？"}
     )
     monkeypatch.setattr(planning.memory, "search_memory", Mock(side_effect=AssertionError("retrieve should be skipped")))
     monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(side_effect=AssertionError("execute should be skipped")))
@@ -138,7 +250,7 @@ def test_react_continue_returns_to_plan_and_increments_round(monkeypatch):
     ])
     calls = []
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "document"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", lambda state: next(decisions))
 
@@ -158,7 +270,7 @@ def test_react_continue_returns_to_plan_and_increments_round(monkeypatch):
 
 def test_react_respond_stops_after_first_round(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "document"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", lambda state: {"action": "respond"})
     call_tool = Mock(return_value=_result(tool="search_documents", data="首轮结果"))
@@ -193,7 +305,7 @@ def test_react_limit_forces_respond_with_notice(monkeypatch):
 
 def test_chat_intent_skips_reflect(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "chat"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "chat"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", Mock(side_effect=AssertionError("chat should skip reflect")))
     call_tool = Mock(return_value=_result(tool="llm_chat", data="聊天回复"))
@@ -212,7 +324,7 @@ def test_search_intent_skips_reflect_after_single_search(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_classify_with_model",
-        lambda message, context, tier="fast": {"intent": "search"}
+        lambda message, context, tier="fast", **kwargs: {"intent": "search"}
     )
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(
@@ -232,7 +344,7 @@ def test_search_intent_skips_reflect_after_single_search(monkeypatch):
 
 def test_document_list_intent_uses_list_tool_and_skips_reflect(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast": {"intent": "document_list"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "document_list"})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", Mock(side_effect=AssertionError("document list should skip reflect")))
     call_tool = Mock(return_value=_result(tool="list_documents", data="当前企业信息库包含以下文件：\n1. a.txt"))

@@ -13,7 +13,10 @@ LOG_DIR = os.path.join(config.BASE_DIR, "data", "logs")
 LOG_FILE = os.path.join(LOG_DIR, "zhitian.log")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-PROJECT_LOGGERS = {"main", "execution", "planning", "memory", "llm_provider", "observability"}
+PROJECT_LOGGERS = {
+    "main", "execution", "planning", "memory", "llm_provider", "observability",
+    "mcp_client",
+}
 
 _configured = False
 

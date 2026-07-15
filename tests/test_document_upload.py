@@ -2,6 +2,8 @@
 """Offline tests for document upload validation."""
 
 from io import BytesIO
+import os
+import zipfile
 
 from docx import Document
 from fastapi import HTTPException, UploadFile
@@ -9,6 +11,7 @@ import pytest
 
 import config
 import main
+from layers import converter
 
 
 def _docx_bytes() -> bytes:
@@ -46,8 +49,33 @@ def _pdf_bytes() -> bytes:
 
 
 def _stub_document_persistence(monkeypatch):
-    monkeypatch.setattr("main.memory.save_document", lambda source, chunks, doc_id: len(chunks))
+    monkeypatch.setattr(
+        "main.memory.save_document",
+        lambda source, chunks, doc_id, converted_from="": len(chunks),
+    )
     monkeypatch.setattr("main.auth.register_document", lambda *args, **kwargs: None)
+
+
+def _office_zip_bytes(entry: str) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry, "<xml />")
+    return buffer.getvalue()
+
+
+def test_upload_rejects_forged_xlsx_before_parsing(client, auth_headers, monkeypatch):
+    headers, _ = auth_headers("employee")
+    parsed = []
+    monkeypatch.setattr("main.document_loader.load_document", lambda path: parsed.append(path))
+
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("report.xlsx", b"not an xlsx", "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert parsed == []
 
 
 def test_upload_rejects_unsupported_extension_before_parsing(client, auth_headers, monkeypatch):
@@ -58,7 +86,7 @@ def test_upload_rejects_unsupported_extension_before_parsing(client, auth_header
     response = client.post(
         "/documents/upload",
         headers=headers,
-        files={"file": ("report.xlsx", b"not an xlsx", "application/octet-stream")},
+        files={"file": ("program.exe", b"MZbinary", "application/octet-stream")},
     )
 
     assert response.status_code == 400
@@ -139,3 +167,108 @@ def test_supported_upload_formats_reach_parser(client, auth_headers, monkeypatch
         )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "target_format"),
+    [
+        ("legacy.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1payload", "docx"),
+        ("sheet.xlsx", _office_zip_bytes("xl/workbook.xml"), "pdf"),
+        ("slides.pptx", _office_zip_bytes("ppt/presentation.xml"), "pdf"),
+    ],
+)
+def test_convertible_upload_converts_and_cleans_temp_files(
+    client,
+    auth_headers,
+    tmp_path,
+    monkeypatch,
+    filename,
+    content,
+    target_format,
+):
+    headers, _ = auth_headers("employee")
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    saved = {}
+
+    def convert(source_path, requested_format):
+        assert requested_format == target_format
+        output_dir = os.path.join(os.path.dirname(source_path), "conversion_test")
+        os.makedirs(output_dir)
+        output_path = os.path.join(output_dir, "converted.%s" % requested_format)
+        with open(output_path, "wb") as output:
+            output.write(b"converted")
+        return converter.ConversionResult(
+            success=True,
+            status=converter.ConversionStatus.SUCCESS,
+            output_path=output_path,
+            converted_from_format=filename.rsplit(".", 1)[-1],
+            converted_to_format=requested_format,
+        )
+
+    monkeypatch.setattr("main.converter.convert_file", convert)
+    monkeypatch.setattr("main.document_loader.load_document", lambda path: "converted text")
+    monkeypatch.setattr(
+        "main.memory.save_document",
+        lambda source, chunks, doc_id, converted_from="": saved.update(
+            source=source,
+            converted_from=converted_from,
+        ) or len(chunks),
+    )
+    monkeypatch.setattr(
+        "main.auth.register_document",
+        lambda doc_id, source, uploaded_by, converted_from="": saved.update(
+            db_converted_from=converted_from,
+        ),
+    )
+
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": (filename, content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["converted_from"] == filename
+    assert saved == {
+        "source": filename,
+        "converted_from": filename,
+        "db_converted_from": filename,
+    }
+    assert not list((tmp_path / "data" / "tmp_uploads").glob("**/*"))
+
+
+def test_convertible_upload_failure_is_rejected_and_cleans_source(
+    client,
+    auth_headers,
+    tmp_path,
+    monkeypatch,
+):
+    headers, _ = auth_headers("employee")
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "main.converter.convert_file",
+        lambda source, target: converter.ConversionResult(
+            success=False,
+            status=converter.ConversionStatus.FAILED,
+            converted_from_format="doc",
+            converted_to_format="docx",
+            error_type="process_failed",
+            error_msg="服务器未安装或未配置LibreOffice，暂时无法转换该格式",
+        ),
+    )
+
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={
+            "file": (
+                "legacy.doc",
+                b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1payload",
+                "application/msword",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert "LibreOffice" in response.json()["detail"]
+    assert not list((tmp_path / "data" / "tmp_uploads").glob("**/*"))

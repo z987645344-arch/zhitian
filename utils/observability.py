@@ -49,7 +49,11 @@ def set_trace_id(trace_id: str, mode: str = "fast") -> Token:
 def reset_trace_id(token: Token) -> None:
     trace_id = get_trace_id()
     discard_active_request(trace_id)
-    _trace_id.reset(token)
+    try:
+        _trace_id.reset(token)
+    except ValueError:
+        # Starlette may advance a synchronous SSE generator in a sibling Context.
+        _trace_id.set("")
     _request_mode.set("fast")
     _request_started_at.set(None)
     _stage_timings.set(None)
