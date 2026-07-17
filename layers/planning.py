@@ -66,6 +66,8 @@ class AgentState(TypedDict):
     current_task_pointer: int
     complex_task_created_count: int
     complex_action: str
+    complex_deadline: float
+    stream_prepared: bool
     layer_trace: list[str]
 
 
@@ -195,9 +197,10 @@ INTENT_TOOLS = [
         "function": {
             "name": "convert_document",
             "description": (
-                "仅当用户明确要求把本轮对话已经上传的一个附件转换为PDF或DOCX时调用。"
+                "仅当用户明确要求转换本轮对话已经上传的一个附件时调用。"
                 "这是格式转换，不是读取、总结附件，也不是生成新内容。"
-                "DOC附件只能转DOCX；XLS、XLSX、PPT、PPTX附件只能转PDF。"
+                "支持PDF转Word(DOCX)、Excel(XLSX)或PPT(PPTX)，以及Word(DOC/DOCX)、"
+                "Excel(XLS/XLSX)、PPT(PPT/PPTX)转PDF；另外保留DOC转DOCX兼容能力。"
                 "没有附件或同时存在多个附件时仍选择本工具，由系统提示用户上传或明确目标，禁止猜测附件。"
             ),
             "parameters": {
@@ -209,7 +212,7 @@ INTENT_TOOLS = [
                     },
                     "target_format": {
                         "type": "string",
-                        "enum": ["pdf", "docx"],
+                        "enum": ["pdf", "docx", "xlsx", "pptx"],
                         "description": "用户明确要求的目标格式"
                     }
                 },
@@ -223,6 +226,8 @@ INTENT_TOOLS = [
             "name": "direct_answer",
             "description": (
                 "当用户问题完整清晰，可以直接根据已有上下文或通用知识回答，不需要联网搜索时调用。"
+                "当本轮attachment_ids非空时，附件正文已经作为本轮上下文提供；读取、概括、分析当前附件应调用本工具，"
+                "不要为读取当前附件调用search_documents或list_documents。只有格式转换请求才调用convert_document。"
                 "天气、下雨、出行、附近推荐这类依赖城市或位置的问题，不要调用本工具。"
                 "如果用户同时明确提供了自己的城市，优先在city参数中带出城市；如果模型能力支持多个工具，可额外调用save_city。"
             ),
@@ -342,6 +347,8 @@ COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_c
 
 def classify_node(state: AgentState) -> AgentState:
     """classify节点：调用所选模型的 Function Call 判断意图。"""
+    if state.get("stream_prepared") and state.get("intent"):
+        return state
     started_at = time.perf_counter()
     state["context"] = _merge_context(
         state["context"],
@@ -389,6 +396,8 @@ def classify_node(state: AgentState) -> AgentState:
 
 def retrieve_node(state: AgentState) -> AgentState:
     """retrieve节点：从Chroma检索语义相关的长期记忆"""
+    if state.get("stream_prepared"):
+        return state
     started_at = time.perf_counter()
     try:
         retrieved_context = memory.search_memory(
@@ -453,8 +462,14 @@ def reflect_node(state: AgentState) -> AgentState:
 
 def complex_plan_node(state: AgentState) -> AgentState:
     """Generate the initial bounded linear task list for an expert request."""
+    if _complex_budget_exhausted(state):
+        return _mark_complex_timeout(state)
     started_at = time.perf_counter()
-    tasks = _generate_complex_tasks(state, config.MAX_COMPLEX_TASKS)
+    try:
+        tasks = _generate_complex_tasks(state, config.MAX_COMPLEX_TASKS)
+    except TimeoutError:
+        observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
+        return _mark_complex_timeout(state)
     observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
     state["complex_task_list"] = tasks
     state["complex_task_created_count"] = len(tasks)
@@ -469,6 +484,8 @@ def complex_plan_node(state: AgentState) -> AgentState:
 
 def execute_complex_node(state: AgentState) -> AgentState:
     """Execute exactly one task from the expert linear plan."""
+    if _complex_budget_exhausted(state):
+        return _mark_complex_timeout(state)
     pointer = state["current_task_pointer"]
     if pointer >= len(state["complex_task_list"]):
         state["complex_action"] = "respond"
@@ -476,7 +493,13 @@ def execute_complex_node(state: AgentState) -> AgentState:
 
     task = state["complex_task_list"][pointer]
     started_at = time.perf_counter()
-    result = mcp_client.call_tool(task.tool, task.params)
+    params = dict(task.params)
+    remaining = _remaining_complex_budget(state)
+    if task.tool == "search_web":
+        params["total_budget"] = remaining
+    elif task.tool in {"search_documents", "llm_chat"}:
+        params["timeout"] = min(config.EXPERT_LLM_TIMEOUT, remaining)
+    result = mcp_client.call_tool(task.tool, params)
     observability.log_stage(
         "complex_execute_%s" % task.tool,
         int((time.perf_counter() - started_at) * 1000),
@@ -505,6 +528,8 @@ def execute_complex_node(state: AgentState) -> AgentState:
 def checkpoint_node(state: AgentState) -> AgentState:
     """Apply one global replan opportunity and one local adjustment per task position."""
     _append_layer_trace(state, "checkpoint")
+    if _complex_budget_exhausted(state):
+        return _mark_complex_timeout(state)
     if state["current_task_pointer"] >= len(state["complex_task_list"]):
         state["complex_action"] = "respond"
         return state
@@ -567,6 +592,12 @@ def complex_respond_node(state: AgentState) -> AgentState:
     """Synthesize all expert subtask results into one response."""
     started_at = time.perf_counter()
     state["citations"] = _dedupe_citations(state["citations"])
+    if state["error"] == "complex_task_timeout" or _complex_budget_exhausted(state):
+        state["error"] = "complex_task_timeout"
+        state["response"] = _complex_timeout_response(state["complex_task_results"])
+        observability.log_stage("complex_respond_model", 0)
+        _append_layer_trace(state, "complex_respond")
+        return state
     try:
         response = llm_provider.chat_completion(
             cache_friendly_messages(
@@ -586,10 +617,15 @@ def complex_respond_node(state: AgentState) -> AgentState:
                 include_date=True,
             ),
             tier="expert",
+            timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
+            total_budget=_remaining_complex_budget(state),
         )
         state["response"] = llm_provider.extract_text(response)
         if not state["response"]:
             raise ValueError("empty complex response")
+    except TimeoutError:
+        state["error"] = "complex_task_timeout"
+        state["response"] = _complex_timeout_response(state["complex_task_results"])
     except Exception as e:
         logger.error("复杂任务汇总失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
         state["error"] = state["error"] or "complex_respond_failed"
@@ -678,9 +714,10 @@ def run_graph_state(
     extra_context: Optional[list[str]] = None,
     owner_user_id: str = "",
     attachment_ids: Optional[list[str]] = None,
+    prepared_state: Optional[AgentState] = None,
 ) -> AgentState:
     """运行规划层状态机并返回完整状态，供接口层判断降级和记忆写入。"""
-    state = _new_agent_state(
+    state = prepared_state or _new_agent_state(
         session_id,
         message,
         mode,
@@ -688,11 +725,14 @@ def run_graph_state(
         owner_user_id=owner_user_id,
         attachment_ids=attachment_ids,
     )
+    if prepared_state is not None:
+        state["stream_prepared"] = True
     if mode == "fast":
         return _run_fast_state(state)
     if mode != "expert":
         raise ValueError("mode只支持fast或expert")
 
+    state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     try:
         return graph.invoke(state)
     except Exception as e:
@@ -758,6 +798,8 @@ def _new_agent_state(
         current_task_pointer=0,
         complex_task_created_count=0,
         complex_action="",
+        complex_deadline=0.0,
+        stream_prepared=False,
         layer_trace=[]
     )
 
@@ -851,14 +893,25 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
         current_date_prompt()
         + "\n\n你处于快速模式，只能基于对话上下文、长期记忆和本地企业知识库回答。"
         "需要查询知识库正文时调用search_documents；需要列出文件清单时调用list_documents。"
+        "如果本轮提供了聊天附件，附件正文已经直接包含在上下文中，应优先阅读并回答附件内容，"
+        "不要仅为读取当前附件调用search_documents或list_documents。用户没有附加文字时，直接概括附件的主要内容。"
         "其他问题直接回答，不调用工具。你没有联网搜索工具，不得声称已经查询互联网或获得实时结果。"
     )
     messages = [{"role": "system", "content": system_content}]
     messages.extend(_fast_history_messages(state["session_id"]))
-    if state["context"]:
+    if state["attachment_context"]:
         messages.append({
             "role": "system",
-            "content": "相关长期记忆：\n" + "\n".join(state["context"])
+            "content": "本轮聊天附件正文：\n" + "\n\n".join(state["attachment_context"])
+        })
+    memory_context = [
+        item for item in state["context"]
+        if item not in state["attachment_context"]
+    ]
+    if memory_context:
+        messages.append({
+            "role": "system",
+            "content": "相关长期记忆：\n" + "\n".join(memory_context)
         })
     messages.append({"role": "user", "content": state["message"]})
     return messages
@@ -941,6 +994,8 @@ def _generate_complex_tasks(
         ),
         tier="expert",
         response_format={"type": "json_object"},
+        timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
+        total_budget=_remaining_complex_budget(state),
     )
     data = _parse_json_object(llm_provider.extract_text(response))
     raw_tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
@@ -983,6 +1038,8 @@ def _check_complex_route_with_model(state: AgentState) -> str:
         ),
         tier="expert",
         response_format={"type": "json_object"},
+        timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
+        total_budget=_remaining_complex_budget(state),
     )
     data = _parse_json_object(llm_provider.extract_text(response))
     return "replan" if data.get("action") == "replan" else "keep"
@@ -1011,6 +1068,8 @@ def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[T
         ),
         tier="expert",
         response_format={"type": "json_object"},
+        timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
+        total_budget=_remaining_complex_budget(state),
     )
     data = _parse_json_object(llm_provider.extract_text(response))
     if data.get("action") != "adjust" or not isinstance(data.get("task"), dict):
@@ -1081,6 +1140,37 @@ def _fallback_complex_response(results: list[ComplexTaskResult]) -> str:
     if not results:
         return "复杂任务未能生成可执行步骤，请稍后重试。"
     lines = ["复杂任务未能完成最终汇总，以下为已执行步骤摘要："]
+    for item in results:
+        lines.append("%s. [%s] %s" % (item.task_index + 1, item.status, item.result_summary))
+    return "\n".join(lines)
+
+
+def _remaining_complex_budget(state: AgentState) -> float:
+    deadline = float(state.get("complex_deadline") or 0.0)
+    if deadline <= 0:
+        return config.EXPERT_COMPLEX_TIMEOUT
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise TimeoutError("expert complex task budget exhausted")
+    return remaining
+
+
+def _complex_budget_exhausted(state: AgentState) -> bool:
+    deadline = float(state.get("complex_deadline") or 0.0)
+    return deadline > 0 and time.perf_counter() >= deadline
+
+
+def _mark_complex_timeout(state: AgentState) -> AgentState:
+    state["error"] = "complex_task_timeout"
+    state["complex_action"] = "respond"
+    return state
+
+
+def _complex_timeout_response(results: list[ComplexTaskResult]) -> str:
+    prefix = "复杂任务已达到全局时间上限，以下为超时前已完成的步骤摘要："
+    if not results:
+        return prefix + "\n尚无已完成步骤。"
+    lines = [prefix]
     for item in results:
         lines.append("%s. [%s] %s" % (item.task_index + 1, item.status, item.result_summary))
     return "\n".join(lines)
@@ -1286,6 +1376,22 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
                 "context": state["attachment_context"],
             },
             order=order
+        )
+    if state["attachment_context"]:
+        return Task(
+            tool="llm_chat",
+            params={
+                "message": state["message"],
+                "session_id": state["session_id"],
+                "tier": state["mode"],
+                "system_prompt": (
+                    "请优先根据本轮聊天附件正文回答。用户没有附加文字时，概括附件主要内容；"
+                    "不得把当前附件误当成企业知识库文件清单，也不得编造附件中没有的信息。"
+                    "\n\n本轮聊天附件正文：\n"
+                    + "\n\n".join(state["attachment_context"])
+                ),
+            },
+            order=order,
         )
     return Task(
         tool="llm_chat",
@@ -1512,7 +1618,10 @@ def _classify_with_model(
                     "需要实时信息或外部事实时选search_web；无需联网时选direct_answer；"
                     "用户明确要求把内容整理、导出或生成为可下载文件、文档、清单或报告时选generate_file；"
                     "generate_file用于生成新的md、txt、pdf或docx交付物，不用于读取或转换用户已有文件；"
-                    "用户明确要求把本轮已上传附件转换为PDF或DOCX时选convert_document；附件缺失或数量不唯一时仍选convert_document，由系统负责提示，不要改选ask_clarification或猜测附件；"
+                    "用户明确要求把本轮已上传附件在PDF、Word、Excel、PPT之间转换时选convert_document；支持PDF转DOCX/XLSX/PPTX以及DOC/DOCX/XLS/XLSX/PPT/PPTX转PDF；附件缺失或数量不唯一时仍选convert_document，由系统负责提示，不要改选ask_clarification或猜测附件；"
+                    "本轮attachment_ids非空表示用户已提供当前聊天附件，附件正文会由系统直接注入后续回答上下文；"
+                    "读取、概括、总结、分析当前附件时必须选direct_answer，不要选search_documents或list_documents；"
+                    "用户消息为空但attachment_ids非空时也选direct_answer，由后续节点直接概括附件；只有明确要求转换格式时选convert_document；"
                     "当用户想知道企业信息库/知识库/已上传资料里“有哪些文件、哪些文档、哪些资料、上传了什么”时，必须选list_documents；"
                     "list_documents只列清单，不回答内容；"
                     "用户明确提到文档、资料、上传的文件、刚才的PDF、这份文件、这份文档等本地文档指代时选search_documents；"
@@ -1710,7 +1819,9 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
                 arguments.get("target_format", "") or ""
             ).lower()
             decision["conversion_target_format"] = (
-                requested_target if requested_target in {"pdf", "docx"} else ""
+                requested_target
+                if requested_target in {"pdf", "docx", "xlsx", "pptx"}
+                else ""
             )
             decision["clarification"] = ""
             decision["decision_reasoning"] = _normalize_decision_reasoning(

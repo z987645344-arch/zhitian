@@ -57,8 +57,8 @@ def test_files_api_lists_downloads_and_deletes_owner_files(
     assert "owner_user_id" not in listed.json()[0]
     assert "session_id" not in listed.json()[0]
 
-    assert client.get("/files/%s" % file_id, headers=other_headers).status_code == 403
-    assert client.delete("/files/%s" % file_id, headers=other_headers).status_code == 403
+    assert client.get("/files/%s" % file_id, headers=other_headers).status_code == 404
+    assert client.delete("/files/%s" % file_id, headers=other_headers).status_code == 404
     downloaded = client.get("/files/%s" % file_id, headers=owner_headers)
     assert downloaded.status_code == 200
     assert downloaded.content == b"report-body"

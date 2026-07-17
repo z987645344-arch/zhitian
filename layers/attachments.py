@@ -31,7 +31,7 @@ def save_attachment(
     file_id: str = "",
 ) -> AttachmentRecord:
     record = AttachmentRecord(
-        attachment_id=str(uuid.uuid4()),
+        attachment_id=file_id or str(uuid.uuid4()),
         file_id=file_id,
         text=text,
         filename=filename,

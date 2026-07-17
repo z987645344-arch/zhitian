@@ -236,7 +236,7 @@ def test_generated_file_download_permissions_and_missing_file(
     path = "/files/%s" % generated.file_id
 
     forbidden = client.get(path, headers=other_headers)
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 404
 
     missing = client.get(
         "/files/22222222-2222-2222-2222-222222222222",
@@ -251,7 +251,7 @@ def test_generated_file_download_permissions_and_missing_file(
     assert generated.download_filename in unquote(downloaded.headers["content-disposition"])
 
     reviewer_download = client.get(path, headers=reviewer_headers)
-    assert reviewer_download.status_code == 403
+    assert reviewer_download.status_code == 404
 
 
 @pytest.mark.integration

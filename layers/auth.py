@@ -302,6 +302,51 @@ def list_verified_documents() -> list[dict]:
         raise
 
 
+def delete_session_binding(session_id: str) -> bool:
+    """删除session归属记录，供会话彻底删除流程复用。"""
+    if not session_id:
+        return False
+    try:
+        with _connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(
+            "删除用户会话归属失败：session_id=%s error_type=%s",
+            session_id,
+            type(e).__name__,
+        )
+        raise
+
+
+def list_user_session_ids(user_id: str) -> list[str]:
+    """返回用户绑定过的全部session，最近绑定的优先。"""
+    if not user_id:
+        return []
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id
+                FROM user_sessions
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [row["session_id"] for row in rows]
+    except Exception as e:
+        logger.error(
+            "读取用户会话列表失败：user_id_len=%s error_type=%s",
+            len(user_id),
+            type(e).__name__,
+        )
+        raise
+
+
 def approve_document(doc_id: str, reviewer_user_id: str) -> bool:
     """审核通过文档。"""
     return _review_document(doc_id, reviewer_user_id, "verified")

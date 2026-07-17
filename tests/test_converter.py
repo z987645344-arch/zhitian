@@ -94,3 +94,7 @@ def test_convert_document_is_registered_for_expert_only():
     }
     assert "convert_document" in exposed_tools
     assert "convert_document" not in fast_tools
+
+
+def test_pdf_reconstruction_does_not_share_libreoffice_lock():
+    assert converter._pdf_conversion_lock is not converter._conversion_lock

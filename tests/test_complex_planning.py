@@ -2,6 +2,7 @@
 """Offline tests for the expert-only linear complex task workflow."""
 
 import json
+import time
 from unittest.mock import Mock
 
 import config
@@ -218,3 +219,42 @@ def test_fast_tool_set_does_not_expose_complex_task_declaration():
 
     assert "declare_complex_task" not in tool_names
     assert tool_names == {"search_documents", "list_documents"}
+
+
+def test_complex_deadline_returns_completed_results_without_final_model(monkeypatch):
+    state = _state()
+    state["complex_deadline"] = time.perf_counter() - 1
+    state["complex_task_results"] = [
+        planning.ComplexTaskResult(
+            task_index=0,
+            tool="search_web",
+            status="success",
+            result_summary="已完成结果",
+        )
+    ]
+    model_call = Mock(side_effect=AssertionError("expired task must not call model"))
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", model_call)
+
+    planning.checkpoint_node(state)
+    planning.complex_respond_node(state)
+
+    assert state["error"] == "complex_task_timeout"
+    assert "已达到全局时间上限" in state["response"]
+    assert "已完成结果" in state["response"]
+    assert model_call.call_count == 0
+
+
+def test_complex_model_calls_receive_remaining_deadline_budget(monkeypatch):
+    state = _state()
+    state["complex_deadline"] = time.perf_counter() + 5
+    observed = {}
+
+    def chat(*args, **kwargs):
+        observed.update(kwargs)
+        return _json_response({"tasks": []})
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    planning._generate_complex_tasks(state, 1)
+
+    assert 0 < observed["timeout"] <= 5
+    assert 0 < observed["total_budget"] <= 5

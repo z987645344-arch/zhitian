@@ -69,7 +69,7 @@ def test_valid_token_can_access_authenticated_endpoint(client, auth_headers):
 
     response = client.get("/memory/test-session-auth", headers=headers)
 
-    assert response.status_code in (200, 403)
+    assert response.status_code in (200, 404)
     assert response.status_code != 401
 
 

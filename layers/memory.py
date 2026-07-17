@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
@@ -110,16 +110,32 @@ def init_db() -> None:
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "attachment_ids" not in columns:
+                conn.execute(
+                    "ALTER TABLE conversations "
+                    "ADD COLUMN attachment_ids TEXT NOT NULL DEFAULT '[]'"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id  TEXT PRIMARY KEY,
                     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
                     last_active DATETIME,
-                    summary     TEXT DEFAULT ""
+                    summary     TEXT DEFAULT "",
+                    display_name TEXT DEFAULT NULL
                 )
                 """
             )
+            session_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "display_name" not in session_columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN display_name TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversations_session_id_id
@@ -131,7 +147,12 @@ def init_db() -> None:
         raise
 
 
-def save_message(session_id: str, role: str, content: str) -> None:
+def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    attachment_ids: Optional[List[str]] = None,
+) -> None:
     """保存一条对话记录到SQLite"""
     _validate_message(session_id, role, content)
     timestamp = datetime.now().isoformat()
@@ -147,10 +168,17 @@ def save_message(session_id: str, role: str, content: str) -> None:
             )
             conn.execute(
                 """
-                INSERT INTO conversations (session_id, role, content, timestamp)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO conversations (
+                    session_id, role, content, timestamp, attachment_ids
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, role, content, timestamp)
+                (
+                    session_id,
+                    role,
+                    content,
+                    timestamp,
+                    json.dumps(_normalize_attachment_ids(attachment_ids)),
+                )
             )
     except Exception as e:
         logger.error("SQLite保存消息失败：session_id=%s role=%s error_type=%s", session_id, role, type(e).__name__)
@@ -167,7 +195,7 @@ def get_history(session_id: str, limit: int = 10) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, session_id, role, content, timestamp
+                SELECT id, session_id, role, content, timestamp, attachment_ids
                 FROM conversations
                 WHERE session_id = ?
                 ORDER BY id DESC
@@ -193,7 +221,7 @@ def get_session_history(session_id: str) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT role, content, timestamp
+                SELECT role, content, timestamp, attachment_ids
                 FROM conversations
                 WHERE session_id = ?
                 ORDER BY id ASC
@@ -208,10 +236,73 @@ def get_session_history(session_id: str) -> list[dict]:
         {
             "role": row["role"],
             "content": row["content"],
-            "timestamp": row["timestamp"]
+            "timestamp": row["timestamp"],
+            "attachment_ids": _parse_attachment_ids(row["attachment_ids"]),
         }
         for row in rows
     ]
+
+
+def list_session_summaries(session_ids: List[str]) -> List[dict]:
+    """按最近活动时间返回给定session集合的摘要。"""
+    normalized = list(dict.fromkeys(item for item in session_ids if item))
+    if not normalized:
+        return []
+    placeholders = ",".join("?" for _ in normalized)
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.session_id, s.created_at, s.last_active, s.display_name,
+                       COALESCE((
+                           SELECT c.content
+                           FROM conversations c
+                           WHERE c.session_id = s.session_id AND c.role = 'user'
+                           ORDER BY c.id ASC
+                           LIMIT 1
+                       ), '') AS title,
+                       (SELECT COUNT(*) FROM conversations c
+                        WHERE c.session_id = s.session_id) AS message_count
+                FROM sessions s
+                WHERE s.session_id IN (%s)
+                ORDER BY COALESCE(s.last_active, s.created_at) DESC
+                """ % placeholders,
+                normalized,
+            ).fetchall()
+    except Exception as e:
+        logger.error("SQLite读取会话列表失败：error_type=%s", type(e).__name__)
+        raise
+    return [
+        {
+            "session_id": row["session_id"],
+            "title": str(row["title"] or "")[:80],
+            "display_name": row["display_name"],
+            "created_at": row["created_at"],
+            "last_active": row["last_active"] or row["created_at"],
+            "message_count": int(row["message_count"] or 0),
+        }
+        for row in rows
+    ]
+
+
+def rename_session(session_id: str, display_name: Optional[str]) -> bool:
+    """设置或清除会话自定义显示名称。"""
+    if not session_id:
+        return False
+    try:
+        with _connect() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET display_name = ? WHERE session_id = ?",
+                (display_name, session_id),
+            )
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(
+            "SQLite重命名会话失败：session_id=%s error_type=%s",
+            session_id,
+            type(e).__name__,
+        )
+        raise
 
 
 def is_message_important(content: str, tier: str = "fast") -> bool:
@@ -479,7 +570,8 @@ def search_documents(
     top_k: int = 5,
     verified_doc_ids: list[str] = None,
     tier: str = "fast",
-    enable_rerank: bool = True
+    enable_rerank: bool = True,
+    timeout: Optional[float] = None,
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，优先BM25粗筛再向量重排。"""
     if not query:
@@ -534,7 +626,7 @@ def search_documents(
     results.sort(key=lambda item: item["score"], reverse=True)
     stage_started_at = time.perf_counter()
     if enable_rerank:
-        results = _apply_document_rerank(query, results, tier=tier)
+        results = _apply_document_rerank(query, results, tier=tier, timeout=timeout)
     observability.log_stage("documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     logger.info(
@@ -711,7 +803,8 @@ def _is_metadata_query_term(term: str) -> bool:
 def _apply_document_rerank(
     query: str,
     candidates: list[dict],
-    tier: str = "fast"
+    tier: str = "fast",
+    timeout: Optional[float] = None,
 ) -> list[dict]:
     if not config.RERANK_ENABLED:
         return candidates
@@ -727,7 +820,7 @@ def _apply_document_rerank(
     rerank_count = max(1, int(config.RERANK_CANDIDATE_COUNT))
     head = candidates[:rerank_count]
     tail = candidates[rerank_count:]
-    return _rerank_candidates(query, head, tier=tier) + tail
+    return _rerank_candidates(query, head, tier=tier, timeout=timeout) + tail
 
 
 def _has_title_source_match(candidates: list[dict]) -> bool:
@@ -737,7 +830,8 @@ def _has_title_source_match(candidates: list[dict]) -> bool:
 def _rerank_candidates(
     query: str,
     candidates: list[dict],
-    tier: str = "fast"
+    tier: str = "fast",
+    timeout: Optional[float] = None,
 ) -> list[dict]:
     """用expert tier一次性批量重排候选chunk，失败时返回原顺序。"""
     if not candidates:
@@ -775,7 +869,7 @@ def _rerank_candidates(
             ),
             tier=tier,
             response_format={"type": "json_object"} if tier == "expert" else None,
-            timeout=config.RERANK_TIMEOUT
+            timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
         )
         score_map = _parse_rerank_scores(llm_provider.extract_text(response), len(candidates))
         reranked = sorted(
@@ -1145,15 +1239,34 @@ def hard_delete_days(importance_level: str) -> int:
 
 
 def clear_session(session_id: str) -> bool:
-    """清空会话的SQLite短期记忆和Chroma长期记忆"""
+    """清空两层记忆但保留session元数据和用户归属。"""
+    if not session_id:
+        return True
+    try:
+        with _connect() as conn:
+            conn.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+    except Exception as e:
+        logger.error("SQLite清空会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
+        raise
+    return _clear_vector_session(session_id)
+
+
+def delete_session_full(session_id: str) -> bool:
+    """彻底删除会话记录、归属和长期向量；返回向量清理是否完整。"""
     if not session_id:
         return True
     try:
         with _connect() as conn:
             conn.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        from layers import auth
+        auth.delete_session_binding(session_id)
     except Exception as e:
-        logger.error("SQLite清空会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
+        logger.error(
+            "SQLite彻底删除会话失败：session_id=%s error_type=%s",
+            session_id,
+            type(e).__name__,
+        )
         raise
     return _clear_vector_session(session_id)
 
@@ -1186,8 +1299,25 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "session_id": row["session_id"],
         "role": row["role"],
         "content": row["content"],
-        "timestamp": row["timestamp"]
+        "timestamp": row["timestamp"],
+        "attachment_ids": _parse_attachment_ids(row["attachment_ids"]),
     }
+
+
+def _normalize_attachment_ids(attachment_ids: Optional[List[str]]) -> List[str]:
+    return list(
+        dict.fromkeys(
+            str(item).strip() for item in (attachment_ids or []) if str(item).strip()
+        )
+    )
+
+
+def _parse_attachment_ids(raw_value: object) -> List[str]:
+    try:
+        parsed = json.loads(str(raw_value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return _normalize_attachment_ids(parsed if isinstance(parsed, list) else [])
 
 
 def _validate_message(session_id: str, role: str, content: str) -> None:

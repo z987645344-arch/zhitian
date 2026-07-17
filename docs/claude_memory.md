@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-07-14**
+> **最后更新：2026-07-17**
 
 ---
 
@@ -17,6 +17,8 @@
 | 开发者 | Zheng，大三 |
 | 技术设计 | 见 docs/zhitian_structure.md |
 | 工作手册 | 见 docs/claude_skill.md |
+
+> 补充定位（2026-07-16 对话中澄清）：开发者本人计划长期自用此项目，核心诉求是“方便持续接入新工具/小能力”，类似 Codex 那种可扩展体验，不只是学习/作品集用途。这是 MCP 相关工作（版本升级、`mcp_connector.py`）优先级被提前、且放弃采用 `langchain-mcp-adapters` 改为自建通用连接层的核心原因：自建是为了不受 LangGraph 版本绑定，同时保留协议实现的可控性。
 
 ---
 
@@ -38,11 +40,11 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ 已清理未接入主流程且真实解析持续超时的MinerU实验集成，保留MCP 1.28.1本地工具服务 |
-| 上一轮完成 | 2026-07-15：移除MinerU stdio/uvx客户端、专项测试和`uv`依赖，规划层本地工具调用接口保持兼容 |
-| 当前等待 | 无 |
-| 文档优化 | 2026-07-06 完成：4 份文档重组、claude_skill.md 指令模板、claude_memory.md 精简 |
-| 下一步 | 继续扩展Agent工具集；新的MCP生态工具按实际价值和稳定性逐项验证 |
+| 状态 | ✅ WorkBuddy F10/F19/F22/F23已收敛；Expert stream复用预分类state，不再重复classify/retrieve |
+| 上一轮完成 | 2026-07-17：修复Expert stream双重classify/retrieve，document_list、convert_document、complex_task真实请求均降为1次classify；SSE顺序不变，完整未筛选回归`186 passed`且无failed/skipped/deselected |
+| 当前等待 | 用户继续观察真实网络波动下的Expert stream耗时；F14连接池复用、F16指标告警和F21 convert_document显式预算仍待后续处理 |
+| 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
+| 下一步 | 优先评估F16可观测性告警，再按收益处理F14连接池复用和F21 convert_document显式预算；之后继续Agent/MCP工具扩展 |
 
 > 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，无工具时1次模型调用、有工具时2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
@@ -59,10 +61,11 @@
   - expert的generate_file可生成Markdown/TXT/PDF/DOCX；convert_document已接入对话意图，仅允许转换当前session已上传且owner匹配的附件
 - reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
 - ReAct仅保留在document路径；普通chat和search均单轮respond，避免重复联网搜索放大延迟
+- 当前请求带`attachment_ids`时，expert分类通过结构化附件信号优先选择当前附件直答，fast将附件正文作为独立上下文直接回答；仅转换请求进入`convert_document`。无附件时知识库`search_documents/list_documents`行为保持不变，document低置信度附件fallback继续保留。
 
-### 2. MCP保留本地工具服务，MinerU实验集成已清理
+### 2. MCP已具备独立外部连接基础设施，尚未接入Agent
 
-项目保留`mcp==1.28.1`和本地`mcp_server.py`工具服务；规划层继续通过轻量`mcp_client.call_tool()`兼容调用`execution.run()`。MinerU实验客户端虽曾完成协议连接和工具发现，但未接入业务主流程，且真实PDF解析在30/90/180秒预算下持续超时，现已删除相关stdio/uvx代码和依赖，避免维护不可用能力。
+项目保留`mcp==1.28.1`和本地`mcp_server.py`工具服务；规划层继续通过轻量`mcp_client.call_tool()`兼容调用`execution.run()`。现已新建通用MCP外部连接层`layers/mcp_connector.py`，复用MinerU阶段验证过的环境隔离和Windows进程树清理经验，本地stdio测试server已完成真实工具发现和调用验证。该连接层尚未接入`TOOL_REGISTRY`或对话意图路由，当前仅支持stdio transport。
 
 ### 3. 记忆系统仍处基础阶段
 
@@ -103,6 +106,8 @@
 | L1 | ✅ 已解决：保留MCP 1.28.1本地工具服务；未接入且不稳定的MinerU实验客户端已清理，不再作为待交付能力 | mcp_server.py / mcp_client.py | - |
 | L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
 | L14 | ✅ 已解决：改为用户手动管理的持久化文件库，由owner通过“我的文件”主动下载和删除，而非自动清理策略 | layers/files_store.py / data/user_files | - |
+| F14 | LLM客户端（DeepSeek/GLM调用封装）无连接池复用，每次请求新建连接 | 待定位（相关LLM客户端封装代码） | P3 |
+| F21 | convert_document 工具调用无显式Agent层预算/超时，依赖上游整体请求超时兜底 | execution.py convert_document | P3 |
 
 ---
 
@@ -117,17 +122,22 @@
 - 扩展工具集（数据库查询、API 调用、文件操作）
 - `generate_file`已完成：expert可生成并交付Markdown/TXT/PDF/DOCX；PDF/DOCX转换失败时保留并降级交付Markdown
 - 用户自助转换工具箱已完成：任意认证用户可上传受支持Office格式、转换并下载个人产物，不进入知识库和Agent路由
-- 文件转换第二阶段（3-B）已完成：expert可将当前会话已上传的DOC转DOCX、XLS/XLSX/PPT/PPTX转PDF，产物进入统一用户文件库
+- 文件转换第二阶段（3-B）已完成：expert可将当前会话已上传附件执行PDF转DOCX/XLSX/PPTX，以及DOC/DOCX、XLS/XLSX、PPT/PPTX转PDF，产物进入统一用户文件库
 - 聊天附件上传与阅读、用户端转换工具箱和统一“我的文件”管理入口均已完成
 - 任务分解基础版已完成；后续扩展DAG依赖图和并行执行
 - 思考链输出（用户可见 Agent 推理过程）
 - classify决策理由展示已完成；reflect和complex_task检查点/局部调整理由展示为可选后续
+- 评估是否/何时将真实稳定的外部MCP server接入`mcp_connector`并暴露为Agent工具；优先选择本地或官方稳定实现，避免重复MinerU免费云服务的不稳定问题，同时关注多server工具schema的token开销
+
+### 前端体验后续观察
+- PDF转Office已提供尽力重建能力：Word提取文本、Excel提取表格或逐行文本、PPT按页面生成图片幻灯片；扫描件无OCR，复杂版式和可编辑结构不能保证无损恢复，需继续用用户真实样例判断是否需要引入更专业的PDF解析/版面重建方案
 
 ### 第三优先：工程化
 - PostgreSQL 迁移
 - Docker Compose 部署
 - CI 已完成基础接入；后续按实际部署需要再补 CD
 - MCP版本升级已完成；后续接入新的MCP生态工具时理论上不再需要预设`uvx`隔离等workaround，但每个server的依赖闭包和运行行为仍需真实验证
+- 外部MCP连接目前仅支持stdio；未来如需HTTP/SSE transport，在`mcp_connector`内部新增handler，不改变`discover_tools()`和`call_tool()`外部签名
 
 ---
 
@@ -140,9 +150,10 @@
 | LibreOffice转换 | 员工上传的`.doc/.xls/.xlsx/.ppt/.pptx`依赖本机LibreOffice `soffice`；当前开发机已安装26.2.4.2并通过`.env`配置实际路径，转换串行执行且默认30秒超时。DOC→DOCX、XLSX/PPTX→PDF、SQLite/Chroma元数据和真实HTTP审核链路均已验证；CI继续排除integration测试 |
 | 聊天附件 | 附件正文仅保存在单进程内存中，按session隔离并默认30分钟懒惰过期；原始文件独立持久化到用户文件库，直到owner手动删除。正文不跨worker共享，不写入SQLite、Chroma或日志正文 |
 | tier划分依据 | fast/expert不仅模型档位不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次模型调用；expert保留完整分类、联网、精排、ReAct和complex_task能力 |
-| expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；真实2项搜索汇总约86秒，延迟和上游超时风险高于普通expert |
+| expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；全链路默认120秒全局预算，各模型/搜索节点使用剩余预算，超时返回已完成步骤摘要。真实10项任务在121.85秒终止并保留4项结果 |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
 | mcp 版本 | 已正式升级至`mcp==1.28.1`，并联动精确锁定`uvicorn==0.51.0`和`PyJWT==2.13.0`；FastAPI 0.115.0、Starlette 0.38.6、sse-starlette 3.0.3保持不变。主环境`pip check`、154项离线测试、真实Uvicorn `/health`、JWT登录/对话和HTTP SSE正文→citations→`[DONE]`均通过；测试统一使用独立的32字节以上HMAC密钥，无PyJWT短密钥警告 |
+| MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
 | RAG阈值 | 极短文档/极短查询的纯向量score仍可能低于`RAG_SCORE_THRESHOLD=0.55`；已通过title/source元数据补充召回缓解“查询主体命中文档标题/source”的场景（如“知了是什么”命中`知了简介`后提升到0.57），但短查询不命中任何文档标题/source时仍需后续评估query扩展或阈值策略 |
@@ -151,6 +162,7 @@
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
 | Codex 环境 | 运行时验证需用提权方式调用 .venv\Scripts\python.exe |
 | .venv | Python 3.10.11，可正常 import fastapi，环境状态正常 |
+| 完整回归口径 | 测试数字必须来自项目`.venv\Scripts\python.exe -m pytest`且不筛选标记；不能用系统Python叠加`.venv` site-packages替代，因为MCP外部连接测试会主动隔离`PYTHONPATH`，该替代环境会让子进程找不到`mcp`并产生伪失败 |
 | 日志轮转 | 已使用SafeTimedRotatingFileHandler容错Windows文件占用；重复初始化不会重复挂同一路径FileHandler |
 
 ---

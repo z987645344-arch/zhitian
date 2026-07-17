@@ -77,12 +77,14 @@ def _build_real_samples(tmp_path) -> list:
 
     csv_path = source_dir / "sample.csv"
     csv_path.write_text("name,value\nknowledge,42\n", encoding="utf-8")
+    xls_path = _soffice_convert(soffice, str(csv_path), "xls", str(output_dir))
     xlsx_path = _soffice_convert(soffice, str(csv_path), "xlsx", str(output_dir))
 
     fodp_path = source_dir / "sample.fodp"
     fodp_path.write_text(FODP_SAMPLE, encoding="utf-8")
+    ppt_path = _soffice_convert(soffice, str(fodp_path), "ppt", str(output_dir))
     pptx_path = _soffice_convert(soffice, str(fodp_path), "pptx", str(output_dir))
-    return [doc_path, xlsx_path, pptx_path]
+    return [str(docx_path), doc_path, xls_path, xlsx_path, ppt_path, pptx_path]
 
 
 def test_real_soffice_uploads_doc_xlsx_and_pptx(
@@ -107,22 +109,25 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["status"] == "success"
-        assert payload["converted_from"] == os.path.basename(sample_path)
+        expected_converted_from = (
+            "" if sample_path.endswith(".docx") else os.path.basename(sample_path)
+        )
+        assert payload["converted_from"] == expected_converted_from
         uploaded_doc_ids.append(payload["doc_id"])
 
         document_row = auth.get_document(payload["doc_id"])
         assert document_row["uploaded_by"] == user["user_id"]
-        assert document_row["converted_from"] == os.path.basename(sample_path)
+        assert document_row["converted_from"] == expected_converted_from
         collection = memory._get_document_collection()
         stored = collection.get(where={"doc_id": payload["doc_id"]}, include=["metadatas"])
         assert stored["metadatas"]
         assert all(
-            metadata.get("converted_from") == os.path.basename(sample_path)
+            metadata.get("converted_from", "") == expected_converted_from
             for metadata in stored["metadatas"]
         )
 
     monkeypatch.setattr(config, "MAX_CONVERSION_FILE_SIZE_MB", 0)
-    with open(samples[0], "rb") as oversized_sample:
+    with open(samples[1], "rb") as oversized_sample:
         rejected_response = client.post(
             "/documents/upload",
             headers=headers,
@@ -137,7 +142,7 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
     assert rejected_response.status_code == 422
     upload_dir = tmp_path / "runtime" / "data" / "tmp_uploads"
     assert not list(upload_dir.glob("**/*"))
-    assert len(uploaded_doc_ids) == 3
+    assert len(uploaded_doc_ids) == 6
 
 
 def test_real_soffice_toolbox_conversion_stays_outside_knowledge_base(
@@ -148,31 +153,45 @@ def test_real_soffice_toolbox_conversion_stays_outside_knowledge_base(
 ):
     headers, _ = auth_headers("customer")
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path / "runtime"))
-    xlsx_path = _build_real_samples(tmp_path)[1]
+    sample_paths = _build_real_samples(tmp_path)
     before_documents = auth.list_documents()
+    expected_targets = {
+        "doc": "pdf",
+        "docx": "pdf",
+        "xls": "pdf",
+        "xlsx": "pdf",
+        "ppt": "pdf",
+        "pptx": "pdf",
+    }
 
-    with open(xlsx_path, "rb") as sample_file:
-        response = client.post(
-            "/tools/convert",
+    for sample_path in sample_paths:
+        source_format = os.path.splitext(sample_path)[1].lstrip(".")
+        with open(sample_path, "rb") as sample_file:
+            response = client.post(
+                "/tools/convert",
+                headers=headers,
+                data={"target_format": expected_targets[source_format]},
+                files={
+                    "file": (
+                        os.path.basename(sample_path),
+                        sample_file,
+                        "application/octet-stream",
+                    )
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["converted_from_format"] == source_format
+        assert payload["converted_to_format"] == expected_targets[source_format]
+        download = client.get(
+            "/files/%s" % payload["file_id"],
             headers=headers,
-            files={
-                "file": (
-                    os.path.basename(xlsx_path),
-                    sample_file,
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            },
         )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["success"] is True
-    assert payload["converted_from_format"] == "xlsx"
-    assert payload["converted_to_format"] == "pdf"
-    download = client.get(
-        "/files/%s" % payload["file_id"],
-        headers=headers,
-    )
-    assert download.status_code == 200
-    assert download.content.startswith(b"%PDF-")
+        assert download.status_code == 200
+        if expected_targets[source_format] == "pdf":
+            assert download.content.startswith(b"%PDF-")
+        else:
+            assert download.content.startswith(b"PK")
     assert auth.list_documents() == before_documents

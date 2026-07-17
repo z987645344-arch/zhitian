@@ -6,6 +6,11 @@ import os
 import uuid
 import zipfile
 
+import fitz
+from docx import Document
+from openpyxl import load_workbook
+from pptx import Presentation
+
 from layers import auth, converter
 
 
@@ -14,6 +19,15 @@ def _xlsx_bytes() -> bytes:
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("xl/workbook.xml", "<workbook />")
     return buffer.getvalue()
+
+
+def _pdf_bytes() -> bytes:
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "PDF conversion marker")
+    content = document.tobytes()
+    document.close()
+    return content
 
 
 def _successful_conversion(captured_paths):
@@ -124,7 +138,7 @@ def test_tool_conversion_success_download_permissions_and_source_cleanup(
     assert client.get(
         "/files/%s" % file_id,
         headers=other_headers,
-    ).status_code == 403
+    ).status_code == 404
     missing = client.get(
         "/files/%s" % uuid.uuid4(),
         headers=owner_headers,
@@ -137,3 +151,37 @@ def test_tool_conversion_success_download_permissions_and_source_cleanup(
     assert download.status_code == 200
     assert download.content == b"converted-content"
     assert "quarterly.pdf" in download.headers["content-disposition"]
+
+
+def test_pdf_to_office_three_targets_use_real_reconstruction(
+    client, auth_headers, monkeypatch, tmp_path
+):
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr("main.config.BASE_DIR", str(tmp_path))
+
+    for target_format in ("docx", "xlsx", "pptx"):
+        response = client.post(
+            "/tools/convert",
+            headers=headers,
+            data={"target_format": target_format},
+            files={"file": ("source.pdf", _pdf_bytes(), "application/pdf")},
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["converted_from_format"] == "pdf"
+        assert payload["converted_to_format"] == target_format
+        download = client.get(payload["download_url"], headers=headers)
+        assert download.status_code == 200
+
+        if target_format == "docx":
+            document = Document(io.BytesIO(download.content))
+            assert "PDF conversion marker" in "\n".join(
+                paragraph.text for paragraph in document.paragraphs
+            )
+        elif target_format == "xlsx":
+            workbook = load_workbook(io.BytesIO(download.content), read_only=True)
+            assert workbook.active["A1"].value == "PDF conversion marker"
+            workbook.close()
+        else:
+            presentation = Presentation(io.BytesIO(download.content))
+            assert len(presentation.slides) == 1

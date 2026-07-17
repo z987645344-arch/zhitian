@@ -138,6 +138,60 @@ def test_function_call_reasoning_is_parsed_without_tool_specific_fallback():
     )
 
 
+def test_attachment_signal_routes_empty_message_to_direct_answer(monkeypatch):
+    observed = {}
+
+    def fake_completion(messages, **kwargs):
+        observed["messages"] = messages
+        return _fast_response(
+            tool_name="direct_answer",
+            arguments={"reasoning": "本轮已有附件正文，应直接阅读附件"},
+        )
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", fake_completion)
+
+    decision = planning._classify_with_model(
+        "",
+        context=[],
+        tier="expert",
+        attachment_ids=["attachment-1"],
+    )
+
+    assert decision["intent"] == "chat"
+    assert any(
+        "attachment-1" in item["content"]
+        for item in observed["messages"]
+    )
+
+
+def test_fast_attachment_context_is_answered_without_knowledge_tool(monkeypatch):
+    _prepare_fast_mocks(monkeypatch)
+    observed = {}
+
+    def chat(messages, **kwargs):
+        observed["messages"] = messages
+        return _fast_response(content="附件主要内容是项目进度。")
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    tool_call = Mock(side_effect=AssertionError("current attachment must not use knowledge tools"))
+    monkeypatch.setattr(planning.mcp_client, "call_tool", tool_call)
+
+    state = planning.run_graph_state(
+        "fast-attachment",
+        "",
+        mode="fast",
+        extra_context=["本轮用户提供的聊天附件：项目进度"],
+        attachment_ids=["attachment-1"],
+    )
+
+    assert state["intent"] == "chat"
+    assert state["response"] == "附件主要内容是项目进度。"
+    assert any(
+        "本轮聊天附件正文" in item["content"]
+        for item in observed["messages"]
+    )
+
+
 def test_chat_request_defaults_to_fast_and_rejects_invalid_mode(client, auth_headers):
     assert main.ChatRequest(session_id="mode-default", message="hello").mode == "fast"
     headers, _ = auth_headers("customer")
@@ -317,6 +371,47 @@ def test_chat_intent_skips_reflect(monkeypatch):
     assert state["round_count"] == 1
     assert state["response"] == "聊天回复"
     call_tool.assert_called_once()
+
+
+def test_prepared_stream_state_skips_duplicate_classify_and_retrieve(monkeypatch):
+    state = planning._new_agent_state(
+        "prepared-stream",
+        "读取企业文档",
+        "expert",
+    )
+    state["intent"] = "document"
+    state["context"] = ["预处理阶段已检索的上下文"]
+    monkeypatch.setattr(
+        planning,
+        "_classify_with_model",
+        Mock(side_effect=AssertionError("prepared state must not classify again")),
+    )
+    monkeypatch.setattr(
+        planning.memory,
+        "search_memory",
+        Mock(side_effect=AssertionError("prepared state must not retrieve again")),
+    )
+    monkeypatch.setattr(
+        planning.mcp_client,
+        "call_tool",
+        lambda tool, params: ToolResult(
+            tool=tool,
+            status="success",
+            data="文档结果",
+            metadata={"supplied_context_answer": True},
+        ),
+    )
+
+    result = planning.run_graph_state(
+        "prepared-stream",
+        "读取企业文档",
+        mode="expert",
+        prepared_state=state,
+    )
+
+    assert result["response"] == "文档结果"
+    assert result["context"] == ["预处理阶段已检索的上下文"]
+    assert result["stream_prepared"] is True
 
 
 def test_search_intent_skips_reflect_after_single_search(monkeypatch):

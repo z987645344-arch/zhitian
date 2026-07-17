@@ -107,7 +107,7 @@ def auth_headers(client, user_factory):
 def test_session_id():
     session_id = "test_integration_%s" % uuid.uuid4().hex
     yield session_id
-    memory.clear_session(session_id)
+    memory.delete_session_full(session_id)
 
 
 @pytest.fixture

@@ -122,14 +122,19 @@ def _search_web(
     query: str,
     context: list[str] = None,
     session_id: str = None,
-    tier: str = "fast"
+    tier: str = "fast",
+    total_budget: Optional[float] = None,
 ) -> str:
     """联网搜索：先优化搜索query，再调用Tavily并整理成自然语言回复"""
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
         raise ValueError("TAVILY_API_KEY未配置")
 
     started_at = time.perf_counter()
-    deadline = started_at + config.SEARCH_TOTAL_TIMEOUT
+    search_budget = min(
+        config.SEARCH_TOTAL_TIMEOUT,
+        float(total_budget or config.SEARCH_TOTAL_TIMEOUT),
+    )
+    deadline = started_at + max(0.001, search_budget)
     original_question = query
     optimized_query = _rewrite_search_query(
         original_question,
@@ -308,6 +313,7 @@ def _search_documents(
     generate_answer: bool = True,
     rerank_enabled: bool = True,
     context: list[str] = None,
+    timeout: Optional[float] = None,
 ) -> ToolResult:
     """检索已上传的本地文档并整理为自然语言。"""
     verified_doc_ids = auth.get_verified_doc_ids()
@@ -316,10 +322,11 @@ def _search_documents(
         top_k=5,
         verified_doc_ids=verified_doc_ids,
         tier=tier,
-        enable_rerank=rerank_enabled
+        enable_rerank=rerank_enabled,
+        timeout=timeout,
     )
     if not results and context and generate_answer:
-        return _answer_from_supplied_context(query, context, tier)
+        return _answer_from_supplied_context(query, context, tier, timeout=timeout)
     if not results:
         return ToolResult(
             tool="search_documents",
@@ -341,7 +348,7 @@ def _search_documents(
             config.RAG_SCORE_THRESHOLD
         )
         if context and generate_answer:
-            return _answer_from_supplied_context(query, context, tier)
+            return _answer_from_supplied_context(query, context, tier, timeout=timeout)
         return ToolResult(
             tool="search_documents",
             status="success",
@@ -359,10 +366,10 @@ def _search_documents(
         for item in trusted_results
     ]
     if generate_answer and context:
-        context_result = _answer_from_supplied_context(query, context, tier)
+        context_result = _answer_from_supplied_context(query, context, tier, timeout=timeout)
         answer = context_result.data
     elif generate_answer:
-        answer = _answer_from_documents(query, trusted_results, tier=tier)
+        answer = _answer_from_documents(query, trusted_results, tier=tier, timeout=timeout)
     else:
         answer = _format_document_tool_context(trusted_results)
     title_source_match = any(
@@ -387,6 +394,7 @@ def _answer_from_supplied_context(
     query: str,
     context: list[str],
     tier: str,
+    timeout: Optional[float] = None,
 ) -> ToolResult:
     system_prompt = (
         "请只根据本轮提供的附件或上下文回答用户问题。不得编造上下文中没有的信息；"
@@ -398,6 +406,7 @@ def _answer_from_supplied_context(
             message=query,
             system_prompt=system_prompt,
             tier=tier,
+            timeout=timeout,
         )
     ).strip()
     return ToolResult(
@@ -463,7 +472,7 @@ def _list_documents() -> ToolResult:
 
 def _convert_document(
     attachment_id: str,
-    target_format: Literal["pdf", "docx"],
+    target_format: Literal["pdf", "docx", "xlsx", "pptx"],
     session_id: str,
     owner_user_id: str,
 ) -> ConvertDocumentResult:
@@ -479,14 +488,16 @@ def _convert_document(
         return ConvertDocumentResult(success=False, error_type="forbidden")
     if source.session_id != session_id:
         return ConvertDocumentResult(success=False, error_type="session_mismatch")
-    supported_target = {
-        "doc": "docx",
-        "xls": "pdf",
-        "xlsx": "pdf",
-        "ppt": "pdf",
-        "pptx": "pdf",
-    }.get(source.format)
-    if target not in {"pdf", "docx"} or supported_target != target:
+    allowed_targets = {
+        "pdf": {"docx", "xlsx", "pptx"},
+        "doc": {"pdf", "docx"},
+        "docx": {"pdf"},
+        "xls": {"pdf"},
+        "xlsx": {"pdf"},
+        "ppt": {"pdf"},
+        "pptx": {"pdf"},
+    }.get(source.format, set())
+    if target not in allowed_targets:
         return ConvertDocumentResult(
             success=False,
             error_type="unsupported_conversion",
@@ -497,8 +508,13 @@ def _convert_document(
 
     conversion = None
     converted_path = ""
+    conversion_fn = (
+        converter.convert_pdf_to_office
+        if source.format == "pdf"
+        else converter.convert_file
+    )
     for attempt in range(2):
-        conversion = converter.convert_file(source_path, target)
+        conversion = conversion_fn(source_path, target)
         converted_path = conversion.output_path or ""
         if conversion.success and converted_path:
             break
@@ -804,7 +820,8 @@ def _remove_generated_temp_file(path: str) -> None:
 def _answer_from_documents(
     query: str,
     results: list[dict],
-    tier: str = "fast"
+    tier: str = "fast",
+    timeout: Optional[float] = None,
 ) -> str:
     """基于可信文档chunk生成回答，来源信息只通过citations返回。"""
     snippets = []
@@ -834,10 +851,11 @@ def _answer_from_documents(
                     include_date=True,
                 ),
                 tier=tier,
+                timeout=timeout,
             )
             return llm_provider.extract_text(response).strip()
         prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
-        return str(_llm_chat(message=prompt, tier=tier)).strip()
+        return str(_llm_chat(message=prompt, tier=tier, timeout=timeout)).strip()
     except Exception as e:
         logger.warning("文档回答生成失败，返回保守摘要：query_len=%s error_type=%s", len(query or ""), type(e).__name__)
         contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]

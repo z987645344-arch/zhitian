@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 助手 · 文件格式转换</title>
+  <link rel="stylesheet" href="assets/common.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- ========== 左侧导航栏 ========== -->
+    <aside class="sidebar-left">
+      <!-- 品牌 -->
+      <div class="flex items-center justify-between px-2 mb-2">
+        <div class="flex items-center gap-2">
+          <span class="icon c-primary" data-icon="bot"></span>
+          <span class="text-headline-md font-headline font-bold c-on-surface">AI 助手</span>
+          <span class="icon icon-sm c-on-surface-variant opacity-60" data-icon="chevron-down"></span>
+        </div>
+        <button class="btn-icon">
+          <span class="icon" data-icon="edit"></span>
+        </button>
+      </div>
+
+      <!-- 搜索 -->
+      <div class="search-wrap relative px-2 mb-4">
+        <span class="icon icon-sm absolute c-on-surface-variant opacity-60" style="left:16px;top:50%;transform:translateY(-50%)" data-icon="search"></span>
+        <input class="input-search" type="text" placeholder="搜索会话..." />
+        <span class="text-label-sm c-on-surface-variant opacity-40 absolute" style="right:16px;top:50%;transform:translateY(-50%)">⌘K</span>
+      </div>
+
+      <!-- 导航 -->
+      <nav class="flex flex-col gap-1 overflow-y-auto scrollbar-hide flex-grow">
+        <a class="nav-item" href="index.html">
+          <span class="icon" data-icon="home"></span>
+          <span>主页</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="plus-square"></span>
+          <span>新建任务</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="bot"></span>
+          <span>智能体中心</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="book"></span>
+          <span>知识库</span>
+        </a>
+        <a class="nav-item active" href="history.html">
+          <span class="icon" data-icon="wrench"></span>
+          <span>工具集</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="workflow"></span>
+          <span>工作流</span>
+        </a>
+        <a class="nav-item" href="settings.html">
+          <span class="icon" data-icon="settings"></span>
+          <span>设置</span>
+        </a>
+
+        <!-- 最近会话 -->
+        <div class="mt-8 px-3">
+          <div class="flex items-center justify-between mb-4">
+            <span class="text-label-sm uppercase tracking-wider c-on-surface-variant opacity-60 font-semibold">最近会话</span>
+            <span class="icon icon-sm c-on-surface-variant opacity-60 cursor-pointer" data-icon="plus"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate">产品需求分析</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">刚刚</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">用户增长策略讨论</span>
+              <span class="text-label-sm opacity-40 shrink-0">2小时前</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">市场调研报告</span>
+              <span class="text-label-sm opacity-40 shrink-0">昨天</span>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- 用户 -->
+      <div class="mt-auto px-2 pt-4 border-t" style="border-color:rgba(210,196,184,0.3)">
+        <div class="flex items-center gap-3 p-2 cursor-pointer transition-colors" style="border-radius:12px">
+          <div class="avatar">
+            <span class="icon icon-lg" data-icon="user-circle"></span>
+          </div>
+          <div class="flex flex-col min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-label-md font-semibold truncate">Wuya</span>
+              <span class="badge badge-primary-dim">企业版</span>
+            </div>
+            <span class="text-label-sm opacity-60">产品经理</span>
+          </div>
+          <span class="icon ml-auto c-on-surface-variant" data-icon="unfold-more"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== 主工作区 ========== -->
+    <main class="workspace">
+      <!-- 顶部栏 -->
+      <header class="topbar workspace-inner">
+        <h2 class="text-headline-lg font-headline font-semibold c-on-surface">文件格式转换</h2>
+        <div class="flex items-center gap-4">
+          <div class="flex gap-2">
+            <button class="btn-icon"><span class="icon" data-icon="save"></span></button>
+            <button class="btn-icon"><span class="icon" data-icon="folder-open"></span></button>
+            <button class="btn-icon"><span class="icon" data-icon="grid"></span></button>
+          </div>
+          <button class="btn btn-primary btn-pill">分享</button>
+        </div>
+      </header>
+
+      <!-- 内容区 -->
+      <div class="workspace-inner px-8 py-8 flex flex-col gap-8">
+        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:24px">
+          <!-- 上传区 -->
+          <div style="grid-column:span 12">
+            <div class="drop-zone" id="drop-zone">
+              <div class="drop-icon">
+                <span class="icon icon-xl" data-icon="upload-file"></span>
+              </div>
+              <h3 class="text-headline-md font-headline mb-2">拖拽文件到此处</h3>
+              <p class="c-on-surface-variant text-center" style="max-width:24rem">支持 PDF、DOCX、XLSX、TXT 格式，单个文件不超过 50MB</p>
+              <p class="drop-text" style="position:absolute;left:-9999px"></p>
+              <input id="file-input" type="file" style="position:absolute;inset:0;opacity:0;cursor:pointer" />
+            </div>
+          </div>
+
+          <!-- 格式选择 -->
+          <div style="grid-column:span 12" class="flex flex-col gap-4">
+            <div class="bg-white border p-6 rounded-xl" style="border-color:var(--outline-variant)">
+              <h4 class="text-label-md c-on-surface-variant mb-4 uppercase tracking-wider">选择输出格式</h4>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px" data-chip-group>
+                <button class="chip active flex flex-col items-center justify-center gap-2 p-4" style="border-radius:12px">
+                  <span class="icon icon-lg c-primary" data-icon="file-pdf"></span>
+                  <span class="text-label-sm">PDF</span>
+                </button>
+                <button class="chip flex flex-col items-center justify-center gap-2 p-4" style="border-radius:12px">
+                  <span class="icon icon-lg c-primary" data-icon="file-doc"></span>
+                  <span class="text-label-sm">DOCX</span>
+                </button>
+                <button class="chip flex flex-col items-center justify-center gap-2 p-4" style="border-radius:12px">
+                  <span class="icon icon-lg c-primary" data-icon="file-table"></span>
+                  <span class="text-label-sm">XLSX</span>
+                </button>
+                <button class="chip flex flex-col items-center justify-center gap-2 p-4" style="border-radius:12px">
+                  <span class="icon icon-lg c-primary" data-icon="file-article"></span>
+                  <span class="text-label-sm">TXT</span>
+                </button>
+              </div>
+              <button class="btn btn-primary btn-block mt-6 text-headline-md">立即转换</button>
+            </div>
+          </div>
+
+          <!-- 最近转换 -->
+          <div class="card overflow-hidden" style="grid-column:span 12">
+            <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color:var(--outline-variant);background:rgba(246,243,242,0.3)">
+              <h4 class="text-headline-md font-headline">最近转换</h4>
+              <button class="c-primary text-label-md font-semibold" style="cursor:pointer">查看全部</button>
+            </div>
+            <div class="divide-y" style="border-color:var(--outline-variant)">
+              <!-- 转换项1 -->
+              <div class="px-6 py-4 flex items-center justify-between transition-colors">
+                <div class="flex items-center gap-4">
+                  <div class="tool-icon-box"><span class="icon c-on-surface-variant" data-icon="file-pdf"></span></div>
+                  <div>
+                    <p class="text-label-md c-on-surface">2023 年度财务报表_最终版.pdf</p>
+                    <p class="text-label-sm c-on-surface-variant">2.4 MB · 2分钟前</p>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-outline">
+                    <span class="icon icon-sm" data-icon="download"></span>
+                    下载
+                  </button>
+                  <button class="btn-icon c-on-surface-variant" style="width:28px;height:28px"><span class="icon icon-sm" data-icon="trash"></span></button>
+                </div>
+              </div>
+              <!-- 转换项2 -->
+              <div class="px-6 py-4 flex items-center justify-between transition-colors">
+                <div class="flex items-center gap-4">
+                  <div class="tool-icon-box"><span class="icon c-on-surface-variant" data-icon="file-doc"></span></div>
+                  <div>
+                    <p class="text-label-md c-on-surface">产品需求文档_V2.docx</p>
+                    <p class="text-label-sm c-on-surface-variant">856 KB · 1小时前</p>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-outline">
+                    <span class="icon icon-sm" data-icon="download"></span>
+                    下载
+                  </button>
+                  <button class="btn-icon c-on-surface-variant" style="width:28px;height:28px"><span class="icon icon-sm" data-icon="trash"></span></button>
+                </div>
+              </div>
+              <!-- 转换项3 -->
+              <div class="px-6 py-4 flex items-center justify-between transition-colors">
+                <div class="flex items-center gap-4">
+                  <div class="tool-icon-box"><span class="icon c-on-surface-variant" data-icon="file-article"></span></div>
+                  <div>
+                    <p class="text-label-md c-on-surface">会议记录_20231024.txt</p>
+                    <p class="text-label-sm c-on-surface-variant">12 KB · 3小时前</p>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-outline">
+                    <span class="icon icon-sm" data-icon="download"></span>
+                    下载
+                  </button>
+                  <button class="btn-icon c-on-surface-variant" style="width:28px;height:28px"><span class="icon icon-sm" data-icon="trash"></span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ========== 右侧智能栏 ========== -->
+    <aside class="sidebar-right custom-scrollbar">
+      <div class="flex flex-col gap-1 mb-8">
+        <h3 class="text-headline-md font-headline c-on-surface mb-2">智能侧栏</h3>
+        <p class="text-label-sm font-semibold c-on-surface-variant uppercase tracking-wider">效率面板</p>
+      </div>
+      <div class="flex flex-col gap-6">
+        <!-- 智能工具 -->
+        <section>
+          <h4 class="text-label-sm font-semibold c-on-surface-variant uppercase mb-3">智能工具</h4>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="bg-white p-3 rounded-lg border card-hover cursor-pointer flex flex-col items-center text-center gap-2">
+              <span class="icon c-primary" data-icon="brain"></span>
+              <span class="text-label-sm">AI 语义分析</span>
+            </div>
+            <div class="bg-white p-3 rounded-lg border card-hover cursor-pointer flex flex-col items-center text-center gap-2">
+              <span class="icon c-primary" data-icon="sparkles"></span>
+              <span class="text-label-sm">文本增强</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 知识库 -->
+        <section>
+          <h4 class="text-label-sm font-semibold c-on-surface-variant uppercase mb-3">知识库</h4>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center gap-3 p-3 bg-white border rounded-lg card-hover cursor-pointer">
+              <span class="icon c-primary" data-icon="library"></span>
+              <span class="text-body-md font-medium">企业文档库</span>
+            </div>
+            <div class="flex items-center gap-3 p-3 bg-white border rounded-lg card-hover cursor-pointer">
+              <span class="icon c-primary" data-icon="clock"></span>
+              <span class="text-body-md font-medium">历史转换档案</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 升级提示 -->
+        <div class="mt-8">
+          <div class="relative overflow-hidden rounded-xl p-6" style="background:rgba(175,139,101,0.1);border:1px solid rgba(119,88,54,0.2)">
+            <div class="relative z-10">
+              <h5 class="text-headline-md font-headline mb-2" style="color:var(--on-primary-container)">需要批量处理？</h5>
+              <p class="text-body-md mb-4" style="color:rgba(61,37,8,0.8)">升级至专业版以解锁无限量转换、OCR 识别及自定义格式映射。</p>
+              <button class="btn btn-primary btn-block">了解更多</button>
+            </div>
+            <div class="absolute" style="right:-32px;top:-32px;width:128px;height:128px;background:rgba(119,88,54,0.2);filter:blur(48px);border-radius:50%"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="assets/common.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      initDropZone("drop-zone", "file-input");
+    });
+  </script>
+</body>
+</html>

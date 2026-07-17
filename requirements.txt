@@ -13,7 +13,11 @@ starlette==0.38.6
 sse-starlette==3.0.3
 PyJWT==2.13.0
 pdfplumber
+pypdf
 python-docx
+openpyxl
+python-pptx
+PyMuPDF
 bcrypt
 slowapi
 rank_bm25

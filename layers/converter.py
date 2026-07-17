@@ -18,6 +18,7 @@ from utils.logger import get_logger
 
 logger = get_logger("converter")
 _conversion_lock = threading.Lock()
+_pdf_conversion_lock = threading.Lock()
 
 
 class ConversionStatus(str, Enum):
@@ -121,6 +122,130 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
             type(exc).__name__,
         )
         return _failed("文档转换失败", source_ext, target, type(exc).__name__)
+
+
+def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionResult:
+    """Best-effort PDF content reconstruction without OCR."""
+    started_at = time.perf_counter()
+    target = (target_format or "").lower().lstrip(".")
+    output_dir = ""
+    try:
+        if not source_path or not os.path.isfile(source_path):
+            return _failed("待转换文件不存在", ".pdf", target, "invalid_source")
+        if target not in {"docx", "xlsx", "pptx"}:
+            return _failed("不支持的PDF转换目标", ".pdf", target, "invalid_target")
+        max_bytes = max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024
+        if os.path.getsize(source_path) > max_bytes:
+            return _failed("文件超过转换大小限制", ".pdf", target, "file_too_large")
+        output_dir = os.path.join(
+            os.path.dirname(source_path),
+            "conversion_%s" % uuid.uuid4().hex,
+        )
+        os.makedirs(output_dir, exist_ok=False)
+        output_path = os.path.join(
+            output_dir,
+            "%s.%s" % (os.path.splitext(os.path.basename(source_path))[0], target),
+        )
+        with _pdf_conversion_lock:
+            if target == "docx":
+                _pdf_to_docx(source_path, output_path)
+            elif target == "xlsx":
+                _pdf_to_xlsx(source_path, output_path)
+            else:
+                _pdf_to_pptx(source_path, output_path)
+        if not os.path.isfile(output_path):
+            _cleanup_directory(output_dir)
+            return _failed("未生成转换文件", ".pdf", target, "output_missing")
+        _log_conversion(".pdf", target, "success", started_at)
+        return ConversionResult(
+            success=True,
+            status=ConversionStatus.SUCCESS,
+            output_path=output_path,
+            converted_from_format="pdf",
+            converted_to_format=target,
+        )
+    except Exception as exc:
+        _cleanup_directory(output_dir)
+        error_type = "encrypted_pdf" if "password" in str(exc).lower() else type(exc).__name__
+        logger.warning(
+            "PDF反向转换异常：target=%s error_type=%s",
+            target,
+            error_type,
+        )
+        return _failed("PDF内容提取或重建失败", ".pdf", target, error_type)
+
+
+def _pdf_to_docx(source_path: str, output_path: str) -> None:
+    import pdfplumber
+    from docx import Document
+
+    document = Document()
+    with pdfplumber.open(source_path) as pdf:
+        for page_index, page in enumerate(pdf.pages):
+            if page_index:
+                document.add_page_break()
+            text = page.extract_text() or ""
+            for line in text.splitlines():
+                document.add_paragraph(line)
+    document.save(output_path)
+
+
+def _pdf_to_xlsx(source_path: str, output_path: str) -> None:
+    import pdfplumber
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    with pdfplumber.open(source_path) as pdf:
+        for page_index, page in enumerate(pdf.pages, start=1):
+            sheet = workbook.create_sheet("Page %s" % page_index)
+            row_index = 1
+            tables = page.extract_tables() or []
+            if tables:
+                for table in tables:
+                    for row in table:
+                        for column_index, value in enumerate(row or [], start=1):
+                            sheet.cell(row=row_index, column=column_index, value=value or "")
+                        row_index += 1
+                    row_index += 1
+            else:
+                for line in (page.extract_text() or "").splitlines():
+                    sheet.cell(row=row_index, column=1, value=line)
+                    row_index += 1
+    if not workbook.sheetnames:
+        workbook.create_sheet("Page 1")
+    workbook.save(output_path)
+
+
+def _pdf_to_pptx(source_path: str, output_path: str) -> None:
+    import fitz
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    presentation.slide_width = Inches(13.333)
+    presentation.slide_height = Inches(7.5)
+    blank_layout = presentation.slide_layouts[6]
+    pdf = fitz.open(source_path)
+    try:
+        for page_index, page in enumerate(pdf):
+            image_path = os.path.join(
+                os.path.dirname(output_path),
+                "page_%s.png" % (page_index + 1),
+            )
+            page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(image_path)
+            slide = presentation.slides.add_slide(blank_layout)
+            slide.shapes.add_picture(
+                image_path,
+                0,
+                0,
+                width=presentation.slide_width,
+                height=presentation.slide_height,
+            )
+            os.remove(image_path)
+    finally:
+        pdf.close()
+    presentation.save(output_path)
 
 
 def cleanup_conversion_output(output_path: str) -> None:

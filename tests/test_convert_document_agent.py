@@ -3,6 +3,8 @@
 
 import os
 
+import pytest
+
 import config
 from layers import attachments, converter, execution, files_store, planning
 from layers.converter import ConversionResult, ConversionStatus
@@ -98,7 +100,7 @@ def test_convert_document_rejects_unsupported_source_target_pair(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
-    record = _store_attachment(tmp_path, "session-docx", OWNER_A, "docx")
+    record = _store_attachment(tmp_path, "session-xlsx", OWNER_A, "xlsx")
     called = []
     monkeypatch.setattr(
         converter,
@@ -107,13 +109,68 @@ def test_convert_document_rejects_unsupported_source_target_pair(
     )
 
     result = execution._convert_document(
-        record.attachment_id, "pdf", "session-docx", OWNER_A
+        record.attachment_id, "docx", "session-xlsx", OWNER_A
     )
 
     assert result.success is False
     assert result.error_type == "unsupported_conversion"
     assert called == []
-    attachments.clear_session("session-docx")
+    attachments.clear_session("session-xlsx")
+
+
+@pytest.mark.parametrize(
+    ("source_format", "target_format", "converter_name"),
+    [
+        ("pdf", "docx", "convert_pdf_to_office"),
+        ("pdf", "xlsx", "convert_pdf_to_office"),
+        ("pdf", "pptx", "convert_pdf_to_office"),
+        ("docx", "pdf", "convert_file"),
+        ("xlsx", "pdf", "convert_file"),
+        ("pptx", "pdf", "convert_file"),
+    ],
+)
+def test_convert_document_supports_six_agent_directions(
+    tmp_path,
+    monkeypatch,
+    source_format,
+    target_format,
+    converter_name,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    session_id = "session-%s-%s" % (source_format, target_format)
+    record = _store_attachment(tmp_path, session_id, OWNER_A, source_format)
+    calls = []
+
+    def fake_convert(source_path, requested_target):
+        calls.append((converter_name, requested_target))
+        output_dir = os.path.join(os.path.dirname(source_path), "conversion_six_way")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "converted.%s" % requested_target)
+        with open(output_path, "wb") as output:
+            output.write(b"converted")
+        return ConversionResult(
+            success=True,
+            status=ConversionStatus.SUCCESS,
+            output_path=output_path,
+            converted_from_format=source_format,
+            converted_to_format=requested_target,
+        )
+
+    monkeypatch.setattr(converter, converter_name, fake_convert)
+    result = execution._convert_document(
+        record.attachment_id,
+        target_format,
+        session_id,
+        OWNER_A,
+    )
+
+    assert result.success is True
+    assert result.download_filename.endswith(".%s" % target_format)
+    assert calls == [(converter_name, target_format)]
+    stored = files_store.get_file(result.file_id)
+    assert stored is not None
+    assert stored.format == target_format
+    attachments.clear_session(session_id)
 
 
 def test_convert_document_retries_converter_once(tmp_path, monkeypatch):
@@ -205,6 +262,18 @@ def test_convert_document_classification_and_mode_boundary():
     assert decision["decision_reasoning"] == "用户要求把附件转换为DOCX"
     assert "convert_document" in expert_tools
     assert "convert_document" not in fast_tools
+
+    pdf_to_excel = planning._build_classify_decision([
+        {
+            "name": "convert_document",
+            "arguments": {
+                "attachment_id": "attachment-2",
+                "target_format": "xlsx",
+                "reasoning": "用户要求把PDF附件转换为Excel",
+            },
+        }
+    ])
+    assert pdf_to_excel["conversion_target_format"] == "xlsx"
 
 
 def test_convert_document_responds_with_download_and_specific_errors():

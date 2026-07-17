@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -24,7 +25,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, perception, planning
+from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, pdf_tools, perception, planning
 from utils.logger import get_logger
 from utils import observability
 
@@ -129,6 +130,10 @@ class ChatResponse(BaseModel):
     reasoning: Optional[str] = None
 
 
+class SessionRenameRequest(BaseModel):
+    display_name: Optional[str] = None
+
+
 class KnowledgeInputRequest(BaseModel):
     content: str
     title: str = ""
@@ -148,6 +153,26 @@ class ToolConversionResponse(BaseModel):
     converted_to_format: str = ""
     error_type: str = ""
     download_url: str = ""
+
+
+class PdfToolFile(BaseModel):
+    file_id: str
+    download_filename: str
+    download_url: str
+
+
+class PdfMergeResponse(BaseModel):
+    success: bool
+    file_id: str
+    download_filename: str
+    download_url: str
+    page_count: int
+
+
+class PdfSplitResponse(BaseModel):
+    success: bool
+    files: List[PdfToolFile]
+    page_count: int
 
 
 class ChatAttachmentResponse(BaseModel):
@@ -211,6 +236,11 @@ def _ensure_session_owner(session_id: str, current_user: dict) -> None:
         raise HTTPException(status_code=403, detail="无权访问该session")
 
 
+def _ensure_session_owner_or_404(session_id: str, current_user: dict) -> None:
+    if not auth.verify_session_owner(session_id, current_user["user_id"]):
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+
 def _bind_or_verify_session(session_id: str, current_user: dict) -> None:
     auth.bind_session(session_id, current_user["user_id"])
     _ensure_session_owner(session_id, current_user)
@@ -247,6 +277,20 @@ def _resolve_attachment_context(
             record.char_count,
         )
     return ["本轮用户提供的聊天附件：\n\n" + "\n\n---\n\n".join(blocks)] if blocks else []
+
+
+def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List[dict]:
+    """为历史消息补充可展示的附件文件名，不暴露其他用户文件。"""
+    enriched = []
+    for item in history:
+        attachment_ids = item.get("attachment_ids") or []
+        filenames = []
+        for attachment_id in attachment_ids:
+            record = files_store.get_file(attachment_id)
+            if record is not None and record.owner_user_id == owner_user_id:
+                filenames.append(record.original_filename)
+        enriched.append({**item, "attachment_filenames": filenames})
+    return enriched
 
 
 @app.get("/")
@@ -372,7 +416,12 @@ async def chat(
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
 
         if not has_error:
-            memory.save_message(perception_output.session_id, "user", perception_output.message)
+            memory.save_message(
+                perception_output.session_id,
+                "user",
+                perception_output.message,
+                chat_request.attachment_ids,
+            )
             memory.save_message(perception_output.session_id, "assistant", final_data)
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
@@ -451,7 +500,7 @@ async def chat_stream(
     )
     chat_request.mode = mode
     return StreamingResponse(
-        _chat_stream_events(
+        _chat_stream_events_with_heartbeat(
             chat_request,
             current_user,
             background_tasks,
@@ -464,12 +513,51 @@ async def chat_stream(
     )
 
 
+@app.get("/memory/sessions")
+async def list_memory_sessions(current_user: dict = Depends(get_current_user)):
+    session_ids = auth.list_user_session_ids(current_user["user_id"])
+    return {"sessions": memory.list_session_summaries(session_ids)}
+
+
+@app.patch("/memory/sessions/{session_id}")
+async def rename_memory_session(
+    session_id: str,
+    request: SessionRenameRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_session_owner_or_404(session_id, current_user)
+    display_name = request.display_name
+    if display_name is not None:
+        display_name = display_name.strip()
+        if not display_name or len(display_name) > 50:
+            raise HTTPException(status_code=400, detail="会话名称长度必须为1-50个字符")
+    if not memory.rename_session(session_id, display_name):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"session_id": session_id, "display_name": display_name}
+
+
+@app.delete("/memory/sessions/{session_id}")
+async def delete_memory_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    _ensure_session_owner_or_404(session_id, current_user)
+    vector_cleanup_complete = memory.delete_session_full(session_id)
+    response = {"deleted": True}
+    if not vector_cleanup_complete:
+        response["vector_cleanup"] = "partial"
+    return response
+
+
 @app.get("/memory/{session_id}")
 async def get_memory(session_id: str, current_user: dict = Depends(get_current_user)):
     logger.info("收到GET /memory请求：session_id=%s", session_id)
     try:
-        _ensure_session_owner(session_id, current_user)
-        history = memory.get_session_history(session_id)
+        _ensure_session_owner_or_404(session_id, current_user)
+        history = _enrich_history_attachments(
+            memory.get_session_history(session_id),
+            current_user["user_id"],
+        )
         return {
             "session_id": session_id,
             "history": history,
@@ -520,19 +608,105 @@ async def list_user_files(current_user: dict = Depends(get_current_user)):
     ]
 
 
+def _get_owned_user_file(
+    file_id: str,
+    current_user: dict,
+    forbidden_status: int = 403,
+):
+    """统一读取用户文件并校验owner；调用方决定是否隐藏越权状态。"""
+    record = files_store.get_file(file_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if record.owner_user_id != current_user["user_id"]:
+        if forbidden_status == 404:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=forbidden_status, detail="无权访问该文件")
+    file_path = files_store.get_file_path(record)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return record, file_path
+
+
+async def _extract_file_preview(file_path: str) -> str:
+    """在线程池内解析文件；Level1重试1次，单次预算复用转换超时。"""
+    timeout_seconds = max(1, config.CONVERSION_TIMEOUT_SECONDS)
+    last_error_type = "preview_failed"
+    for attempt in range(2):
+        try:
+            content = await asyncio.wait_for(
+                asyncio.to_thread(document_loader.load_document, file_path),
+                timeout=timeout_seconds,
+            )
+            if content.startswith("错误："):
+                last_error_type = "parse_failed"
+                if attempt == 0:
+                    continue
+                raise HTTPException(status_code=422, detail="文件内容解析失败")
+            return content
+        except asyncio.TimeoutError:
+            last_error_type = "timeout"
+            if attempt == 0:
+                continue
+        except HTTPException:
+            raise
+        except Exception as e:
+            last_error_type = type(e).__name__
+            if attempt == 0:
+                continue
+    logger.warning("文件预览提取失败：error_type=%s", last_error_type)
+    if last_error_type == "timeout":
+        raise HTTPException(status_code=422, detail="文件预览解析超时")
+    raise HTTPException(status_code=422, detail="文件内容解析失败")
+
+
+@app.get("/files/{file_id}/preview")
+async def preview_user_file(
+    file_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    record, file_path = _get_owned_user_file(
+        file_id,
+        current_user,
+        forbidden_status=404,
+    )
+    previewable_formats = {"txt", "md", "pdf", "docx"}
+    if record.format not in previewable_formats:
+        raise HTTPException(status_code=400, detail="该格式暂不支持预览")
+    try:
+        content = await _extract_file_preview(file_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("文件预览失败：file_id=%s error_type=%s", file_id, type(e).__name__)
+        raise HTTPException(status_code=422, detail="文件内容解析失败") from None
+    max_chars = max(0, config.PREVIEW_MAX_CHARS)
+    truncated = len(content) > max_chars
+    logger.info(
+        "预览用户文件：user_id_len=%s file_id=%s format=%s truncated=%s",
+        len(current_user["user_id"] or ""),
+        file_id,
+        record.format,
+        truncated,
+    )
+    return {
+        "file_id": record.file_id,
+        "filename": record.original_filename,
+        "format": record.format,
+        "content": content[:max_chars],
+        "truncated": truncated,
+    }
+
+
 @app.get("/files/{file_id}")
 async def download_user_file(
     file_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    record = files_store.get_file(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
-    if record.owner_user_id != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="无权访问该文件")
-    file_path = files_store.get_file_path(record)
-    if file_path is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
+    record, file_path = _get_owned_user_file(
+        file_id,
+        current_user,
+        forbidden_status=404,
+    )
     logger.info(
         "下载用户文件：user_id_len=%s file_id=%s source_type=%s format=%s file_size=%s",
         len(current_user["user_id"] or ""),
@@ -554,11 +728,11 @@ async def delete_user_file(
     file_id: str,
     current_user: dict = Depends(get_current_user),
 ):
-    record = files_store.get_file(file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
-    if record.owner_user_id != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="无权删除该文件")
+    record, _ = _get_owned_user_file(
+        file_id,
+        current_user,
+        forbidden_status=404,
+    )
     if not files_store.delete_file(file_id, current_user["user_id"]):
         raise HTTPException(status_code=500, detail="文件删除失败")
     logger.info(
@@ -711,12 +885,13 @@ async def upload_chat_attachment(
 @app.post("/tools/convert", response_model=ToolConversionResponse)
 async def convert_tool_file(
     file: UploadFile = File(...),
+    target_format: Optional[str] = Form(default=None),
     current_user: dict = Depends(get_current_user),
 ):
     filename = _safe_upload_filename(file.filename or "")
     suffix = os.path.splitext(filename)[1].lower()
     source_format = suffix.lstrip(".")
-    target_format = _conversion_target_for_suffix(suffix)
+    target_format = _conversion_target_for_suffix(suffix, target_format)
     if not filename or not target_format:
         await file.close()
         return JSONResponse(
@@ -744,11 +919,12 @@ async def convert_tool_file(
     converted_path = ""
     try:
         temp_path = _save_temp_upload(file, file_id, filename)
-        conversion = await asyncio.to_thread(
-            converter.convert_file,
-            temp_path,
-            target_format,
+        conversion_fn = (
+            converter.convert_pdf_to_office
+            if suffix == ".pdf"
+            else converter.convert_file
         )
+        conversion = await asyncio.to_thread(conversion_fn, temp_path, target_format)
         if not conversion.success or not conversion.output_path:
             status_code = 422
             return JSONResponse(
@@ -818,6 +994,202 @@ async def convert_tool_file(
         await file.close()
         converter.cleanup_conversion_output(converted_path)
         _remove_temp_upload(temp_path)
+
+
+def _pdf_error_detail(error_type: Optional[str]) -> str:
+    return {
+        "encrypted_pdf": "加密PDF暂不支持处理",
+        "invalid_pdf": "PDF文件损坏或无法解析",
+        "too_many_pages": "PDF页数超过拆分上限",
+        "timeout": "PDF处理超时，请稍后重试",
+    }.get(error_type or "", "PDF处理失败")
+
+
+async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
+    """Level1：失败重试1次；单次超时复用转换任务预算。"""
+    timeout_seconds = max(1, config.CONVERSION_TIMEOUT_SECONDS)
+    last_result = pdf_tools.PdfOperationResult(
+        success=False,
+        error_type="invalid_pdf",
+    )
+    for attempt in range(2):
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(operation, *args),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            result = pdf_tools.PdfOperationResult(
+                success=False,
+                error_type="timeout",
+            )
+        last_result = result
+        if result.success:
+            return result
+        logger.warning(
+            "PDF工具处理失败：operation=%s attempt=%s error_type=%s",
+            operation.__name__,
+            attempt + 1,
+            result.error_type or "other",
+        )
+        if result.error_type in {"encrypted_pdf", "too_many_pages"}:
+            break
+    return last_result
+
+
+def _pdf_output_name(filename: str, prefix: str = "") -> str:
+    normalized = _conversion_download_filename(filename, "pdf")
+    stem = os.path.splitext(normalized)[0]
+    return "%s%s.pdf" % (prefix, stem)
+
+
+@app.post("/tools/pdf/merge", response_model=PdfMergeResponse)
+async def merge_pdf_tool_files(
+    files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    if len(files) < 2 or len(files) > config.PDF_MERGE_MAX_FILES:
+        for upload in files:
+            await upload.close()
+        raise HTTPException(
+            status_code=400,
+            detail="PDF合并文件数必须在2到%s之间" % config.PDF_MERGE_MAX_FILES,
+        )
+    if any(os.path.splitext(upload.filename or "")[1].lower() != ".pdf" for upload in files):
+        for upload in files:
+            await upload.close()
+        raise HTTPException(status_code=400, detail="PDF合并仅支持PDF文件")
+
+    operation_id = str(uuid.uuid4())
+    temp_paths = []
+    output_path = os.path.join(
+        config.BASE_DIR,
+        "data",
+        "tmp_uploads",
+        "%s_merged.pdf" % operation_id,
+    )
+    try:
+        for index, upload in enumerate(files):
+            safe_name = _safe_upload_filename(upload.filename or "")
+            temp_paths.append(
+                _save_temp_upload(upload, "%s_%s" % (operation_id, index), safe_name)
+            )
+        result = await _run_pdf_operation(pdf_tools.merge_pdfs, temp_paths, output_path)
+        if not result.success:
+            raise HTTPException(
+                status_code=422,
+                detail=_pdf_error_detail(result.error_type),
+            )
+        download_filename = _pdf_output_name(files[0].filename or "document.pdf", "merged_")
+        file_id = files_store.save_file(
+            current_user["user_id"],
+            "converted",
+            download_filename,
+            output_path,
+            "pdf",
+        )
+        logger.info(
+            "PDF合并完成：user_id_len=%s file_id=%s input_count=%s page_count=%s",
+            len(current_user["user_id"] or ""),
+            file_id,
+            len(files),
+            result.page_count,
+        )
+        return PdfMergeResponse(
+            success=True,
+            file_id=file_id,
+            download_filename=download_filename,
+            download_url="/files/%s" % file_id,
+            page_count=result.page_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("PDF合并异常：error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=422, detail="PDF合并失败") from None
+    finally:
+        for upload in files:
+            await upload.close()
+        for temp_path in temp_paths:
+            _remove_temp_upload(temp_path)
+        _remove_temp_upload(output_path)
+
+
+@app.post("/tools/pdf/split", response_model=PdfSplitResponse)
+async def split_pdf_tool_file(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    filename = _safe_upload_filename(file.filename or "")
+    if os.path.splitext(filename)[1].lower() != ".pdf":
+        await file.close()
+        raise HTTPException(status_code=400, detail="PDF拆分仅支持PDF文件")
+
+    operation_id = str(uuid.uuid4())
+    temp_path = ""
+    output_dir = os.path.join(
+        config.BASE_DIR,
+        "data",
+        "tmp_uploads",
+        "%s_split" % operation_id,
+    )
+    saved_file_ids = []
+    try:
+        temp_path = _save_temp_upload(file, operation_id, filename)
+        result = await _run_pdf_operation(
+            pdf_tools.split_pdf,
+            temp_path,
+            output_dir,
+            max(1, config.PDF_SPLIT_MAX_PAGES),
+        )
+        if not result.success:
+            status_code = 400 if result.error_type == "too_many_pages" else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=_pdf_error_detail(result.error_type),
+            )
+
+        base_name = os.path.splitext(_conversion_download_filename(filename, "pdf"))[0]
+        response_files = []
+        for index, output_path in enumerate(result.output_paths, start=1):
+            download_filename = "%s_page%s.pdf" % (base_name, index)
+            file_id = files_store.save_file(
+                current_user["user_id"],
+                "converted",
+                download_filename,
+                output_path,
+                "pdf",
+            )
+            saved_file_ids.append(file_id)
+            response_files.append(
+                PdfToolFile(
+                    file_id=file_id,
+                    download_filename=download_filename,
+                    download_url="/files/%s" % file_id,
+                )
+            )
+        logger.info(
+            "PDF拆分完成：user_id_len=%s output_count=%s page_count=%s",
+            len(current_user["user_id"] or ""),
+            len(response_files),
+            result.page_count,
+        )
+        return PdfSplitResponse(
+            success=True,
+            files=response_files,
+            page_count=result.page_count,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        for file_id in saved_file_ids:
+            files_store.delete_file(file_id, current_user["user_id"])
+        logger.error("PDF拆分异常：error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=422, detail="PDF拆分失败") from None
+    finally:
+        await file.close()
+        _remove_temp_upload(temp_path)
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 @app.post("/documents/upload")
@@ -1138,11 +1510,15 @@ def _safe_upload_filename(filename: str) -> str:
     return os.path.basename(normalized).strip()
 
 
-def _conversion_target_for_suffix(suffix: str) -> str:
-    if suffix == ".doc":
-        return "docx"
-    if suffix in {".xls", ".xlsx", ".ppt", ".pptx"}:
-        return "pdf"
+def _conversion_target_for_suffix(
+    suffix: str,
+    requested_target: Optional[str] = None,
+) -> str:
+    target = (requested_target or "").lower().lstrip(".")
+    if suffix == ".pdf":
+        return target if target in {"docx", "xlsx", "pptx"} else ""
+    if suffix in config.TOOL_CONVERSION_EXTENSIONS:
+        return "pdf" if not target or target == "pdf" else ""
     return ""
 
 
@@ -1291,7 +1667,12 @@ def _chat_stream_events(
             yield _sse_data({"type": "citations", "citations": citations})
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                memory.save_message(perception_output.session_id, "user", perception_output.message)
+                memory.save_message(
+                    perception_output.session_id,
+                    "user",
+                    perception_output.message,
+                    attachment_ids,
+                )
                 memory.save_message(perception_output.session_id, "assistant", final_data)
                 auth.bind_session(perception_output.session_id, current_user["user_id"])
                 if final_data:
@@ -1359,6 +1740,7 @@ def _chat_stream_events(
                         extra_context=attachment_context,
                         owner_user_id=current_user["user_id"],
                         attachment_ids=attachment_ids,
+                        prepared_state=state,
                     )
                     final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
                     citations = _serialize_citations(final_state.get("citations", []))
@@ -1383,6 +1765,7 @@ def _chat_stream_events(
                 extra_context=attachment_context,
                 owner_user_id=current_user["user_id"],
                 attachment_ids=attachment_ids,
+                prepared_state=state,
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
@@ -1400,7 +1783,12 @@ def _chat_stream_events(
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
         request_status = status
         if not has_error:
-            memory.save_message(perception_output.session_id, "user", perception_output.message)
+            memory.save_message(
+                perception_output.session_id,
+                "user",
+                perception_output.message,
+                attachment_ids,
+            )
             memory.save_message(perception_output.session_id, "assistant", final_data)
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
@@ -1433,6 +1821,57 @@ def _chat_stream_events(
             mode=request.mode,
         )
         observability.reset_trace_id(trace_token)
+
+
+async def _chat_stream_events_with_heartbeat(
+    request: ChatRequest,
+    current_user: dict,
+    background_tasks: BackgroundTasks,
+    trace_id: str,
+    attachment_context: List[str],
+    attachment_ids: List[str],
+):
+    """Run blocking stream work separately so long stages can emit SSE heartbeats."""
+    loop = asyncio.get_running_loop()
+    event_queue = asyncio.Queue()
+
+    def produce() -> None:
+        try:
+            for event in _chat_stream_events(
+                request,
+                current_user,
+                background_tasks,
+                trace_id,
+                attachment_context,
+                attachment_ids,
+            ):
+                loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
+        except BaseException as exc:
+            loop.call_soon_threadsafe(event_queue.put_nowait, ("error", exc))
+        finally:
+            loop.call_soon_threadsafe(event_queue.put_nowait, ("done", None))
+
+    producer_task = asyncio.create_task(asyncio.to_thread(produce))
+    try:
+        while True:
+            try:
+                event_type, payload = await asyncio.wait_for(
+                    event_queue.get(),
+                    timeout=config.SSE_HEARTBEAT_INTERVAL_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # SSE comments refresh the connection without becoming chat content.
+                yield ": heartbeat\n\n"
+                continue
+
+            if event_type == "event":
+                yield payload
+            elif event_type == "error":
+                raise payload
+            else:
+                break
+    finally:
+        await producer_task
 
 
 def _prepare_stream_state(
@@ -1607,7 +2046,7 @@ if __name__ == "__main__":
         "main:app",
         host=config.HOST,
         port=config.PORT,
-        reload=True,
+        reload=False,
         timeout_graceful_shutdown=config.SHUTDOWN_GRACE_PERIOD_SECONDS,
     )
 

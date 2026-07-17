@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 助手 · 产品需求分析</title>
+  <link rel="stylesheet" href="assets/common.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- ========== 左侧导航栏 ========== -->
+    <aside class="sidebar-left">
+      <!-- 品牌 -->
+      <div class="flex items-center justify-between px-2 mb-2">
+        <div class="flex items-center gap-2">
+          <span class="icon c-primary" data-icon="bot"></span>
+          <span class="text-headline-md font-headline font-bold c-on-surface">AI 助手</span>
+          <span class="icon icon-sm c-on-surface-variant opacity-60" data-icon="chevron-down"></span>
+        </div>
+        <button class="btn-icon">
+          <span class="icon" data-icon="edit"></span>
+        </button>
+      </div>
+
+      <!-- 搜索 -->
+      <div class="search-wrap relative px-2 mb-4">
+        <span class="icon icon-sm absolute c-on-surface-variant opacity-60" style="left:16px;top:50%;transform:translateY(-50%)" data-icon="search"></span>
+        <input class="input-search" type="text" placeholder="搜索会话..." />
+        <span class="text-label-sm c-on-surface-variant opacity-40 absolute" style="right:16px;top:50%;transform:translateY(-50%)">⌘K</span>
+      </div>
+
+      <!-- 导航 -->
+      <nav class="flex flex-col gap-1 overflow-y-auto scrollbar-hide flex-grow">
+        <a class="nav-item active" href="index.html">
+          <span class="icon" data-icon="home"></span>
+          <span>主页</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="plus-square"></span>
+          <span>新建任务</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="bot"></span>
+          <span>智能体中心</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="book"></span>
+          <span>知识库</span>
+        </a>
+        <a class="nav-item" href="history.html">
+          <span class="icon" data-icon="wrench"></span>
+          <span>工具集</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="workflow"></span>
+          <span>工作流</span>
+        </a>
+        <a class="nav-item" href="settings.html">
+          <span class="icon" data-icon="settings"></span>
+          <span>设置</span>
+        </a>
+
+        <!-- 最近会话 -->
+        <div class="mt-8 px-3">
+          <div class="flex items-center justify-between mb-4">
+            <span class="text-label-sm uppercase tracking-wider c-on-surface-variant opacity-60 font-semibold">最近会话</span>
+            <span class="icon icon-sm c-on-surface-variant opacity-60 cursor-pointer" data-icon="plus"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate">产品需求分析</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">刚刚</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">用户增长策略讨论</span>
+              <span class="text-label-sm opacity-40 shrink-0">2小时前</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">市场调研报告</span>
+              <span class="text-label-sm opacity-40 shrink-0">昨天</span>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- 用户 -->
+      <div class="mt-auto px-2 pt-4 border-t" style="border-color:rgba(210,196,184,0.3)">
+        <div class="flex items-center gap-3 p-2 cursor-pointer transition-colors" style="border-radius:12px">
+          <div class="avatar">
+            <span class="icon icon-lg" data-icon="user-circle"></span>
+          </div>
+          <div class="flex flex-col min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-label-md font-semibold truncate">Wuya</span>
+              <span class="badge badge-primary-dim">企业版</span>
+            </div>
+            <span class="text-label-sm opacity-60">产品经理</span>
+          </div>
+          <span class="icon ml-auto c-on-surface-variant" data-icon="unfold-more"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== 主工作区 ========== -->
+    <main class="workspace">
+      <!-- 顶部栏 -->
+      <header class="topbar">
+        <div class="flex items-center gap-2 cursor-pointer">
+          <h1 class="text-headline-lg font-headline font-semibold c-on-surface">产品需求分析</h1>
+          <span class="icon c-on-surface-variant group-hover-translate transition-all" data-icon="chevron-down"></span>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="btn-icon c-primary"><span class="icon" data-icon="save"></span></button>
+          <button class="btn-icon c-primary"><span class="icon" data-icon="folder-open"></span></button>
+          <button class="btn-icon c-primary"><span class="icon" data-icon="grid"></span></button>
+          <button class="btn btn-primary btn-pill">
+            <span class="icon icon-sm" data-icon="share"></span>
+            分享
+          </button>
+        </div>
+      </header>
+
+      <!-- 内容区 -->
+      <div class="flex-grow workspace-inner px-8 py-8 flex flex-col gap-8">
+
+        <!-- 用户提问 -->
+        <div class="flex flex-col items-end w-full">
+          <div class="bubble-user">
+            <p class="text-body-lg c-on-surface-variant" style="line-height:1.6">
+              请帮我分析一下我们的产品需求文档，提取核心功能点和用户痛点，并生成 PRD 大纲。
+            </p>
+            <div class="mt-2 text-label-sm opacity-40 text-right italic">10:30</div>
+          </div>
+        </div>
+
+        <!-- AI 回复 -->
+        <div class="flex flex-col items-start w-full gap-6">
+          <!-- AI 标识 -->
+          <div class="flex items-center gap-2 mb-1">
+            <div class="badge badge-primary">
+              <span class="icon icon-sm" data-icon="sparkles"></span>
+              <span class="text-label-sm font-bold" style="letter-spacing:-0.01em">AI 助手</span>
+            </div>
+          </div>
+
+          <!-- 回复气泡 -->
+          <div class="bubble-ai">
+            <p class="text-body-lg c-on-surface" style="line-height:1.6">
+              没问题，我会协助你分析产品需求文档。首先，我将阅读文档内容，然后提炼核心功能点和用户痛点，最后生成 PRD 大纲。
+            </p>
+
+            <!-- 已读取文件 -->
+            <div class="mt-4 flex items-center gap-2 c-on-surface-variant opacity-60">
+              <span class="icon icon-sm" data-icon="eye"></span>
+              <span class="text-label-sm">已读取 1 个文件</span>
+            </div>
+
+            <!-- 文件卡片 -->
+            <div class="mt-4 flex items-center justify-between p-4 bg-background border rounded-xl cursor-pointer transition-colors card-hover">
+              <div class="flex items-center gap-3">
+                <div class="file-icon-box bg-info-container" style="border-color:rgba(21,101,192,0.2)">
+                  <span class="icon icon-lg c-info" data-icon="file-text"></span>
+                </div>
+                <div class="flex flex-col">
+                  <span class="text-body-md font-semibold c-on-surface">产品需求文档.docx</span>
+                  <span class="text-label-sm opacity-60">2.4 MB · Word 文档</span>
+                </div>
+              </div>
+              <span class="icon c-success icon-fill" data-icon="check-circle"></span>
+            </div>
+
+            <!-- 分析进度 -->
+            <div class="mt-6 border rounded-xl overflow-hidden" style="border-color:rgba(210,196,184,0.5);background:rgba(255,255,255,0.5)">
+              <div class="px-5 py-3 border-b flex items-center justify-between" style="border-color:rgba(210,196,184,0.3);background:rgba(246,243,242,0.3)">
+                <div class="flex items-center gap-2">
+                  <span class="icon icon-sm c-primary" data-icon="query-stats"></span>
+                  <span class="text-label-md font-bold c-on-surface">分析进度</span>
+                </div>
+                <span class="text-label-sm opacity-60 animate-pulse">处理中...</span>
+              </div>
+
+              <div class="p-6 flex flex-col gap-5 relative">
+                <div class="stepper-line"></div>
+
+                <div class="flex items-center gap-4 relative z-10">
+                  <div class="step-circle step-done"><span class="icon icon-sm" data-icon="check"></span></div>
+                  <span class="text-body-md font-medium c-on-surface">文档内容解析</span>
+                </div>
+                <div class="flex items-center gap-4 relative z-10">
+                  <div class="step-circle step-done"><span class="icon icon-sm" data-icon="check"></span></div>
+                  <span class="text-body-md font-medium c-on-surface">核心功能点提炼</span>
+                </div>
+                <div class="flex items-center gap-4 relative z-10">
+                  <div class="step-circle step-done"><span class="icon icon-sm" data-icon="check"></span></div>
+                  <span class="text-body-md font-medium c-on-surface">用户痛点分析</span>
+                </div>
+                <div class="flex items-center gap-4 relative z-10">
+                  <div class="step-circle step-active animate-pulse"><span class="icon icon-sm animate-spin" data-icon="loader"></span></div>
+                  <span class="text-body-md font-bold c-on-surface">生成 PRD 大纲</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 分析结果预览 -->
+            <div class="mt-8 border-t pt-6" style="border-color:var(--outline-variant)">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-headline-md font-headline c-on-surface">分析结果预览</h3>
+                <button class="c-primary text-label-sm font-bold flex items-center gap-1">
+                  全屏预览 <span class="icon icon-sm" data-icon="maximize"></span>
+                </button>
+              </div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <h4 class="text-body-md font-bold c-on-surface mb-2">核心功能点（6 项）</h4>
+                  <ul class="flex flex-col gap-2 c-on-surface-variant ml-2">
+                    <li class="text-body-md"><span class="font-semibold c-on-surface">智能数据分析：</span>支持多维度数据可视化分析。</li>
+                    <li class="text-body-md"><span class="font-semibold c-on-surface">自动化报表：</span>一键生成周报 / 月报高层汇报摘要。</li>
+                    <li class="text-body-md"><span class="font-semibold c-on-surface">团队协作：</span>具备实时编辑和评论功能的共享工作空间。</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部输入区 -->
+      <footer class="mt-auto px-8 pb-8">
+        <div class="workspace-inner w-full">
+          <div class="bg-white border rounded-2xl p-3" style="box-shadow:var(--shadow-lg)">
+            <textarea class="input-area" rows="1" placeholder="输入消息，或拖拽文件到此处..."></textarea>
+            <div class="flex items-center justify-between mt-2 px-2">
+              <div class="flex items-center gap-1">
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="paperclip"></span></button>
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="image"></span></button>
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="smile"></span></button>
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="code"></span></button>
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="table"></span></button>
+                <button class="btn-icon opacity-60"><span class="icon" data-icon="at"></span></button>
+              </div>
+              <div class="flex items-center gap-3">
+                <div class="flex items-center gap-1.5 px-3 py-1.5 cursor-pointer transition-colors" style="background:rgba(234,231,231,0.5);border-radius:var(--radius-full)">
+                  <span class="text-label-sm font-semibold c-on-surface-variant">Claude 3.5 Sonnet</span>
+                  <span class="icon icon-sm c-on-surface-variant" data-icon="chevron-up"></span>
+                </div>
+                <button class="btn-primary flex items-center justify-center" style="width:40px;height:40px;border-radius:12px">
+                  <span class="icon" data-icon="arrow-up"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="text-center text-label-sm opacity-40 mt-4">AI 生成内容仅供参考，请结合实际情况进行判断。</p>
+        </div>
+      </footer>
+    </main>
+
+    <!-- ========== 右侧智能栏 ========== -->
+    <aside class="sidebar-right scrollbar-hide">
+      <!-- 智能工具 -->
+      <section class="mb-10">
+        <div class="flex items-center justify-between mb-5">
+          <h2 class="text-headline-md font-headline c-on-surface">智能工具</h2>
+          <button class="opacity-40 c-primary transition-colors"><span class="icon" data-icon="plus"></span></button>
+        </div>
+        <div class="flex flex-col gap-3">
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="file-open"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">文件阅读器</span>
+                <span class="text-label-sm opacity-60">阅读并分析各种文件格式</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="terminal"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">代码解释器</span>
+                <span class="text-label-sm opacity-60">运行代码并解释结果</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="activity"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">数据分析</span>
+                <span class="text-label-sm opacity-60">分析数据并生成可视化</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="travel-explore"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">网页搜索</span>
+                <span class="text-label-sm opacity-60">搜索最新信息和数据</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-block mt-4 text-label-sm font-bold opacity-60 btn-ghost" style="background:rgba(234,231,231,0.4)">
+          浏览更多工具 <span class="icon icon-sm" data-icon="chevron-right"></span>
+        </button>
+      </section>
+
+      <!-- 知识库 -->
+      <section class="mb-10">
+        <div class="flex items-center justify-between mb-5">
+          <h2 class="text-headline-md font-headline c-on-surface">知识库</h2>
+          <button class="opacity-40 c-primary transition-colors"><span class="icon" data-icon="plus"></span></button>
+        </div>
+        <div class="flex flex-col gap-3">
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box bg-success-container" style="border-color:transparent"><span class="icon c-success" data-icon="folder"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">产品文档库</span>
+                <span class="text-label-sm opacity-60">128 个文档</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box bg-info-container" style="border-color:transparent"><span class="icon c-info" data-icon="bar-chart"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">行业研究报告</span>
+                <span class="text-label-sm opacity-60">56 个文档</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-block mt-4 text-label-sm font-bold opacity-60 btn-ghost" style="background:rgba(234,231,231,0.4)">
+          查看全部知识库 <span class="icon icon-sm" data-icon="chevron-right"></span>
+        </button>
+      </section>
+
+      <!-- 工作流 -->
+      <section>
+        <div class="flex items-center justify-between mb-5">
+          <h2 class="text-headline-md font-headline c-on-surface">工作流</h2>
+          <button class="opacity-40 c-primary transition-colors"><span class="icon" data-icon="plus"></span></button>
+        </div>
+        <div class="flex flex-col gap-3">
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="tool-icon-box" style="background:var(--warning-container)"><span class="icon" style="color:var(--warning)" data-icon="workflow"></span></div>
+                <div class="flex flex-col min-w-0">
+                  <span class="text-body-md font-bold c-on-surface truncate">需求分析流程</span>
+                  <span class="text-label-sm opacity-60">上次运行：2小时前</span>
+                </div>
+              </div>
+              <span class="icon opacity-40 group-hover-c-primary" data-icon="play-circle"></span>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="tool-icon-box" style="background:#f3e8ff"><span class="icon" style="color:#7c3aed" data-icon="history-edu"></span></div>
+                <div class="flex flex-col min-w-0">
+                  <span class="text-body-md font-bold c-on-surface truncate">PRD 生成流程</span>
+                  <span class="text-label-sm opacity-60">上次运行：1天前</span>
+                </div>
+              </div>
+              <span class="icon opacity-40 group-hover-c-primary" data-icon="play-circle"></span>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-block mt-4 text-label-sm font-bold opacity-60 btn-ghost" style="background:rgba(234,231,231,0.4)">
+          浏览更多工作流 <span class="icon icon-sm" data-icon="chevron-right"></span>
+        </button>
+      </section>
+    </aside>
+  </div>
+
+  <script src="assets/common.js"></script>
+</body>
+</html>

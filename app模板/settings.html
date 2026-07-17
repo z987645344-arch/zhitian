@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 助手 · 工具箱设置</title>
+  <link rel="stylesheet" href="assets/common.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- ========== 左侧导航栏 ========== -->
+    <aside class="sidebar-left">
+      <!-- 品牌 -->
+      <div class="flex items-center justify-between px-2 mb-2">
+        <div class="flex items-center gap-2">
+          <span class="icon c-primary" data-icon="bot"></span>
+          <span class="text-headline-md font-headline font-bold c-on-surface">AI 助手</span>
+          <span class="icon icon-sm c-on-surface-variant opacity-60" data-icon="chevron-down"></span>
+        </div>
+        <button class="btn-icon">
+          <span class="icon" data-icon="edit"></span>
+        </button>
+      </div>
+
+      <!-- 搜索 -->
+      <div class="search-wrap relative px-2 mb-4">
+        <span class="icon icon-sm absolute c-on-surface-variant opacity-60" style="left:16px;top:50%;transform:translateY(-50%)" data-icon="search"></span>
+        <input class="input-search" type="text" placeholder="搜索会话..." />
+        <span class="text-label-sm c-on-surface-variant opacity-40 absolute" style="right:16px;top:50%;transform:translateY(-50%)">⌘K</span>
+      </div>
+
+      <!-- 导航 -->
+      <nav class="flex flex-col gap-1 overflow-y-auto scrollbar-hide flex-grow">
+        <a class="nav-item" href="index.html">
+          <span class="icon" data-icon="home"></span>
+          <span>主页</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="plus-square"></span>
+          <span>新建任务</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="bot"></span>
+          <span>智能体中心</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="book"></span>
+          <span>知识库</span>
+        </a>
+        <a class="nav-item" href="history.html">
+          <span class="icon" data-icon="wrench"></span>
+          <span>工具集</span>
+        </a>
+        <a class="nav-item" href="#">
+          <span class="icon" data-icon="workflow"></span>
+          <span>工作流</span>
+        </a>
+        <a class="nav-item active" href="settings.html">
+          <span class="icon" data-icon="settings"></span>
+          <span>设置</span>
+        </a>
+
+        <!-- 最近会话 -->
+        <div class="mt-8 px-3">
+          <div class="flex items-center justify-between mb-4">
+            <span class="text-label-sm uppercase tracking-wider c-on-surface-variant opacity-60 font-semibold">最近会话</span>
+            <span class="icon icon-sm c-on-surface-variant opacity-60 cursor-pointer" data-icon="plus"></span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate">产品需求分析</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">刚刚</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">用户增长策略讨论</span>
+              <span class="text-label-sm opacity-40 shrink-0">2小时前</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors c-on-surface-variant" style="border-radius:6px">
+              <span class="text-body-md truncate">市场调研报告</span>
+              <span class="text-label-sm opacity-40 shrink-0">昨天</span>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- 用户 -->
+      <div class="mt-auto px-2 pt-4 border-t" style="border-color:rgba(210,196,184,0.3)">
+        <div class="flex items-center gap-3 p-2 cursor-pointer transition-colors" style="border-radius:12px">
+          <div class="avatar">
+            <span class="icon icon-lg" data-icon="user-circle"></span>
+          </div>
+          <div class="flex flex-col min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-label-md font-semibold truncate">Wuya</span>
+              <span class="badge badge-primary-dim">企业版</span>
+            </div>
+            <span class="text-label-sm opacity-60">产品经理</span>
+          </div>
+          <span class="icon ml-auto c-on-surface-variant" data-icon="unfold-more"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== 主工作区 ========== -->
+    <main class="workspace">
+      <!-- 顶部栏 -->
+      <header class="topbar workspace-inner">
+        <h1 class="text-headline-lg font-headline font-semibold c-on-surface">工具箱设置</h1>
+        <div class="flex items-center gap-4">
+          <button class="btn-icon"><span class="icon" data-icon="save"></span></button>
+          <button class="btn btn-primary btn-pill font-semibold">分享</button>
+        </div>
+      </header>
+
+      <!-- 设置区域 -->
+      <div class="flex-1 workspace-inner p-8 flex flex-col gap-8">
+
+        <!-- 通用配置 -->
+        <section class="card p-6" style="box-shadow:var(--shadow-sm)">
+          <h2 class="text-headline-md font-headline c-on-surface mb-6 flex items-center gap-2">
+            <span class="icon c-primary" data-icon="tune"></span> 通用配置
+          </h2>
+          <div class="flex flex-col gap-6">
+            <!-- 自动更新 -->
+            <div class="flex items-center justify-between">
+              <div class="flex flex-col gap-1">
+                <span class="text-body-lg font-semibold c-on-surface">自动更新工具</span>
+                <span class="text-body-md c-on-surface-variant">保持所有已集成的外部工具处于最新版本以获取最佳性能。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" checked />
+                <span class="toggle-slot"><span class="toggle-dot"></span></span>
+              </label>
+            </div>
+            <!-- 隐私模式 -->
+            <div class="flex items-center justify-between">
+              <div class="flex flex-col gap-1">
+                <span class="text-body-lg font-semibold c-on-surface">文件解析隐私模式</span>
+                <span class="text-body-md c-on-surface-variant">启用后，所有文件解析过程均在本地沙箱运行，不上传至云端服务器。</span>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" />
+                <span class="toggle-slot"><span class="toggle-dot"></span></span>
+              </label>
+            </div>
+            <!-- 首选语言 -->
+            <div class="flex items-center justify-between pt-2">
+              <div class="flex flex-col gap-1">
+                <span class="text-body-lg font-semibold c-on-surface">首选输出语言</span>
+                <span class="text-body-md c-on-surface-variant">设定工具生成的报告、分析和摘要的默认语言。</span>
+              </div>
+              <select class="input" style="width:auto;padding:8px 16px">
+                <option selected>简体中文</option>
+                <option>英语（美国）</option>
+                <option>日本語</option>
+                <option>Deutsch</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <!-- API 密钥管理 -->
+        <section class="card p-6" style="box-shadow:var(--shadow-sm)">
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="text-headline-md font-headline c-on-surface flex items-center gap-2">
+              <span class="icon c-primary" data-icon="key"></span> API 密钥管理
+            </h2>
+            <button class="flex items-center gap-2 c-primary text-label-md font-semibold px-3 py-1.5 rounded-lg transition-colors" style="cursor:pointer">
+              <span class="icon icon-sm" data-icon="plus"></span> 添加新密钥
+            </button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px">
+            <!-- 密钥1 -->
+            <div class="border rounded-lg p-4 bg-background card-hover" style="border-color:var(--outline-variant);box-shadow:var(--shadow-sm)">
+              <div class="flex items-center gap-3 mb-3">
+                <div class="tool-icon-box" style="background:rgba(28,27,27,0.05)"><span class="icon c-secondary" data-icon="cloud"></span></div>
+                <div class="flex flex-col">
+                  <span class="text-label-md font-bold c-on-surface">OpenAI GPT-4</span>
+                  <span class="text-label-sm font-semibold uppercase tracking-wider c-success">使用中</span>
+                </div>
+              </div>
+              <div class="flex items-center justify-between bg-surface-container p-2 rounded">
+                <span class="text-body-md c-on-surface-variant" style="font-family:monospace">sk-•••••••••••••4a2b</span>
+                <span class="icon icon-sm c-on-surface-variant cursor-pointer" data-icon="eye"></span>
+              </div>
+            </div>
+            <!-- 密钥2 -->
+            <div class="border rounded-lg p-4 bg-background card-hover" style="border-color:var(--outline-variant);box-shadow:var(--shadow-sm)">
+              <div class="flex items-center gap-3 mb-3">
+                <div class="tool-icon-box" style="background:rgba(28,27,27,0.05)"><span class="icon c-secondary" data-icon="database"></span></div>
+                <div class="flex flex-col">
+                  <span class="text-label-md font-bold c-on-surface">Pinecone 向量数据库</span>
+                  <span class="text-label-sm font-semibold uppercase tracking-wider c-on-surface-variant">未使用</span>
+                </div>
+              </div>
+              <div class="flex items-center justify-between bg-surface-container p-2 rounded">
+                <span class="text-body-md c-on-surface-variant" style="font-family:monospace">pc-•••••••••••••f91c</span>
+                <span class="icon icon-sm c-on-surface-variant cursor-pointer" data-icon="eye"></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 维护与清理 -->
+        <section class="card p-6" style="box-shadow:var(--shadow-sm)">
+          <h2 class="text-headline-md font-headline c-on-surface mb-6 flex items-center gap-2">
+            <span class="icon c-primary" data-icon="mop"></span> 维护与清理
+          </h2>
+          <div class="flex items-center justify-between p-4 rounded-lg" style="background:rgba(186,26,26,0.08);border:1px solid rgba(186,26,26,0.1)">
+            <div class="flex flex-col gap-1">
+              <span class="text-body-lg font-semibold c-error" style="color:var(--on-error-container)">清空本地缓存</span>
+              <span class="text-body-md c-on-surface-variant">删除工具预加载数据、临时解析文件和本地日志。操作不可撤销。</span>
+            </div>
+            <button class="btn btn-error flex items-center gap-2 font-semibold" id="clear-cache-btn">
+              <span class="icon icon-sm" data-icon="trash-forever"></span> 立即清空
+            </button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- ========== 右侧智能栏 ========== -->
+    <aside class="sidebar-right custom-scrollbar">
+      <div class="mb-8">
+        <h3 class="text-headline-md font-headline c-on-surface mb-2">智能工具</h3>
+        <p class="text-label-sm c-on-surface-variant uppercase tracking-wider">效率面板</p>
+      </div>
+      <div class="flex flex-col gap-6">
+        <!-- 工具项1 -->
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center gap-3">
+            <div class="tool-icon-box bg-white" style="border:1px solid var(--outline-variant);box-shadow:var(--shadow-sm)">
+              <span class="icon c-primary" data-icon="brain"></span>
+            </div>
+            <span class="text-label-md font-bold c-on-surface">智能工具</span>
+          </div>
+          <div class="p-4 bg-white rounded-lg border text-body-md c-on-surface-variant" style="border-color:var(--outline-variant);box-shadow:var(--shadow-sm)">
+            管理高级认知模型与专业化智能体。
+          </div>
+        </div>
+        <!-- 工具项2 -->
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center gap-3">
+            <div class="tool-icon-box bg-white" style="border:1px solid var(--outline-variant);box-shadow:var(--shadow-sm)">
+              <span class="icon c-primary" data-icon="library"></span>
+            </div>
+            <span class="text-label-md font-bold c-on-surface">知识库</span>
+          </div>
+          <div class="p-4 bg-white rounded-lg border text-body-md c-on-surface-variant" style="border-color:var(--outline-variant);box-shadow:var(--shadow-sm)">
+            访问内部文档与语义检索索引。
+          </div>
+        </div>
+        <!-- 工具项3 -->
+        <div class="flex flex-col gap-3">
+          <div class="flex items-center gap-3">
+            <div class="tool-icon-box bg-white" style="border:1px solid var(--outline-variant);box-shadow:var(--shadow-sm)">
+              <span class="icon c-primary" data-icon="tree"></span>
+            </div>
+            <span class="text-label-md font-bold c-on-surface">工作流</span>
+          </div>
+          <div class="p-4 bg-white rounded-lg border text-body-md c-on-surface-variant" style="border-color:var(--outline-variant);box-shadow:var(--shadow-sm)">
+            可视化编排自动化工具链。
+          </div>
+        </div>
+      </div>
+
+      <!-- 用户 -->
+      <div class="mt-auto pt-8">
+        <div class="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors border-transparent">
+          <span class="icon c-on-surface-variant" data-icon="user-circle"></span>
+          <div class="flex flex-col">
+            <span class="text-label-md font-semibold c-on-surface">Wuya · 企业版</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="assets/common.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      initClearCache("#clear-cache-btn");
+    });
+  </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # 指挥师工作手册
 > 告诉指挥师如何工作：你的职责、工作流程、Codex 指令格式、编码规范。
 > 每次新对话开头阅读此文档 + claude_memory.md，即可接手。
-> **最后更新：2026-07-08**
+> **最后更新：2026-07-16**
 
 ---
 
@@ -114,6 +114,14 @@
 - **编码规范**：如果涉及特殊规范，提醒 Codex 遵守 zhitian_structure.md 第十章
 - **更新文档**：每条指令末尾固定要求更新 CHANGELOG.md 和 claude_memory.md
 
+### CHANGELOG.md条目格式规范
+
+- 新条目使用“标题行（日期+一句话概括）+ 最多3-5条bullet”的结构。
+- 不按时间顺序复述探索过程，只记录改动文件或新增能力、关键真实验证数字（测试通过数、真实耗时、错误码）和最终结论。
+- 推翻既有方案时必须说明“为什么变了”，但不展开中间debug过程。
+- 中间失败和重试步骤通常不写入；环境变量污染、进程树清理等可复用通用教训例外，必须保留。
+- 具体数字、bug结论、架构决定及理由、安全或权限行为变化不得为追求简洁而删除。
+
 ---
 
 ## 四、编码规范
@@ -139,12 +147,15 @@
 
 | 约束 | 影响 | 注意事项 |
 |------|------|---------|
-| mcp 1.9.4 固定版本 | 新版与 FastAPI 不兼容 | 不要升级 mcp 版本 |
+| mcp 1.28.1 联动版本 | 已于 2026-07-15 升级，并联动精确锁定 `uvicorn==0.51.0`、`PyJWT==2.13.0` | 不要单独漂移其中一个版本；升级前需复核 FastAPI 启动、JWT 和 SSE 事件顺序 |
 | Chroma 0.5.0 全局变量 | 非线程安全 | 多请求并发可能竞态，如果要改需要加锁 |
 | .env BOM 污染 | python-dotenv 无法识别首行变量名 | .env 改动后确认无 BOM |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |
 | Codex 沙盒 PATH | 与本机不一致 | 运行时验证需用提权方式调 .venv\Scripts\python.exe |
 | Python 3.10 | 不支持 `X | Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
+| LibreOffice 转换 | `.doc/.xls/.xlsx/.ppt/.pptx` 转换依赖本机 `soffice`，并采用进程级串行锁和默认 30 秒超时 | 复用 `layers/converter.py` 和 `LIBREOFFICE_PATH`，不得绕过锁、超时及临时文件清理 |
+| 聊天附件双生命周期 | 提取文本只在单进程内存中按 session 保存并默认 30 分钟过期；原始文件独立持久化到用户文件库 | 不要把文本 TTL 当成原始文件保留期，也不要把附件正文写入 SQLite、Chroma 或日志 |
+| MCP 外部子进程 | `mcp_connector.py` 当前仅支持 stdio；直接继承完整环境会污染子进程，Windows 仅终止直接子进程会留下进程树 | 使用安全环境白名单并默认排除 `PYTHONPATH`；超时或取消必须终止整棵进程树并真实检查无残留 |
 
 ---
 
@@ -162,8 +173,12 @@
 | 改记忆存储/检索 | memory.py |
 | 改认证/权限 | auth.py + main.py（require_* 依赖） |
 | 改文档解析/切片 | document_loader.py |
+| 改文件格式转换 | layers/converter.py（工具箱与上传自动转换共用） |
+| 改文件生成/交付 | execution.py（generate_file）+ layers/files_store.py（统一持久化存储） |
+| 改聊天附件上传/阅读 | layers/attachments.py（内存 TTL 文本）+ layers/files_store.py（持久化原始文件） |
 | 改日志 | utils/logger.py + 各层 logger 调用 |
-| 改 MCP | mcp_server.py + mcp_client.py |
+| 改本地 MCP 工具适配 | mcp_server.py + mcp_client.py（规划层到 execution.run() 的兼容适配） |
+| 改外部 MCP server 连接 | layers/mcp_connector.py（真实 stdio 协议，与 mcp_client.py 的本地工具适配职责分离） |
 | 改数据库表结构 | auth.py（users.db）/ memory.py（history.db）+ 可能需要迁移脚本 |
 | 新增依赖 | requirements.txt + 可能 config.py |
 

@@ -1,232 +1,54 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-07-13**
+> **最后追加：2026-07-16**
 
-## 2026-06-28
-- 初始化项目完整目录结构
-- 写入五层代码骨架
-- FastAPI基础服务完成
-- 写入三份docs文档
-- 修正zhipuai依赖版本为包源可安装版本
-- 修正langgraph依赖版本为包源可安装版本
-- 删除Codex内置Python 3.12创建的.venv
-- 使用本机Python 3.10.11重新创建.venv
-- 重新安装requirements.txt全部依赖并验证FastAPI接口
-- 更新GLM模型配置：主模型、fallback模型和视觉模型
-- 执行层接入GLM与Tavily真实SDK调用，按Level1规则重试和超时
-- /chat接口串联感知层、规划层、执行层和输出层
-- 显式补充sniffio依赖，修复zhipuai SDK导入缺失依赖问题
-- 写入真实API Key到.env并完成GLM chat链路验证
-- 完成Tavily search链路验证，/chat完整链路跑通
-- 删除根目录重复的三份Markdown文档，保留docs目录版本
-- 实现SQLite短期记忆，自动创建conversations和sessions表
-- /chat每轮结束后写入user和assistant对话记录
-- GLM调用前注入同session最近10条历史消息
-- 验证同session第二轮可记住“郑同学”，data/history.db已生成
-- 实现Chroma长期记忆，集合名称为zhitian_memory
-- /chat成功响应后异步写入assistant回复到向量库
-- 完成Chroma默认embedding模型下载、向量写入和search_memory检索验证
-- 确认data/vectordb目录已生成Chroma持久化文件
-- 实现方案B简化版LangGraph三节点状态机：classify、execute、respond
-- classify节点接入GLM Function Call选择search_web或direct_answer
-- /chat改为调用planning.run_graph，layer_trace固定为perception、planning、execution、output
-- 规划层异常按Level2规则降级为直接GLM回复
-- 搜索链路新增GLM query改写，Tavily使用优化后的搜索关键词
-- 搜索结果注入GLM上下文，由GLM基于原始问题生成自然语言回复
-- 为“适合出门”类问题增加天气方向纠偏，避免搜索偏向黄历
-- 删除“适合出门”搜索硬编码纠偏规则，改为通过GLM query优化prompt处理
-- 优化搜索query改写prompt，覆盖天气、比较、时事新闻等意图规则
-- 在项目开发规则中新增禁止用硬编码规则处理语义问题的约束
-- 规划层新增retrieve节点，调用Chroma长期记忆search_memory并写入state.context
-- LangGraph流转更新为classify -> retrieve -> execute -> respond
-- respond节点在存在长期记忆上下文时，将历史记录拼入GLM system_prompt生成最终回复
-- 验证/chat两轮对话和retrieve_node检索链路，确认layer_trace保持perception、planning、execution、output
-- 更新技术栈文档中的GLM模型为glm-4.7-flash，并重排claude_memory第四阶段待办任务
+## 2026-06-28 项目骨架、模型调用与两级记忆跑通
+- 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
+- 执行层接入GLM与Tavily真实SDK，按Level1执行超时与重试；`/chat`串联感知、规划、执行、输出四层，真实GLM chat和Tavily search链路均验证通过。模型配置包含主模型、fallback和视觉模型，最终技术栈记录主模型为`glm-4.7-flash`。
+- SQLite短期记忆自动创建`conversations/sessions`，每轮完整写入user和assistant，并向GLM注入同session最近10条历史；真实两轮验证可记住“郑同学”，`data/history.db`生成。
+- Chroma长期记忆使用`zhitian_memory`集合，成功响应后异步写入assistant，默认embedding下载、向量写入、`search_memory`检索和`data/vectordb`持久化均验证通过。
+- LangGraph由`classify/execute/respond`扩展为`classify→retrieve→execute→respond`，Function Call选择联网或直接回答，规划异常按Level2降级；搜索新增GLM query改写和结果整理。曾加入“适合出门”天气硬编码纠偏，因违反语义不硬编码原则而删除，改由覆盖天气、比较和新闻的prompt处理；两轮`/chat`与retrieve验证保持`layer_trace=perception/planning/execution/output`。
 
-## 2026-06-29
-- 优化Chroma长期记忆检索质量，search_memory接口改为支持session_id参数
-- search_memory新增距离阈值过滤，仅返回Chroma L2距离score < 0.8的结果
-- search_memory优先检索当前session记忆，不足top_k时再补充其他session相关记忆
-- planning.retrieve_node调用search_memory时传入state.session_id，减少旧测试记忆污染
-- 同步更新记忆层接口文档、CHANGELOG和claude_memory第四阶段进度
-- 执行层_llm_chat新增stream参数，stream=True时通过zhipuai SDK流式返回GLM内容片段
-- 新增POST /chat/stream接口，返回text/event-stream格式SSE事件
-- /chat/stream按data: {"chunk": "..."}格式输出内容，并以data: {"chunk": "[DONE]"}结束
-- 流式接口在完整回复拼接后继续写入SQLite短期记忆和Chroma长期记忆
-- /chat/stream在存在Chroma上下文时将历史记录注入GLM system_prompt，并保持逐chunk输出
-- 使用curl -N验证/chat/stream逐chunk返回和[DONE]结束标志，确认普通/chat接口不受影响
-- 记忆层新增get_session_history接口，按时间顺序返回指定session完整对话历史
-- clear_session扩展为同时清空SQLite短期记忆和Chroma长期向量记忆
-- 新增GET /memory/{session_id}接口，返回session_id、history和count
-- 新增DELETE /memory/{session_id}接口，返回cleared状态并清空两层记忆
-- 验证/memory查询、删除、删除后为空，以及/chat和/chat/stream回归正常
-- _search_web新增Tavily结果质量兜底：空结果时降级为模型知识回答并提示网络搜索无结果
-- _search_web新增Tavily异常兜底：按Level1规则重试1次后仍失败则降级为模型知识回答并提示搜索服务暂时不可用
-- _search_web新增低相关兜底：所有Tavily结果score < 0.3时降级为模型知识回答并提示搜索结果相关性不足
-- 保持正常搜索链路不变，高相关结果继续注入GLM上下文整理为自然语言回复
-- 使用函数级模拟验证空结果、异常、低相关和正常搜索路径
-- 规划层classify工具列表新增ask_clarification，用于缺少城市、位置等关键信息时向用户追问
-- LangGraph新增条件边：classify返回clarify时直接进入respond，跳过retrieve和execute
-- respond节点支持clarify意图，直接返回澄清问题，不再调用GLM二次生成
-- 规划层新增城市信息感知，检测到用户提供城市时写入Chroma长期记忆：用户城市：{城市}
-- classify阶段只读取当前session的城市/位置长期记忆，避免跨session城市污染
-- 搜索执行时将retrieve上下文传入query改写，天气/出行类问题可自动带入已记住城市
-- 验证“今天天气怎么样”会追问城市，“北京今天天气怎么样”直接搜索，“你好”正常chat，回答城市后再问天气可自动带入北京
-- 新增utils/logger.py统一日志系统，日志文件路径为data/logs/zhitian.log
-- 日志同时输出到文件和控制台，格式为时间 | 级别 | 模块 | 消息
-- 日志文件INFO及以上写入，控制台WARNING及以上输出，按天轮转并保留7天
-- execution、planning、memory、main关键路径已接入日志，覆盖工具失败、降级、规划异常、记忆失败、请求记录和未捕获异常
-- 更新项目结构图，补充utils/目录和data/logs/日志目录
-- 边界验证澄清机制：附近推荐、无城市降雨问题、AI新闻、写诗分别覆盖clarify/search/chat路径
-- 修正澄清机制误判：新增LLM澄清守卫，避免“明天会下雨吗”“附近有什么好吃的”被误判为chat
-- 修正城市识别误判：仅当用户明确提供所在地时写入“用户城市”，避免“我不喜欢北京的天气”误写入北京
-- 验证/chat/stream读到首条SSE后断开连接，SQLite未写入残缺记忆，无需额外修改流式落库逻辑
-- 修复搜索降级丢失上下文问题，_fallback_llm_answer支持session_id和context，并在降级调用_llm_chat时注入会话历史和城市记忆
-- search_web执行参数新增session_id透传，规划层调用搜索工具时同步传入当前session_id
-- clear_session改为返回两层记忆清理结果，Chroma清理失败不再静默吞掉
-- DELETE /memory/{session_id}在SQLite已清空但Chroma失败时返回partial状态和明细
-- docs/claude_memory.md遗留问题清单保留问题1/5/7/8，并将问题4/6标记为已修复
-- 合并规划层GLM调用，classify_node不再单独调用城市抽取和澄清守卫
-- classify Function Call工具调整为search_web(query_hint)、direct_answer、ask_clarification(question)、save_city(city)
-- classify一次Function Call同时完成意图判断、澄清判断和城市提取；save_city可与主意图工具同时调用
-- 删除规划层额外的城市抽取GLM调用和澄清守卫GLM调用，降低普通消息RPM消耗
-- docs/claude_memory.md将遗留问题1“规划层GLM调用次数偏多”标记为已修复
-- 补充主意图工具city参数，兼容当前SDK不支持parallel_tool_calls的情况
-- 验证“你好”“今天天气怎么样”“北京今天天气”“我在北京，今天天气怎么样”均只触发1次规划层GLM调用
-- 验证澄清、搜索、chat、城市记忆路径均正常：“北京今天天气”不写用户城市，“我在北京，今天天气怎么样”写入用户城市：北京
-- 严格化规划层层间数据传递，新增Task Pydantic模型并将AgentState.tasks改为list[Task]
-- 执行层新增ToolResult Pydantic模型，execution.run统一返回ToolResult对象
-- planning.AgentState.results改为list[ToolResult]，节点间读取结果改为类型化属性访问
-- AgentState统一补充city字段，普通/chat与/chat/stream预处理状态保持同一结构
-- 通过py_compile语法检查，并验证/chat发送“你好”和“今天北京天气”均正常返回且layer_trace正确
-- /health接口改为真实健康检查，返回感知、记忆、规划、执行、输出五层状态和ISO时间戳
-- /health记忆层检查SQLite文件可读写、Chroma目录存在和collection.count()轻量操作
-- /health规划层检查GLM API Key和LangGraph graph初始化状态，执行层检查GLM与Tavily Key配置
-- 验证正常状态/status为ok，临时清空TAVILY_API_KEY时execution为degraded且整体degraded，恢复后回到ok
-- 安装并接入mcp==1.9.4，新增layers/mcp_server.py将search_web和llm_chat封装为MCP工具
-- 新增layers/mcp_client.py，规划层execute_node改为通过mcp_client.call_tool调用工具，保持execution.py业务逻辑不变
-- requirements.txt补充mcp相关兼容版本：pydantic==2.13.4、starlette==0.38.6、sse-starlette==3.0.3、PyJWT==2.8.0
-- docs/zhitian_structure.md项目结构图补充MCP工具服务端和客户端文件
-- 验证pip check无依赖冲突，所有层文件py_compile通过，/health返回ok，/chat发送“你好”正常返回
-- 验证“搜索今日新闻”已走搜索链路，但搜索结果整理阶段触发GLM内容安全过滤，未改动execution.py业务逻辑
-- 修复搜索结果整理失败被当成成功响应的问题：_search_web在GLM整理异常时抛出统一“搜索结果整理失败”
-- planning.respond_node检测ToolResult error后返回用户可读降级提示，不再把error_msg原文作为回复
-- /chat改为读取planning.run_graph_state完整状态，规划错误时status返回degraded
-- /chat在AgentState.error非空时跳过SQLite和Chroma写入，避免错误内容污染记忆库
-- 验证“搜索今日科技新闻”返回degraded和降级提示，SQLite历史为空，Chroma无错误向量；正常北京天气搜索仍为success
-- 新增layers/document_loader.py，支持txt/md直接读取、pdfplumber解析PDF、python-docx解析docx，并提供chunk_text切片
-- memory.py新增独立文档Collection：zhitian_documents，提供save_document和search_documents
-- execution.py新增search_documents工具，从已上传文档检索并返回带来源文件名的自然语言结果
-- planning.py新增search_documents Function Call工具，与search_web严格区分，仅在用户明确提到文档/资料/上传文件时使用
-- main.py新增临时POST /documents/upload接口，接收file_path并完成文档解析、切片和向量写入
-- requirements.txt新增pdfplumber和python-docx依赖，并验证pip check无冲突
-- 使用data/test_product_doc.txt验证文档上传成功，写入1个chunk
-- 工具区分度验证：今天天气怎么样 -> clarify；刚才上传的文档里说了什么 -> document（首次受GLM超时影响降级，重试通过）；搜索今天的AI新闻 -> search；这份文档的主要内容是什么 -> document
+## 2026-06-29 流式接口、记忆管理、工具协议与文档RAG成型
+- `search_memory`新增`session_id`和L2距离`score<0.8`过滤，优先当前session、不足`top_k`再跨session补充；新增按时间返回历史的`GET /memory/{session_id}`和清理SQLite+Chroma的`DELETE /memory/{session_id}`。Chroma清理失败不再静默吞掉，SQLite已清空但向量失败时返回`partial`明细。
+- `_llm_chat(stream=True)`和`POST /chat/stream`输出`data: {"chunk":"..."}`并以`{"chunk":"[DONE]"}`结束，完整拼接后写入两级记忆；`curl -N`验证逐chunk、上下文注入和普通`/chat`兼容。客户端读首条SSE后断开时SQLite不写残缺回复，确认既有落库时机正确。
+- 搜索新增透明降级：Tavily异常按Level1重试1次，空结果、异常或全部`score<0.3`分别提示无结果、服务不可用或相关性不足；高相关结果继续由模型整理。修复降级丢失历史/城市上下文，以及GLM整理异常被误判成功的bug：错误统一为`degraded`用户提示，`AgentState.error`非空时不写SQLite/Chroma；科技新闻失败验证历史和向量均为空，北京天气正常链路仍`success`。
+- classify引入clarify和城市记忆：缺位置时直接respond追问，明确所在地才保存“用户城市”，避免“我不喜欢北京天气”误写；天气查询可使用当前session城市。城市抽取、澄清和意图最终合并为一次Function Call：`search_web(query_hint)`、`direct_answer`、`ask_clarification(question)`、`save_city(city)`，并以主意图`city`参数兼容SDK不支持`parallel_tool_calls`；“你好”等4类验证均只触发1次规划GLM。
+- 新增`data/logs/zhitian.log`统一日志：文件INFO、控制台WARNING、每日轮转保留7天，覆盖execution/planning/memory/main失败和降级路径；流式降级、城市识别和附近/降雨/AI新闻/写诗边界场景均完成验证。
+- 层间数据改为Pydantic：`Task`、`ToolResult`、`list[Task]`、`list[ToolResult]`和统一`city`字段；`py_compile`及“你好/今天北京天气”验证通过。`/health`返回五层状态与ISO时间，检查SQLite、Chroma、graph和Key；正常为`ok`，清空TAVILY Key时整体`degraded`，恢复后回到`ok`。
+- 接入`mcp==1.9.4`：`mcp_server.py`暴露`search_web/llm_chat`，规划层经`mcp_client.call_tool`调用且不改execution业务；兼容锁定`pydantic==2.13.4`、`starlette==0.38.6`、`sse-starlette==3.0.3`、`PyJWT==2.8.0`，`pip check`、全层`py_compile`、`/health`和普通聊天通过。
+- 新增文档RAG：`document_loader.py`支持TXT/MD、pdfplumber PDF和python-docx DOCX，`zhitian_documents`独立集合及`search_documents`工具与联网搜索严格区分；临时`POST /documents/upload`接收服务器路径。`data/test_product_doc.txt`写入1个chunk；天气→clarify、已上传文档→document、AI新闻→search、文档主要内容→document，首次文档测试受GLM超时降级后重试通过。
 
-## 2026-07-01
-- 文档向量库新增管理能力：memory.list_documents按source去重统计chunk数量和最早上传时间
-- memory.delete_document支持按source删除zhitian_documents Collection中的全部chunk，并返回删除数量
-- main.py新增GET /documents接口，返回已上传文档列表和总数
-- main.py新增DELETE /documents/{source}接口，支持URL decode后按source删除文档，未命中时返回not_found
-- docs/zhitian_structure.md第五章接口规范补充文档管理接口
-- 使用data/document_manage_test.txt验证上传、GET /documents列表、DELETE /documents/{source}删除和再次列表移除均通过
-- 新增用户认证系统：layers/auth.py使用独立data/users.db保存用户和session归属
-- config.py和.env新增JWT_SECRET_KEY配置，JWT_EXPIRE_HOURS固定为24小时
-- requirements.txt新增bcrypt，认证层使用bcrypt保存密码哈希，禁止明文密码
-- main.py新增POST /auth/register和POST /auth/login，登录成功返回JWT token和role
-- main.py新增Bearer Token依赖和customer/employee/reviewer三档权限控制
-- /chat和/chat/stream改为登录后访问，并在成功响应后绑定session到当前用户
-- /memory接口要求登录且校验session归属，防止用户查看或删除他人会话
-- 文档接口权限调整：上传和列表需要employee或reviewer，删除文档仅reviewer可用
-- 新增GET /pending占位接口，仅reviewer可访问
-- 验证注册zheng_customer、zheng_employee、zheng_reviewer三个用户成功，登录均返回token
-- 验证未登录/chat返回401，customer可发消息但上传文档403，employee可上传但删除文档403，reviewer可删除文档，customer访问他人session历史403
-- Phase 3信任分级机制完成：documents审核表建在data/users.db，Chroma chunk保持不变，trust_level只由SQL管理
-- auth.py新增register_document、list_pending_documents、approve_document、reject_document、get_verified_doc_ids等文档审核函数
-- POST /documents/upload上传成功后生成doc_id并登记pending状态，返回doc_id和trust_level
-- GET /pending改为返回SQL中的pending文档列表，新增POST /approve/{doc_id}和POST /reject/{doc_id}审核接口
-- memory.search_documents新增verified_doc_ids过滤参数，execution._search_documents检索前先读取SQL verified doc_id白名单
-- 补强规划层search_documents工具说明，明确“这份文档说了什么”等本地文档指代必须走文档检索
-- 验证employee上传文档后为pending且不参与检索，reviewer审核通过后可被/chat文档检索命中，rejected文档不参与检索
-- 修复.env被写成UTF-8 BOM导致python-dotenv读取到\ufeffGLM_API_KEY、后端误报GLM_API_KEY未配置的问题
-- 将.env重写为无BOM UTF-8，并验证GLM_API_KEY、JWT_SECRET_KEY、TAVILY_API_KEY均可被config.py读取
+## 2026-07-01 认证授权与文档审核信任分级上线
+- 文档管理新增按source去重统计chunk/最早上传时间、按source删除全部向量并返回数量，以及`GET /documents`和URL decode后的`DELETE /documents/{source}`；`data/document_manage_test.txt`完成上传、列表、删除和移除验证。
+- 新增独立`data/users.db`认证层、bcrypt密码哈希和JWT；`JWT_EXPIRE_HOURS=24`，注册/登录返回token与role。`/chat`、`/chat/stream`和`/memory`要求Bearer认证并绑定/校验session，角色为customer/employee/reviewer。
+- 权限验证：三个`zheng_*`角色均可注册登录；未登录聊天返回401，customer上传403且访问他人session历史403，employee可上传但删除403，reviewer可删除；`GET /pending`仅reviewer可访问。
+- 文档信任分级由SQLite `documents`表管理，Chroma chunk不直接决定状态；上传生成`doc_id`并登记pending，新增pending列表和approve/reject接口，检索只接受SQL返回的`verified_doc_ids`。employee上传后不参与检索，reviewer批准后可命中，rejected始终不可检索。
+- 修复`.env` UTF-8 BOM导致首个变量变成`\ufeffGLM_API_KEY`、后端误报Key缺失的bug；重写为无BOM UTF-8后，GLM、JWT和Tavily三项配置均可读取。该环境变量污染教训保留为通用约束。
 
-## 2026-07-02
-- 新建独立静态网页管理后台D:\zhiliao\zhitian_admin，包含index/login/employee/reviewer四个页面
-- zhitian_admin新增统一样式css/style.css和API封装js/api.js，所有请求统一携带Authorization: Bearer token并处理401回登录页
-- 登录页支持POST /auth/login，employee跳转员工页，reviewer跳转审核员页，customer提示使用桌面端应用
-- 员工页支持上传服务器文件路径到POST /documents/upload，展示doc_id和pending状态，并可刷新GET /documents列表
-- 审核员页支持GET /pending、POST /approve/{doc_id}、POST /reject/{doc_id}审核流，以及GET/DELETE /documents文档总览
-- 审核员页新增记忆总览，读取GET /health展示document_chunks和sqlite_conversations统计，不展示具体对话内容
-- /health memory层新增sqlite_conversations、chroma_count、document_chunks只读统计字段，保持原有sqlite/chroma健康字段兼容
-- 验证JS语法检查通过，/health统计字段返回正常，employee上传pending、reviewer查看pending/批准/拒绝、customer管理后台拦截逻辑均通过
-- 修复Chroma跨session补充召回隐私风险：memory.search_memory新增strict_session参数，strict_session=True时只检索当前session
-- planning.retrieve_node生产路径调用search_memory时固定传入strict_session=True，避免不同用户之间长期记忆互相召回
-- docs/zhitian_structure.md第六章同步更新search_memory接口签名
-- 验证user_a/user_b两个customer账号隔离：user_b无法检索到user_a的“我叫张三”记忆，user_a同session第二轮后仍可检索自己的姓名记忆
-- 修复日志记录用户消息片段的隐私问题：/chat和/chat/stream请求日志改为记录message_len，不再记录消息原文或片段
-- main.py、planning.py、execution.py、memory.py中的日志统一脱敏，query/source/file_path改为长度信息，异常原文改为error_type
-- 保留允许记录的session_id、intent、tool、状态和错误类型信息，避免用户消息、文档内容、GLM回复和搜索结果原文进入日志
-- 验证发送“我的密码是123456”后日志仅新增message_len=11，没有出现“密码”或“123456”，/chat返回success
-- 新增scripts/clean_testdata.py，支持清空data/users.db中的users、user_sessions、documents和data/history.db中的conversations、sessions
-- 运行清理脚本验证通过，清理后users/documents/user_sessions/conversations/sessions记录数均为0
-- 新增POST /knowledge/input接口，employee/reviewer可直接提交文字知识，内容切片写入zhitian_documents并登记pending审核状态
-- zhitian_admin员工页新增“直接录入文字”区域，支持标题、正文提交到/knowledge/input，成功后展示doc_id、source和trust_level
-- 验证employee直接录入文字返回pending，reviewer在/pending可见并批准，通过/chat文档检索路径可命中录入内容
-- 新增README.md，补充项目简介、环境要求、.env配置、三项目启动方式、角色说明、注册账号、多机共用和数据备份说明
-- 新增D:\zhiliao\启动知天.bat，一键启动后端和Flutter Windows客户端，并提示管理后台入口
-- 修复D:\zhiliao\启动知天.bat中的绝对路径，改为基于%~dp0定位zhitian、zhitian_app和zhitian_admin
-- 完成基地v1.0 Git存档准备，新增.gitignore并排除.env、.venv、data等敏感或本地运行数据
-- 完成zhitian_app Git存档：commit 4bdb500，提交Flutter Windows桌面端、登录、聊天、历史记录等客户端v1.0代码，确认build/未提交
-- 完成zhitian_admin Git存档：commit 118ebd5，提交员工上传/直接录入、审核员审核、文档总览和记忆统计等管理后台v1.0代码
-- 复核三项目Git状态：zhitian、zhitian_app、zhitian_admin均为working tree clean，基地v1.0三项目全部存档完毕
-- 修复文档删除权限：employee可撤销自己上传且仍为pending的文档，reviewer继续保留删除任意文档权限
-- DELETE /documents/{source}删除Chroma chunk时同步删除users.db中的documents审核记录，避免撤销后仍出现在pending列表
-- GET /documents返回SQL审核状态、上传者、doc_id、chunk_count和can_revoke字段，employee仅看到自己的文档记录
-- 新增GET /documents/{doc_id}/preview接口，reviewer可按doc_id预览文档在Chroma中的全部chunk内容
-- 修复文档审核隔离粒度问题：Chroma文档chunk metadata新增doc_id，检索白名单从source改为verified doc_id
-- memory.search_documents改为verified_doc_ids过滤，避免同source下pending/rejected chunk被verified记录带出
-- POST /documents/upload和POST /knowledge/input生成doc_id后写入Chroma metadata，预览接口也改为按doc_id读取chunk
-- 验证同source下A文档verified、B文档pending时，B特有内容不会被检索；B审核通过后可被检索，doc_id预览隔离正常
-- 补全layers/auth.py日志脱敏：username/source/异常原文均改为长度或error_type，保留允许记录的user_id、doc_id和操作状态
-- 修复/chat/stream在clarify和search路径非真流式的问题：clarify按字符逐步SSE输出，search在Tavily后使用GLM流式整理结果
-- 新增execution.stream_search_result，普通POST /chat搜索路径保持非流式兼容，流式整理失败时降级为一次性提示或非流式整理
-- 验证Python语法检查通过，前端flutter analyze通过，管理后台JS语法检查通过
-- 回退审核员知识库查看权限和管理员密码二次确认危险删除功能，撤销GET /admin/knowledge、POST /admin/delete_memory和ADMIN_SECRET_KEY配置
-- 清理.env中残留的ADMIN_SECRET_KEY，确认后端不再提供审核员查看长期记忆片段或全量清空知识库/记忆的接口
-- 保留原有权限边界：customer仅能访问本人session历史，employee/reviewer按既有文档审核流程操作，reviewer不再查看用户长期记忆原文
-- 新增GET /documents/verified接口，仅reviewer可访问，只返回trust_level=verified的文档记录，并补充Chroma chunk_count
-- 审核员“文档管理”区域改为读取/documents/verified，只展示已审核通过文档；pending文档继续只出现在“待审核文档”
-- POST /documents/upload从服务器路径上传改为multipart/form-data真实文件上传，解析后立即删除临时原始文件，只长期保存Chroma chunk/向量和SQLite审核记录
-- requirements.txt新增python-multipart；README补充文档上传不需要服务器路径、原始文件不长期保存的说明
+## 2026-07-02 管理后台、隐私隔离与文档权限加固
+- 新建独立`zhitian_admin`静态后台（index/login/employee/reviewer、统一CSS与Bearer API封装）：employee上传和直接录入文字知识，reviewer处理pending批准/拒绝及文档总览；`/health`新增`sqlite_conversations/chroma_count/document_chunks`只读统计，不展示对话正文。JS语法、上传审核链路和customer拦截均验证通过。
+- 修复Chroma跨session召回隐私bug：`search_memory(strict_session=True)`成为生产固定行为；user_b无法召回user_a的“我叫张三”，user_a同session仍可召回。全链路日志改为只记录`message_len`、长度和`error_type`；发送“我的密码是123456”后日志仅出现`message_len=11`，不含“密码”或`123456`，聊天仍`success`。
+- 新增`clean_testdata.py`清理users、user_sessions、documents、conversations和sessions，验证后五类记录均为0；`POST /knowledge/input`允许employee/reviewer提交文字知识并进入pending，reviewer批准后可由聊天文档检索命中。
+- README补充环境、`.env`、三项目启动、角色、多机和备份；总启动BAT由绝对路径修复为`%~dp0`定位。v1.0存档中Flutter commit为`4bdb500`、管理后台commit为`118ebd5`，三仓库均clean；`.gitignore`排除`.env/.venv/data/build`等敏感或运行产物。
+- 文档权限调整：employee仅可查看并撤销自己仍pending的上传，reviewer可删除任意文档并按`doc_id`预览全部chunk；删除向量时同步删除审核记录。`GET /documents`返回状态、上传者、doc_id、chunk_count和can_revoke。
+- 修复审核隔离粒度bug：Chroma metadata和上传/文字录入统一写`doc_id`，verified白名单从source改为doc_id，避免同source的pending/rejected内容被已批准记录带出；A verified/B pending时B不可检索，B批准后可检索且预览隔离正常。
+- 修复clarify/search伪流式：clarify逐字符SSE，search经Tavily后由`stream_search_result`流式整理，失败时透明降级；Python语法、Flutter analyze和后台JS检查通过。
+- 曾增加审核员查看长期记忆及管理员密码危险删除接口，因越权暴露用户记忆风险而整体回退：删除`GET /admin/knowledge`、`POST /admin/delete_memory`和`ADMIN_SECRET_KEY`，reviewer不再查看用户长期记忆原文；新增仅reviewer可用的`GET /documents/verified`。上传由服务器路径改为multipart真实文件，解析后立即删除原文件，仅保留Chroma向量和SQLite审核记录。
 
-## 2026-07-05
-- 通过git revert撤回DeepSeek/LLM Provider切换试验提交，删除layers/llm_client.py并恢复到GLM固定模型稳定版
-- 确认当前代码树与DeepSeek改造前提交25e0ff4一致，保留multipart真实文件上传能力
-- 清理LLM_PROVIDER、DEEPSEEK_API_KEY、openai依赖和knowledge_base文件夹式知识源相关改动，后续如需模型切换将重新拆分设计
-- 复核本机Python环境：系统Python 3.10.11可用，项目.venv的python.exe可正常导入FastAPI；此前Codex内报错属于沙盒/PATH上下文差异，不影响本机运行
-- 拆分原D:\zhiliao\启动知天.bat总启动脚本：后端新增D:\zhiliao\zhitian\启动后端.bat，前端新增D:\zhiliao\zhitian_app\启动前端.bat，并删除旧总启动脚本
-- README启动说明同步改为后端/前端两个独立快捷脚本，避免一次性同时启动两个项目
-- RAG文档检索补全可信回答机制：search_documents返回source、doc_id、chunk_index、score，ToolResult和ChatResponse新增citations结构化字段
-- config.py新增RAG_SCORE_THRESHOLD配置，文档检索最高相关性分数未达阈值时返回“未找到可靠依据，无法确认答案”，citations为空
-- /chat/stream在正文结束后新增citations SSE事件，普通chat和联网search路径保持citations为空列表
-- docs/zhitian_structure.md同步更新层间Citation模型、ChatResponse返回结构、SSE citations事件和文档检索返回字段说明
-- 诊断Codex执行环境调用.venv问题：提权执行D:\zhiliao\zhitian\.venv\Scripts\python.exe可正常import fastapi，无需重建.venv
-- Codex提权启动main.py后/health返回ok，验证完成后已清理残留的项目Python子进程；后续运行时验证统一使用提权调用项目.venv
-- 运行时验证RAG可信回答：Chroma原始返回distances，memory.search_documents转换为score=1/(1+distance)，score越高越相关；execution按best_score >= RAG_SCORE_THRESHOLD放行，方向正确
-- 修正文档命中后的citations过滤：只返回score >= RAG_SCORE_THRESHOLD的可信chunk，避免低分旧测试chunk混入引用来源
-- 通过真实接口验证：文档命中问题返回答案和非空citations，低置信无关问题返回“未找到可靠依据，无法确认答案”且citations为空，普通chat和联网search均保持citations为空
-- 运行时验证后已删除本轮产生的测试文档chunk、审核记录和临时测试文件，并确认后端进程已停止
-- 新增reviewer专用POST /debug/retrieve检索调试接口，只查询zhitian_documents中trust_level=verified的企业文档，不访问zhitian_memory、search_memory或用户对话历史
-- /debug/retrieve返回完整top-k候选source/doc_id/chunk_index/score和当前RAG_SCORE_THRESHOLD，不做阈值过滤、不返回chunk正文、不写入数据库或向量库
-- 运行时验证/debug/retrieve：reviewer可查看完整候选含低分结果，employee/customer访问均返回403，pending测试文档不会出现在结果中，/chat与/chat/stream正式问答链路不受影响
+## 2026-07-05 模型试验回退与RAG可信引用
+- 通过`git revert`撤回DeepSeek/LLM Provider试验，删除`llm_client.py`及LLM_PROVIDER、DeepSeek Key、openai和文件夹知识源改动，恢复到提交`25e0ff4`的GLM稳定版，同时保留multipart上传；原因是模型切换范围耦合过大，后续需重新拆分设计。
+- 系统Python 3.10.11和项目`.venv`均可正常导入FastAPI，Codex报错属于沙盒/PATH差异，无需重建环境；后续运行验证统一提权调用项目`.venv`。启动脚本拆为独立后端/前端BAT并同步README，避免总脚本同时拉起两个项目。
+- RAG新增结构化`Citation(source/doc_id/chunk_index/score)`和`RAG_SCORE_THRESHOLD`；分数公式为`1/(1+distance)`且越高越相关，只有`score>=阈值`的chunk进入回答和citations，低置信返回“未找到可靠依据，无法确认答案”。真实接口验证文档命中有引用、无关问题无引用，普通chat/search引用为空。
+- `/chat/stream`在正文后发送citations事件；新增reviewer专用`POST /debug/retrieve`，只查verified企业文档并返回未过滤的top-k元数据和阈值，不返回正文、不访问用户记忆、不写存储。employee/customer访问均403，pending不出现，正式聊天不受影响。
+- 提权启动后`/health=ok`；测试chunk、审核记录、临时文件和验证进程均已清理。
 
-## 2026-07-05
+## 2026-07-05 检索调试支持pending候选
 - 检索调试接口新增include_pending开关：默认关闭时仅查询verified企业文档；开启后合并pending文档用于审核员检索质量调试；rejected文档始终排除。
 - /debug/retrieve结果新增status字段（verified/pending），用于区分调试候选是否为客户正式问答可见内容；正式/chat与/chat/stream链路仍只使用verified文档。
 - 运行时验证通过：默认结果不含pending，开启开关后pending文档以status=pending返回，rejected文档不返回，employee/customer访问/debug/retrieve均为403。
 
-## 2026-07-05
+## 2026-07-05 轻量ReAct循环上线
 - 规划层新增轻量ReAct循环：LangGraph流转改为classify -> retrieve -> plan -> execute -> reflect，reflect可在轮数上限内回到plan继续调用工具。
 - config.py新增MAX_REACT_ROUNDS=2，表示初始execute之后最多追加2轮工具调用；达到总轮数上限后强制respond，不允许无限循环。
 - AgentState新增round_count、tool_call_history、react_action、react_limit_reached字段，跨轮次保留工具调用历史和citations。
@@ -234,13 +56,13 @@
 - 多轮citations按doc_id+chunk_index去重；轮数上限仍信息不足时以当前最佳结果回复，并提示“基于目前检索到的信息回答，可能不够全面”。
 - 运行时验证通过：普通“你好”保持单轮round_count=1；受控多轮可追加第二轮工具；极端不足场景在总轮数3时强制respond；citations去重生效；/chat正式接口正常返回且测试知识已清理。
 
-## 2026-07-05
+## 2026-07-05 ReAct真实模型判断验证
 - 补充验证should_continue_react真实LLM判断质量：未使用monkeypatch，走真实/chat接口，临时打印reflect原始JSON后已清理观测代码。
 - 场景A（文档缺少价格依据且用户自然表达“没有依据就联网查找”）：GLM自主返回continue并选择search_web，工具选择合理；搜索后第二次reflect仍尝试重复search_web，同query重复调用被代码层tool_call_history拦截，最终正常respond。
 - 场景B（文档已明确命中“支持哪些能力”）：GLM返回respond，没有过度触发第二轮；最终citations来自verified文档且测试知识已清理。
 - 结论：轻量ReAct不只是工程上可循环，真实LLM在缺依据转联网场景下能触发continue；但搜索后仍可能再次尝试重复同工具，当前依赖重复调用拦截避免多余轮次，后续可考虑优化reflect prompt降低重复continue倾向。
 
-## 2026-07-07
+## 2026-07-07 接口防护与长期记忆重要性过滤
 - 新增slowapi限流依赖，main.py创建Limiter并绑定FastAPI app，/chat与/chat/stream按JWT user_id限流；默认RATE_LIMIT_PER_MINUTE=20，超限返回429和统一提示“请求过于频繁，请稍后重试”。
 - CORS从allow_origins=["*"]收窄为读取config.CORS_ORIGINS；.env新增CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080,null，并确认.env无BOM。
 - /chat/stream未捕获异常SSE输出改为统一脱敏提示“服务暂时异常，请重试”，日志继续仅记录session_id与error_type，不暴露异常原文。
@@ -256,7 +78,7 @@
 - 将真实GLM端到端/chat链路记录为待补验证项：后续需在GLM稳定时补测“我叫张三，来自杭州”到“我叫什么”的同session长期记忆召回，以及Chroma中user/assistant role写入情况；本项不阻塞本轮记忆改造完成状态。
 - docs/claude_memory.md移除“长期记忆只存assistant”遗留问题，并将下一步调整为Chroma并发安全和重要性评估升级；docs/zhitian_structure.md同步记忆层接口说明。
 
-## 2026-07-08
+## 2026-07-08 并发可靠性、记忆生命周期与hybrid search
 - memory.py新增全局_chroma_lock = threading.RLock()，用于串行化保护所有Chroma client/collection懒加载、读写和删除操作；选择RLock以支持maybe_save_to_vector内部调用save_to_vector时同线程重入。
 - save_to_vector、maybe_save_to_vector、save_document、delete_document、search_memory、search_session_memory、search_documents、list_documents、get_document_chunks、clear_session中的Chroma部分均纳入_chroma_lock保护；SQLite短期记忆函数保持原样不加该锁。
 - _get_chroma_collection和_get_document_collection改为锁内双重检查，避免并发首次访问时重复初始化PersistentClient或collection。
@@ -303,7 +125,7 @@
 - 验证通过：py_compile成功；直接构造含ERR-8842、ZX-91Q-ALPHA、HydraNode等专有名词/编号chunk后，关键词query可由BM25阶段召回并最终返回目标chunk；空verified集合返回空且不抛异常；删除文档后索引标脏并在下次检索反映删除结果。
 - 真实链路验证通过：/documents/upload上传测试文档、审核通过后/debug/retrieve查询ERR-8842约41ms返回，top结果命中新文档；同一query的纯向量基线在该小样本中也命中目标chunk，但hybrid search新增了编号/术语精确匹配的BM25粗筛路径，降低专有名词检索完全依赖embedding语义相似度的风险；测试文档和用户已清理。
 
-## 2026-07-09
+## 2026-07-09 检索重排序、核心测试覆盖与文档路由修复
 - config.py新增RERANK_ENABLED、RERANK_CANDIDATE_COUNT、RERANK_TIMEOUT配置，用于控制文档检索候选阶段的GLM批量重排序。
 - memory.py新增_rerank_with_glm(query, candidates)，将hybrid search产出的前N条候选一次性打包给GLM fallback模型，要求返回严格JSON评分；只记录candidate_count、elapsed_ms和降级状态，不记录query原文或候选chunk内容。
 - search_documents在BM25粗筛+向量重排之后接入GLM rerank；RERANK_ENABLED=false时完全保留原hybrid顺序，GLM异常或超时时保留原顺序并正常返回，不影响文档检索可用性。
@@ -339,13 +161,13 @@
 - 搜索整理失败兜底改造：当Tavily已有结果但GLM整理失败时，不再抛出不透明错误，而是返回带“搜索结果整理失败”前缀的原始搜索标题/链接/摘要，避免看似正常的编造回复。
 - document短查询链路优化：title/source元数据命中的少量候选（当前candidate_count<=3）跳过GLM rerank，并通过ToolResult.metadata传递title_source_match，让规划层直接respond、跳过reflect；本地验证“知了是什么”检索阶段约346ms且next_after_execute=respond，非title命中“智能agent”仍进入rerank分支。
 - 验证通过：py_compile成功；pytest tests/test_planning.py tests/test_memory_hybrid_search.py -v为21 passed；真实搜索链路在GLM整理失败时返回“搜索结果整理失败，以下为原始搜索结果摘要”前缀，但完整搜索链路在GLM连续失败时仍可能耗时约76s，后续需继续优化搜索链路超时预算。
-## 2026-07-10
+## 2026-07-10 搜索链路延迟诊断
 - 诊断L12搜索链路高延迟，不修改代码：阅读execution.py确认搜索链路理论配置为TIMEOUT=10s、MAX_RETRIES=1、RETRY_DELAY=1s；Tavily通过ThreadPoolExecutor单次10s超时且外层重试1次；GLM _chat_with_model每个模型最多2次attempt，每次timeout=10s，中间等待1s。
 - 真实分段计时“近期AI热点”类搜索链路：query改写耗时30955ms且成功；Tavily调用耗时4370ms且成功返回5条结果，max_score=0.7592；搜索结果整理主模型glm-4.7耗时24935ms后失败；fallback模型glm-4-flash耗时26867ms后失败；总耗时87129ms。
 - 逐attempt计时确认搜索结果整理阶段存在同层内部重试：glm-4.7第1次attempt耗时11591ms失败(APITimeoutError)，第2次耗时12620ms失败(APITimeoutError)；glm-4-flash第1次attempt耗时13320ms失败(APITimeoutError)，第2次耗时11981ms失败(APITimeoutError)。
 - 结论：76s/87s级别超时主要来自三段GLM串行累计，其中query改写约31s，搜索结果整理主备模型失败合计约52s；Tavily本身约4.4s，不是主要瓶颈。主模型和fallback模型各自失败时都会内部重试2次，单个模型整理失败可消耗约25-27s。
 
-## 2026-07-12
+## 2026-07-12 fast/expert双模型能力分层
 - 新增`layers/llm_provider.py`双模型薄适配层：fast模式调用GLM，expert模式通过OpenAI兼容接口调用DeepSeek；`requirements.txt`新增`openai`，两种模式均为单次调用且禁止跨tier自动fallback。
 - `/chat`和`/chat/stream`请求体新增可选`mode`字段，只接受`fast`或`expert`；缺省及未提供时默认fast，现有Flutter客户端无需改动。非法mode返回400，日志仅记录mode值和必要统计。
 - mode写入`AgentState`并沿请求生命周期透传到classify、普通chat、query改写、搜索整理、reflect、文档重排序、RAG回答、上下文最终回复和后台记忆重要性判断；验证同一请求内无fast/expert混用。
@@ -364,7 +186,7 @@
 - Flutter客户端聊天页新增“快速/专家”分段切换控件，默认fast并在应用运行期间保持选择；ApiService不再发送旧`mode=chat`，而是将当前选择映射为`fast`或`expert`写入`/chat/stream`请求体。
 - Flutter验证通过：`flutter analyze`无问题，8项测试全部通过；内存HTTP客户端确认fast/expert请求体序列化正确，真实本地后端SSE验证两种模式均返回HTTP 200和`[DONE]`，登录、历史和citations既有测试保持通过。
 
-## 2026-07-12
+## 2026-07-12 基础可观测性与reviewer指标接口
 - 新增 `utils/observability.py` 进程内基础可观测性：`ContextVar` trace_id 贯穿 `/chat`、`/chat/stream`、规划、执行、记忆和模型适配调用；原临时 `_log_diag_timing` 已移除，统一输出 `trace_id/stage/elapsed_ms` 脱敏阶段日志。
 - `llm_provider.py` 新增 fast(GLM) 与 expert(DeepSeek) 的独立调用次数、平均耗时及 timeout/rate_limit/other 错误分类计数；计数器由线程锁保护，不记录提示词、消息原文或 API Key。
 - 搜索结果整理失败并降级为 Tavily 原始摘要时计入搜索降级次数；新增 reviewer 专用 `GET /reviewer/metrics`，明确返回进程启动以来的内存统计，服务重启清零且不跨 worker/实例聚合。
@@ -373,41 +195,41 @@
 - `utils/logger.py` 将 `observability` 与 `llm_provider` 纳入项目日志过滤白名单，确保 trace 阶段和模型错误分类日志实际写入业务日志文件。
 - 验证：完整 pytest 49 项通过；真实 `/ready` 返回 200，依赖故障模拟返回 503；reviewer metrics 返回 200、customer 返回 403；真实 expert 请求日志可按同一 trace_id 串联 classify、retrieve、execute 和 respond 阶段。
 
-## 2026-07-13
+## 2026-07-13 搜索链路与可观测性测试补齐
 - 补齐 WorkBuddy F13：新增 `tests/test_execution_search.py`，离线覆盖 query 改写超时后使用原 query、Tavily 成功整理、整理失败原始摘要与降级计数、Tavily 失败/空结果降级及搜索总时间预算。
 - 补齐 WorkBuddy F15：新增 `tests/test_observability.py`，覆盖 ContextVar trace 传播、timeout/rate_limit/other 错误分类、12 线程计数原子性、fast/expert 独立统计、reviewer metrics 结构与权限、`/ready` 的 200/503 依赖状态。
 - 验证：新增的 13 项测试全部通过且未发起真实 GLM/Tavily/DeepSeek 调用；完整 pytest 从 49 项增加至 62 项，结果为 `62 passed, 1 warning`（保留既有 integration smoke 用例）。
 
-## 2026-07-13
+## 2026-07-13 最近请求诊断视图
 - `observability.py` 新增受同一线程锁保护的最近请求环形缓冲区（最多 100 条）：请求完成时按 trace_id 汇总 classify/retrieve/execute/respond 等阶段耗时、mode、总耗时、状态、错误类型和时间戳；`/reviewer/metrics` 在原累计统计基础上新增时间正序的 `recent_requests`。
 - 修复 LangGraph 派生 ContextVar 不回传阶段字典的问题：改为按 trace_id 的锁保护临时聚合表，确保 recent_requests 的阶段耗时与同 trace_id 日志一致。
 - 审核员后台开发者视图改为与审核工作台互斥：开发者模式隐藏四个审核区，基于 `recent_requests` 展示阶段平均耗时、trace_id 明细和原生 SVG 请求耗时趋势。
 - 验证：真实 expert `/chat` 请求的 recent record 为 classify=13301ms、retrieve=19ms、execute=17654ms、respond=0ms，与同 trace_id 阶段日志一致；环形缓冲区 101 条测试保持最新 100 条；完整 pytest `62 passed, 1 warning`。
 
-## 2026-07-13
+## 2026-07-13 fast请求阶段耗时记录修复
 - 修复 fast 模式 recent_requests 阶段和总耗时缺失：请求状态由仅 ContextVar 保存改为按 trace_id 的锁保护共享请求状态，入口在 `/chat` 与 `/chat/stream` 完成时显式传入 trace_id/mode 组装记录，避免流式或派生执行上下文丢失起始时间与聚合数据。
 - fast 独立路径新增 `select_tool` 与 `respond` 阶段打点；retrieve 与工具 execute 继续复用统一阶段日志。该问题与此前 expert/LangGraph 的阶段数据回传缺失同属跨执行上下文的请求状态丢失，但 fast 同时暴露了 total_elapsed_ms 依赖 ContextVar 的问题。
 - 验证：3 次真实 fast 请求均因当前 GLM 上游失败返回 degraded，但 recent_requests 均有非零总耗时和非空阶段数据；真实 expert 请求仍返回 success，total_elapsed_ms=9788ms 且阶段数据正常。fast 成功状态的 recent_requests 组装由离线路由测试覆盖；完整 pytest `63 passed, 1 warning`。
 
-## 2026-07-13
+## 2026-07-13 GitHub Actions基础CI
 - 新增 `.github/workflows/ci.yml` 基础持续集成：push 到 master 及面向 master 的 pull request 自动使用 Python 3.10 安装 requirements、检查敏感文件、编译全部 Python 源码并运行排除 integration 标记的离线测试。
 - CI 使用占位 `JWT_SECRET_KEY`，显式清空 GLM/DeepSeek/Tavily Key；敏感检查拒绝跟踪 `.env` 及常见 `sk-`/`tvly-` 长密钥格式，不在流水线中写入真实凭据。
 - requirements.txt 未发现 Windows 专属依赖，当前依赖均提供 Linux 安装路径；本地等价验证通过：YAML 解析成功、py_compile 成功、离线测试 `62 passed, 1 deselected`、敏感文件检查通过。实际 GitHub Actions 运行待 commit/push 后确认。
 
-## 2026-07-13
+## 2026-07-13 生产生命周期与延迟分位指标
 - 新增 FastAPI lifespan 优雅关闭：收到 Uvicorn/SIGTERM 关闭流程后停止接收新请求，按 `SHUTDOWN_GRACE_PERIOD_SECONDS`（默认30秒）等待在途请求，超时后记录剩余请求数并继续退出；SQLite保持短连接模式，关闭阶段释放Chroma客户端与collection引用。
 - `/reviewer/metrics` 基于最近100条 `recent_requests` 新增 fast/expert 独立的P50/P95/P99延迟和样本数，使用nearest-rank算法，不引入统计依赖。
 - 修复F17：将 `_active_requests` 清理收口为幂等 `discard_active_request()`，并继续由 `/chat`、`/chat/stream` 的 `finally -> reset_trace_id()` 保证正常、异常和连接中断路径均释放临时trace状态；确认此前入口已有部分兜底，本轮补充显式接口和异常测试锁定行为。
 - 清理F12：删除planning.py和execution.py中已被 `llm_provider.extract_text` 替代的 `_extract_glm_text` 死代码。F18诊断确认 `python-multipart` 已声明，warning来自FastAPI 0.115.0兼容范围内Starlette 0.38.6的旧导入方式；pytest仅精确过滤该上游PendingDeprecationWarning，未降级multipart依赖。
 - 验证：py_compile通过；lifespan覆盖等待完成、30秒配置上限和应用异常仍释放资源；分位数、trace启动后立即异常及通用异常清理测试通过；完整pytest `69 passed`，无warning。
 
-## 2026-07-13
+## 2026-07-13 文档上传输入安全加固
 - `/documents/upload` 新增基础输入安全校验：`ALLOWED_UPLOAD_EXTENSIONS`仅允许 `.txt/.md/.pdf/.docx`，`MAX_UPLOAD_SIZE_MB`默认20MB；不支持扩展名在保存和解析前返回400，超限文件返回413。
 - 大小限制先使用Starlette已解析的 `UploadFile.size` 在项目临时文件写入前拒绝，并在按1MB块复制时继续累计校验；超限或写入异常会立即删除部分临时文件。multipart在进入端点前仍可能使用框架spool临时存储，这是当前FastAPI接收模型的边界。
 - 新增轻量文件特征校验：PDF校验 `%PDF-` 文件头，DOCX校验ZIP结构及 `word/document.xml`，TXT/Markdown拒绝NUL和无法按UTF-8/UTF-8 BOM/GBK解码的二进制样本，缓解伪造扩展名直接进入解析器的问题。
 - 验证：新增5项离线上传测试，覆盖 `.xlsx`、伪装为TXT的可执行内容、已知/未知size超限文件及部分文件清理；TXT/Markdown/PDF/DOCX均使用真实解析器验证通过。完整测试总数增至74项。
 
-## 2026-07-14
+## 2026-07-14 expert任务分解、DeepSeek迁移与Office转换
 - expert分类Function Call新增 `declare_complex_task`，由DeepSeek语义判断单一工具是否足以完成目标；fast路径的工具集保持仅 `search_documents/list_documents`，不暴露复杂任务能力。
 - `Task`新增task_index/status/adjusted，`AgentState`新增复杂任务清单、Pydantic结果摘要、执行指针、整体重规划标记和历史累计任务计数；`MAX_COMPLEX_TASKS`默认10，初始规划、重规划新增和局部替换统一计入硬上限。
 - LangGraph新增 `complex_plan → execute_complex ↔ checkpoint → complex_respond` 线性任务链：顺序复用现有MCP/TOOL_REGISTRY工具，单任务失败不中断；checkpoint由DeepSeek先判断整体路线（最多重规划1次），无需重规划时再判断下一任务局部调整（每个位置最多1次）；连续2次失败提前degraded汇总。
@@ -425,7 +247,7 @@
 - `documents`表和Chroma chunk metadata新增可空`converted_from`字段；SQLite启动时通过`PRAGMA table_info`进行幂等轻量迁移。员工页扩展文件选择范围并提示自动转换，审核员待审/已通过列表展示转换来源；原文件和转换产物仍不长期保存。
 - 新增转换成功/失败/超时及DOC/XLSX/PPTX上传成功、转换失败清理、伪造XLSX和非白名单扩展名测试；完整pytest为`105 passed`。本机未安装LibreOffice，真实soffice验证暂时跳过；需要安装后配置`LIBREOFFICE_PATH`再补测。
 
-## 2026-07-15
+## 2026-07-15 生成文件、决策理由与用户转换工具箱
 - `generate_file`输出格式由Markdown/TXT扩展为Markdown/TXT/PDF/DOCX：expert先生成Markdown正文，PDF/DOCX请求复用现有LibreOffice转换器的进程锁和30秒超时；转换成功后删除中间Markdown，仅保留最终产物，转换失败或超时时不重试转换并降级交付可下载Markdown。
 - `GenerateFileResult`新增`requested_format`、`delivered_format`和`conversion_error_type`，下载接口按实际交付扩展名返回PDF/DOCX媒体类型；分类Function Call和固定系统提示同步声明四种格式，fast工具集合保持不变。
 - 技术前置验证通过：含一级/二级标题、粗体和无序列表的20行Markdown真实转换为PDF/DOCX后，标题样式、粗体和项目符号均被渲染，未原样保留`#`、`**`、`-`语法。真实expert请求正确选择PDF，完成正文生成、LibreOffice转换和认证下载；完整离线回归为`127 passed, 4 deselected`。
@@ -493,3 +315,74 @@
 - MinerU虽已完成stdio协议连接和工具发现，但从未接入文档上传、聊天附件或其他活跃业务路径，且真实PDF解析在30/90/180秒预算下持续超时；本轮将其判定为不可交付的实验能力并移除。
 - `layers/mcp_client.py`收缩为规划层到`execution.run()`的本地工具兼容适配器，保持现有`call_tool()`调用方不变；删除MinerU工具发现、解析封装、Flash限制、uvx子进程管理和对应专项测试。
 - `requirements.txt`移除仅用于MinerU隔离启动的`uv`依赖；保留`mcp==1.28.1`和`mcp_server.py`本地工具服务，后续MCP生态工具按实际业务价值与真实稳定性逐项评估。
+
+## 2026-07-16 SSE长任务保活
+- `/chat/stream`新增15秒SSE注释心跳：阻塞式规划和文件生成在独立工作线程执行，异步响应层可在正文空窗期持续保活，不改变正文、citations和`[DONE]`事件顺序。
+- `SSE_HEARTBEAT_INTERVAL_SECONDS`支持环境变量配置；`python main.py`明确关闭Uvicorn reload，避免开发热重载中断正在生成文件的流式连接。
+- 新增心跳与事件顺序离线测试，完整后端回归为`148 passed, 5 deselected`。
+
+## 2026-07-16 通用MCP外部连接层
+- 新增`layers/mcp_connector.py`，以稳定的`discover_tools()`和`call_tool()`接口连接外部stdio MCP server；与规划层现有`mcp_client.py`本地工具适配器职责分离，尚未接入Agent业务路径。
+- 子进程环境只继承操作系统安全白名单并叠加显式`env_overrides`，默认排除`PYTHONPATH`；超时取消复用MCP 1.28.1 Windows Job Object进程树终止能力，真实父子PID检查均无残留。
+- 新增纯本地开发测试server和一次性验证脚本；真实工具发现约936ms，发现`add_numbers`并成功调用得到6.0。新增4项专项测试覆盖配置校验、发现/调用、环境隔离和超时进程树清理，完整离线回归为`152 passed, 5 deselected`。
+
+## 2026-07-16 聊天附件回显与跨重启历史会话恢复
+- 根因确认不是历史数据丢失：Flutter每次启动生成新`session_id`且后端只提供按session查询；真实库仍有266条消息、50个会话。新增当前session本地持久化和按认证用户列出全部会话的`GET /memory/sessions`。
+- `conversations`向后兼容新增`attachment_ids` JSON字段；旧消息默认空列表。用户消息同步保存附件ID，历史响应补充owner可见文件名，新附件统一使用持久化文件ID，支持重启后气泡回显附件chip。
+- Flutter允许纯附件发送，新建对话改为追加会话状态，历史页可恢复任一既有会话；快速/专家切换旁新增能力边界说明，不改变两种模式既有执行链路。
+- 真实Uvicorn关闭并重启前后，临时用户均可通过JWT读取1个会话、1条消息和1个附件ID，测试数据已清理；后端专项`13 passed`，排除既有`test_mcp_connector.py`缺少`pywintypes`的环境阻断后其余离线回归`152 passed, 5 deselected`，Flutter `analyze`无问题且`21 tests passed`。
+
+## 2026-07-16 纯附件展示与当前附件路由修复
+- 根因确认：Flutter请求已正确携带`attachment_ids`，空白气泡来自渲染仅依赖文件名；后端状态也已收到附件ID和正文，但expert分类提示将“这份文件”引向知识库检索，fast又把附件正文混入长期记忆标签，导致当前附件语义不明确。
+- Flutter气泡改为文字或附件ID任一存在即显示；文件名缺失时按附件ID数量生成“附件 N”标签，兼容实时消息和历史回显。
+- expert分类改为基于非空`attachment_ids`结构化信号优先选择当前附件直答，fast将附件正文单独标注并直接回答；未引入用户文本关键词或正则路由，不影响无附件时的`search_documents/list_documents`。
+- 真实DOCX唯一标记验证全部成功：expert纯附件`15.038s`、expert“阅读这个文件”`17.370s`、fast纯附件`5.529s`，均返回HTTP 200/`success`并引用附件内容。
+- 项目`.venv`不排除任何标记运行完整回归，新增2项附件路由测试后共`163 passed`，无skipped或deselected；Flutter `analyze`无问题且`22 tests passed`。
+
+## 2026-07-17 历史会话重命名与彻底删除
+- `sessions`向后兼容新增可空`display_name`，`GET /memory/sessions`保留原排序与首条消息标题并补充自定义名称；新增PATCH重命名/重置名称及DELETE彻底删除接口，名称限制1-50字符。
+- 新彻底删除流程同时清除`conversations`、`sessions`、`users.db/user_sessions`和Chroma长期记忆；跨用户PATCH/DELETE统一返回404。原`DELETE /memory/{session_id}`继续用于清空两层记忆并保留会话元数据，Chroma失败仍返回partial。
+- Flutter历史列表新增逐会话重命名、恢复默认名称和二次确认删除；优先显示`display_name`，删除当前会话后自动进入新会话。
+- 真实HTTP验证完成发消息→重命名→列表确认→跨用户404→彻底删除，删除后历史GET为404且三张SQLite记录计数均为0；完整回归`167 passed`且无deselected，Flutter `analyze`无问题、`24 tests passed`。
+
+## 2026-07-17 用户文件实时预览
+- 新增`PREVIEW_MAX_CHARS=20000`和认证接口`GET /files/{file_id}/preview`，仅owner可访问且越权隐藏为404；支持TXT/Markdown/PDF/DOCX，不支持格式明确返回400。
+- 预览每次实时复用`document_loader.load_document()`提取，不落盘缓存；解析在线程池执行，单次复用30秒转换预算并按Level1重试1次，失败或超时返回422且日志不记录正文。
+- Flutter“我的文件”对四种支持格式显示预览入口，独立页面提供加载、错误、纯文本选择和截断提示；未新增Markdown渲染依赖，下载接口行为保持不变。
+- 真实上传TXT、MD、DOCX和LibreOffice生成的PDF均返回正确标记，20,005字符文本截为20,000且`truncated=true`，XLSX返回400、跨用户返回404；完整回归`172 passed`且无deselected，Flutter `analyze`无问题、`25 tests passed`。
+
+## 2026-07-17 PDF工具箱与下载权限收敛
+- `GET /files/{file_id}`将不存在与非owner统一为404，与预览接口一致，避免通过响应码探测文件存在性；成功下载、响应头和文件流保持不变。
+- 新增`pypdf`、`PDF_MERGE_MAX_FILES=10`和`PDF_SPLIT_MAX_PAGES=200`；认证用户可通过`/tools/pdf/merge`按上传顺序合并PDF，或通过`/tools/pdf/split`逐页拆分，产物统一以`converted`类型进入个人文件库。
+- PDF处理复用20MB单文件上限、30秒单次预算和Level1重试；文件数/格式/页数错误返回400，加密或损坏PDF返回422，日志仅记录错误类型和数量统计。
+- 真实PDF验证合并后3页顺序为`FIRST→SECOND→THIRD`，拆分后3个单页产物均可独立读取；边界测试覆盖1个/超量合并、非PDF、超页数、损坏和加密文件，完整回归`175 passed`且无deselected。
+
+## 2026-07-17 PDF工具箱选择交互回归修复
+- 根因确认：后端`/tools/convert`与`CONVERTIBLE_EXTENSIONS`始终支持DOC/XLS/XLSX/PPT/PPTX，并未缩减为PPT；Flutter改为从单一共享常量读取这五种格式，避免工具箱内部清单再次分叉。
+- 修复上一轮PDF合并引入的选择回归：单个PDF现在可先加入待合并列表，后续选择或拖拽继续追加而非覆盖；列表显示明确顺序并支持逐项移除，至少2项后才允许显式提交。
+- 格式转换和PDF拆分仍保持单文件处理；三种模式切换会清空文件、结果和错误状态，避免跨模式污染。
+- 本机LibreOffice真实验证DOC/XLS/XLSX/PPT/PPTX五种工具箱上传均转换成功；完整后端回归`175 passed`且无deselected。
+
+## 2026-07-17 工具箱六向格式转换
+- 修复格式转换选择器遗漏`.docx`的问题，并将入口明确拆分为PDF转Word/Excel/PPT及Word/Excel/PPT转PDF六种方向；客户端按所选方向使用统一常量生成文件过滤器和`target_format`请求参数。
+- `/tools/convert`新增PDF到DOCX/XLSX/PPTX的本地重建路径；Office到PDF继续复用LibreOffice，且`.doc/.docx/.xls/.xlsx/.ppt/.pptx`六种输入均进入统一文件库。
+- PDF反向转换属于尽力重建：Word提取分页文本、Excel提取表格或逐行文本、PPT按PDF页面生成图片幻灯片；不包含扫描件OCR，也不保证复杂版式和可编辑结构无损恢复。
+- 真实转换验证覆盖六种Office输入转PDF及PDF转三种Office产物；完整后端回归`176 passed`，Flutter `analyze`无问题且`27 tests passed`。
+
+## 2026-07-17 Expert附件六向转换
+- `convert_document`的Expert Function Call由仅支持PDF/DOCX扩展为PDF转DOCX/XLSX/PPTX，以及DOC/DOCX、XLS/XLSX、PPT/PPTX转PDF；保留DOC转DOCX兼容能力，Fast工具集不变。
+- 执行层按源格式分发转换器：PDF使用本地内容重建，Office使用LibreOffice；继续校验当前session、文件owner和附件映射，转换产物统一写入个人文件库。
+- 新增六向参数化测试，覆盖模型目标格式解析、转换器选择、产物格式和Fast隔离；专项回归`17 passed`。
+- 真实DeepSeek Expert六种指令验证全部正确选择`convert_document`，目标依次为`docx/xlsx/pptx/pdf/pdf/pdf`且均含决策理由，分类耗时为4.65-6.97秒；完整回归`182 passed`。
+
+## 2026-07-17 WorkBuddy F19/F20/F22/F23审计收敛
+- Expert复杂任务新增可配置的`EXPERT_COMPLEX_TIMEOUT=120`秒全局预算；复杂规划、路线判断、局部调整、文档重排/回答、搜索和最终汇总均接收剩余预算，超时返回已完成步骤摘要和明确提示。真实10项任务在121.85秒终止，已完成4项，返回`complex_task_timeout`且无500或挂起。
+- `DELETE /files/{file_id}`复用统一owner校验，不存在与非owner均返回404；PDF反向重建改用独立锁，LibreOffice串行锁保持不变。真实并发验证中PDF→DOCX于0.444秒完成，DOCX→PDF于1.863秒完成，两条链无交叉等待。
+- F20核验结论：项目`.venv`修改前完整未筛选基线为`182 passed`，无法复现审计所述`1 failed, 181 passed`；系统Python配合`.venv` site-packages会因MCP子进程环境隔离产生`3 failed, 179 passed`，根因是子进程找不到`mcp`，不是Windows编码问题，也未通过skip掩盖。
+- 新增复杂任务deadline、独立转换锁和文件删除404测试；修改后完整未筛选回归为`185 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-17 修复Expert流式路径重复分类与检索（F10）
+- 根因确认：`_prepare_stream_state()`已执行classify和retrieve，但document/complex_task/convert_document等else分支随后从全新state调用`run_graph_state()`，导致预处理结果丢失；search流式异常回退同样受影响，fast路径不经过该预处理。
+- `run_graph_state()`新增可选`prepared_state`，stream将预处理state传入；`stream_prepared`标记让图内classify/retrieve节点直接复用既有intent和context。非stream `/chat`仍完整入图，未改任何prompt文本或固定缓存前缀。
+- 真实Expert stream验证：修复前基线为2次classify、60.97秒；修复后同请求为1次classify、72.67秒，上游波动使单样本总耗时未改善。额外验证document_list为11.35秒、convert_document为9.20秒、complex_task为109.48秒，均仅1次classify并正常发送`[DONE]`；fast stream保持0次，非stream `/chat`保持1次。
+- SSE正文、citations、`[DONE]`顺序保持不变；新增预处理state复用测试，完整未筛选回归为`186 passed`，`failed/skipped/deselected`均为0。

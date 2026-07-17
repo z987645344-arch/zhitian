@@ -56,4 +56,4 @@ def test_real_fast_and_expert_read_uploaded_docx(client, auth_headers):
     finally:
         for session_id in session_ids:
             attachments.clear_session(session_id)
-            memory.clear_session(session_id)
+            memory.delete_session_full(session_id)
