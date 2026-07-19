@@ -568,26 +568,38 @@ def test_fast_chat_uses_one_model_call_without_tools(monkeypatch):
     }
 
 
-def test_fast_document_uses_two_model_calls_and_local_retrieval(monkeypatch):
+def test_fast_document_uses_three_model_calls_and_local_retrieval(monkeypatch):
     _prepare_fast_mocks(monkeypatch)
     responses = iter([
         _fast_response(tool_name="search_documents", arguments={"query": "知了"}),
+        _fast_response(content=json.dumps({
+            "evidence_sufficient": True,
+            "used_candidate_ids": [1],
+            "reason": "候选能够支撑回答",
+        }, ensure_ascii=False)),
         _fast_response(content="知识库回答")
     ])
     model_calls = []
 
     def chat(messages, tier="fast", **kwargs):
-        model_calls.append(tier)
+        model_calls.append({"tier": tier, "response_format": kwargs.get("response_format")})
         return next(responses)
 
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
-    tool_call = Mock(return_value=_result(tool="search_documents", data="知了文档片段"))
+    tool_call = Mock(return_value=ToolResult(
+        tool="search_documents",
+        status="success",
+        data="[1] 知了文档片段",
+        citations=[planning.Citation(source="doc", doc_id="doc-1", chunk_index=0, score=0.8)],
+    ))
     monkeypatch.setattr(planning.mcp_client, "call_tool", tool_call)
 
     state = planning.run_graph_state("fast-document", "知了是什么", mode="fast")
 
     assert state["response"] == "知识库回答"
-    assert model_calls == ["fast", "fast"]
+    assert [call["tier"] for call in model_calls] == ["fast", "fast", "fast"]
+    assert model_calls[1]["response_format"] == {"type": "json_object"}
+    assert model_calls[2]["response_format"] is None
     params = tool_call.call_args[0][1]
     assert params["generate_answer"] is False
     assert params["rerank_enabled"] is False
@@ -597,6 +609,11 @@ def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
     _prepare_fast_mocks(monkeypatch)
     responses = iter([
         _fast_response(tool_name="search_documents", arguments={"query": "local topic"}),
+        _fast_response(content=json.dumps({
+            "evidence_sufficient": True,
+            "used_candidate_ids": [1],
+            "reason": "候选相关",
+        }, ensure_ascii=False)),
         TimeoutError("simulated timeout"),
     ])
 
@@ -610,7 +627,12 @@ def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
     monkeypatch.setattr(
         planning.mcp_client,
         "call_tool",
-        Mock(return_value=_result(tool="search_documents", data="local evidence summary")),
+        Mock(return_value=ToolResult(
+            tool="search_documents",
+            status="success",
+            data="[1] local evidence summary",
+            citations=[planning.Citation(source="doc", doc_id="doc-1", chunk_index=0, score=0.8)],
+        )),
     )
 
     state = planning.run_graph_state("fast-document-fallback", "local topic", mode="fast")
@@ -657,3 +679,110 @@ def test_fast_has_no_search_web_capability(monkeypatch):
     assert state["response"]
     assert "search_web" not in observed_tools
     assert len(observed_tools) == 2
+
+
+def test_fast_document_filters_citations_to_model_used_candidates(monkeypatch):
+    _prepare_fast_mocks(monkeypatch)
+    responses = iter([
+        _fast_response(tool_name="search_documents", arguments={"query": "topic"}),
+        _fast_response(content=json.dumps({
+            "evidence_sufficient": True,
+            "used_candidate_ids": [2],
+            "reason": "second candidate is relevant",
+        })),
+        _fast_response(content="supported answer"),
+    ])
+    model_messages = []
+
+    def chat(messages, **kwargs):
+        model_messages.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    citations = [
+        planning.Citation(source="a", doc_id="a", chunk_index=0, score=0.7),
+        planning.Citation(source="b", doc_id="b", chunk_index=1, score=0.6),
+    ]
+    monkeypatch.setattr(
+        planning.mcp_client,
+        "call_tool",
+        Mock(return_value=ToolResult(
+            tool="search_documents",
+            status="success",
+            data="[1] unrelated\n\n[2] relevant",
+            citations=citations,
+        )),
+    )
+
+    state = planning.run_graph_state("fast-filter", "topic", mode="fast")
+
+    assert state["response"] == "supported answer"
+    assert [item.doc_id for item in state["citations"]] == ["b"]
+    assert "[2] relevant" in model_messages[2][-1]["content"]
+    assert "[1] unrelated" not in model_messages[2][-1]["content"]
+
+
+def test_fast_document_decline_has_no_citations(monkeypatch):
+    _prepare_fast_mocks(monkeypatch)
+    responses = iter([
+        _fast_response(tool_name="search_documents", arguments={"query": "topic"}),
+        _fast_response(content=json.dumps({
+            "answer": "should not be exposed",
+            "evidence_sufficient": False,
+            "used_candidate_ids": [],
+        })),
+    ])
+    model_calls = []
+
+    def chat(*args, **kwargs):
+        model_calls.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    monkeypatch.setattr(
+        planning.mcp_client,
+        "call_tool",
+        Mock(return_value=ToolResult(
+            tool="search_documents",
+            status="success",
+            data="[1] unrelated",
+            citations=[planning.Citation(source="a", doc_id="a", chunk_index=0, score=0.7)],
+        )),
+    )
+
+    state = planning.run_graph_state("fast-decline", "topic", mode="fast")
+
+    assert state["response"] == "未找到可靠依据，无法确认答案"
+    assert state["citations"] == []
+    assert len(model_calls) == 2
+
+
+def test_fast_document_evidence_parse_failure_declines_without_generation(monkeypatch):
+    _prepare_fast_mocks(monkeypatch)
+    responses = iter([
+        _fast_response(tool_name="search_documents", arguments={"query": "topic"}),
+        _fast_response(content="not-json"),
+    ])
+    model_calls = []
+
+    def chat(*args, **kwargs):
+        model_calls.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    monkeypatch.setattr(
+        planning.mcp_client,
+        "call_tool",
+        Mock(return_value=ToolResult(
+            tool="search_documents",
+            status="success",
+            data="[1] candidate",
+            citations=[planning.Citation(source="a", doc_id="a", chunk_index=0, score=0.7)],
+        )),
+    )
+
+    state = planning.run_graph_state("fast-parse-failure", "topic", mode="fast")
+
+    assert state["response"] == "未找到可靠依据，无法确认答案"
+    assert state["citations"] == []
+    assert len(model_calls) == 2

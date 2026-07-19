@@ -386,3 +386,76 @@
 - `run_graph_state()`新增可选`prepared_state`，stream将预处理state传入；`stream_prepared`标记让图内classify/retrieve节点直接复用既有intent和context。非stream `/chat`仍完整入图，未改任何prompt文本或固定缓存前缀。
 - 真实Expert stream验证：修复前基线为2次classify、60.97秒；修复后同请求为1次classify、72.67秒，上游波动使单样本总耗时未改善。额外验证document_list为11.35秒、convert_document为9.20秒、complex_task为109.48秒，均仅1次classify并正常发送`[DONE]`；fast stream保持0次，非stream `/chat`保持1次。
 - SSE正文、citations、`[DONE]`顺序保持不变；新增预处理state复用测试，完整未筛选回归为`186 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-18 PDF文字规范化与保守列顺序修复
+- 新增`layers/pdf_text.py`共享提取层，知识库/附件PDF解析与PDF→DOCX/XLSX文本重建统一复用；兼容汉字经NFKC转为标准码位，同时保留中文全角标点样式，全角数字转为半角。
+- 对存在明确页级纵向栏间隙、两侧文字量和纵向覆盖均充足的页面，按左栏从上到下、再右栏从上到下输出；无法可靠判断时回退原`pdfplumber.extract_text()`顺序，不做强制版面猜测。
+- 真实`046.pdf`确认`⼯(U+2F2F)`已规范为`工(U+5DE5)`；但其头部`32 / 岁上 / 海`源字符坐标和词边界本身异常，通用列聚类不能无歧义恢复为`32岁 / 上海`，未加入样本专用语义规则。
+- 临时双栏PDF验证由逐行左右交错修复为完整左栏后完整右栏；真实单栏简历除Unicode规范化外文本逐字一致、长度同为1,722。完整未筛选回归`190 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-19 修复UTF-8文本上传边界误判
+- 修复`.txt/.md`前8,192字节内容抽样恰好截断UTF-8多字节字符时被误判为非法编码的问题；改用严格增量解码，允许样本末尾未完成字符但继续拒绝样本内部非法字节和空字节。
+- 真实`法律常识20页.md`为43,231字节标准UTF-8文件，修改前校验为`False`、修改后为`True`；管理后台文件选择器原本已允许`.md`，因此问题不在扩展名白名单。
+- 新增截断边界与内部非法字节测试；上传专项`12 passed`，完整未筛选回归`192 passed`，无failed/skipped/deselected。
+
+## 2026-07-19 收紧title/source短查询加分边界
+- 新增`TITLE_BOOST_MAX_QUERY_LENGTH=12`；超过12字符的查询完全跳过标题子串生成，长问题只走BM25、向量与既有DeepSeek重排序。
+- 删除标题命中后从Chroma拉入整篇文档全部chunk的路径；短查询现在只提升已被原生检索召回的chunk，`final_score=max(vector_score, RAG_SCORE_THRESHOLD+0.02)`，并以原始分作为同分二级排序依据。
+- `/debug/retrieve`保留原字段并新增`vector_score/title_boosted/final_score`。真实长查询5条候选为0.495180–0.554020且全部未标题加分；隔离verified“知了简介”短查询由0.409195提升至0.570000，测试数据清理后SQLite/Chroma残留均为0。
+- 新增长短查询、候选范围、同分排序和接口字段测试；完整未筛选回归`196 passed`，无failed/skipped/deselected。
+
+## 2026-07-19 诊断Expert文档路由回潮
+- 真实Expert `/chat` 查询“未指定受益人的保险金能作为遗产吗？”对应trace_id为`b62d6bdb-256e-42bc-89e2-57ca75b27243`，classify耗时5,902ms并明确返回`intent=chat`；决策理由为“这是一个通用法律知识问题，答案明确可依据中国《保险法》及相关司法解释直接回答，无需联网搜索或检索文档。”
+- 该trace仅执行`retrieve_chroma`和`execute_llm_chat`，没有`documents_bm25/documents_vector/execute_search_documents`阶段，响应citations为空；因此根因是分类层将专业领域问题视为训练知识可直答，不是文档置信度不足、RAG阈值、标题加分或前端citation字段丢失。
+- 同款`/debug/retrieve`可召回verified法律资料，5条候选分数为`0.494623/0.535336/0.562325/0.546423/0.528293`，其中最高分0.562325超过0.55阈值；该检索是独立诊断调用，实际`/chat`因走chat路径并未执行检索。
+- 当前Function Call描述把`direct_answer`定义为通用知识直答，而`search_documents`主要覆盖显式文档指代、内部术语、产品名和编号，缺少“已有领域知识库覆盖的专业事实应优先检索核验”的边界说明。本轮仅记录诊断，未修改prompt、`RAG_SCORE_THRESHOLD`或`TITLE_BOOST_MAX_QUERY_LENGTH`。
+
+## 2026-07-19 尝试收紧Expert知识库语义边界
+- 仅修改classify的Function Call描述：`search_documents`新增“verified知识库已覆盖的专业领域事实、规范或依据问题应优先检索”，`direct_answer`同步排除该范围；未加入关键词、正则、特定领域名称，也未调整RAG阈值、标题加分或检索逻辑。
+- 指令列出的题目实际为12条而非13条。真实Expert结果为`7/12`：A组5条专业事实题全部仍判为chat，B组4条通用/创作题全部保持chat，C组分别正确进入document_list/document/document；“知了项目”返回1条citation，“GDPR”返回“未找到可靠依据，无法确认答案”。
+- A组模型理由仍明确将问题视为可由通用训练知识回答，说明静态工具描述无法让模型知道当前verified知识库实际覆盖哪些领域；本轮按约束停止继续堆叠提示句，路由回潮未宣称修复完成，后续需评估为classify提供有界的知识库领域/标题摘要。
+- `layers/planning.py`语法检查通过；项目主`.venv`完整未筛选回归为`196 passed`，无failed/skipped/deselected。一次错误使用“系统Python+注入site-packages”运行得到`193 passed, 3 failed`，失败均为MCP隔离子进程找不到`mcp`，不作为项目回归基线。
+
+## 2026-07-19 系统提示词模块化管理与文档路由回归验证
+- 新增`layers/system_modules.py`及SQLite `system_modules`表，分别保存规范、语气风格和禁用模块的当前值；仅reviewer可通过`GET/PUT /reviewer/system-modules`读写，保存后缓存失效并从下一次请求生效。
+- Expert classify/respond与Fast工具选择/最终生成统一按“规范→语气风格→禁用→原有固定规则→日期→动态上下文”组装prompt。Fast也应用禁用模块，避免简化路径绕过全局禁止行为；未加入关键词、正则或领域专用代码判断。
+- 使用指定法律领域规范真实验证：Expert 12题`12/12`路由符合预期，A组专业题document `5/5`、B组通用题chat `4/4`、C组document_list/document/document `3/3`；Fast A/B组`9/9`正确选择document/chat。部分A组document检索无citation，说明路由已修复但低置信检索仍需独立观察。
+- 新增模块覆盖、reviewer权限、固定前缀顺序及Fast/Expert注入测试；`py_compile`通过，项目`.venv`完整未筛选回归为`199 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-19 Fast文档证据筛选与citation一致性
+- 根因确认：Fast的`search_documents`关闭重排序并把全部过阈值候选原样交给第二次模型调用，但调用前已机械写入全部citation；正文相关性判断与来源展示没有共享同一决策结果，结构上可能出现拒答文字仍带来源。
+- `layers/planning.py`在原有第二次调用内新增候选级语义筛选，要求模型返回`answer/evidence_sufficient/used_candidate_ids`；后端仅保留实际采用编号对应的citation，证据不足时统一拒答并清空citation，Fast仍保持无工具1次、有工具最多2次模型调用。
+- 当前本地Fast检索基线中，5条专业题最高原始分为`0.384424-0.389725`，其中“喝酒开车”最高`0.389725`，均低于`RAG_SCORE_THRESHOLD=0.55`，因此当前数据状态下工具层直接拒答且不产生citation；未改阈值、title boost、BM25/向量或Expert重排序。
+- 新增候选过滤与全不相关拒答测试；项目`.venv`完整未筛选回归为`201 passed`，`failed/skipped/deselected`均为0。真实DeepSeek A/B组及重复稳定性矩阵因当前执行环境禁止向外部模型发送企业知识库片段而未执行，不能据离线测试宣称真实模型稳定率。
+
+## 2026-07-19 Fast证据筛选与回答生成职责拆分
+- `layers/planning.py`将Fast文档路径从合并的“判断+生成”改为“工具选择→本地检索→独立证据筛选→最终生成”；证据筛选和最终生成使用指定原文prompt，并按系统模块→原有规则→日期→动态问题/候选的固定顺序组装。
+- 证据筛选输出`evidence_sufficient/used_candidate_ids/reason`，解析失败按证据不足处理；最终生成只接收被选中的编号片段，citation直接使用同一编号映射，不增加关键词、正则语义判断或独立重排序。
+- Fast调用边界正式调整为：无工具1次、文档证据不足2次后固定拒答、文档证据充分最多3次、文档清单2次；此变更用于避免回答生成同时承担证据判定时对`0.562325`等真实过线候选过度保守。
+- 真实附件回归曾因模型输出视觉等价的`SKY‑739`（U+2011）而不满足仅接受ASCII连字符的断言，测试层现统一常见连字符后再核对项目代号，未修改生产输出。
+- `py_compile`通过，新增三调用、证据裁剪、citation映射、拒答短路及解析失败测试；项目`.venv`完整未筛选回归为`202 passed`，`failed/skipped/deselected`均为0。指定法律问题的真实DeepSeek重复验证仍受当前Codex外部数据传输策略限制，需用户在可信本机补测。
+
+## 2026-07-19 诊断Fast保险金问题仍拒答
+- Flutter真实Fast请求`trace_id=f3287596-d1dd-4801-8a4c-8352ccebffe4`：工具选择3,106ms、本地检索66ms、证据筛选3,341ms，最终正常记录`evidence_sufficient=false`；该时间窗无JSON解析失败或候选映射异常日志。
+- `0.562325`候选确实被传给调用②，但它是`宪法要义.md`第17块，内容为人民警察出示证件和疫情防疫规定，与“未指定受益人的保险金是否为遗产”无关；调用②实际只收到这唯一条过0.55阈值的候选。
+- 原始hybrid top 5分数为`0.562325/0.546423/0.535336/0.528293/0.524082`；真正提到遗产纠纷的候选为`家事民事权益与继承.docx`第60块，但分数仅`0.535336`而被工具层过滤。因此当前证据支持归因A：筛选模型对真实无关片段拒绝合理，核心问题是检索排序与固定阈值未送出真正相关片段，不是证据判断过严。
+- Codex外部数据策略拒绝将企业知识库片段发送给DeepSeek，因此无法重放并贴出模型原始JSON；现有生产日志也按脱敏规范不记录该原文。本轮未改prompt、阈值或业务代码。
+
+## 2026-07-19 修复BM25与向量候选融合
+- 根因是旧实现并非真正融合：BM25只用于限定Chroma查询的doc_id，随后还要求chunk出现在向量返回集中；最终`score`纯为`1/(1+distance)`，BM25精确命中可被向量结果直接丢弃。
+- `layers/memory.py`改为BM25和向量各召回`top_k×4`后取chunk并集；BM25以`1-exp(-raw_score/BM25_SCORE_SCALE)`标定到0-1，默认scale=20，重复chunk保留`vector_score/bm25_score/bm25_relevance`并取两通道较强值为`final_score`，不把两个弱信号线性相加制造虚高分。
+- 保险金查询修改前无关`宪法要义.md#17`以0.562325排第1，真正答案chunk未进top 5；修改后`家事民事权益与继承.docx#59`以BM25 69.767705/融合分0.969450排第1，无关宪法chunk降到第4。试用期查询的`#51`从最终候选缺失变为BM25 62.213234/融合分0.955429第1。
+- 无库内答案的酒驾查询最高仍为0.481502，BM25最高12.658985只映射到0.468977，未凭空过0.55；婚前父母购房、危房拆迁、未成年人行为能力三道改写题的对应chunk分别以0.958675、0.883619、0.759195进入前列。
+- `/debug/retrieve`新增`bm25_score/bm25_relevance`字段；语法检查和14项检索专项通过，完整未筛选回归`205 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-19 约束Expert知识库回答的证据与法域边界
+- 诊断确认Expert的文档最终答案由`layers/execution.py::_answer_from_documents`生成，`planning.respond_node`仅透传工具结果；原prompt能看到候选原文，但看不到来源和置信分数，虽有基础拒答要求，却没有禁止补充/纠正或跨法域替换的明确约束。
+- Expert生成prompt现携带每条候选的`source/score`，并要求仅依据片段回答；证据不相关、不完整或为空时固定说明“未找到可靠依据，无法确认答案”，法律法规、地区、机构和版本必须与片段一致，存在歧义时如实说明来源范围。
+- 本地检索确认：试用期题前5条为`0.955429/0.868436/0.840320/0.818334/0.797060`；保险金题前4条过0.55，正确继承资料以`0.969450/0.966473`排前两位；GDPR最高`0.514071`应直接拒答；“知了项目”以标题补充召回`0.570000`排首位。
+- 目标法律题的真实DeepSeek端到端重放因Codex环境不允许主动向外部模型发送企业知识库片段而未执行；新增离线测试验证固定约束、动态来源/分数和Expert tier传递，完整未筛选回归为`206 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-19 收敛联网搜索汇总失败的用户降级输出
+- 根因确认：`_search_web`和`stream_search_result`在Tavily已成功、但汇总模型超时或异常时，旧逻辑有意调用`_format_raw_search_results`，将标题、摘要和URL连同“搜索结果整理失败”内部状态直接返回用户；搜索总预算耗尽时也存在相同暴露。
+- 汇总失败或预算耗尽现在统一返回“很抱歉，联网搜索遇到问题，暂时无法为您整理结果，建议稍后重试或换个方式提问。”；日志保留`error_type`、query长度和是否已输出流式正文，搜索降级计数继续累加，原始Tavily结果不再进入用户响应。
+- 新增非流式汇总异常、预算耗尽和流式汇总异常测试，均确认响应不含原始标题或URL；正常汇总调用路径未改。真实公开联网复测时Tavily两次超时，验证到既有“搜索服务暂时不可用”降级，未取得正常成功样本。
+- `py_compile`通过；完整未筛选回归为`207 passed`，`failed/skipped/deselected`均为0。

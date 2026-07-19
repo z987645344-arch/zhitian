@@ -2,6 +2,7 @@
 """Real DeepSeek chat attachment coverage; excluded from CI."""
 
 import io
+import re
 
 import pytest
 from docx import Document
@@ -10,6 +11,14 @@ from layers import attachments, memory
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
+def _normalize_hyphens(text):
+    return str(text or "").translate(str.maketrans("‐‑‒–—−", "------"))
+
+
+def _normalize_whitespace(text):
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 def _real_docx_bytes():
@@ -50,8 +59,8 @@ def test_real_fast_and_expert_read_uploaded_docx(client, auth_headers):
             assert response.status_code == 200, response.text
             payload = response.json()
             assert payload["status"] == "success", payload
-            assert "SKY-739" in payload["data"]
-            assert "9月18" in payload["data"]
+            assert "SKY-739" in _normalize_hyphens(payload["data"])
+            assert "9月18" in _normalize_whitespace(payload["data"])
             assert "林岚" in payload["data"]
     finally:
         for session_id in session_ids:

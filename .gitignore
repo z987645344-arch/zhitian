@@ -10,3 +10,7 @@ build/
 .ruff_cache/
 *.log
 .workbuddy/
+
+# Local-only diagnostic corpus and one-off document backups.
+/临时信息库/
+*.bak-????-??-??

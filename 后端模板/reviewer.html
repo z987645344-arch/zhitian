@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>审核工作台 · 知天管理后台</title>
+  <link rel="stylesheet" href="assets/common.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- ========== 左侧导航栏 ========== -->
+    <aside class="sidebar-left">
+      <!-- 品牌 -->
+      <div class="flex items-center justify-between px-2 mb-2">
+        <div class="flex items-center gap-2">
+          <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--primary),var(--primary-container));display:flex;align-items:center;justify-content:center;color:var(--on-primary);font-family:var(--font-headline);font-weight:800;font-size:16px">知</div>
+          <span class="text-headline-md font-headline font-bold c-on-surface">知天后台</span>
+        </div>
+        <button class="btn-icon">
+          <span class="icon" data-icon="edit"></span>
+        </button>
+      </div>
+
+      <!-- 搜索 -->
+      <div class="search-wrap relative px-2 mb-4">
+        <span class="icon icon-sm absolute c-on-surface-variant opacity-60" style="left:16px;top:50%;transform:translateY(-50%)" data-icon="search"></span>
+        <input class="input-search" type="text" placeholder="搜索文档..." />
+        <span class="text-label-sm c-on-surface-variant opacity-40 absolute" style="right:16px;top:50%;transform:translateY(-50%)">⌘K</span>
+      </div>
+
+      <!-- 导航 -->
+      <nav class="flex flex-col gap-1 overflow-y-auto scrollbar-hide flex-grow">
+        <a class="nav-item active" href="#pending-section" data-tab="pending">
+          <span class="icon" data-icon="inbox"></span>
+          <span>待审核</span>
+          <span class="badge badge-error ml-auto" style="font-size:10px;padding:1px 8px">3</span>
+        </a>
+        <a class="nav-item" href="#docs-section" data-tab="docs">
+          <span class="icon" data-icon="clipboard-list"></span>
+          <span>文档管理</span>
+        </a>
+        <a class="nav-item" href="#debug-section" data-tab="debug">
+          <span class="icon" data-icon="file-search"></span>
+          <span>检索调试</span>
+        </a>
+        <a class="nav-item" href="#memory-section" data-tab="memory">
+          <span class="icon" data-icon="server"></span>
+          <span>记忆总览</span>
+        </a>
+        <a class="nav-item" href="#developer-section" data-tab="developer">
+          <span class="icon" data-icon="cpu"></span>
+          <span>开发者视图</span>
+        </a>
+
+        <!-- 最近操作 -->
+        <div class="mt-8 px-3">
+          <div class="flex items-center justify-between mb-4">
+            <span class="text-label-sm uppercase tracking-wider c-on-surface-variant opacity-60 font-semibold">最近操作</span>
+          </div>
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate c-on-surface-variant">批准：产品手册.docx</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">5分钟前</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate c-on-surface-variant">拒绝：草稿.txt</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">1小时前</span>
+            </div>
+            <div class="flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors" style="border-radius:6px">
+              <span class="text-body-md truncate c-on-surface-variant">批准：行业报告.pdf</span>
+              <span class="text-label-sm c-on-surface-variant opacity-40 shrink-0">昨天</span>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <!-- 用户 -->
+      <div class="mt-auto px-2 pt-4 border-t" style="border-color:rgba(210,196,184,0.3)">
+        <div class="flex items-center gap-3 p-2 cursor-pointer transition-colors" style="border-radius:12px">
+          <div class="avatar">
+            <span class="icon icon-lg" data-icon="user-circle"></span>
+          </div>
+          <div class="flex flex-col min-w-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-label-md font-semibold truncate" id="sidebarUsername">审核员</span>
+              <span class="badge badge-primary-dim">审核员</span>
+            </div>
+            <span class="text-label-sm opacity-60">知识管理员</span>
+          </div>
+          <span class="icon ml-auto c-on-surface-variant" data-icon="unfold-more"></span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== 主工作区 ========== -->
+    <main class="workspace overflow-y-auto h-screen custom-scrollbar">
+      <!-- 顶部栏 -->
+      <header class="topbar">
+        <div class="flex items-center gap-3">
+          <h1 class="text-headline-lg font-headline font-semibold c-on-surface">审核工作台</h1>
+          <span class="badge badge-neutral" id="currentUser">-</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <button class="btn btn-outline" id="developerViewButton">
+            <span class="icon icon-sm" data-icon="cpu"></span>
+            开发者视图
+          </button>
+          <button class="btn btn-outline" id="logoutButton">
+            <span class="icon icon-sm" data-icon="log-out"></span>
+            退出
+          </button>
+        </div>
+      </header>
+
+      <!-- 内容区 -->
+      <div class="workspace-inner px-8 py-8 flex flex-col gap-8" style="max-width:1100px">
+
+        <!-- ===== 待审核文档 ===== -->
+        <section class="section-panel" id="pending-section">
+          <div class="section-panel-header">
+            <div class="flex items-center gap-2">
+              <span class="icon c-primary" data-icon="inbox"></span>
+              <h2 class="text-headline-md font-headline c-on-surface">待审核文档</h2>
+              <span class="badge badge-warning">3 待处理</span>
+            </div>
+            <button class="btn btn-outline" id="refreshPending">
+              <span class="icon icon-sm" data-icon="refresh"></span>
+              刷新
+            </button>
+          </div>
+          <div class="section-panel-body" style="padding:0">
+            <div class="table-wrap" style="border:none;border-radius:0">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>doc_id</th>
+                    <th>文件名</th>
+                    <th>上传者</th>
+                    <th>上传时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="pendingTable">
+                  <tr>
+                    <td class="c-on-surface-variant" style="font-family:monospace;font-size:12px">doc_a1b2c3</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-text"></span>
+                        <span>售后流程说明.txt</span>
+                      </div>
+                    </td>
+                    <td>zhang_san</td>
+                    <td class="c-on-surface-variant">2024-10-25 10:15</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon c-primary" style="width:32px;height:32px" title="预览" data-action="preview"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" data-action="approve">
+                          <span class="icon icon-sm c-success" data-icon="check"></span>
+                          批准
+                        </button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px;color:var(--error)" data-action="reject">
+                          <span class="icon icon-sm" data-icon="x"></span>
+                          拒绝
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="c-on-surface-variant" style="font-family:monospace;font-size:12px">doc_d4e5f6</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-pdf"></span>
+                        <span>技术白皮书.pdf</span>
+                      </div>
+                    </td>
+                    <td>li_si</td>
+                    <td class="c-on-surface-variant">2024-10-25 09:30</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon c-primary" style="width:32px;height:32px" title="预览" data-action="preview"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" data-action="approve">
+                          <span class="icon icon-sm c-success" data-icon="check"></span>
+                          批准
+                        </button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px;color:var(--error)" data-action="reject">
+                          <span class="icon icon-sm" data-icon="x"></span>
+                          拒绝
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="c-on-surface-variant" style="font-family:monospace;font-size:12px">doc_g7h8i9</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-table"></span>
+                        <span>季度销售数据.xlsx</span>
+                      </div>
+                    </td>
+                    <td>wang_wu</td>
+                    <td class="c-on-surface-variant">2024-10-24 16:42</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon c-primary" style="width:32px;height:32px" title="预览" data-action="preview"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px" data-action="approve">
+                          <span class="icon icon-sm c-success" data-icon="check"></span>
+                          批准
+                        </button>
+                        <button class="btn btn-outline" style="padding:4px 12px;font-size:12px;color:var(--error)" data-action="reject">
+                          <span class="icon icon-sm" data-icon="x"></span>
+                          拒绝
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <!-- 预览面板 -->
+            <div id="previewPanel" class="preview-panel hidden" style="border-top:1px solid var(--outline-variant);border-radius:0;margin:0">
+              <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-2">
+                  <span class="icon c-primary" data-icon="file-search"></span>
+                  <h3 class="text-headline-md font-headline c-on-surface">文档预览</h3>
+                </div>
+                <button class="btn-icon" id="closePreview"><span class="icon icon-sm" data-icon="x"></span></button>
+              </div>
+              <div class="flex flex-col gap-2">
+                <div class="preview-chunk">
+                  <span class="text-label-sm font-semibold c-primary">Chunk 1 / 8</span>
+                  <p class="mt-1">售后流程的第一步是接收客户反馈，通过多渠道（电话、邮件、在线表单）收集问题信息，并创建工单记录...</p>
+                </div>
+                <div class="preview-chunk">
+                  <span class="text-label-sm font-semibold c-primary">Chunk 2 / 8</span>
+                  <p class="mt-1">第二步是问题分类与分配，系统根据关键词自动将工单分配给对应的售后工程师，同时设置优先级...</p>
+                </div>
+                <div class="preview-chunk">
+                  <span class="text-label-sm font-semibold c-primary">Chunk 3 / 8</span>
+                  <p class="mt-1">第三步是处理与跟踪，工程师在系统中更新处理进度，客户可实时查看状态变更通知...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 文档管理 ===== -->
+        <section class="section-panel" id="docs-section">
+          <div class="section-panel-header">
+            <div class="flex items-center gap-2">
+              <span class="icon c-primary" data-icon="clipboard-list"></span>
+              <h2 class="text-headline-md font-headline c-on-surface">文档管理</h2>
+              <span class="badge badge-success">已审核</span>
+            </div>
+            <button class="btn btn-outline" id="refreshDocuments">
+              <span class="icon icon-sm" data-icon="refresh"></span>
+              刷新
+            </button>
+          </div>
+          <div class="section-panel-body" style="padding:0">
+            <div class="table-wrap" style="border:none;border-radius:0">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>文件名</th>
+                    <th>Chunk 数量</th>
+                    <th>上传者</th>
+                    <th>审核时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="documentsTable">
+                  <tr>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-text"></span>
+                        <span>产品使用手册.docx</span>
+                      </div>
+                    </td>
+                    <td>24</td>
+                    <td>zhang_san</td>
+                    <td class="c-on-surface-variant">2024-10-25 14:30</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon" style="width:32px;height:32px" title="预览"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn-icon" style="width:32px;height:32px;color:var(--error)" title="删除"><span class="icon icon-sm" data-icon="trash"></span></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-pdf"></span>
+                        <span>行业研究报告.pdf</span>
+                      </div>
+                    </td>
+                    <td>56</td>
+                    <td>li_si</td>
+                    <td class="c-on-surface-variant">2024-10-24 16:42</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon" style="width:32px;height:32px" title="预览"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn-icon" style="width:32px;height:32px;color:var(--error)" title="删除"><span class="icon icon-sm" data-icon="trash"></span></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <span class="icon icon-sm c-primary" data-icon="file-doc"></span>
+                        <span>API 接口文档.docx</span>
+                      </div>
+                    </td>
+                    <td>18</td>
+                    <td>wang_wu</td>
+                    <td class="c-on-surface-variant">2024-10-23 11:20</td>
+                    <td>
+                      <div class="flex items-center gap-2">
+                        <button class="btn-icon" style="width:32px;height:32px" title="预览"><span class="icon icon-sm" data-icon="eye"></span></button>
+                        <button class="btn-icon" style="width:32px;height:32px;color:var(--error)" title="删除"><span class="icon icon-sm" data-icon="trash"></span></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 检索调试 ===== -->
+        <section class="section-panel" id="debug-section">
+          <div class="section-panel-header">
+            <div class="flex items-center gap-2">
+              <span class="icon c-primary" data-icon="file-search"></span>
+              <h2 class="text-headline-md font-headline c-on-surface">检索调试</h2>
+            </div>
+          </div>
+          <div class="section-panel-body">
+            <p class="text-body-md c-on-surface-variant opacity-70 mb-4">默认只查已审核企业文档，可选包含待审核文档，不访问用户记忆</p>
+            <div class="debug-form">
+              <input id="debugQuery" type="text" placeholder="输入要测试的 query..." />
+              <input id="debugTopK" type="number" min="1" max="20" value="5" />
+              <label class="debug-checkbox">
+                <input id="debugIncludePending" type="checkbox" />
+                包含待审核文档
+              </label>
+              <button class="btn btn-primary" id="runDebugRetrieve">
+                <span class="icon icon-sm" data-icon="search"></span>
+                查询
+              </button>
+            </div>
+            <p id="debugThreshold" class="text-label-sm c-on-surface-variant opacity-60 mb-4"></p>
+            <div class="table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>source</th>
+                    <th>doc_id</th>
+                    <th>状态</th>
+                    <th>chunk_index</th>
+                    <th>score</th>
+                  </tr>
+                </thead>
+                <tbody id="debugRetrieveTable">
+                  <tr>
+                    <td class="c-on-surface-variant">enterprise_docs</td>
+                    <td style="font-family:monospace;font-size:12px" class="c-on-surface-variant">doc_a1b2c3</td>
+                    <td><span class="badge badge-success">verified</span></td>
+                    <td>3</td>
+                    <td><span class="font-bold c-primary">0.892</span></td>
+                  </tr>
+                  <tr>
+                    <td class="c-on-surface-variant">enterprise_docs</td>
+                    <td style="font-family:monospace;font-size:12px" class="c-on-surface-variant">doc_d4e5f6</td>
+                    <td><span class="badge badge-success">verified</span></td>
+                    <td>1</td>
+                    <td><span class="font-bold c-primary">0.845</span></td>
+                  </tr>
+                  <tr>
+                    <td class="c-on-surface-variant">enterprise_docs</td>
+                    <td style="font-family:monospace;font-size:12px" class="c-on-surface-variant">doc_g7h8i9</td>
+                    <td><span class="badge badge-success">verified</span></td>
+                    <td>7</td>
+                    <td><span class="font-bold c-primary">0.781</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 记忆总览 ===== -->
+        <section class="section-panel" id="memory-section">
+          <div class="section-panel-header">
+            <div class="flex items-center gap-2">
+              <span class="icon c-primary" data-icon="server"></span>
+              <h2 class="text-headline-md font-headline c-on-surface">记忆总览</h2>
+            </div>
+            <button class="btn btn-outline" id="refreshStats">
+              <span class="icon icon-sm" data-icon="refresh"></span>
+              刷新
+            </button>
+          </div>
+          <div class="section-panel-body">
+            <div class="stats-grid" style="grid-template-columns:1fr 1fr">
+              <div class="stat-card">
+                <div class="stat-icon"><span class="icon" data-icon="database"></span></div>
+                <span class="stat-value" id="vectorCount">128</span>
+                <span class="stat-label">当前向量库文档数量</span>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon" style="background:var(--info-container);color:var(--info)"><span class="icon" data-icon="hard-drive"></span></div>
+                <span class="stat-value" id="sqliteCount">1,024</span>
+                <span class="stat-label">SQLite 对话记录数量</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== 开发者视图 ===== -->
+        <section class="section-panel hidden" id="developer-section">
+          <div class="section-panel-header">
+            <div class="flex items-center gap-2">
+              <span class="icon c-primary" data-icon="cpu"></span>
+              <h2 class="text-headline-md font-headline c-on-surface">开发者视图</h2>
+            </div>
+            <button class="btn btn-outline" id="refreshMetrics">
+              <span class="icon icon-sm" data-icon="refresh"></span>
+              刷新
+            </button>
+          </div>
+          <div class="section-panel-body">
+            <p id="metricsTimestamp" class="text-label-sm c-on-surface-variant opacity-60 mb-4">数据截至 2024-10-25 15:30</p>
+
+            <!-- 指标网格 -->
+            <div class="metrics-grid">
+              <div class="metric-card">
+                <span class="metric-label">累计请求</span>
+                <span class="metric-value">3,842</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">P50 延迟</span>
+                <span class="metric-value">320ms</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">P95 延迟</span>
+                <span class="metric-value">890ms</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">P99 延迟</span>
+                <span class="metric-value">1.2s</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">模型错误</span>
+                <span class="metric-value c-error">12</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">检索错误</span>
+                <span class="metric-value c-error">3</span>
+              </div>
+            </div>
+
+            <!-- 分阶段耗时 -->
+            <div class="developer-section">
+              <h2>分阶段耗时分布</h2>
+              <div class="table-wrap">
+                <table class="admin-table">
+                  <thead><tr><th>阶段</th><th>平均耗时</th><th>调用次数</th></tr></thead>
+                  <tbody id="stageTimingTable">
+                    <tr><td>检索 (Retrieve)</td><td>180ms</td><td>3,842</td></tr>
+                    <tr><td>重排序 (Rerank)</td><td>95ms</td><td>3,842</td></tr>
+                    <tr><td>生成 (Generate)</td><td>620ms</td><td>3,842</td></tr>
+                    <tr><td>后处理 (Post-process)</td><td>45ms</td><td>3,842</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- trace_id 明细 -->
+            <div class="developer-section">
+              <h2>trace_id 明细</h2>
+              <div class="debug-form">
+                <input id="traceIdQuery" type="text" placeholder="输入 trace_id..." />
+                <button class="btn btn-outline" id="traceIdSearch">
+                  <span class="icon icon-sm" data-icon="search"></span>
+                  查询
+                </button>
+              </div>
+              <div id="traceDetail" class="result-box hidden">
+                <div class="flex items-center gap-3 mb-3">
+                  <span class="badge badge-info">trace_abc123</span>
+                  <span class="text-label-sm c-on-surface-variant">2024-10-25 15:28 · retrieve 模式</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="admin-table">
+                    <thead><tr><th>阶段</th><th>耗时</th></tr></thead>
+                    <tbody>
+                      <tr><td>检索 (Retrieve)</td><td>165ms</td></tr>
+                      <tr><td>重排序 (Rerank)</td><td>88ms</td></tr>
+                      <tr><td>生成 (Generate)</td><td>580ms</td></tr>
+                      <tr><td>总计</td><td class="font-bold c-primary">833ms</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- 请求耗时趋势 -->
+            <div class="developer-section">
+              <h2>请求耗时趋势</h2>
+              <svg id="requestTrendChart" class="trend-chart" viewBox="0 0 720 180" role="img" aria-label="请求耗时趋势">
+                <!-- 网格线 -->
+                <line x1="0" y1="45" x2="720" y2="45" stroke="rgba(210,196,184,0.2)" stroke-width="1"/>
+                <line x1="0" y1="90" x2="720" y2="90" stroke="rgba(210,196,184,0.2)" stroke-width="1"/>
+                <line x1="0" y1="135" x2="720" y2="135" stroke="rgba(210,196,184,0.2)" stroke-width="1"/>
+                <!-- 趋势线 -->
+                <polyline points="0,120 60,100 120,110 180,80 240,95 300,70 360,85 420,60 480,75 540,50 600,65 660,45 720,55" fill="none" stroke="var(--primary)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+                <!-- 填充区域 -->
+                <polygon points="0,120 60,100 120,110 180,80 240,95 300,70 360,85 420,60 480,75 540,50 600,65 660,45 720,55 720,180 0,180" fill="rgba(119,88,54,0.08)"/>
+                <!-- 数据点 -->
+                <circle cx="300" cy="70" r="3" fill="var(--primary)"/>
+                <circle cx="540" cy="50" r="3" fill="var(--primary)"/>
+                <circle cx="660" cy="45" r="3" fill="var(--primary)"/>
+              </svg>
+              <div class="table-wrap">
+                <table class="admin-table">
+                  <thead><tr><th>时间</th><th>模式</th><th>总耗时</th><th>状态</th></tr></thead>
+                  <tbody id="requestTrendTable">
+                    <tr><td>15:28:42</td><td>retrieve</td><td>833ms</td><td><span class="badge badge-success">成功</span></td></tr>
+                    <tr><td>15:25:18</td><td>retrieve</td><td>912ms</td><td><span class="badge badge-success">成功</span></td></tr>
+                    <tr><td>15:20:05</td><td>retrieve</td><td>1,240ms</td><td><span class="badge badge-error">错误</span></td></tr>
+                    <tr><td>15:15:33</td><td>retrieve</td><td>756ms</td><td><span class="badge badge-success">成功</span></td></tr>
+                    <tr><td>15:10:12</td><td>retrieve</td><td>890ms</td><td><span class="badge badge-success">成功</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <p class="text-label-sm c-on-surface-variant opacity-50 mt-4">进程内统计，服务重启后清零；不跨 worker 或实例聚合。</p>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- ========== 右侧智能栏 ========== -->
+    <aside class="sidebar-right custom-scrollbar">
+      <!-- 审核概览 -->
+      <section class="mb-8">
+        <h2 class="text-headline-md font-headline c-on-surface mb-5">审核概览</h2>
+        <div class="stats-grid" style="grid-template-columns:1fr 1fr">
+          <div class="stat-card">
+            <div class="stat-icon" style="background:var(--warning-container);color:var(--warning)"><span class="icon" data-icon="inbox"></span></div>
+            <span class="stat-value">3</span>
+            <span class="stat-label">待审核</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon" style="background:var(--success-container);color:var(--success)"><span class="icon" data-icon="file-check"></span></div>
+            <span class="stat-value">128</span>
+            <span class="stat-label">已审核文档</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><span class="icon" data-icon="database"></span></div>
+            <span class="stat-value">128</span>
+            <span class="stat-label">向量库文档</span>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon" style="background:var(--info-container);color:var(--info)"><span class="icon" data-icon="hard-drive"></span></div>
+            <span class="stat-value">1,024</span>
+            <span class="stat-label">对话记录</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 快捷操作 -->
+      <section class="mb-8">
+        <h2 class="text-headline-md font-headline c-on-surface mb-4">快捷操作</h2>
+        <div class="flex flex-col gap-3">
+          <div class="card card-hover p-4 cursor-pointer" onclick="document.getElementById('pending-section').scrollIntoView({behavior:'smooth'})">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="inbox"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">审核待处理文档</span>
+                <span class="text-label-sm opacity-60">3 篇文档等待审核</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer" onclick="document.getElementById('debug-section').scrollIntoView({behavior:'smooth'})">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="file-search"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">检索调试</span>
+                <span class="text-label-sm opacity-60">测试 RAG 检索质量</span>
+              </div>
+            </div>
+          </div>
+          <div class="card card-hover p-4 cursor-pointer" id="toggleDeveloperSidebar">
+            <div class="flex items-center gap-3">
+              <div class="tool-icon-box"><span class="icon c-primary" data-icon="cpu"></span></div>
+              <div class="flex flex-col">
+                <span class="text-body-md font-bold c-on-surface">开发者视图</span>
+                <span class="text-label-sm opacity-60">运行指标与诊断</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 知识审核说明 -->
+      <section>
+        <div class="p-5 rounded-xl" style="background:rgba(119,88,54,0.05);border:1px solid rgba(119,88,54,0.15)">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="icon c-primary" data-icon="shield-check"></span>
+            <h3 class="text-label-md font-bold c-primary">知识审核机制</h3>
+          </div>
+          <p class="text-body-md c-on-surface-variant mb-4">员工提交的文档保持 pending 状态，只有审核员批准后才进入用户 RAG 检索范围。</p>
+          <div class="flex flex-col gap-2 text-label-sm c-on-surface-variant">
+            <div class="flex items-center gap-2">
+              <span class="icon icon-sm c-success icon-fill" data-icon="check-circle"></span>
+              <span>预览 chunk 内容后再批准</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="icon icon-sm c-success icon-fill" data-icon="check-circle"></span>
+              <span>查看转换来源与元数据</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="icon icon-sm c-success icon-fill" data-icon="check-circle"></span>
+              <span>拒绝时支持填写原因</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script src="assets/common.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      // 显示用户名
+      var username = localStorage.getItem("username") || "审核员";
+      document.getElementById("currentUser").textContent = username;
+      document.getElementById("sidebarUsername").textContent = username;
+
+      // 退出登录
+      document.getElementById("logoutButton").addEventListener("click", function () {
+        localStorage.removeItem("auth_token");
+        localStorage.removeItem("user_role");
+        localStorage.removeItem("username");
+        location.replace("login.html");
+      });
+
+      // 开发者视图切换
+      var devSection = document.getElementById("developer-section");
+      var devBtn = document.getElementById("developerViewButton");
+      var devSidebar = document.getElementById("toggleDeveloperSidebar");
+      var isDevMode = false;
+
+      function toggleDevView() {
+        isDevMode = !isDevMode;
+        if (isDevMode) {
+          devSection.classList.remove("hidden");
+          devBtn.innerHTML = '<span class="icon icon-sm" data-icon="layout-dashboard"></span> 返回业务视图';
+          renderIcons(devBtn);
+          devSection.scrollIntoView({ behavior: "smooth" });
+        } else {
+          devSection.classList.add("hidden");
+          devBtn.innerHTML = '<span class="icon icon-sm" data-icon="cpu"></span> 开发者视图';
+          renderIcons(devBtn);
+          document.getElementById("pending-section").scrollIntoView({ behavior: "smooth" });
+        }
+      }
+
+      devBtn.addEventListener("click", toggleDevView);
+      devSidebar.addEventListener("click", toggleDevView);
+
+      // 预览面板
+      var previewPanel = document.getElementById("previewPanel");
+      document.querySelectorAll('[data-action="preview"]').forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (previewPanel.classList.contains("hidden")) {
+            previewPanel.classList.remove("hidden");
+            renderIcons(previewPanel);
+          } else {
+            previewPanel.classList.add("hidden");
+          }
+        });
+      });
+      document.getElementById("closePreview").addEventListener("click", function () {
+        previewPanel.classList.add("hidden");
+      });
+
+      // 批准操作
+      document.querySelectorAll('[data-action="approve"]').forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var row = btn.closest("tr");
+          row.style.transition = "opacity 0.3s";
+          row.style.opacity = "0.3";
+          setTimeout(function () {
+            row.querySelector("td:nth-child(5)").innerHTML = '<span class="badge badge-success"><span class="icon icon-sm" data-icon="check"></span> 已批准</span>';
+            row.style.opacity = "1";
+            renderIcons(row);
+          }, 400);
+        });
+      });
+
+      // 拒绝操作
+      document.querySelectorAll('[data-action="reject"]').forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var row = btn.closest("tr");
+          row.style.transition = "opacity 0.3s";
+          row.style.opacity = "0.3";
+          setTimeout(function () {
+            row.querySelector("td:nth-child(5)").innerHTML = '<span class="badge badge-error"><span class="icon icon-sm" data-icon="x"></span> 已拒绝</span>';
+            row.style.opacity = "1";
+            renderIcons(row);
+          }, 400);
+        });
+      });
+
+      // 检索调试
+      document.getElementById("runDebugRetrieve").addEventListener("click", function () {
+        var query = document.getElementById("debugQuery").value.trim();
+        var topK = document.getElementById("debugTopK").value;
+        var includePending = document.getElementById("debugIncludePending").checked;
+        var threshold = document.getElementById("debugThreshold");
+
+        if (!query) {
+          threshold.textContent = "请输入要测试的 query";
+          return;
+        }
+
+        threshold.textContent = "检索中... top_k=" + topK + (includePending ? "（包含待审核）" : "");
+
+        setTimeout(function () {
+          threshold.textContent = "返回 " + topK + " 条结果 · 阈值 0.65 · 耗时 165ms";
+        }, 600);
+      });
+
+      // trace_id 查询
+      document.getElementById("traceIdSearch").addEventListener("click", function () {
+        var traceId = document.getElementById("traceIdQuery").value.trim();
+        var detail = document.getElementById("traceDetail");
+
+        if (!traceId) {
+          detail.classList.add("hidden");
+          return;
+        }
+
+        detail.classList.remove("hidden");
+      });
+
+      // 刷新按钮
+      ["refreshPending", "refreshDocuments", "refreshStats", "refreshMetrics"].forEach(function (id) {
+        var btn = document.getElementById(id);
+        if (btn) {
+          btn.addEventListener("click", function () {
+            var original = btn.innerHTML;
+            btn.innerHTML = '<span class="icon icon-sm animate-spin" data-icon="loader"></span> 刷新中...';
+            renderIcons(btn);
+            setTimeout(function () {
+              btn.innerHTML = original;
+              renderIcons(btn);
+            }, 800);
+          });
+        }
+      });
+
+      // 侧边栏导航高亮
+      document.querySelectorAll(".nav-item[data-tab]").forEach(function (item) {
+        item.addEventListener("click", function (e) {
+          document.querySelectorAll(".nav-item").forEach(function (n) { n.classList.remove("active"); });
+          item.classList.add("active");
+        });
+      });
+    });
+  </script>
+</body>
+</html>

@@ -14,7 +14,7 @@ from typing import Literal, Optional, Union
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 import config
-from layers import attachments, auth, converter, files_store, llm_provider, memory
+from layers import attachments, auth, converter, files_store, llm_provider, memory, system_modules
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -65,6 +65,7 @@ class ConvertDocumentResult(BaseModel):
 MAX_RETRIES = 1
 RETRY_DELAY = 1.0
 TIMEOUT = 10.0
+SEARCH_SUMMARY_FALLBACK_MESSAGE = "很抱歉，联网搜索遇到问题，暂时无法为您整理结果，建议稍后重试或换个方式提问。"
 
 # 工具注册表：新增工具在此注册
 TOOL_REGISTRY = {
@@ -182,11 +183,12 @@ def _search_web(
 
     remaining = _remaining_budget(deadline)
     if remaining <= 0:
-        observability.record_search_fallback()
-        return _format_raw_search_results(
-            results,
-            prefix="（搜索链路已达到时间预算，以下为原始搜索结果摘要）"
+        logger.warning(
+            "搜索结果整理跳过：reason=budget_exhausted query_len=%s",
+            len(optimized_query or ""),
         )
+        observability.record_search_fallback()
+        return SEARCH_SUMMARY_FALLBACK_MESSAGE
 
     search_results = json.dumps(result, ensure_ascii=False)
     try:
@@ -204,10 +206,7 @@ def _search_web(
             type(e).__name__
         )
         observability.record_search_fallback()
-        return _format_raw_search_results(
-            results,
-            prefix="（搜索结果整理失败，以下为原始搜索结果摘要）"
-        )
+        return SEARCH_SUMMARY_FALLBACK_MESSAGE
 
 
 def stream_search_result(
@@ -271,10 +270,12 @@ def stream_search_result(
 
     remaining = _remaining_budget(deadline)
     if remaining <= 0:
-        yield _format_raw_search_results(
-            results,
-            prefix="（搜索链路已达到时间预算，以下为原始搜索结果摘要）"
+        logger.warning(
+            "流式搜索结果整理跳过：reason=budget_exhausted query_len=%s",
+            len(optimized_query or ""),
         )
+        observability.record_search_fallback()
+        yield SEARCH_SUMMARY_FALLBACK_MESSAGE
         return
 
     search_results = json.dumps(result, ensure_ascii=False)
@@ -301,10 +302,7 @@ def stream_search_result(
         if emitted:
             return
         observability.record_search_fallback()
-        yield _format_raw_search_results(
-            results,
-            prefix="（搜索结果整理失败，以下为原始搜索结果摘要）"
-        )
+        yield SEARCH_SUMMARY_FALLBACK_MESSAGE
 
 
 def _search_documents(
@@ -828,15 +826,33 @@ def _answer_from_documents(
     for index, item in enumerate(results, start=1):
         content = str(item.get("content", "")).strip()
         if content:
-            snippets.append(f"[{index}]\n{content}")
+            snippets.append(
+                "[%s] source=%s score=%.6f\n%s" % (
+                    index,
+                    str(item.get("source", "")),
+                    float(item.get("score", 0.0) or 0.0),
+                    content,
+                )
+            )
     if not snippets:
         return "未找到可靠依据，无法确认答案"
 
-    fixed_prompt = (
-        "你是企业知识库问答助手。请只根据给定文档片段回答用户问题。"
-        "不要编造文档片段之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
-        "如果片段不足以回答，直接回答：未找到可靠依据，无法确认答案。"
-    )
+    if tier == "expert":
+        fixed_prompt = (
+            "你是企业知识库问答助手。生成回答时必须遵守："
+            "1. 仅基于检索到的知识库片段内容组织回答，不得引入片段之外的自身知识来补充、替换、“完善”或纠正片段内容。"
+            "2. 如果检索片段不足以支撑对用户问题的可靠回答（内容不相关、信息不完整、或未检索到任何片段），必须明确说明“未找到可靠依据，无法确认答案”，可建议咨询专业人士或查阅相关法规名称，不得展开具体条款内容替代。"
+            "3. 回答中涉及的法律法规、地区、机构等具体信息，必须与检索片段中实际出现的表述一致，不得替换为其他法域、其他地区或其他版本的规定，即使自身知识认为更常见或更准确。"
+            "4. 如果检索片段本身存在法域、地区或版本歧义，应如实呈现片段内容并说明该片段的来源范围，不得自行判断替换为其他法域内容。"
+            "不要在正文里写doc_id、chunk_index或score，来源引用由系统的citations字段单独展示。"
+        )
+    else:
+        fixed_prompt = (
+            "你是企业知识库问答助手。请只根据给定文档片段回答用户问题。"
+            "不要编造文档片段之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
+            "如果片段不足以回答，直接回答：未找到可靠依据，无法确认答案。"
+        )
+    fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
     dynamic_prompt = (
         f"用户问题：{query}\n\n"
         "文档片段：\n"
@@ -1009,10 +1025,11 @@ def _llm_chat(
 def _build_model_messages(session_id: str, message: str, system_prompt: str = "") -> list[dict]:
     """读取会话历史并追加本轮用户消息"""
     history = memory.get_history(session_id, limit=10) if session_id else []
-    system_parts = [current_date_prompt()]
-    if system_prompt:
-        system_parts.append(system_prompt)
-    messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
+    messages = cache_friendly_messages(
+        system_modules.prompt_prefix("你是知天对话助手，请准确完成用户请求。"),
+        ([{"role": "system", "content": system_prompt}] if system_prompt else []),
+        include_date=True,
+    )
     messages.extend([
         {"role": item["role"], "content": item["content"]}
         for item in history
@@ -1033,6 +1050,7 @@ def _build_search_answer_messages(
         "不得编造搜索结果中没有出现的事件、发布时间、模型名称、公司动态或数据。"
         "如果搜索结果不足以支持明确结论，请直接说明“搜索结果中没有足够可靠的信息确认”。"
     )
+    fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
     dynamic_messages = [
         {
             "role": "user",
@@ -1041,7 +1059,7 @@ def _build_search_answer_messages(
     ]
     if tier == "expert":
         return cache_friendly_messages(fixed_prompt, dynamic_messages, include_date=True)
-    return [{"role": "system", "content": current_date_prompt() + "\n\n" + fixed_prompt}] + dynamic_messages
+    return cache_friendly_messages(fixed_prompt, dynamic_messages, include_date=True)
 
 
 def _rewrite_search_query(

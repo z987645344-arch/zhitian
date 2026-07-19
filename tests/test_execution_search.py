@@ -16,6 +16,38 @@ SEARCH_RESULT = {
 }
 
 
+def test_expert_document_answer_prompt_is_evidence_and_jurisdiction_bound(monkeypatch):
+    captured = {}
+
+    def fake_completion(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", fake_completion)
+    monkeypatch.setattr(execution.llm_provider, "extract_text", lambda response: "基于片段的回答")
+
+    answer = execution._answer_from_documents(
+        "测试问题",
+        [{
+            "content": "《中华人民共和国测试法》规定的片段。",
+            "source": "大陆法律资料.docx",
+            "score": 0.91,
+        }],
+        tier="expert",
+        timeout=5,
+    )
+
+    assert answer == "基于片段的回答"
+    system_text = captured["messages"][0]["content"]
+    user_text = captured["messages"][-1]["content"]
+    assert "仅基于检索到的知识库片段" in system_text
+    assert "不得替换为其他法域" in system_text
+    assert "未找到可靠依据，无法确认答案" in system_text
+    assert "source=大陆法律资料.docx score=0.910000" in user_text
+    assert captured["kwargs"]["tier"] == "expert"
+
+
 def _prepare_search(monkeypatch):
     monkeypatch.setattr(execution, "_has_valid_key", lambda value, name: True)
     monkeypatch.setattr(execution, "TavilyClient", lambda api_key: object())
@@ -54,7 +86,7 @@ def test_search_web_returns_llm_summary_when_tavily_succeeds(monkeypatch):
     assert answer.call_args.kwargs["tier"] == "expert"
 
 
-def test_search_summary_failure_returns_raw_results_and_counts_fallback(monkeypatch):
+def test_search_summary_failure_returns_friendly_message_and_counts_fallback(monkeypatch):
     _prepare_search(monkeypatch)
     fallback_counter = Mock()
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
@@ -64,8 +96,9 @@ def test_search_summary_failure_returns_raw_results_and_counts_fallback(monkeypa
 
     result = execution._search_web("原始问题")
 
-    assert result.startswith("（搜索结果整理失败，以下为原始搜索结果摘要）")
-    assert "测试结果" in result
+    assert result == execution.SEARCH_SUMMARY_FALLBACK_MESSAGE
+    assert "测试结果" not in result
+    assert "https://" not in result
     fallback_counter.assert_called_once()
 
 
@@ -85,7 +118,7 @@ def test_tavily_failure_and_empty_results_use_explicit_fallback(monkeypatch):
     assert "网络搜索无结果" in fallback.call_args.kwargs["prefix"]
 
 
-def test_search_budget_returns_available_raw_results_without_llm_wait(monkeypatch):
+def test_search_budget_returns_friendly_message_without_llm_wait(monkeypatch):
     _prepare_search(monkeypatch)
     fallback_counter = Mock()
     llm = Mock(side_effect=AssertionError("budget path must not call LLM"))
@@ -97,7 +130,27 @@ def test_search_budget_returns_available_raw_results_without_llm_wait(monkeypatc
 
     result = execution._search_web("原始问题")
 
-    assert result.startswith("（搜索链路已达到时间预算，以下为原始搜索结果摘要）")
-    assert "测试结果" in result
+    assert result == execution.SEARCH_SUMMARY_FALLBACK_MESSAGE
+    assert "测试结果" not in result
     llm.assert_not_called()
+    fallback_counter.assert_called_once()
+
+
+def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
+    _prepare_search(monkeypatch)
+    fallback_counter = Mock()
+    monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
+    monkeypatch.setattr(execution, "_search_tavily_with_retry", Mock(return_value=SEARCH_RESULT))
+    monkeypatch.setattr(
+        execution,
+        "_llm_chat",
+        Mock(side_effect=TimeoutError("timeout")),
+    )
+    monkeypatch.setattr(execution.observability, "record_search_fallback", fallback_counter)
+
+    chunks = list(execution.stream_search_result("原始问题", tier="expert"))
+
+    assert chunks == [execution.SEARCH_SUMMARY_FALLBACK_MESSAGE]
+    assert "测试结果" not in chunks[0]
+    assert "https://" not in chunks[0]
     fallback_counter.assert_called_once()

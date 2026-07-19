@@ -280,7 +280,7 @@ class ChatResponse(BaseModel):
   Collection: zhitian_documents — 企业文档向量
   写入：成功响应后按两段式重要性评估写入 user 消息和 assistant 回复；文档切片写入 zhitian_documents
   文档切片：段落优先、句子兜底的语义切分，目标长度 500 字符；极端无边界长文本硬切兜底
-  文档检索：BM25 字符 bigram 粗筛 verified chunk，再用 Chroma 向量重排；短查询命中文档source/title时以元数据精确匹配补充召回并小幅提升到RAG阈值上方；候选阶段可用 DeepSeek 批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
+  文档检索：BM25字符bigram与Chroma向量各自召回`top_k×4`候选并取并集；BM25原始分按`1-exp(-score/BM25_SCORE_SCALE)`映射到0-1，同一chunk的最终分取`max(vector_score,bm25_relevance)`，保留两通道原始分供调试；短查询命中文档source/title时仅提升已召回chunk；候选阶段可用DeepSeek批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
   重要性：低信息/高信息规则速判，边界消息调用当前DeepSeek档位二分类；异常时保守不写入
   遗忘：按 importance_level=high/normal 设置半衰期、淡出阈值和硬删除阈值
   检索：L2 距离 < 0.8 才采纳，再按 age_days 做时间衰减重排；超过淡出天数的候选不返回
@@ -364,7 +364,9 @@ fast（DeepSeek v4 flash，独立简化路径，不进入LangGraph）
      ↓
   DeepSeek Function Call，只暴露search_documents和list_documents
      ├── 无工具调用 → 直接回答（共1次模型调用）
-     └── 本地工具调用 → 执行一次工具 → 结合工具结果生成回答（共2次模型调用）
+     ├── 文档检索 → 执行工具 → 证据筛选 → 证据充分时生成回答（最多3次模型调用）
+     │                                  └── 证据不足时固定拒答（共2次模型调用）
+     └── 文档清单 → 执行工具 → 结合清单生成回答（共2次模型调用）
 
 expert（DeepSeek，完整LangGraph）
   classify → retrieve → plan → execute → reflect/respond
@@ -418,7 +420,7 @@ classify
 - 代码层硬拦截：工具白名单、重复调用检测、轮数上限
 - 达到上限仍信息不足时，回复前追加"基于目前检索到的信息回答，可能不够全面。"
 - 多轮 citations 按 `doc_id + chunk_index` 去重
-- fast模式不进入classify、plan或reflect，不提供search_web，也不支持追加检索；search_documents在工具阶段关闭内部模型重排和回答生成，确保整条fast请求最多2次模型调用
+- fast模式不进入classify、plan或reflect，不提供search_web，也不支持追加检索；search_documents在工具阶段关闭内部模型重排和回答生成，随后以独立证据筛选调用确定相关候选，再由生成调用回答。无工具1次、证据不足2次短路、有工具且证据充分最多3次模型调用
 - fast保留retrieve节点的Chroma长期记忆读取，为低成本上下文回答提供依据
 - complex_task仅expert可用，复杂度完全由DeepSeek Function Call语义判断，不使用关键词/正则兜底
 - 复杂任务是线性顺序链，不是DAG；不支持并行。整体重规划最多1次，每个任务位置的局部调整判断最多1次

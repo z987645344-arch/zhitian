@@ -14,6 +14,17 @@ import main
 from layers import converter
 
 
+def test_text_sample_allows_multibyte_character_split_at_header_boundary():
+    complete = (b"a" * 8191) + "中".encode("utf-8")
+    header = complete[:8192]
+
+    assert main._is_supported_text_sample(header) is True
+
+
+def test_text_sample_still_rejects_invalid_bytes_inside_header():
+    assert main._is_supported_text_sample(b"valid-prefix\xff\xfeinvalid") is False
+
+
 def _docx_bytes() -> bytes:
     buffer = BytesIO()
     document = Document()

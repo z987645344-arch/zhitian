@@ -7,6 +7,8 @@ import re
 import pdfplumber
 from docx import Document
 
+from layers.pdf_text import extract_pdf_page_text
+
 
 LONG_PARAGRAPH_RATIO = 1.5
 SENTENCE_END_PATTERN = re.compile(r"[^。！？.!?]+[。！？.!?]*")
@@ -141,7 +143,7 @@ def _read_pdf(file_path: str) -> str:
     texts = []
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text() or ""
+            text = extract_pdf_page_text(page)
             if text.strip():
                 texts.append(text)
     return "\n\n".join(texts)

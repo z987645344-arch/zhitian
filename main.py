@@ -2,6 +2,7 @@
 # 知天（zhitian）FastAPI主入口
 
 import asyncio
+import codecs
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, pdf_tools, perception, planning
+from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, pdf_tools, perception, planning, system_modules
 from utils.logger import get_logger
 from utils import observability
 
@@ -143,6 +144,12 @@ class DebugRetrieveRequest(BaseModel):
     query: str
     top_k: int = 5
     include_pending: bool = False
+
+
+class SystemModulesRequest(BaseModel):
+    guidance: str = ""
+    tone: str = ""
+    forbidden: str = ""
 
 
 class ToolConversionResponse(BaseModel):
@@ -1353,7 +1360,12 @@ async def debug_retrieve(
             "doc_id": str(item.get("doc_id", "")),
             "status": doc_status.get(str(item.get("doc_id", "")), ""),
             "chunk_index": int(item.get("chunk_index", 0)),
-            "score": float(item.get("score", 0.0))
+            "score": float(item.get("final_score", item.get("score", 0.0))),
+            "vector_score": float(item.get("vector_score", item.get("score", 0.0))),
+            "bm25_score": float(item.get("bm25_score", 0.0)),
+            "bm25_relevance": float(item.get("bm25_relevance", 0.0)),
+            "title_boosted": bool(item.get("title_boosted", False)),
+            "final_score": float(item.get("final_score", item.get("score", 0.0))),
         }
         for item in results
     ]
@@ -1413,6 +1425,21 @@ async def pending(current_user: dict = Depends(require_reviewer)):
 async def reviewer_metrics(current_user: dict = Depends(require_reviewer)):
     """Process-memory metrics; counters reset on restart and are not multi-worker aggregated."""
     return observability.metrics_snapshot()
+
+
+@app.get("/reviewer/system-modules")
+async def get_system_modules(current_user: dict = Depends(require_reviewer)):
+    modules = system_modules.list_modules()
+    return {name: module.model_dump() for name, module in modules.items()}
+
+
+@app.put("/reviewer/system-modules")
+async def update_system_modules(
+    request: SystemModulesRequest,
+    current_user: dict = Depends(require_reviewer),
+):
+    modules = system_modules.save_modules(request.model_dump(), current_user["user_id"])
+    return {name: module.model_dump() for name, module in modules.items()}
 
 
 @app.post("/approve/{doc_id}")
@@ -1611,7 +1638,11 @@ def _is_supported_text_sample(content: bytes) -> bool:
         return True
     for encoding in ("utf-8", "utf-8-sig", "gbk"):
         try:
-            content.decode(encoding)
+            # The fixed-size header may end halfway through a multibyte character.
+            # Incremental decoding still rejects invalid bytes inside the sample,
+            # while allowing an incomplete character only at the sample boundary.
+            decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+            decoder.decode(content, final=False)
             return True
         except UnicodeDecodeError:
             continue

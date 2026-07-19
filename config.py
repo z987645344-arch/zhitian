@@ -65,6 +65,8 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 # 记忆
 MAX_HISTORY_LENGTH = 20
 RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.55"))
+BM25_SCORE_SCALE = float(os.getenv("BM25_SCORE_SCALE", "20.0"))
+TITLE_BOOST_MAX_QUERY_LENGTH = int(os.getenv("TITLE_BOOST_MAX_QUERY_LENGTH", "12"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_CANDIDATE_COUNT = int(os.getenv("RERANK_CANDIDATE_COUNT", "10"))
 RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "5.0"))

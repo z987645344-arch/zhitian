@@ -2,13 +2,14 @@
 # 规划层：LangGraph状态机调度意图分类、记忆检索、执行和响应生成
 
 import json
+import re
 import time
 from typing import Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 import config
-from layers import execution, llm_provider, memory
+from layers import execution, llm_provider, memory, system_modules
 from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
@@ -33,6 +34,34 @@ class ComplexTaskResult(BaseModel):
     status: Literal["success", "error"]
     result_summary: str = ""
     citations: list[Citation] = Field(default_factory=list)
+
+
+class FastEvidenceSelection(BaseModel):
+    evidence_sufficient: bool = False
+    used_candidate_ids: list[int] = Field(default_factory=list)
+    reason: str = ""
+
+
+FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。你会收到用户问题，以及从企业知识库检索到的若干候选片段（每个候选带编号和原文内容）。
+
+你的任务：判断这些候选片段中，哪些足以支撑对用户问题的可靠回答。
+
+判断原则：
+1. 依据语义相关性判断，不要求候选片段与问题使用完全相同的措辞。
+2. 只要存在至少一个候选片段的内容能够支撑对用户问题的可靠回答，即判定证据充分（evidence_sufficient=true），并列出所有真正相关候选的编号。
+3. 如果全部候选片段都与问题的实际询问内容不符（仅字面相似、或主题无关），判定证据不充分（evidence_sufficient=false），候选编号列表为空。
+4. 不要求候选片段覆盖问题的全部细节才算充分——只要核心问题能被候选内容回答，即视为充分，避免因"不完整"而误判为不充分。
+5. 只输出以下JSON，不要输出任何其他文字：
+{"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason": "一句话说明判断依据"}"""
+
+
+FAST_DOCUMENT_GENERATION_PROMPT = """你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题，以及已经过筛选、确认为真正相关的知识库片段（如果为空，说明上一环节判定证据不充分）。
+
+生成原则：
+1. 如果提供了知识库片段，仅基于这些片段内容组织回答，不得引入片段之外的自身知识来补充、替换或"完善"片段内容；片段信息不完整时，如实说明"资料未详细说明"，不要编造。
+2. 如果没有提供任何知识库片段，直接回复"未找到可靠依据，无法确认答案"，可视情况建议咨询专业人士或查阅相关法规名称，不展开具体条款内容。
+3. 回答简洁准确，不堆砌免责声明。
+4. 不需要重新评估证据是否充分——这一步已在上一环节完成。"""
 
 
 class AgentState(TypedDict):
@@ -135,6 +164,7 @@ INTENT_TOOLS = [
                 "用户提到“文档”“资料”“上传的文件”“刚才的PDF”“这份文件”“这份文档”等明确指代本地文档时使用。"
                 "用户问“这份文档说了什么”“文档主要内容是什么”“ERR-8842是什么意思”“知了是什么”“蓝鲸项目有哪些能力”这类内容问题，必须调用本工具。"
                 "当用户提出简短定义型问题（例如“XX是什么”“XX介绍一下”），且XX可能是企业内部术语、产品名、项目名、编号或知识库标题时，应优先调用本工具检索验证，不要直接用通用常识回答。"
+                "当当前知识库已有某个专业或业务领域的verified资料时，用户提出该领域内的事实性、规范性或依据性问题，即使没有显式提到文档或复述资料原词，也应优先调用本工具检索核验，不要仅凭模型训练知识直接回答。"
                 "如果用户问“有哪些文件/文档/资料”“上传了哪些文档”“企业信息库有哪些文件”这类清单问题，不要调用本工具，应调用list_documents。"
                 "不要用于天气、新闻、价格、互联网实时信息、通用知识问答。"
             ),
@@ -226,6 +256,7 @@ INTENT_TOOLS = [
             "name": "direct_answer",
             "description": (
                 "当用户问题完整清晰，可以直接根据已有上下文或通用知识回答，不需要联网搜索时调用。"
+                "如果问题属于可能被当前知识库已有verified资料覆盖的专业或业务领域，并且涉及事实、规范、依据或结论核验，不得调用本工具，应调用search_documents；是否属于该范围由语义和知识库领域背景综合判断，不要求用户显式提到文档。"
                 "当本轮attachment_ids非空时，附件正文已经作为本轮上下文提供；读取、概括、分析当前附件应调用本工具，"
                 "不要为读取当前附件调用search_documents或list_documents。只有格式转换请求才调用convert_document。"
                 "天气、下雨、出行、附近推荐这类依赖城市或位置的问题，不要调用本工具。"
@@ -601,8 +632,10 @@ def complex_respond_node(state: AgentState) -> AgentState:
     try:
         response = llm_provider.chat_completion(
             cache_friendly_messages(
-                "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
-                "明确说明失败或证据不足的部分，不得编造未提供的信息。",
+                system_modules.prompt_prefix(
+                    "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
+                    "明确说明失败或证据不足的部分，不得编造未提供的信息。"
+                ),
                 [
                 {
                     "role": "user",
@@ -805,7 +838,7 @@ def _new_agent_state(
 
 
 def _run_fast_state(state: AgentState) -> AgentState:
-    """Run the independent fast path: retrieve, select an optional local tool, then answer."""
+    """Run fast with one call for chat or up to three for tool selection, evidence, and answer."""
     deadline = time.perf_counter() + config.FAST_REQUEST_TIMEOUT
     try:
         state = retrieve_node(state)
@@ -840,16 +873,55 @@ def _run_fast_state(state: AgentState) -> AgentState:
         state["results"] = [result]
         state["round_count"] = 1
         state["tool_call_history"] = [_tool_history_item(task)]
-        state["citations"] = _dedupe_citations(result.citations or [])
+        state["citations"] = []
         if result.status == "error":
             state["error"] = result.error_msg or "工具调用失败"
             state["response"] = "抱歉，知识库处理失败，请稍后重试"
             return state
 
+        selected_evidence = ""
+        if task.tool == "search_documents":
+            evidence_started_at = time.perf_counter()
+            try:
+                evidence_response = llm_provider.chat_completion(
+                    _build_fast_evidence_messages(state, result),
+                    tier="fast",
+                    response_format={"type": "json_object"},
+                    timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
+                    total_budget=_remaining_fast_budget(deadline),
+                )
+                selection = _parse_fast_evidence_selection(evidence_response)
+                selected_evidence, selected_citations = _select_fast_evidence(
+                    result,
+                    selection.used_candidate_ids if selection.evidence_sufficient else [],
+                )
+            except Exception as exc:
+                selection = FastEvidenceSelection()
+                selected_citations = []
+                logger.warning(
+                    "fast证据筛选失败并按证据不足处理：session_id=%s error_type=%s",
+                    state["session_id"],
+                    type(exc).__name__,
+                )
+            observability.log_stage(
+                "fast_evidence_filter",
+                int((time.perf_counter() - evidence_started_at) * 1000),
+            )
+            if not selection.evidence_sufficient or not selected_evidence or not selected_citations:
+                state["response"] = "未找到可靠依据，无法确认答案"
+                state["citations"] = []
+                logger.info(
+                    "fast路径完成：session_id=%s model_calls=2 tool=%s evidence_sufficient=false",
+                    state["session_id"],
+                    task.tool,
+                )
+                return state
+            state["citations"] = selected_citations
+
         response_started_at = time.perf_counter()
         try:
             final_response = llm_provider.chat_completion(
-                _build_fast_result_messages(state, result),
+                _build_fast_result_messages(state, result, selected_evidence),
                 tier="fast",
                 timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
                 total_budget=_remaining_fast_budget(deadline),
@@ -857,6 +929,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
             state["response"] = llm_provider.extract_text(final_response) or result.data
         except Exception as exc:
             state["error"] = "fast_final_generation_failed"
+            state["citations"] = []
             state["response"] = (
                 "（模型生成失败，以下为本地检索结果摘要）\n" + str(result.data or "")
             ).strip()
@@ -868,8 +941,9 @@ def _run_fast_state(state: AgentState) -> AgentState:
             )
         observability.log_stage("fast_respond", int((time.perf_counter() - response_started_at) * 1000))
         logger.info(
-            "fast路径完成：session_id=%s model_calls=2 tool=%s",
+            "fast路径完成：session_id=%s model_calls=%s tool=%s",
             state["session_id"],
+            3 if task.tool == "search_documents" else 2,
             task.tool
         )
         return state
@@ -889,15 +963,14 @@ def _remaining_fast_budget(deadline: float) -> float:
 
 
 def _build_fast_messages(state: AgentState) -> list[dict]:
-    system_content = (
-        current_date_prompt()
-        + "\n\n你处于快速模式，只能基于对话上下文、长期记忆和本地企业知识库回答。"
+    fixed_prompt = system_modules.prompt_prefix(
+        "你处于快速模式，只能基于对话上下文、长期记忆和本地企业知识库回答。"
         "需要查询知识库正文时调用search_documents；需要列出文件清单时调用list_documents。"
         "如果本轮提供了聊天附件，附件正文已经直接包含在上下文中，应优先阅读并回答附件内容，"
         "不要仅为读取当前附件调用search_documents或list_documents。用户没有附加文字时，直接概括附件的主要内容。"
         "其他问题直接回答，不调用工具。你没有联网搜索工具，不得声称已经查询互联网或获得实时结果。"
     )
-    messages = [{"role": "system", "content": system_content}]
+    messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
     messages.extend(_fast_history_messages(state["session_id"]))
     if state["attachment_context"]:
         messages.append({
@@ -917,15 +990,37 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
     return messages
 
 
-def _build_fast_result_messages(state: AgentState, result: ToolResult) -> list[dict]:
-    messages = [{
-        "role": "system",
-        "content": (
-            current_date_prompt()
-            + "\n\n你处于快速模式。请只根据提供的本地工具结果和对话上下文回答，"
-            "不要编造工具结果中不存在的信息，不要声称使用了联网搜索。"
-        )
-    }]
+def _build_fast_evidence_messages(state: AgentState, result: ToolResult) -> list[dict]:
+    fixed_prompt = system_modules.prompt_prefix(FAST_EVIDENCE_PROMPT)
+    messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
+    messages.append({
+        "role": "user",
+        "content": "用户问题：%s\n\n候选片段：\n%s" % (state["message"], result.data),
+    })
+    return messages
+
+
+def _build_fast_result_messages(
+    state: AgentState,
+    result: ToolResult,
+    selected_evidence: str = "",
+) -> list[dict]:
+    instruction = FAST_DOCUMENT_GENERATION_PROMPT if result.tool == "search_documents" else (
+        "你处于快速模式。请只根据提供的本地工具结果和对话上下文回答，"
+        "不要编造工具结果中不存在的信息，不要声称使用了联网搜索。"
+    )
+    fixed_prompt = system_modules.prompt_prefix(instruction)
+    messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
+    if result.tool == "search_documents":
+        messages.append({
+            "role": "user",
+            "content": "用户问题：%s\n\n知识库片段：\n%s" % (
+                state["message"],
+                selected_evidence,
+            ),
+        })
+        return messages
+
     messages.extend(_fast_history_messages(state["session_id"]))
     context_text = "\n".join(state["context"]) if state["context"] else "无"
     messages.append({
@@ -936,6 +1031,46 @@ def _build_fast_result_messages(state: AgentState, result: ToolResult) -> list[d
         )
     })
     return messages
+
+
+def _parse_fast_evidence_selection(response: object) -> FastEvidenceSelection:
+    """Parse evidence selection; malformed output is treated as insufficient evidence."""
+    try:
+        payload = _parse_json_object(llm_provider.extract_text(response))
+        return FastEvidenceSelection(**payload)
+    except Exception as exc:
+        logger.warning("fast文档证据选择解析失败：error_type=%s", type(exc).__name__)
+        return FastEvidenceSelection()
+
+
+def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple[str, list[Citation]]:
+    """Select numbered candidate blocks and matching citations without semantic hard-coding."""
+    blocks = {
+        int(match.group(1)): match.group(2).strip()
+        for match in re.finditer(
+            r"(?ms)^\[(\d+)\]\s*(.*?)(?=^\[\d+\]\s*|\Z)",
+            str(result.data or ""),
+        )
+        if match.group(2).strip()
+    }
+    source_citations = _dedupe_citations(result.citations or [])
+    selected_blocks = []
+    selected = []
+    seen = set()
+    for candidate_id in candidate_ids:
+        candidate_id = int(candidate_id)
+        index = int(candidate_id) - 1
+        if (
+            candidate_id not in blocks
+            or index < 0
+            or index >= len(source_citations)
+            or candidate_id in seen
+        ):
+            continue
+        seen.add(candidate_id)
+        selected_blocks.append("[%s] %s" % (candidate_id, blocks[candidate_id]))
+        selected.append(source_citations[index])
+    return "\n\n".join(selected_blocks), selected
 
 
 def _fast_history_messages(session_id: str) -> list[dict]:
@@ -1641,6 +1776,7 @@ def _classify_with_model(
                     "附近推荐问题没有位置且上下文也没有位置时，必须选ask_clarification。"
                     "用户只是评价、喜欢/不喜欢、询问或提到某城市时，不要调用save_city。"
     )
+    fixed_system_prompt = system_modules.prompt_prefix(fixed_system_prompt)
     response = llm_provider.chat_completion(
         messages=cache_friendly_messages(
             fixed_system_prompt,
@@ -1660,6 +1796,7 @@ def _classify_with_model(
                 "role": "user",
                 "content": message
             }],
+            include_date=True,
         ),
         tier=tier,
         tools=INTENT_TOOLS,
@@ -1678,7 +1815,9 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
     """在有长期记忆上下文时，让所选模型生成最终回复。"""
     context_text = "\n".join(state["context"])
     messages = cache_friendly_messages(
-        "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。",
+        system_modules.prompt_prefix(
+            "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。"
+        ),
         [
         {
             "role": "system",

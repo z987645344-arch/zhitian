@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-07-17**
+> **最后更新：2026-07-19**
 
 ---
 
@@ -17,8 +17,20 @@
 | 开发者 | Zheng，大三 |
 | 技术设计 | 见 docs/zhitian_structure.md |
 | 工作手册 | 见 docs/claude_skill.md |
+| 仓库状态 | zhitian / zhitian_admin / zhitian_app 三个仓库均已在 GitHub 公开，CI 均通过；涉及 README 或对外展示相关任务时按"已公开"处理 |
 
 > 补充定位（2026-07-16 对话中澄清）：开发者本人计划长期自用此项目，核心诉求是“方便持续接入新工具/小能力”，类似 Codex 那种可扩展体验，不只是学习/作品集用途。这是 MCP 相关工作（版本升级、`mcp_connector.py`）优先级被提前、且放弃采用 `langchain-mcp-adapters` 改为自建通用连接层的核心原因：自建是为了不受 LangGraph 版本绑定，同时保留协议实现的可控性。
+
+---
+
+## 项目外部事项（非代码本身，但影响连续性）
+
+| 事项 | 状态 |
+|------|------|
+| 2026 AI先锋未来人才大赛 | 已选诺禾致源命题，已提交开题报告（Part1/Part2+三个GitHub仓库链接作为补充材料），报名截止2026-07-19 24:00。目前等结果阶段；如后续有新进展（如进12强要求做demo），新对话需先了解此背景 |
+| 简历优化 | 针对"AI应用开发工程师"方向重写过；曾在指挥师2那边继续迭代（自我评价加了成长时间线，知天项目改成更谦虚措辞）。若继续改，用户会把最新版本内容一并发来，不要假设只有第一版 |
+
+> 注：本节内容不涉及代码，Codex编辑本文档时容易在"只更新自己相关的项目状态"时无意间覆盖丢失。指挥师每次核对本文档时，如发现本节缺失，应主动重新补回，而不是假设已过时删除。
 
 ---
 
@@ -40,13 +52,13 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ WorkBuddy F10/F19/F22/F23已收敛；Expert stream复用预分类state，不再重复classify/retrieve |
-| 上一轮完成 | 2026-07-17：修复Expert stream双重classify/retrieve，document_list、convert_document、complex_task真实请求均降为1次classify；SSE顺序不变，完整未筛选回归`186 passed`且无failed/skipped/deselected |
-| 当前等待 | 用户继续观察真实网络波动下的Expert stream耗时；F14连接池复用、F16指标告警和F21 convert_document显式预算仍待后续处理 |
+| 状态 | ✅ v2.0里程碑：本轮文档路由回潮、系统提示词模块化、Fast三次调用改造、BM25向量融合、Expert法域约束、联网搜索降级六项已全部在Flutter客户端真实验证通过 |
+| 上一轮完成 | 2026-07-19：用户在Flutter客户端真实测试确认——Expert法域约束生效（保险金题正确引用《保险法》第四十二条，试用期题正确引用《劳动法》第三十二条，均不再出现跨法域内容），且与Fast模式结论一致，互相印证非编造；本轮完整验收结束 |
+| 当前等待 | 无阻塞项，等用户执行Git存档（v2.0 tag + push触发CI） |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
-| 下一步 | 优先评估F16可观测性告警，再按收益处理F14连接池复用和F21 convert_document显式预算；之后继续Agent/MCP工具扩展 |
+| 下一步 | 用户决定：F16可观测性告警评估、继续法律书剩余章节导入测试、界面优化，三选一或并行 |
 
-> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单，无工具时1次模型调用、有工具时2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
+> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单；无工具时1次模型调用，文档证据不足时2次，文档证据充分时最多3次，文件清单仍为2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
 ---
 
@@ -106,8 +118,9 @@
 | L1 | ✅ 已解决：保留MCP 1.28.1本地工具服务；未接入且不稳定的MinerU实验客户端已清理，不再作为待交付能力 | mcp_server.py / mcp_client.py | - |
 | L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
 | L14 | ✅ 已解决：改为用户手动管理的持久化文件库，由owner通过“我的文件”主动下载和删除，而非自动清理策略 | layers/files_store.py / data/user_files | - |
-| F14 | LLM客户端（DeepSeek/GLM调用封装）无连接池复用，每次请求新建连接 | 待定位（相关LLM客户端封装代码） | P3 |
+| F14 | DeepSeek客户端调用封装无连接池复用，每次请求新建连接 | layers/llm_provider.py | P3 |
 | F21 | convert_document 工具调用无显式Agent层预算/超时，依赖上游整体请求超时兜底 | execution.py convert_document | P3 |
+| F22 | 2026-07-19 Flutter真实使用中短时间内观察到多次DeepSeek `APITimeoutError`（重排序、长期记忆重要性判断、一次trace_id=none的调用），均`attempts=1`未见重试；即使重排序超时降级为hybrid原始顺序，回答仍正确，暂未构成功能故障，但值得作为F16可观测性告警评估的真实触发案例持续观察 | llm_provider.py / memory.py | P3（观察中） |
 
 ---
 
@@ -147,16 +160,18 @@
 |------|------|
 | DeepSeek双档mode | `/chat`与`/chat/stream`缺省`mode=fast`使用deepseek-v4-flash本地简化路径；`mode=expert`使用deepseek-v4-pro完整Agent路径，不跨档位fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
 | DeepSeek prompt caching | expert新增调用点必须按“固定角色/规则/工具说明 → 当日日期（仅原prompt需要时）→ 用户问题/上下文/检索结果”组织；固定前缀不得混入trace_id、精确时间戳等逐请求动态值。缓存由服务端自动尽力匹配；本轮重复长前缀实测命中2304 tokens、未命中92 tokens（约96.2%） |
+| 系统提示词模块 | `system_modules`表只保留guidance/tone/forbidden三类当前值，仅reviewer可编辑；模型固定前缀按“规范→语气风格→禁用→原有规则→日期→逐请求动态内容”拼接，保存后缓存失效并从下一次请求生效。三类内容不得包含trace_id等逐请求动态值；fast同样应用禁用模块，避免简化路径绕过全局禁止行为 |
 | LibreOffice转换 | 员工上传的`.doc/.xls/.xlsx/.ppt/.pptx`依赖本机LibreOffice `soffice`；当前开发机已安装26.2.4.2并通过`.env`配置实际路径，转换串行执行且默认30秒超时。DOC→DOCX、XLSX/PPTX→PDF、SQLite/Chroma元数据和真实HTTP审核链路均已验证；CI继续排除integration测试 |
+| PDF文字提取 | 知识库PDF解析和PDF→DOCX/XLSX文本重建共用`layers/pdf_text.py`：NFKC修复兼容汉字码位，明显整页多栏按列读取，判断不明确时回退pdfplumber原顺序。该方案只改善文字准确性，不提供OCR或真正版面结构还原；局部混排、异形文本框及源字符坐标异常（如`046.pdf`头部`32/岁上/海`）仍可能错序 |
 | 聊天附件 | 附件正文仅保存在单进程内存中，按session隔离并默认30分钟懒惰过期；原始文件独立持久化到用户文件库，直到owner手动删除。正文不跨worker共享，不写入SQLite、Chroma或日志正文 |
-| tier划分依据 | fast/expert不仅模型档位不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents，后台记忆仅规则判断，整次请求最多2次模型调用；expert保留完整分类、联网、精排、ReAct和complex_task能力 |
+| tier划分依据 | fast/expert不仅模型档位不同，能力范围也不同：fast无classify/search_web/reflect，只支持上下文回答、search_documents和list_documents；无工具1次、文档证据不足2次、文档证据充分最多3次模型调用，文件清单2次。expert保留完整分类、联网、精排、ReAct和complex_task能力 |
 | expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；全链路默认120秒全局预算，各模型/搜索节点使用剩余预算，超时返回已完成步骤摘要。真实10项任务在121.85秒终止并保留4项结果 |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
 | mcp 版本 | 已正式升级至`mcp==1.28.1`，并联动精确锁定`uvicorn==0.51.0`和`PyJWT==2.13.0`；FastAPI 0.115.0、Starlette 0.38.6、sse-starlette 3.0.3保持不变。主环境`pip check`、154项离线测试、真实Uvicorn `/health`、JWT登录/对话和HTTP SSE正文→citations→`[DONE]`均通过；测试统一使用独立的32字节以上HMAC密钥，无PyJWT短密钥警告 |
 | MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
-| RAG阈值 | 极短文档/极短查询的纯向量score仍可能低于`RAG_SCORE_THRESHOLD=0.55`；已通过title/source元数据补充召回缓解“查询主体命中文档标题/source”的场景（如“知了是什么”命中`知了简介`后提升到0.57），但短查询不命中任何文档标题/source时仍需后续评估query扩展或阈值策略 |
+| RAG阈值 | `score`现为向量相关分与BM25标定分的较强值；BM25按`1-exp(-raw/20)`饱和映射，并保留`vector_score/bm25_score/bm25_relevance`供调试。`RAG_SCORE_THRESHOLD=0.55`未改，但需在更大/不同领域语料上持续校准`BM25_SCORE_SCALE=20`；title/source通道仍只对≤12字查询的已召回chunk保证到0.57 |
 | 搜索链路 | query改写失败直接使用原query，整理只调用当前mode模型一次，总预算30秒；search执行后直接respond，失败透明返回带前缀的Tavily原始摘要。最终实测expert平均27.84秒，较历史87.6秒下降约68% |
 | .env | 必须保持无 BOM UTF-8，否则 python-dotenv 无法正确识别首行环境变量名 |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
@@ -181,4 +196,4 @@
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |
 | 管理后台 | ✅ 静态网页（员工上传/录入 + 审核员审核/调试） |
-| Git 存档 | ✅ 三项目 v1.0 均已 commit |
+| Git 存档 | ✅ 三项目 v1.0 均已 commit；v2.0里程碑（检索融合+证据筛选+法域约束+搜索降级）待用户确认后打tag并push触发CI |

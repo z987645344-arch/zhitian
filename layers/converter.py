@@ -13,6 +13,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 import config
+from layers.pdf_text import extract_pdf_page_text
 from utils.logger import get_logger
 
 
@@ -184,7 +185,7 @@ def _pdf_to_docx(source_path: str, output_path: str) -> None:
         for page_index, page in enumerate(pdf.pages):
             if page_index:
                 document.add_page_break()
-            text = page.extract_text() or ""
+            text = extract_pdf_page_text(page)
             for line in text.splitlines():
                 document.add_paragraph(line)
     document.save(output_path)
@@ -209,7 +210,7 @@ def _pdf_to_xlsx(source_path: str, output_path: str) -> None:
                         row_index += 1
                     row_index += 1
             else:
-                for line in (page.extract_text() or "").splitlines():
+                for line in extract_pdf_page_text(page).splitlines():
                     sheet.cell(row=row_index, column=1, value=line)
                     row_index += 1
     if not workbook.sheetnames:

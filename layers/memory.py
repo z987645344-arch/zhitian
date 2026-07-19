@@ -4,6 +4,7 @@
 import os
 import difflib
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -573,7 +574,7 @@ def search_documents(
     enable_rerank: bool = True,
     timeout: Optional[float] = None,
 ) -> list[dict]:
-    """从本地文档Collection检索相关内容，优先BM25粗筛再向量重排。"""
+    """从本地文档Collection检索相关内容，合并BM25与向量两个独立候选源。"""
     if not query:
         return []
     allowed_doc_ids = None
@@ -590,40 +591,23 @@ def search_documents(
     stage_started_at = time.perf_counter()
     with _chroma_lock:
         collection = _get_document_collection()
-        if bm25_candidates:
-            result = _query_document_memory(
-                collection,
-                query,
-                max(safe_top_k * BM25_CANDIDATE_MULTIPLIER, len(bm25_candidates)),
-                [candidate["doc_id"] for candidate in bm25_candidates]
-            )
-        else:
-            result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
+        result = _query_document_memory(
+            collection,
+            query,
+            safe_top_k * BM25_CANDIDATE_MULTIPLIER,
+            allowed_doc_ids,
+        )
     observability.log_stage("documents_vector", int((time.perf_counter() - stage_started_at) * 1000))
 
-    candidate_keys = {
-        (candidate["doc_id"], int(candidate["chunk_index"]))
-        for candidate in bm25_candidates
-    }
-    results = _build_document_search_results(result, allowed_doc_ids, candidate_keys or None)
-    if bm25_candidates and len(results) < safe_top_k:
-        stage_started_at = time.perf_counter()
-        with _chroma_lock:
-            collection = _get_document_collection()
-            fallback_result = _query_document_memory(collection, query, safe_top_k, allowed_doc_ids)
-        fallback_results = _build_document_search_results(fallback_result, allowed_doc_ids, None)
-        results = _merge_document_results(results, fallback_results)
-        observability.log_stage("documents_vector_fallback", int((time.perf_counter() - stage_started_at) * 1000))
+    vector_results = _build_document_search_results(result, allowed_doc_ids, None)
+    lexical_results = _build_bm25_search_results(bm25_candidates)
+    results = _merge_document_results(vector_results, lexical_results)
 
     stage_started_at = time.perf_counter()
-    with _chroma_lock:
-        collection = _get_document_collection()
-        title_match_results = _find_title_match_document_results(collection, query, allowed_doc_ids)
-    if title_match_results:
-        results = _merge_document_results(results, title_match_results)
+    results = _apply_title_source_boost(results, query)
     observability.log_stage("documents_title_match", int((time.perf_counter() - stage_started_at) * 1000))
 
-    results.sort(key=lambda item: item["score"], reverse=True)
+    results.sort(key=_document_result_sort_key, reverse=True)
     stage_started_at = time.perf_counter()
     if enable_rerank:
         results = _apply_document_rerank(query, results, tier=tier, timeout=timeout)
@@ -666,9 +650,48 @@ def _build_document_search_results(
         results.append({
             "content": doc,
             "source": source,
+            "title": str(metadata.get("title", "")),
             "doc_id": doc_id,
             "chunk_index": chunk_index,
-            "score": score
+            "score": score,
+            "vector_score": score,
+            "title_boosted": False,
+            "final_score": score,
+        })
+    return results
+
+
+def _bm25_to_relevance_score(raw_score: float) -> float:
+    """Map unbounded BM25 scores to 0-1 without making every rank-1 result strong."""
+    try:
+        value = max(0.0, float(raw_score))
+        scale = max(0.000001, float(config.BM25_SCORE_SCALE))
+    except (TypeError, ValueError):
+        return 0.0
+    return round(1.0 - math.exp(-value / scale), 6)
+
+
+def _build_bm25_search_results(candidates: list[dict]) -> list[dict]:
+    """Convert BM25 entries into first-class search candidates."""
+    results = []
+    for candidate in candidates or []:
+        content = str(candidate.get("content", ""))
+        if not content:
+            continue
+        raw_score = float(candidate.get("bm25_score", 0.0) or 0.0)
+        relevance = _bm25_to_relevance_score(raw_score)
+        results.append({
+            "content": content,
+            "source": str(candidate.get("source", "")),
+            "title": str(candidate.get("title", "")),
+            "doc_id": str(candidate.get("doc_id", "")),
+            "chunk_index": int(candidate.get("chunk_index", 0)),
+            "score": relevance,
+            "vector_score": 0.0,
+            "bm25_score": raw_score,
+            "bm25_relevance": relevance,
+            "title_boosted": False,
+            "final_score": relevance,
         })
     return results
 
@@ -678,12 +701,35 @@ def _merge_document_results(primary: list[dict], fallback: list[dict]) -> list[d
     for item in primary + fallback:
         key = (item.get("doc_id", ""), int(item.get("chunk_index", 0)))
         existing = merged_by_key.get(key)
-        if existing is None or float(item.get("score", 0.0)) > float(existing.get("score", 0.0)):
-            if existing and existing.get("title_source_match"):
-                item["title_source_match"] = True
-            merged_by_key[key] = item
-        elif item.get("title_source_match"):
-            existing["title_source_match"] = True
+        if existing is None:
+            merged_by_key[key] = dict(item)
+            continue
+        vector_score = max(
+            float(existing.get("vector_score", 0.0) or 0.0),
+            float(item.get("vector_score", 0.0) or 0.0),
+        )
+        bm25_score = max(
+            float(existing.get("bm25_score", 0.0) or 0.0),
+            float(item.get("bm25_score", 0.0) or 0.0),
+        )
+        bm25_relevance = max(
+            float(existing.get("bm25_relevance", 0.0) or 0.0),
+            float(item.get("bm25_relevance", 0.0) or 0.0),
+        )
+        final_score = max(vector_score, bm25_relevance)
+        preferred = item if float(item.get("score", 0.0)) > float(existing.get("score", 0.0)) else existing
+        merged = dict(preferred)
+        merged.update({
+            "vector_score": vector_score,
+            "bm25_score": bm25_score,
+            "bm25_relevance": bm25_relevance,
+            "score": final_score,
+            "final_score": final_score,
+            "title_source_match": bool(
+                existing.get("title_source_match") or item.get("title_source_match")
+            ),
+        })
+        merged_by_key[key] = merged
     return list(merged_by_key.values())
 
 
@@ -692,65 +738,59 @@ def _title_match_min_score() -> float:
     return round(max(0.0, float(config.RAG_SCORE_THRESHOLD)) + TITLE_MATCH_SCORE_MARGIN, 6)
 
 
-def _find_title_match_document_results(
-    collection,
-    query: str,
-    allowed_doc_ids: Optional[list[str]]
-) -> list[dict]:
-    """基于文档source/title元数据做事实性字符串匹配，补充短查询召回。"""
+def _apply_title_source_boost(candidates: list[dict], query: str) -> list[dict]:
+    """短查询命中source/title时，仅提升已被原生检索召回的候选。"""
+    for candidate in candidates:
+        original_score = float(candidate.get("vector_score", candidate.get("score", 0.0)))
+        candidate["vector_score"] = original_score
+        candidate["title_boosted"] = False
+        candidate["final_score"] = float(candidate.get("score", original_score))
+
+    if len(query or "") > max(0, int(config.TITLE_BOOST_MAX_QUERY_LENGTH)):
+        return candidates
+
     terms = _metadata_query_terms(query)
     if not terms:
-        return []
-
-    kwargs = {"include": ["documents", "metadatas"]}
-    if allowed_doc_ids is not None:
-        if not allowed_doc_ids:
-            return []
-        kwargs["where"] = {"doc_id": {"$in": allowed_doc_ids}}
-
-    try:
-        result = collection.get(**kwargs)
-    except Exception as e:
-        logger.warning(
-            "文档title/source匹配失败：query_len=%s error_type=%s",
-            len(query or ""),
-            type(e).__name__
-        )
-        return []
+        return candidates
 
     boosted_score = _title_match_min_score()
-    matches = []
-    for doc, metadata in zip(result.get("documents", []) or [], result.get("metadatas", []) or []):
-        if not doc:
+    match_count = 0
+    for candidate in candidates:
+        if not _metadata_matches_terms(
+            str(candidate.get("source", "")),
+            str(candidate.get("title", "")),
+            terms,
+        ):
             continue
-        metadata = metadata or {}
-        source = str(metadata.get("source", ""))
-        title = str(metadata.get("title", ""))
-        doc_id = str(metadata.get("doc_id", ""))
-        if allowed_doc_ids is not None and doc_id not in allowed_doc_ids:
-            continue
-        if not _metadata_matches_terms(source, title, terms):
-            continue
-        matches.append({
-            "content": doc,
-            "source": source,
-            "doc_id": doc_id,
-            "chunk_index": int(metadata.get("chunk_index", 0)),
-            "score": boosted_score,
-            "title_source_match": True
-        })
+        original_score = float(candidate.get("vector_score", candidate.get("score", 0.0)))
+        combined_score = float(candidate.get("score", original_score))
+        final_score = max(combined_score, boosted_score)
+        candidate["score"] = final_score
+        candidate["final_score"] = final_score
+        candidate["title_boosted"] = True
+        candidate["title_source_match"] = True
+        match_count += 1
 
-    if matches:
+    if match_count:
         logger.info(
             "文档title/source匹配命中：query_len=%s match_count=%s",
             len(query or ""),
-            len(matches)
+            match_count,
         )
-    return matches
+    return candidates
+
+
+def _document_result_sort_key(item: dict) -> tuple:
+    return (
+        float(item.get("final_score", item.get("score", 0.0))),
+        float(item.get("vector_score", item.get("score", 0.0))),
+    )
 
 
 def _metadata_query_terms(query: str) -> list[str]:
     raw_query = query or ""
+    if len(raw_query) > max(0, int(config.TITLE_BOOST_MAX_QUERY_LENGTH)):
+        return []
     normalized = _normalize_metadata_match_text(raw_query)
     if len(normalized) < 2:
         return []
