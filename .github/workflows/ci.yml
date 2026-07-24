@@ -14,6 +14,7 @@ jobs:
     runs-on: windows-latest
     env:
       JWT_SECRET_KEY: ci-only-test-secret-not-for-production
+      ENTERPRISE_PASSWORD_SEED: ci-only-enterprise-seed-not-for-production
       DEEPSEEK_API_KEY: ""
       TAVILY_API_KEY: ""
 
@@ -28,7 +29,10 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
       - name: Check tracked files for secrets
         shell: bash
@@ -49,7 +53,7 @@ jobs:
             -not -path './.venv/*' \
             -not -path './data/*' \
             -not -path './.git/*' \
-            -print0 | xargs -0 python -m py_compile
+            -print0 | xargs -0 ./.venv/Scripts/python.exe -m py_compile
 
       - name: Run offline test suite
-        run: python -m pytest -m "not integration" -q
+        run: .\run_tests.bat -q

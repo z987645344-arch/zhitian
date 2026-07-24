@@ -1,18 +1,28 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime, timedelta, timezone
+import uuid
 
 import jwt
 
 import config
+import main
 from layers.auth import JWT_ALGORITHM
 
 
-def test_register_success_for_all_roles(client, user_factory):
-    users = [user_factory(role) for role in ("customer", "employee", "reviewer")]
+def test_register_success_for_customer(client, user_factory):
+    user = user_factory("customer")
+    assert user["role"] == "customer"
 
-    assert [user["role"] for user in users] == ["customer", "employee", "reviewer"]
-    assert all(user["username"].startswith("test_") for user in users)
+
+def test_register_rejects_privileged_roles(client):
+    for role in ("employee", "reviewer", "developer"):
+        response = client.post(
+            "/auth/register",
+            json={"username": "blocked_%s@example.test" % role, "password": "Pass123!", "role": role},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "该角色需通过注册申请审批流程"
 
 
 def test_duplicate_username_registration_fails(client, user_factory):
@@ -37,7 +47,8 @@ def test_login_success_returns_valid_jwt(client, user_factory):
         "/auth/login",
         json={
             "username": user["username"],
-            "password": user["password"]
+            "password": user["password"],
+            "role": user["role"],
         }
     )
 
@@ -56,12 +67,13 @@ def test_wrong_password_returns_redacted_401(client, user_factory):
         "/auth/login",
         json={
             "username": user["username"],
-            "password": "wrong-password"
+            "password": "wrong-password",
+            "role": user["role"],
         }
     )
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "认证失败，请重试"
+    assert response.json()["detail"] == "用户名、密码或账号类型不正确"
 
 
 def test_valid_token_can_access_authenticated_endpoint(client, auth_headers):
@@ -120,3 +132,79 @@ def test_employee_cannot_access_reviewer_approve(client, auth_headers):
     response = client.post("/approve/nonexistent-doc", headers=headers)
 
     assert response.status_code == 403
+
+
+def test_register_is_limited_to_ten_requests_per_hour(client):
+    created_usernames = []
+    try:
+        for _ in range(10):
+            username = "test_rate_register_%s@example.test" % uuid.uuid4().hex
+            created_usernames.append(username)
+            response = client.post(
+                "/auth/register",
+                json={
+                    "username": username,
+                    "password": "CodexTestPass123!",
+                    "role": "customer",
+                },
+            )
+            assert response.status_code == 200, response.text
+
+        limited = client.post(
+            "/auth/register",
+            json={
+                "username": "test_rate_register_%s@example.test" % uuid.uuid4().hex,
+                "password": "CodexTestPass123!",
+                "role": "customer",
+            },
+        )
+        assert limited.status_code == 429
+        assert limited.json()["detail"] == "请求过于频繁，请稍后重试"
+    finally:
+        from tests.conftest import _cleanup_test_usernames
+
+        _cleanup_test_usernames(created_usernames)
+
+
+def test_login_is_limited_to_ten_requests_per_hour(client, user_factory):
+    user = user_factory("customer")
+    main.limiter.reset()
+
+    for _ in range(10):
+        response = client.post(
+            "/auth/login",
+            json={"username": user["username"], "password": "wrong-password", "role": user["role"]},
+        )
+        assert response.status_code == 401
+
+    limited = client.post(
+        "/auth/login",
+        json={"username": user["username"], "password": "wrong-password", "role": user["role"]},
+    )
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "请求过于频繁，请稍后重试"
+
+
+def test_register_rejects_non_email_username(client):
+    response = client.post(
+        "/auth/register",
+        json={"username": "not-an-email", "password": "Pass123!", "role": "customer"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "用户名必须使用有效邮箱格式"
+
+
+def test_login_requires_matching_role_and_uses_same_error(client, user_factory):
+    user = user_factory("employee")
+    wrong_role = client.post(
+        "/auth/login",
+        json={"username": user["username"], "password": user["password"], "role": "reviewer"},
+    )
+    wrong_password = client.post(
+        "/auth/login",
+        json={"username": user["username"], "password": "wrong", "role": "employee"},
+    )
+    assert wrong_role.status_code == 401
+    assert wrong_password.status_code == 401
+    assert wrong_role.json()["detail"] == wrong_password.json()["detail"]
+    assert wrong_role.json()["detail"] == "用户名、密码或账号类型不正确"

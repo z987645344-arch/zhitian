@@ -308,7 +308,7 @@ def test_react_continue_returns_to_plan_and_increments_round(monkeypatch):
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", lambda state: next(decisions))
 
-    def fake_call_tool(tool, params):
+    def fake_call_tool(tool, params, state=None):
         calls.append((tool, params))
         return _result(tool=tool, data="结果%s" % len(calls))
 
@@ -394,7 +394,7 @@ def test_prepared_stream_state_skips_duplicate_classify_and_retrieve(monkeypatch
     monkeypatch.setattr(
         planning.mcp_client,
         "call_tool",
-        lambda tool, params: ToolResult(
+        lambda tool, params, state=None: ToolResult(
             tool=tool,
             status="success",
             data="文档结果",

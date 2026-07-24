@@ -1,37 +1,38 @@
 # 知天（zhitian）项目总框架
 > 技术设计文档。Codex 每次开发前阅读相关章节，指挥师审阅架构时阅读全文。
-> **最后更新：2026-07-08**
+> **最后更新：2026-07-19**
 
 ---
 
 ## 一、项目结构
 
 ```
-D:\zhiliao\zhitian\
-├── main.py                     ← FastAPI 主入口（810行）
-├── config.py                   ← 配置中心（37行）
-├── requirements.txt            ← 依赖列表（19项）
+D:\zhiliao\zhitian\zhitian\
+├── main.py                     ← FastAPI 主入口（2084行）
+├── config.py                   ← 配置中心（83行）
+├── requirements.txt            ← 依赖列表（25项）
 ├── Dockerfile                  ← Docker 打包配置
 ├── .env                        ← 敏感信息（DeepSeek/Tavily/JWT Key，禁止上传 git）
 ├── .gitignore
 ├── README.md                   ← 项目说明与启动指南
 ├── 启动后端.bat                ← 一键启动后端
+├── run_tests.bat               ← 唯一权威测试入口（项目.venv Python 3.10）
 │
 ├── layers/                     ← 五层 Agent 架构 + 认证 + MCP
 │   ├── __init__.py
-│   ├── perception.py           ← 感知层（31行）
-│   ├── memory.py               ← 记忆层（557行）
-│   ├── planning.py             ← 规划层（798行）
-│   ├── execution.py            ← 执行层（545行）
-│   ├── output.py               ← 输出层（31行）
-│   ├── auth.py                 ← 用户认证与权限（470行）
-│   ├── document_loader.py      ← 文档解析器（74行）
-│   ├── mcp_server.py           ← MCP 工具服务端（79行）
+│   ├── perception.py           ← 感知层（30行）
+│   ├── memory.py               ← 记忆层（1437行）
+│   ├── planning.py             ← 规划层（2109行）
+│   ├── execution.py            ← 执行层（1157行）
+│   ├── output.py               ← 输出层（29行）
+│   ├── auth.py                 ← 用户认证与权限（536行）
+│   ├── document_loader.py      ← 文档解析器（154行）
+│   ├── mcp_server.py           ← MCP 工具服务端（87行）
 │   └── mcp_client.py           ← 规划层到本地执行工具的兼容适配器
 │
 ├── utils/
 │   ├── __init__.py
-│   └── logger.py               ← 统一日志系统（62行）
+│   └── logger.py               ← 统一日志系统（120行）
 │
 ├── scripts/
 │   └── clean_testdata.py       ← 测试数据清理脚本
@@ -58,8 +59,8 @@ D:\zhiliao\zhitian\
 ```
 
 **关联项目：**
-- `D:\zhiliao\zhitian_app\` — Flutter Windows 桌面端（前端）
-- `D:\zhiliao\zhitian_admin\` — 静态网页管理后台（员工/审核员）
+- `D:\zhiliao\zhitian\zhitian_app\` — Flutter Windows 桌面端（前端）
+- `D:\zhiliao\zhitian\zhitian_admin\` — 静态网页管理后台（员工/审核员/开发者）；`developer.html`为独立开发者控制台
 
 ---
 

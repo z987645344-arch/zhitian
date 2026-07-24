@@ -6,6 +6,7 @@ import codecs
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import threading
@@ -13,7 +14,7 @@ import uuid
 import time
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from urllib.parse import unquote
 
@@ -26,7 +27,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, document_loader, execution, files_store, memory, output, pdf_tools, perception, planning, system_modules
+from layers import attachments, auth, converter, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, output, pdf_tools, perception, planning, system_modules
 from utils.logger import get_logger
 from utils import observability
 
@@ -208,6 +209,39 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+    role: str
+
+
+class RegistrationApplicationRequest(BaseModel):
+    username: str
+    password: str
+    email: Optional[str] = None
+    requested_role: str
+    enterprise_password: str
+    verification_code: str
+
+
+class ChangeRoleRequest(BaseModel):
+    target_role: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    username: str
+    enterprise_password: str
+    verification_code: str
+
+
+class SendVerificationCodeRequest(BaseModel):
+    email: str
+    purpose: str
+
+
+class PersonnelFlagRequest(BaseModel):
+    flagged: bool
+
+
+class PersonnelNotesRequest(BaseModel):
+    notes: Optional[str] = None
 
 
 def get_current_user(authorization: str = Header(default="", alias="Authorization")) -> dict:
@@ -226,6 +260,14 @@ def get_current_user(authorization: str = Header(default="", alias="Authorizatio
         raise HTTPException(status_code=401, detail="认证不可用")
 
 
+def _is_basic_email(value: str) -> bool:
+    normalized = (value or "").strip()
+    if "@" not in normalized:
+        return False
+    local, domain = normalized.rsplit("@", 1)
+    return bool(local and "." in domain and not domain.startswith(".") and not domain.endswith("."))
+
+
 def require_employee(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user["role"] not in {"employee", "reviewer"}:
         raise HTTPException(status_code=403, detail="需要employee或reviewer权限")
@@ -238,9 +280,49 @@ def require_reviewer(current_user: dict = Depends(get_current_user)) -> dict:
     return current_user
 
 
+def require_developer(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user["role"] != "developer" or not current_user.get("is_active", False):
+        raise HTTPException(status_code=403, detail="需要developer权限")
+    return current_user
+
+
+def require_reviewer_or_developer(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    if current_user["role"] not in {"reviewer", "developer"}:
+        raise HTTPException(status_code=403, detail="需要reviewer或developer权限")
+    return current_user
+
+
+def require_system_modules_access(
+    current_user: dict = Depends(require_reviewer),
+    x_secondary_password: Optional[str] = Header(
+        default=None,
+        alias="X-Secondary-Password",
+    ),
+) -> dict:
+    expected = config.SECONDARY_DEV_PASSWORD
+    supplied = x_secondary_password or ""
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="需要二级密码校验")
+    return current_user
+
+
 def _ensure_session_owner(session_id: str, current_user: dict) -> None:
     if not auth.verify_session_owner(session_id, current_user["user_id"]):
         raise HTTPException(status_code=403, detail="无权访问该session")
+
+
+def _current_enterprise_password_response() -> dict:
+    """返回当前密码与下一次凌晨4点刷新时间，不持久化也不写审计日志。"""
+    now = datetime.now()
+    next_refresh = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    if next_refresh <= now:
+        next_refresh += timedelta(days=1)
+    return {
+        "password": enterprise_password.get_current_enterprise_password(now),
+        "next_refresh_at": next_refresh.isoformat(),
+    }
 
 
 def _ensure_session_owner_or_404(session_id: str, current_user: dict) -> None:
@@ -335,44 +417,326 @@ async def ready():
 
 
 @app.post("/auth/register")
-async def register(request: RegisterRequest):
+@limiter.limit("10/hour")
+async def register(request: Request, payload: RegisterRequest):
+    if payload.role != "customer":
+        raise HTTPException(status_code=400, detail="该角色需通过注册申请审批流程")
+    if not _is_basic_email(payload.username):
+        raise HTTPException(status_code=400, detail="用户名必须使用有效邮箱格式")
     try:
-        user = auth.register_user(request.username, request.password, request.role)
+        user = auth.register_user(payload.username, payload.password, payload.role)
         return user
     except ValueError as e:
-        logger.warning("/auth/register参数无效：username_len=%s error_type=%s", len(request.username or ""), type(e).__name__)
+        logger.warning("/auth/register参数无效：username_len=%s error_type=%s", len(payload.username or ""), type(e).__name__)
         raise HTTPException(status_code=400, detail="注册信息无效，请检查后重试")
     except Exception as e:
         logger.error(
             "/auth/register未捕获异常：username_len=%s error_type=%s",
-            len(request.username or ""),
+            len(payload.username or ""),
             type(e).__name__
         )
         raise HTTPException(status_code=500, detail="注册失败")
 
 
 @app.post("/auth/login")
-async def login(request: LoginRequest):
+@limiter.limit("10/hour")
+async def login(request: Request, payload: LoginRequest):
     try:
-        token = auth.login_user(request.username, request.password)
+        token = auth.login_user(payload.username, payload.password, payload.role)
         user = auth.verify_token(token)
         return {
             "token": token,
             "role": user["role"]
         }
     except PermissionError as e:
-        logger.warning("/auth/login认证失败：username_len=%s error_type=%s", len(request.username or ""), type(e).__name__)
-        raise HTTPException(status_code=401, detail="认证失败，请重试")
+        logger.warning("/auth/login认证失败：username_len=%s error_type=%s", len(payload.username or ""), type(e).__name__)
+        if str(e) == "账号已被禁用":
+            raise HTTPException(status_code=401, detail="账号已被禁用")
+        raise HTTPException(status_code=401, detail="用户名、密码或账号类型不正确")
     except RuntimeError as e:
         logger.error("/auth/login配置错误：error_type=%s", type(e).__name__)
         raise HTTPException(status_code=500, detail="认证配置错误")
     except Exception as e:
         logger.error(
             "/auth/login未捕获异常：username_len=%s error_type=%s",
-            len(request.username or ""),
+            len(payload.username or ""),
             type(e).__name__
         )
         raise HTTPException(status_code=500, detail="登录失败")
+
+
+@app.post("/auth/register/request")
+@limiter.limit("10/hour")
+async def request_registration(request: Request, payload: RegistrationApplicationRequest):
+    if payload.requested_role not in {"employee", "reviewer", "developer"}:
+        raise HTTPException(status_code=400, detail="申请角色无效")
+    if not _is_basic_email(payload.username):
+        raise HTTPException(status_code=400, detail="用户名必须使用有效邮箱格式")
+    if not auth.verify_and_hold_code(
+        payload.username, "register", payload.verification_code
+    ):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
+    if not secrets.compare_digest(
+        payload.enterprise_password,
+        enterprise_password.get_current_enterprise_password(),
+    ):
+        raise HTTPException(status_code=403, detail="企业密码错误")
+    try:
+        return auth.create_registration_request(
+            payload.username,
+            payload.password,
+            payload.email,
+            payload.requested_role,
+            verification_purpose="register",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/auth/forgot-password")
+@limiter.limit("10/hour")
+async def forgot_password(request: Request, payload: ForgotPasswordRequest):
+    if not _is_basic_email(payload.username):
+        raise HTTPException(status_code=400, detail="邮箱格式无效")
+    if not auth.verify_and_hold_code(
+        payload.username, "reset_password", payload.verification_code
+    ):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
+    if not secrets.compare_digest(
+        payload.enterprise_password,
+        enterprise_password.get_current_enterprise_password(),
+    ):
+        raise HTTPException(status_code=403, detail="企业密码错误")
+    try:
+        plaintext = auth.reset_password_by_username(
+            payload.username, verification_purpose="reset_password"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if plaintext is None:
+        raise HTTPException(status_code=404, detail="账号不存在或企业密码错误")
+    return {
+        "new_password": plaintext,
+        "detail": "新密码已同步至该邮箱名下全部角色账号",
+    }
+
+
+@app.post("/auth/send-verification-code")
+@limiter.limit("10/hour")
+async def send_verification_code(
+    request: Request, payload: SendVerificationCodeRequest
+):
+    email = (payload.email or "").strip()
+    purpose = (payload.purpose or "").strip()
+    if not _is_basic_email(email):
+        raise HTTPException(status_code=400, detail="邮箱格式无效")
+    if purpose not in auth.VERIFICATION_PURPOSES:
+        raise HTTPException(status_code=400, detail="验证码用途无效")
+    limit = auth.get_verification_send_limit(email, purpose)
+    if limit == "cooldown":
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+    if limit == "daily":
+        raise HTTPException(status_code=429, detail="今日验证码发送次数已达上限")
+
+    code = "%06d" % secrets.randbelow(1000000)
+    try:
+        sent = email_provider.send_verification_email(email, code, purpose)
+    except email_provider.EmailServiceUnavailableError as exc:
+        logger.warning("验证码邮件服务不可用：purpose=%s email_len=%s", purpose, len(email))
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not sent:
+        logger.warning("验证码邮件发送失败：purpose=%s email_len=%s", purpose, len(email))
+        raise HTTPException(status_code=502, detail="验证码发送失败，请稍后重试")
+    auth.create_verification_code(email, purpose, code)
+    return {"detail": "验证码已发送，请查收邮箱"}
+
+
+@app.get("/developer/registration-requests")
+async def developer_registration_requests(current_user: dict = Depends(require_developer)):
+    return {"requests": auth.list_registration_requests("developer")}
+
+
+@app.get("/reviewer/registration-requests")
+async def reviewer_registration_requests(current_user: dict = Depends(require_reviewer)):
+    return {"requests": auth.list_registration_requests("reviewer")}
+
+
+def _review_registration_or_http(request_id: int, current_user: dict, approve: bool) -> dict:
+    try:
+        return auth.review_registration_request(
+            request_id,
+            current_user["user_id"],
+            current_user["role"],
+            approve,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/developer/registration-requests/{request_id}/approve")
+async def developer_approve_registration(request_id: int, current_user: dict = Depends(require_developer)):
+    return _review_registration_or_http(request_id, current_user, True)
+
+
+@app.post("/developer/registration-requests/{request_id}/reject")
+async def developer_reject_registration(request_id: int, current_user: dict = Depends(require_developer)):
+    return _review_registration_or_http(request_id, current_user, False)
+
+
+@app.post("/reviewer/registration-requests/{request_id}/approve")
+async def reviewer_approve_registration(request_id: int, current_user: dict = Depends(require_reviewer)):
+    return _review_registration_or_http(request_id, current_user, True)
+
+
+@app.post("/reviewer/registration-requests/{request_id}/reject")
+async def reviewer_reject_registration(request_id: int, current_user: dict = Depends(require_reviewer)):
+    return _review_registration_or_http(request_id, current_user, False)
+
+
+@app.get("/developer/users")
+async def developer_users(current_user: dict = Depends(require_developer)):
+    return {"users": auth.list_users()}
+
+
+@app.get("/developer/enterprise-password")
+async def developer_enterprise_password(
+    current_user: dict = Depends(require_developer),
+):
+    return _current_enterprise_password_response()
+
+
+@app.get("/reviewer/enterprise-password")
+async def reviewer_enterprise_password(
+    current_user: dict = Depends(require_reviewer),
+):
+    return _current_enterprise_password_response()
+
+
+@app.get("/developer/headcount-stats")
+async def developer_headcount_stats(current_user: dict = Depends(require_developer)):
+    snapshots = headcount_snapshot.get_or_create_today_snapshot()
+    current = snapshots["current"]
+    previous = snapshots["previous"]
+    roles = ("developer", "reviewer", "employee", "customer")
+    counts = {role: int(current["%s_count" % role]) for role in roles}
+    changes = {
+        role: (
+            counts[role] - int(previous["%s_count" % role])
+            if previous else None
+        )
+        for role in roles
+    }
+    return {
+        "snapshot_date": current["snapshot_date"],
+        "counts": counts,
+        "changes": changes,
+        "previous_snapshot_date": previous["snapshot_date"] if previous else None,
+    }
+
+
+@app.get("/developer/personnel-detail")
+async def developer_personnel_detail(current_user: dict = Depends(require_developer)):
+    return {"users": auth.list_personnel_detail()}
+
+
+def _ensure_special_personnel(user_id: str) -> None:
+    user = auth.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if user["role"] not in {"developer", "reviewer"}:
+        raise HTTPException(
+            status_code=400,
+            detail="特别关注仅适用于开发者/审核员账号",
+        )
+
+
+@app.patch("/developer/users/{user_id}/flag")
+async def flag_personnel(
+    user_id: str,
+    payload: PersonnelFlagRequest,
+    current_user: dict = Depends(require_developer),
+):
+    _ensure_special_personnel(user_id)
+    auth.update_personnel_flag(user_id, payload.flagged)
+    return {"user_id": user_id, "flagged": payload.flagged}
+
+
+@app.patch("/developer/users/{user_id}/notes")
+async def note_personnel(
+    user_id: str,
+    payload: PersonnelNotesRequest,
+    current_user: dict = Depends(require_developer),
+):
+    _ensure_special_personnel(user_id)
+    auth.update_personnel_notes(user_id, payload.notes)
+    return {"user_id": user_id, "notes": (payload.notes or "").strip() or None}
+
+
+@app.get("/developer/password-reset-events")
+async def developer_password_reset_events(
+    current_user: dict = Depends(require_developer),
+):
+    return {"events": auth.list_password_reset_events()}
+
+
+@app.get("/reviewer/password-reset-events")
+async def reviewer_password_reset_events(
+    current_user: dict = Depends(require_reviewer),
+):
+    return {"events": auth.list_password_reset_events()}
+
+
+def _reject_self_management(user_id: str, current_user: dict, action: str) -> None:
+    if user_id == current_user["user_id"]:
+        detail = "不能修改自己的角色" if action == "role" else "不能禁用自己的账号"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@app.post("/developer/users/{user_id}/disable")
+async def disable_user(user_id: str, current_user: dict = Depends(require_developer)):
+    _reject_self_management(user_id, current_user, "disable")
+    if not auth.set_user_active(user_id, False):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"user_id": user_id, "is_active": False}
+
+
+@app.post("/developer/users/{user_id}/enable")
+async def enable_user(user_id: str, current_user: dict = Depends(require_developer)):
+    if user_id == current_user["user_id"]:
+        raise HTTPException(status_code=400, detail="不能操作自己的账号")
+    if not auth.set_user_active(user_id, True):
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"user_id": user_id, "is_active": True}
+
+
+@app.post("/developer/users/{user_id}/change_role")
+async def change_user_role(user_id: str, payload: ChangeRoleRequest, current_user: dict = Depends(require_developer)):
+    _reject_self_management(user_id, current_user, "role")
+    try:
+        changed = auth.change_user_role(user_id, payload.target_role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not changed:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"user_id": user_id, "role": payload.target_role}
+
+
+@app.post("/developer/users/{user_id}/reset_password")
+async def reset_user_password(user_id: str, current_user: dict = Depends(require_developer)):
+    if user_id == current_user["user_id"]:
+        raise HTTPException(status_code=400, detail="不能操作自己的账号")
+    plaintext = auth.reset_user_password(user_id)
+    if plaintext is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {
+        "user_id": user_id,
+        "new_password": plaintext,
+        "detail": "该密码已同步到此邮箱名下全部角色账号",
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1422,21 +1786,23 @@ async def pending(current_user: dict = Depends(require_reviewer)):
 
 
 @app.get("/reviewer/metrics")
-async def reviewer_metrics(current_user: dict = Depends(require_reviewer)):
+async def reviewer_metrics(
+    current_user: dict = Depends(require_reviewer_or_developer),
+):
     """Process-memory metrics; counters reset on restart and are not multi-worker aggregated."""
     return observability.metrics_snapshot()
 
 
-@app.get("/reviewer/system-modules")
-async def get_system_modules(current_user: dict = Depends(require_reviewer)):
+@app.get("/developer/system-modules")
+async def get_system_modules(current_user: dict = Depends(require_developer)):
     modules = system_modules.list_modules()
     return {name: module.model_dump() for name, module in modules.items()}
 
 
-@app.put("/reviewer/system-modules")
+@app.put("/developer/system-modules")
 async def update_system_modules(
     request: SystemModulesRequest,
-    current_user: dict = Depends(require_reviewer),
+    current_user: dict = Depends(require_developer),
 ):
     modules = system_modules.save_modules(request.model_dump(), current_user["user_id"])
     return {name: module.model_dump() for name, module in modules.items()}
@@ -1754,7 +2120,8 @@ def _chat_stream_events(
                     query=perception_output.message,
                     context=state["context"],
                     session_id=perception_output.session_id,
-                    tier=perception_output.mode
+                    tier=perception_output.mode,
+                    execution_state=state,
                 )
                 for chunk in stream:
                     emitted = True

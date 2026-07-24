@@ -95,6 +95,7 @@ DEEPSEEK_FAST_MODEL=deepseek-v4-flash
 DEEPSEEK_EXPERT_MODEL=deepseek-v4-pro
 TAVILY_API_KEY=replace-with-your-key
 JWT_SECRET_KEY=replace-with-at-least-32-random-bytes
+ENTERPRISE_PASSWORD_SEED=replace-with-a-random-private-seed
 LIBREOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 ```
 
@@ -110,6 +111,19 @@ LIBREOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
 - `GET /ready`：SQLite 与 Chroma 依赖就绪
 - `POST /auth/register`：注册测试账号
 - `POST /chat/stream`：SSE 对话主入口
+
+### 5. 测试
+
+Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口：
+
+```powershell
+.\run_tests.bat -q
+```
+
+脚本默认排除`integration`标记；需要单独运行真实集成测试时使用
+`.\run_tests.bat -m integration`。不要直接调用`python -m pytest`，也不要使用
+“系统Python + `.venv` site-packages”的替代方式；测试收集阶段会校验解释器必须是
+项目`.venv`中的Python 3.10，避免MCP子进程环境隔离产生假性失败。
 
 ## 推荐评审路径
 

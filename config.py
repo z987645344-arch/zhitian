@@ -19,6 +19,9 @@ FAST_LLM_RETRY_DELAY = float(os.getenv("FAST_LLM_RETRY_DELAY", "0.75"))
 FAST_REQUEST_TIMEOUT = float(os.getenv("FAST_REQUEST_TIMEOUT", "25.0"))
 SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
 SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "4.0"))
+OUTPUT_ANOMALY_CHECK_TIMEOUT = float(
+    os.getenv("OUTPUT_ANOMALY_CHECK_TIMEOUT", "5.0")
+)
 SHUTDOWN_GRACE_PERIOD_SECONDS = float(os.getenv("SHUTDOWN_GRACE_PERIOD_SECONDS", "30.0"))
 SSE_HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("SSE_HEARTBEAT_INTERVAL_SECONDS", "15.0"))
 
@@ -53,6 +56,18 @@ LIBREOFFICE_PATH = os.getenv(
 # 认证
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 JWT_EXPIRE_HOURS = 24
+SECONDARY_DEV_PASSWORD = os.getenv("SECONDARY_DEV_PASSWORD", "")
+ENTERPRISE_PASSWORD_SEED = os.getenv("ENTERPRISE_PASSWORD_SEED", "")
+if not ENTERPRISE_PASSWORD_SEED:
+    raise RuntimeError("ENTERPRISE_PASSWORD_SEED must be configured")
+
+# 阿里云 DirectMail：凭据仅从 .env 读取，缺失时由邮件提供层返回明确不可用错误。
+ALIYUN_ACCESS_KEY_ID = os.getenv("ALIYUN_ACCESS_KEY_ID", "")
+ALIYUN_ACCESS_KEY_SECRET = os.getenv("ALIYUN_ACCESS_KEY_SECRET", "")
+ALIYUN_MAIL_ACCOUNT_NAME = os.getenv(
+    "ALIYUN_MAIL_ACCOUNT_NAME", "noreply@mail.zhiliaohub.com"
+)
+ALIYUN_MAIL_REGION_ID = os.getenv("ALIYUN_MAIL_REGION_ID", "")
 
 # 路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +76,9 @@ HISTORY_DB_PATH = os.path.join(BASE_DIR, "data", "history.db")
 
 # 工具
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+WEB_SEARCH_PROVIDER = os.getenv("WEB_SEARCH_PROVIDER", "tavily").strip().lower()
+if WEB_SEARCH_PROVIDER not in {"tavily"}:
+    raise ValueError("WEB_SEARCH_PROVIDER仅支持tavily")
 
 # 记忆
 MAX_HISTORY_LENGTH = 20

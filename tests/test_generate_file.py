@@ -185,7 +185,7 @@ def test_generate_file_intent_executes_content_then_file(monkeypatch):
     state["tasks"] = [task]
     calls = []
 
-    def call_tool(tool, params):
+    def call_tool(tool, params, state=None):
         calls.append((tool, params))
         if tool == "llm_chat":
             return ToolResult(tool=tool, status="success", data="# 项目报告\n正文")

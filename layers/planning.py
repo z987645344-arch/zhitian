@@ -97,6 +97,7 @@ class AgentState(TypedDict):
     complex_action: str
     complex_deadline: float
     stream_prepared: bool
+    external_content_tainted: bool
     layer_trace: list[str]
 
 
@@ -461,7 +462,7 @@ def execute_node(state: AgentState) -> AgentState:
 
     task = state["tasks"][state["round_count"]]
     started_at = time.perf_counter()
-    result = mcp_client.call_tool(task.tool, task.params)
+    result = mcp_client.call_tool(task.tool, task.params, state=state)
     if state["intent"] == "generate_file" and result.status == "success":
         state["results"].append(result)
         result = _save_generated_content(state, result.data)
@@ -530,7 +531,7 @@ def execute_complex_node(state: AgentState) -> AgentState:
         params["total_budget"] = remaining
     elif task.tool in {"search_documents", "llm_chat"}:
         params["timeout"] = min(config.EXPERT_LLM_TIMEOUT, remaining)
-    result = mcp_client.call_tool(task.tool, params)
+    result = mcp_client.call_tool(task.tool, params, state=state)
     observability.log_stage(
         "complex_execute_%s" % task.tool,
         int((time.perf_counter() - started_at) * 1000),
@@ -833,6 +834,7 @@ def _new_agent_state(
         complex_action="",
         complex_deadline=0.0,
         stream_prepared=False,
+        external_content_tainted=False,
         layer_trace=[]
     )
 
@@ -865,7 +867,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
         state["intent"] = "document" if task.tool == "search_documents" else "document_list"
         state["tasks"] = [task]
         tool_started_at = time.perf_counter()
-        result = mcp_client.call_tool(task.tool, task.params)
+        result = mcp_client.call_tool(task.tool, task.params, state=state)
         observability.log_stage(
             "execute_%s" % task.tool,
             int((time.perf_counter() - tool_started_at) * 1000),
@@ -1550,6 +1552,7 @@ def _save_generated_content(state: AgentState, content: str) -> ToolResult:
             "filename_hint": state["filename_hint"],
             "output_format": state["output_format"],
         },
+        state=state,
     )
 
 
@@ -1564,7 +1567,11 @@ def _respond_with_generated_file(state: AgentState) -> None:
     metadata = result.metadata or {}
     if result.tool != "generate_file" or result.status != "success":
         state["error"] = state["error"] or result.error_msg or "generate_file_failed"
-        state["response"] = "文件生成失败，请稍后重试。"
+        state["response"] = (
+            execution.CONTENT_TAINT_BLOCK_MESSAGE
+            if result.blocked_by_content_taint
+            else "文件生成失败，请稍后重试。"
+        )
         state["citations"] = []
         return
     file_id = str(metadata.get("file_id", ""))
@@ -1613,6 +1620,7 @@ def _respond_with_converted_file(state: AgentState) -> None:
         or "conversion_failed"
     )
     messages = {
+        "blocked_by_content_taint": execution.CONTENT_TAINT_BLOCK_MESSAGE,
         "unsupported_conversion": "不支持将该附件转换为所选格式。",
         "timeout": "附件转换超时，请稍后重试。",
         "attachment_not_found": "附件已过期或不存在，请重新上传。",

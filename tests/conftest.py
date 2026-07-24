@@ -6,12 +6,24 @@ created with a unique prefix and removed after each test, together with their
 session and document rows.
 """
 
+import pathlib
+import sys
+
+_py = pathlib.Path(sys.executable)
+assert ".venv" in str(_py).lower() and sys.version_info[:2] == (3, 10), (
+    f"必须使用项目 .venv 的 Python 3.10 运行测试，当前解释器为 {sys.executable} "
+    f"（版本 {sys.version_info[:2]}）。请使用根目录 run_tests.bat，不要直接调用 python -m pytest。"
+)
+
 import os
 import sqlite3
 import uuid
 
 # Test-only key. Keep tests isolated from the production secret loaded from .env.
 os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-at-least-32-bytes-2026"
+os.environ["ENTERPRISE_PASSWORD_SEED"] = (
+    "test-only-enterprise-password-seed-not-for-production"
+)
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +35,13 @@ from layers import memory
 
 
 TEST_PASSWORD = "CodexTestPass123!"
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    main.limiter.reset()
+    yield
+    main.limiter.reset()
 
 
 @pytest.fixture
@@ -62,22 +81,26 @@ def user_factory(client):
     created_usernames = []
 
     def create_user(role="customer"):
-        username = "test_%s_%s" % (role, uuid.uuid4().hex)
-        response = client.post(
-            "/auth/register",
-            json={
-                "username": username,
-                "password": TEST_PASSWORD,
-                "role": role
-            }
-        )
-        assert response.status_code == 200, response.text
+        username = "test_%s_%s@example.test" % (role, uuid.uuid4().hex)
+        if role == "customer":
+            response = client.post(
+                "/auth/register",
+                json={
+                    "username": username,
+                    "password": TEST_PASSWORD,
+                    "role": role
+                }
+            )
+            assert response.status_code == 200, response.text
+            user_id = response.json()["user_id"]
+        else:
+            user_id = auth.register_user(username, TEST_PASSWORD, role)["user_id"]
         created_usernames.append(username)
         return {
             "username": username,
             "password": TEST_PASSWORD,
             "role": role,
-            "user_id": response.json()["user_id"]
+            "user_id": user_id
         }
 
     yield create_user
@@ -92,7 +115,8 @@ def auth_headers(client, user_factory):
             "/auth/login",
             json={
                 "username": user["username"],
-                "password": user["password"]
+                "password": user["password"],
+                "role": user["role"],
             }
         )
         assert response.status_code == 200, response.text

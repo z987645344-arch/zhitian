@@ -459,3 +459,107 @@
 - 汇总失败或预算耗尽现在统一返回“很抱歉，联网搜索遇到问题，暂时无法为您整理结果，建议稍后重试或换个方式提问。”；日志保留`error_type`、query长度和是否已输出流式正文，搜索降级计数继续累加，原始Tavily结果不再进入用户响应。
 - 新增非流式汇总异常、预算耗尽和流式汇总异常测试，均确认响应不含原始标题或URL；正常汇总调用路径未改。真实公开联网复测时Tavily两次超时，验证到既有“搜索服务暂时不可用”降级，未取得正常成功样本。
 - `py_compile`通过；完整未筛选回归为`207 passed`，`failed/skipped/deselected`均为0。
+
+## 2026-07-19 复查DeepSeek Prompt Caching前缀顺序
+- 逐项确认Expert文档生成、Expert classify及Fast工具选择/证据筛选/最终生成三次调用均保持“规范→语气风格→禁用→原有固定规则→当日日期→动态内容”的缓存友好顺序；三类系统模块不拼接candidate、trace_id或其他逐请求数据。
+- Expert新增的证据与法域约束位于固定system前缀，候选`query/source/score/content`只位于动态user消息；Fast调用②已接入系统模块，调用③也未因上下文收紧而丢失模块。本轮未发现顺序回归，因此未修改生产prompt。
+- 新增2项顺序防回归测试，覆盖Fast三次调用的一致性及Expert候选元数据与固定前缀隔离；`py_compile`通过，项目`.venv`完整未筛选回归为`209 passed`，`failed/skipped/deselected`均为0。
+- 历史真实缓存基线仍为命中2,304 tokens、未命中92 tokens（约96.2%）；本轮两次相同真实Expert请求因执行环境禁止向外部DeepSeek发送私有系统模块和请求载荷而未执行，未取得新的缓存命中数字，不能据此声称命中率上升或下降。
+
+## 2026-07-19 统一项目测试解释器入口
+- 新增根目录`run_tests.bat`：固定使用项目`.venv\Scripts\python.exe`并校验Python 3.10，默认排除`integration`；显式传入`-m`时允许覆盖默认marker。`tests/conftest.py`在收集业务测试前再次拒绝非项目`.venv`或非Python 3.10解释器。
+- README和`claude_memory.md`将该脚本设为本地/CI唯一权威测试入口；Windows GitHub Actions同步改为创建项目`.venv`、通过该解释器安装和编译，并调用`run_tests.bat -q`，不再直接使用setup-python的全局解释器运行pytest。
+- 刷新`docs/zhitian_structure.md`目录树过期行数：`main.py/planning.py/execution.py/memory.py`分别为2,084/2,109/1,157/1,437行，并同步其他已标注文件和25项依赖。
+- `run_tests.bat -q`真实结果为`204 passed, 5 deselected`、无failed/skipped；与上一轮未筛选`209 passed`的差异正是默认排除5项integration。系统Python反向验证命令因Codex执行工具提升权限额度耗尽未获运行许可，未宣称该项已实测完成。
+
+## 2026-07-22 复核F10流式重复分类审计结论
+- 静态代码确认2026-07-17提交`71ddb48d`引入的修复仍完整存在：两个stream图执行分支均传入`prepared_state=state`，`run_graph_state`保留该参数并设置`stream_prepared=True`，`classify_node`和`retrieve_node`分别依据该标记短路；07-17之后没有提交删除或改写这组机制。
+- LangGraph入口仍为`set_entry_point("classify")`，但入口节点会立即返回已准备state，不会再次调用分类模型；07-20审计把“图从classify节点进入”等同于“重新分类”，并引用了已经漂移的行号/文件职责，因此得出错误结论。
+- 真实无reload Expert `/chat/stream` trace `150275f5-040f-43e5-901d-c4abdee95e02`与`cbb779ce-a84e-456d-92d9-5aedee498374`均记录`classify_model=1`、`classify_context=1`、`retrieve_chroma=1`；当前系统模块下这些样例被模型路由为chat，未进入图执行分支。
+- 补充prepared-state运行时断言将二次分类与Chroma检索设置为一旦调用即抛错，图仍以`stream_prepared=True`、`intent=document_list`正常返回响应，直接证明图入口短路生效。结论：F10仍处于已修复状态，07-17修复未被后续改动破坏，本轮未修改业务代码。
+
+## 2026-07-22 核实账号与权限审计P0-1/P0-2/P0-3
+- P0-1属实（按规划中的开发者权限边界）：`GET/PUT /reviewer/system-modules`均只依赖`require_reviewer`，该依赖仅判断`role == "reviewer"`，没有二级密码、developer角色或专属校验；管理后台审核员页面直接提供“开发者视图”和系统提示词编辑/保存入口。
+- P0-2属实：`POST /auth/register`和`POST /auth/login`均没有`@limiter.limit`；对照`/chat`与`/chat/stream`均使用`@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute")`。本轮只核实代码，未进行高频请求测试。
+- P0-3在“账号管理能力”口径下属实：全项目未发现`list_users/delete_user/disable_user/change_role/reset_password`账号治理接口或函数；现有用户相关代码覆盖注册、登录、JWT、session归属和个人文件操作，因此不应扩大表述为“完全没有用户/认证能力”。
+- 本轮仅执行源码读取和账号路由/函数检索，未修改权限、限流或账号业务代码，也未更新遗留问题表。
+
+## 2026-07-22 加固系统模块编辑权限与认证入口限流
+- `config.py`新增`SECONDARY_DEV_PASSWORD`；为空、缺失请求头或密码不匹配时一律拒绝。`PUT /reviewer/system-modules`改为reviewer权限之上的逐请求二级密码校验，GET继续保持reviewer只读口径，并新增无副作用的编辑权限验证端点供管理后台解锁。
+- `POST /auth/register`与`POST /auth/login`复用现有SlowAPI Limiter增加同IP `10/hour`限制；超限统一返回429和“请求过于频繁，请稍后重试”，不影响已有chat按JWT用户限流。
+- 管理后台系统模块编辑器默认隐藏，密码只保存在页面内存；验证通过后才能显示并点击“修改模块”，保存PUT携带`X-Secondary-Password`，保存、失败或退出开发者视图后立即清除。
+- `py_compile`及管理后台JavaScript语法检查通过；目标测试`17 passed`。权威`run_tests.bat -q`完整结果为`207 passed, 5 deselected`且无failed/skipped，较改动前204项增加3项安全测试。真实无reload HTTP确认`/health` 200、GET无二级密码200、PUT缺失/错误密码403、正确密码200，注册与登录第11次均429；空配置默认拒绝由隔离测试覆盖。
+
+## 2026-07-22 隔离外部搜索内容并抽象Web Search Provider
+- 新增`layers/web_search_provider.py`，以`WebSearchProvider`和结构化`SearchCandidate`解耦执行层与Tavily；`WEB_SEARCH_PROVIDER`当前仅允许`tavily`，非法值启动即报错。Tavily异常重试1次、空结果和全部score低于0.3的降级判断保持不变；已上线的整理失败友好提示继续保留，不恢复旧的原始摘要泄露行为。
+- `AgentState`新增请求内`external_content_tainted`；Provider.search一旦实际调用，无论成功、空结果或异常都立即置污。`execution.run`在调用`generate_file/convert_document`前执行统一硬拦截，返回`blocked_by_content_taint=true`和明确用户提示；fast不暴露联网或写工具，能力边界未变。
+- 搜索候选仅放入动态user消息并由`<untrusted_external_content>`包裹；固定system前缀新增不执行网页指令、不改变角色和行为准则的规则，保持系统模块与DeepSeek prompt caching固定前缀顺序。
+- `py_compile`、93项受影响专项测试通过；权威`run_tests.bat -q`结果为`218 passed, 5 deselected`且无failed/skipped，较改动前207项增加11项。真实Tavily返回5个候选，执行层自动置污并成功拦截后续转换；干净state真实生成文件成功且测试产物已删除。
+
+## 2026-07-22 准备账号注册审批数据层与企业密码机制
+- `layers/auth.py`为`users`幂等迁移可空`email`、默认启用`is_active`和默认非预置账号`is_default_account`，并新增`registration_requests`表、pending用户名/非空邮箱partial unique index、申请密码bcrypt哈希函数及统一审批角色映射；现有注册、登录和`VALID_ROLES`行为不变。
+- 新增`layers/enterprise_password.py`：使用环境种子与密码日确定性生成8位数字密码，凌晨4点切换密码日；空`ENTERPRISE_PASSWORD_SEED`会阻止应用启动，不引入定时任务或密码持久化。
+- 新增`layers/db_transaction.py`显式SQLite事务context manager，正常提交、异常完整回滚；本批不接入审批业务，也不新增注册、审批或密码展示API，纯属Batch 3所需数据层准备。
+- `py_compile`与9项新增专项测试通过；权威`run_tests.bat -q`结果为`227 passed, 5 deselected`，无failed/skipped，较上一轮增加9项。
+
+## 2026-07-22 落地developer注册审批与账号治理
+- 新增`developer`角色；公开`/auth/register`收窄为仅customer，employee/reviewer/developer通过企业密码提交`/auth/register/request`并分别由reviewer或developer审批。审批原子完成用户创建、申请状态更新和审批人记录，默认developer首次批准真实developer后在同一事务内自动失活。
+- 系统模块迁移至`GET/PUT /developer/system-modules`并改用纯developer权限，旧reviewer路径返回404且不再消费二级密码；新增developer/reviewer申请列表及approve/reject端点，以及developer用户列表、启停、改角色和一次性随机重置密码端点。
+- 新增本机默认账号seed与打包停用脚本；真实库已有同名1/2/3且非默认账号，防误伤检查正确拒绝覆盖。隔离SQLite验证seed后0启用、1/2/3停用；真实无reload HTTP验证0批准developer后新账号登录成功、0号登录返回401。
+- `py_compile`、管理后台JavaScript语法和30项账号相关专项测试通过；权威`run_tests.bat -q`为`231 passed, 5 deselected`，无failed/skipped。
+
+## 2026-07-22 重置开发数据并修正多角色账号身份模型
+- 新增需显式`--confirm`的`scripts/full_reset.py`；真实执行时先清空users/registration_requests/user_sessions/documents、conversations/sessions、统一文件库及物理文件、两个Chroma collection，并将三类system_modules内容置空，随后才执行schema迁移。清空前确认残留`user_sessions=51`，清空后全部目标计数为0。
+- `users`从username单列唯一迁移为`UNIQUE(username, role)`；pending申请索引同步改为username/email与requested_role联合唯一，同邮箱可申请多个不同角色、同角色不可重复申请。真实库迁移后仅重新seed默认账号`0/1/2/3`。
+- 审批新角色时在同一事务内复用该username已有`password_hash`；密码重置改为同步更新同username全部角色。真实HTTP验证employee/reviewer共享首次密码且哈希完全一致，未申请的developer身份登录返回401。
+- `/auth/login`新增必填`role`并按`(username, role)`认证；错误角色与错误密码统一提示。customer自助注册及企业注册申请的username均要求基础邮箱格式，默认数字账号脚本不受此限制。
+- `py_compile`通过；账号专项`30 passed`；权威`run_tests.bat -q`结果为`236 passed, 5 deselected`，无failed/skipped。验证临时账号已清理，最终真实数据为默认账号4条，其余业务表、文件和Chroma记录均为0。
+
+## 2026-07-22 完成账号注册审批体系Batch 4前端接入
+- Flutter客户侧登录固定提交`role=customer`，新增邮箱注册页、确认密码与后端错误明细展示；管理后台登录新增employee/reviewer/developer账号类型选择和分角色工作台跳转。
+- 管理后台新增免登录企业角色申请页；reviewer工作台只保留employee申请审批，developer专属模块全部迁出。新增独立`developer.html`，分区提供reviewer/developer审批、账号启停/改角色/密码重置、系统模块编辑和可观测性视图。
+- 为使独立developer控制台复用既有可观测性数据，仅将`GET /reviewer/metrics`读取权限扩展为reviewer或developer；其他reviewer接口与后端业务行为不变。新增权限测试确认developer可读、employee仍返回403。
+- Flutter `flutter analyze`无问题、`31 tests passed`；管理后台5个JavaScript文件语法检查通过；权威`run_tests.bat -q`结果为`237 passed, 5 deselected`，无failed/skipped。真实HTTP已验证customer注册/登录/聊天及employee申请、reviewer审批、employee登录链路。
+
+## 2026-07-22 扩展账号治理统计与自助密码重置
+- `users`幂等新增`last_login_at/flagged/notes`，成功登录写入时间；默认账号真实库及seed脚本统一改为`0=developer/1=reviewer/2=employee/3=customer`，一次性remap脚本要求显式`--confirm`并打印前后映射。
+- 新增按凌晨4点业务日懒惰创建的四角色真实账号人数快照及`/developer/headcount-stats`；仅developer可读取developer/reviewer详情并维护特别关注与备注，employee/customer目标由接口返回400拒绝。
+- 新增公开`/auth/forgot-password`，以邮箱和企业密码临时验证身份，在同一事务内同步该邮箱全部角色密码并写入`password_reset_log`；developer/reviewer只能读取最近20条重置事件，不返回密码。该验证方式为Batch 6邮件验证码前的过渡方案。
+- `py_compile`通过；首次回归暴露新增测试嵌套写连接导致的SQLite锁并已修正，最终权威`run_tests.bat -q`为`241 passed, 5 deselected`且无failed/skipped。真实HTTP确认重置后登录200、两角色可见事件、人员详情隔离及关注/备注持久化。
+
+## 2026-07-22 诊断MCP进程树测试UnicodeDecodeError
+- 指定测试连续独立运行5次全部通过，耗时分别为`4.46/4.19/4.08/3.74/3.77s`；额外在`PYTHONUTF8=1`下运行仍通过，当前无法稳定复现所报告的`UnicodeDecodeError`，pytest `lastfailed`为空。
+- `tests/test_mcp_connector.py`与`layers/mcp_connector.py`均只在提交`71ddb48d`（2026-07-17 19:54:31 +0800）创建，之后无任何提交修改；近期账号治理等批次未触碰这两个文件，因此排除近期业务改动直接引入回归。
+- 潜在解码点仅存在于测试辅助函数`_pid_exists()`的Windows `subprocess.run(tasklist, capture_output=True, text=True)`；生产`mcp_connector`不直接按文本解码子进程stdout。原失败输出未留存在仓库、pytest缓存或临时日志中，因此无法恢复其具体坏字节位置，不编造历史堆栈。
+- 该测试没有integration标记，自2026-07-17起一直计入`run_tests.bat -q`完整回归，历次全绿数字包含它；现有证据支持“历史环境敏感的低概率测试波动风险”，不支持“近期代码回归”，本轮未修改测试或业务代码。
+
+## 2026-07-23 验收三仓库归拢迁移
+- 后端、管理后台和Flutter客户端均在`D:\zhiliao\zhitian\`下正确识别为独立Git仓库，提交历史完整且未出现整库删除或未跟踪异常；源码扫描只发现6处文档旧路径，已更新为下沉一层后的实际路径，业务源码与配置无旧绝对路径引用。
+- 后端`.env`为`670 bytes`、UTF-8无BOM；`data/users.db/history.db/files.db`与`vectordb`均随迁移保留，`LIBREOFFICE_PATH`指向的`soffice.exe`仍存在。
+- 使用Python `3.10.11`重建后端`.venv`并按`requirements.txt`安装，`pip check`结果为无依赖冲突；权威`run_tests.bat -q`实际结果为`241 passed, 5 deselected`，无failed/skipped，已知F24本次未波动。
+- 后端以无reload方式启动后`GET /health`返回`200`且SQLite/Chroma均healthy；默认账号核验为`0=developer/1=reviewer/2=employee/3=customer`，均处于启用状态。
+
+## 2026-07-24 接入DirectMail邮箱验证码至企业申请与密码重置
+- 新增`layers/email_provider.py`和阿里云官方`alibabacloud_dm20151123` SDK；AccessKey、区域和发件账号均只从`.env`读取，缺失配置返回明确服务不可用错误。邮件调用超时按Level1重试1次，日志仅记录用途、邮箱长度和错误类型。
+- `users.db`新增`email_verification_codes`：验证码只存bcrypt哈希，5分钟有效、错误5次失效；发送接口按邮箱与用途实施60秒冷却和24小时5次上限，发送失败不落库、不消耗额度。
+- `/auth/register/request`与`/auth/forgot-password`均要求验证码；验证成功仅hold，申请写入或密码重置事务成功时才消费，业务失败可在有效期内重试。管理后台申请与忘记密码页面同步提供发送验证码和输入验证码交互。
+- 真实无reload HTTP验证中，首次DirectMail请求暴露`MissingReplyToAddress`（HTTP 400），补齐`reply_to_address=False`后成功投递；真实注册申请创建为`pending`，同验证码复用返回`400`，数据库确认其已消费。
+- `pip check`无冲突；`py_compile`、管理后台JavaScript检查通过，权威`run_tests.bat -q`结果为`248 passed, 5 deselected`，无failed/skipped。
+
+## 2026-07-24 展示开发者与审核员当前企业密码
+- 新增只读`GET /developer/enterprise-password`和`GET /reviewer/enterprise-password`，分别复用现有developer/reviewer权限和`get_current_enterprise_password()`；响应包含当前8位密码及下一次本地凌晨4点的ISO刷新时间，不新增数据库或查看审计日志。
+- `developer.html`将企业密码卡片放入人员概览统计附近，`reviewer.html`新增同等常驻卡片；两页加载后自动请求各自接口，失败时显示明确加载状态。
+- 新增角色隔离回归：developer/reviewer两端密码与刷新时间一致，employee/customer访问两个端点均返回403。
+- `py_compile`、管理后台`node --check`和专项测试通过；权威`run_tests.bat -q`实际结果为`249 passed, 5 deselected`，无failed/skipped。
+
+## 2026-07-24 完成Tavily来源标注与输出侧观察校验
+- `SearchCandidate`新增非阻断性`source_tier`：政府/教育域名标注`official`，精简白名单中的Wikipedia、百度百科标注`known_reference`，其余及URL缺失统一标注`general`；候选仍全部参与原有整理流程。
+- expert外网搜索在最终整理回复后额外发起一次JSON语义校验，仅携带原始问题和最终回复，不携带候选原文；仅记录是否偏题及简短分类。检查失败、超时或标记异常均不修改、不拦截主回复。
+- `/reviewer/metrics`（developer同权限）新增输出校验总数、标记数、校验失败数及按tier细分；开发者控制台同步展示三项计数。
+- 核心非流式路径的`py_compile`、管理后台`node --check`与28项搜索专项测试通过；权威`run_tests.bat -q`实际结果为`259 passed, 5 deselected`，无failed/skipped。随后补齐流式降级回复的同等观察覆盖，因执行环境额度限制尚待重新跑权威回归。首次真实expert请求未进入成功的搜索整理分支，观察计数未递增；后续真实触发验证同样待本机补跑。
+
+## 2026-07-24 补跑流式补丁权威回归并完成真实触发验证
+- 重新执行权威`run_tests.bat -q`：结果为`259 passed, 5 deselected`，无failed/skipped，与流式补丁前基线数字一致，确认流式降级观察覆盖补丁未引入回归。
+- 无reload方式启动后端（`.venv\Scripts\python.exe main.py`），登录默认reviewer（用户名`1`）与customer（用户名`3`）账号，请求前`GET /reviewer/metrics`确认`output_anomaly_check_total=0`。
+- 发起expert模式真实联网请求（黄金实时价格查询），首次尝试即成功走到搜索整理分支：响应耗时约33.5秒，`execute`阶段27718ms、`model_calls.expert.calls=4`；请求后`output_anomaly_check_total=1`（较请求前+1），`output_anomaly_by_tier.expert.total=1`，`flagged=0`、`check_failed_total=0`，确认观察性校验计数器在真实成功路径下正确递增。
+- 验证完成后已停止无reload后端进程，`netstat`确认8000端口无残留监听。

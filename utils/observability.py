@@ -28,6 +28,13 @@ _provider_errors = {
     "deepseek": {"timeout": 0, "rate_limit": 0, "other": 0},
 }
 _search_fallback_count = 0
+_output_anomaly_check_total = 0
+_output_anomaly_flagged_total = 0
+_output_anomaly_check_failed_total = 0
+_output_anomaly_by_tier = {
+    "fast": {"total": 0, "flagged": 0, "failed": 0},
+    "expert": {"total": 0, "flagged": 0, "failed": 0},
+}
 _recent_requests = deque(maxlen=100)
 _active_requests = {}
 
@@ -140,6 +147,28 @@ def record_search_fallback() -> None:
         _search_fallback_count += 1
 
 
+def record_output_anomaly_check(tier: str, flagged: bool = False) -> None:
+    """Record a completed observation-only external-search output check."""
+    global _output_anomaly_check_total, _output_anomaly_flagged_total
+    with _stats_lock:
+        _output_anomaly_check_total += 1
+        if tier in _output_anomaly_by_tier:
+            _output_anomaly_by_tier[tier]["total"] += 1
+        if flagged:
+            _output_anomaly_flagged_total += 1
+            if tier in _output_anomaly_by_tier:
+                _output_anomaly_by_tier[tier]["flagged"] += 1
+
+
+def record_output_anomaly_check_failed(tier: str) -> None:
+    """Record only checker failure; the user response is deliberately unaffected."""
+    global _output_anomaly_check_failed_total
+    with _stats_lock:
+        _output_anomaly_check_failed_total += 1
+        if tier in _output_anomaly_by_tier:
+            _output_anomaly_by_tier[tier]["failed"] += 1
+
+
 def metrics_snapshot() -> dict[str, Any]:
     """Return process-local counters. They reset on restart and are not multi-worker aggregated."""
     with _stats_lock:
@@ -157,6 +186,13 @@ def metrics_snapshot() -> dict[str, Any]:
             "requests": dict(_request_stats),
             "model_calls": tiers,
             "search_fallback_count": _search_fallback_count,
+            "output_anomaly_check_total": _output_anomaly_check_total,
+            "output_anomaly_flagged_total": _output_anomaly_flagged_total,
+            "output_anomaly_check_failed_total": _output_anomaly_check_failed_total,
+            "output_anomaly_by_tier": {
+                tier: dict(values)
+                for tier, values in _output_anomaly_by_tier.items()
+            },
             "provider_errors": {name: dict(values) for name, values in _provider_errors.items()},
             "latency_percentiles_ms": _latency_percentiles_by_mode(recent_requests),
             "recent_requests": recent_requests,

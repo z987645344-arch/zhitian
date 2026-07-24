@@ -189,7 +189,7 @@ def test_complex_graph_executes_all_tasks_and_summarizes(monkeypatch):
     monkeypatch.setattr(
         planning.mcp_client,
         "call_tool",
-        lambda tool, params: ToolResult(
+        lambda tool, params, state=None: ToolResult(
             tool=tool,
             status="success",
             data="result-%s" % params["query"],
