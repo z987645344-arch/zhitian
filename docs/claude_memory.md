@@ -55,7 +55,7 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | ✅ 账号注册审批体系Batch 0-6（含企业密码展示）全部完成：开发者/审核员治理界面、企业申请审批、自助密码重置、DirectMail邮箱验证码与当前企业密码展示均已落地 |
-| 上一轮完成 | 2026-07-24：Tavily来源可信度信息标注与expert搜索输出侧观察校验（含流式降级同等覆盖）已验证完成；权威回归重跑结果`259 passed, 5 deselected`与基线一致无新增failed；真实expert联网搜索成功路径验证`output_anomaly_check_total`由0递增至1 |
+| 上一轮完成 | 2026-07-24：修复CI失败——`test_email_provider_retries_timeout_without_logging_sensitive_values`未隔离`config.ALIYUN_ACCESS_KEY_ID/SECRET/ALIYUN_MAIL_REGION_ID`真实依赖，本机因`.env`配置真实密钥而误判通过；已补充monkeypatch占位值，无密钥/真实密钥两种环境均7 passed，权威回归`259 passed, 5 deselected`与基线一致 |
 | 当前等待 | 无账号注册审批体系遗留缺口；Tavily输出侧观察校验验证主线已完成，无待补验证项 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
 | 下一步 | 聚焦Agent能力深化：讨论DAG编排与稳定外部MCP生态接入 |
@@ -186,6 +186,7 @@
 | 多角色账号身份 | 真实用户username必须使用邮箱，SQLite以`(username, role)`联合唯一；同一邮箱可拥有多个角色且共享同一个`password_hash`，审批新增角色时复用已有哈希，reset_password同步更新该邮箱全部角色。登录必须携带role并按联合键查询；默认账号映射为`0=developer/1=reviewer/2=employee/3=customer`，保留裸数字例外且只能由开发脚本创建 |
 | 账号治理界面边界 | disable/enable/change_role/reset_password后端接口继续保留，但后续`developer.html`不再暴露这些入口；页面只展示真实人数聚合及developer/reviewer的特别关注、备注和上次登录时间 |
 | 邮箱验证码 | 邮箱验证码由DirectMail真实发送，验证码仅存bcrypt哈希；60秒冷却、24小时最多5次、5分钟有效、5次错误后失效。验证码只在注册申请或密码重置事务成功后消费，业务失败时可在有效期内重试；发送、验证码和收件邮箱全文不得写入日志 |
+| 邮箱验证码离线测试隔离 | `send_verification_email`在调用前会检查`config.ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID`三项非空，任一为空即抛`EmailServiceUnavailableError`；凡是需要真实调用该函数（而非直接mock整个函数）的离线测试，必须monkeypatch这三项config属性为非空占位值，不能依赖本机`.env`是否配置真实密钥，否则本机通过、CI（无`.env`）必现失败 |
 | 开发数据重置 | `scripts/full_reset.py`必须显式传入`--confirm`且不接入启动流程。2026-07-22已对真实开发库执行全量清空并在迁移后重新seed：当前users仅有默认账号`0/1/2/3`，documents/conversations/sessions/files、user_sessions、registration_requests及两个Chroma collection均为空，system_modules内容为空 |
 | .env | 必须保持无 BOM UTF-8，否则 python-dotenv 无法正确识别首行环境变量名 |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
@@ -210,4 +211,4 @@
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |
 | 管理后台 | ✅ 静态网页（员工上传/录入 + 审核员审核/调试） |
-| Git 存档 | ✅ 三项目 v1.0 均已 commit；v2.0已完成：后端`56597fe`（检索融合+证据筛选+法域约束+搜索降级）、客户端`d0a370f`、管理后台`05d1262`，三仓库均已推送并打tag，本地临时法律测试语料和`.env`已加入`.gitignore`未推送 |
+| Git 存档 | ✅ 三项目 v1.0/v2.0 均已 commit；v2.1已完成：后端`8dc9730`（账号注册审批体系Batch 0-6 + Tavily注入防护收尾）、管理后台`f9603eb`（developer/reviewer控制台重设计+账号自助服务前端）、客户端`8886e42`（customer邮箱注册+固定角色登录），三仓库均已推送并打tag v2.1，本地`.env`及运行产物持续被`.gitignore`排除未推送 |

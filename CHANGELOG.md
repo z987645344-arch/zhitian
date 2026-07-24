@@ -563,3 +563,10 @@
 - 无reload方式启动后端（`.venv\Scripts\python.exe main.py`），登录默认reviewer（用户名`1`）与customer（用户名`3`）账号，请求前`GET /reviewer/metrics`确认`output_anomaly_check_total=0`。
 - 发起expert模式真实联网请求（黄金实时价格查询），首次尝试即成功走到搜索整理分支：响应耗时约33.5秒，`execute`阶段27718ms、`model_calls.expert.calls=4`；请求后`output_anomaly_check_total=1`（较请求前+1），`output_anomaly_by_tier.expert.total=1`，`flagged=0`、`check_failed_total=0`，确认观察性校验计数器在真实成功路径下正确递增。
 - 验证完成后已停止无reload后端进程，`netstat`确认8000端口无残留监听。
+
+## 2026-07-24 修复邮箱验证码离线测试的真实config依赖隔离缺陷
+- CI失败根因：`tests/test_email_verification.py::test_email_provider_retries_timeout_without_logging_sensitive_values`只monkeypatch了`email_provider._send_once`，未隔离`send_verification_email`函数体前置的`config.ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID`真实配置检查；本机因`.env`已配置真实DirectMail密钥而恰好通过，CI环境无`.env`导致三项配置均为空字符串，`send_verification_email`在调用`_send_once`之前就因`EmailServiceUnavailableError`抛出，测试失败。
+- 修复：该测试新增`monkeypatch.setattr(config, ...)`将`ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID`三项设置为非真实测试占位值，使测试结果不依赖本机`.env`是否配置真实密钥；未修改`layers/email_provider.py`业务逻辑本身。
+- 复核同文件其余6个测试：`test_send_endpoint_stores_only_after_success`已完整monkeypatch`main.email_provider.send_verification_email`本身，`/auth/register/request`和`/auth/forgot-password`两条路径均只消费已存入的验证码、不调用邮件发送函数，均无同类未隔离依赖，未做改动。
+- 真实复现使用Bash显式置空环境变量（`ALIYUN_ACCESS_KEY_ID= ALIYUN_ACCESS_KEY_SECRET= ALIYUN_MAIL_REGION_ID=`，非PowerShell空字符串赋值——后者会被当作变量不存在而非空值传递，dotenv随后仍会从`.env`回填真实值，无法复现）；修复前该条件下1 failed，修复后同条件7 passed，正常配置真实`.env`环境下同样7 passed，两种环境行为一致。未修改`.env`本身，未在CI workflow中添加真实AccessKey作为secrets。
+- 权威`run_tests.bat -q`结果为`259 passed, 5 deselected`，无failed/skipped，与本轮修复前基线一致。

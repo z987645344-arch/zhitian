@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import bcrypt
 import pytest
 
+import config
 import main
 from layers import auth, email_provider, enterprise_password
 
@@ -150,6 +151,9 @@ def test_forgot_password_requires_code_and_preserves_unknown_account_response(cl
 
 
 def test_email_provider_retries_timeout_without_logging_sensitive_values(monkeypatch):
+    monkeypatch.setattr(config, "ALIYUN_ACCESS_KEY_ID", "test-placeholder-id")
+    monkeypatch.setattr(config, "ALIYUN_ACCESS_KEY_SECRET", "test-placeholder-secret")
+    monkeypatch.setattr(config, "ALIYUN_MAIL_REGION_ID", "test-placeholder-region")
     calls = []
 
     def timeout_once(*args):
