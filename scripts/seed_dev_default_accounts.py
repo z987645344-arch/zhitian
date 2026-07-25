@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""仅供本机开发环境使用，不得在生产环境执行。"""
+"""仅供本机开发环境使用，不得在生产环境执行。
+
+当前引导设计仅保留唯一默认账号0（developer），不再预置1/2/3三个测试角色账号；
+其余角色账号由真实用户走注册审批流程创建。0号在批准首个真实developer后，
+按 auth.review_registration_request() 既有事务逻辑自动失活。
+"""
 
 import os
 import sys
@@ -19,9 +24,6 @@ if database_override:
 
 DEFAULT_ACCOUNTS = (
     ("0", "developer"),
-    ("1", "reviewer"),
-    ("2", "employee"),
-    ("3", "customer"),
 )
 
 
@@ -58,7 +60,7 @@ def main() -> None:
                     """,
                     (str(uuid.uuid4()), username, password_hash, role),
                 )
-    print("已创建或重置本机默认账号0/1/2/3")
+    print("已创建或重置本机默认账号0（developer）")
 
 
 if __name__ == "__main__":
