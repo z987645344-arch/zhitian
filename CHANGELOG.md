@@ -570,3 +570,91 @@
 - 复核同文件其余6个测试：`test_send_endpoint_stores_only_after_success`已完整monkeypatch`main.email_provider.send_verification_email`本身，`/auth/register/request`和`/auth/forgot-password`两条路径均只消费已存入的验证码、不调用邮件发送函数，均无同类未隔离依赖，未做改动。
 - 真实复现使用Bash显式置空环境变量（`ALIYUN_ACCESS_KEY_ID= ALIYUN_ACCESS_KEY_SECRET= ALIYUN_MAIL_REGION_ID=`，非PowerShell空字符串赋值——后者会被当作变量不存在而非空值传递，dotenv随后仍会从`.env`回填真实值，无法复现）；修复前该条件下1 failed，修复后同条件7 passed，正常配置真实`.env`环境下同样7 passed，两种环境行为一致。未修改`.env`本身，未在CI workflow中添加真实AccessKey作为secrets。
 - 权威`run_tests.bat -q`结果为`259 passed, 5 deselected`，无failed/skipped，与本轮修复前基线一致。
+
+## 2026-07-24 清理遗留文件并诊断data/tmp_uploads残留成因
+- 清理已确认无用的遗留文件：`git rm scripts/clean_testdata.py`（功能已被`scripts/full_reset.py --confirm`完全覆盖，且当前仅CHANGELOG历史记录和`zhitian_structure.md`目录树提及，未被任何现行文档列为在用工具）；删除`data/tmp_generated`下7个残留工作目录（14个文件，约3.53MB，2026-07-16~19生成/转换验证残留）；删除空目录`data/generated_files`；删除15个孤立验证日志文件（`data/batch6-uvicorn(-error).log`、`data/enterprise-password-verify.(out|err).log`、`data/tavily-observe-verify.(out|err).log`、`data/test_product_doc.txt`、`data/logs/codex_classify_server.(out|err).log`、`data/logs/codex_modules_server.(out|err).log`、`data/logs/codex_runtime_check.(out|err).log`、`data/logs/rag_runtime_check.(out|err).log`）。`data/user_files`（1个真实用户文件）和`data/tmp_uploads`（57个残留文件）本轮未触碰。
+- 诊断`data/tmp_uploads`57个残留文件成因：确认**非当前生产代码bug**。`main.py`中调用`_save_temp_upload`的全部5处入口（`/documents/upload`、`/chat/attachments`、`/tools/convert`、`/tools/pdf/merge`、`/tools/pdf/split`）均以`try/finally`包裹，`finally`无条件调用`_remove_temp_upload`（含转换产物`cleanup_conversion_output`），成功/异常路径均会清理；`_save_temp_upload`自身写入失败时也会在内部`except`中清理后再重新抛出。该`finally`清理机制由提交`9905af0e`于2026-07-15引入，早于残留文件2026-07-16~19的mtime，可排除"当时代码还没加finally"的可能。
+- 现有测试`tests/test_document_upload.py`已对成功、超限拒绝、转换成功、转换失败四类场景断言`tmp_uploads`清空；额外抽样发现残留文件内容（`plain text`/`# markdown`）与该测试文件`test_supported_upload_formats_reach_parser`的fixture payload完全一致，且该测试未隔离`config.BASE_DIR`、确实写入真实`data/tmp_uploads`目录。本轮真实重跑该测试并比对目录文件数：前后均为57个，无新增残留，证明当前代码在同一场景下不会产生残留。
+- 结论：57个残留文件是历史测试/手动验证阶段遗留，成因是运行中的进程（pytest或无reload后端）被硬终止（如`taskkill`/`Stop-Process -Force`）而非正常退出或异常传播，导致Python`finally`未及执行——这是进程级强杀无法被应用代码规避的通用风险，与`data/tmp_generated`残留同期同因。不属于遗留问题，不新增`claude_memory.md`遗留问题条目；57个文件的清理留待下一轮直接删除。
+- 本轮仅删除非代码运维文件（`scripts/clean_testdata.py`除外，已用`git rm`正确暂存删除），未修改任何业务逻辑；权威`run_tests.bat -q`结果为`259 passed, 5 deselected`，确认删除`clean_testdata.py`未破坏任何测试依赖。
+- 诊断确认非bug后，已删除`data/tmp_uploads`下全部57个历史残留文件；删除后目录为空，`data/user_files`（1个真实用户文件）未受影响。
+
+## 2026-07-24 正式设置三个系统提示词模块内容
+- 通过`PUT /developer/system-modules`正式写入guidance/tone/forbidden三个模块内容，取代此前的空白/占位状态：
+  - guidance（规范模块）：“当前企业知识库已收录法律领域相关参考资料。若用户问题可能涉及该领域的事实性、规范性内容（具体法条、司法解释、案例适用等），应优先调用search_documents核验知识库后再回答，不要仅凭自身训练知识作答；若问题明显与知识库覆盖范围无关（如日常闲聊、创作类请求），仍按正常判断处理，不必强行触发检索。”
+  - tone（语气风格模块）：“回答风格保持专业、准确、简洁，避免不必要的寒暄和重复用户问题；引用知识库内容时明确标注来源，无法确认的信息如实说明‘未找到可靠依据’，不臆测或编造；避免使用绝对化措辞（如‘肯定’‘一定’），涉及专业判断时保留必要的严谨性。”
+  - forbidden（禁用模块）：“不得提供具体的医疗诊断建议；引用法律条文和司法解释是允许的，但不得以正式法律意见或法律代理人身份给出具有约束力的法律建议，需提醒用户重大法律事项应咨询执业律师；不得讨论政治敏感话题；不得编造知识库中不存在的法条、案例或数据来源。”
+- 真实无reload后端`PUT`成功后立即`GET /developer/system-modules`回读比对：三项内容长度（152/111/114字符）与原文逐字符一致，确认无截断、无转义损坏、无中文引号丢失。
+- 本轮仅为数据设置，未修改任何代码，未做12题验证测试（保存后模型固定前缀是否按预期拼接生效、fast/expert实际问答效果等），验证留待下一轮单独进行。验证完成后已停止无reload后端进程，8000端口确认无残留监听。
+
+## 2026-07-24 新增企业密码手动刷新接口
+- 新增`POST /developer/enterprise-password/refresh`（`require_developer`，reviewer调用返回403），配合管理后台"立即刷新"按钮。不修改`get_current_enterprise_password()`原有"种子+密码日"确定性推导公式本身：新增`users.db`表`enterprise_password_manual_refresh(business_day PRIMARY KEY, refresh_count, updated_at)`，按当前业务日记录手动刷新次数；`refresh_count=0`（从未手动刷新）时payload与刷新前完全一致（`seed:password_day`），只有`refresh_count>0`时才在payload追加该计数（`seed:password_day:refresh_count`），因此未触发过手动刷新的历史/当前密码值不受本次改动影响。
+- `trigger_manual_refresh()`对当前业务日的计数原子`INSERT ... ON CONFLICT DO UPDATE`+1并返回刷新后的新密码；全程无后台定时任务，读写均在请求内同步完成，与项目"无后台定时任务"约束一致。
+- 新增专项测试`test_manual_enterprise_password_refresh_changes_value_for_both_roles`：验证developer可触发（200且密码值变化）、reviewer/employee调用均403、刷新后developer与reviewer两端`GET`读取的密码值一致。
+- `py_compile`通过；专项测试`6 passed`；权威`run_tests.bat -q`结果为`260 passed, 5 deselected`，无failed/skipped，较改动前259项增加1项。真实HTTP验证：developer登录后点击管理后台"立即刷新"确认弹窗后密码值变化，developer/reviewer两端读取一致；验证过程中对真实企业密码手动刷新计数的测试数据已清理，真实密码恢复为验证前原值。
+
+## 2026-07-24 新增组织管理体系并将guidance改为按组织动态生成
+- 新增`organizations`表（id/name唯一/content可空/is_protected/created_at）与`user_organizations`多对多关联表（联合主键）；迁移按name幂等插入两条种子数据：`默认`（content为NULL、is_protected=1）和`法律`（content="具体法条、司法解释、案例适用"、is_protected=0），重复执行`init_db()`不重复插入。
+- 新增`layers/organizations.py`：`list_organizations()`返回含`is_protected`与实时成员数；`create_organization()`固定`is_protected=0`（开发者不能新建受保护组织）且拒绝与"默认"重名；`update_organization()`/`delete_organization()`对受保护组织均返回`ValueError`；删除自定义组织时同步清除`user_organizations`中的关联记录，账号本身不受影响。
+- 新增四个`require_developer`端点：`GET/POST /developer/organizations`、`PATCH/DELETE /developer/organizations/{id}`；受保护组织的改名/删除返回400，不存在的组织返回404，reviewer调用全部403。
+- `generate_guidance_content()`查询全部非"默认"组织，按`{name}（{content}）`拼接、`、`分隔后套入`当前企业知识库已收录{列表}领域相关参考资料。`；无content的组织只输出名称；组织列表为空时返回兜底文案`当前企业知识库尚未配置知识领域。`。纯字符串拼接，不含任何关键词或正则判断。
+- `system_modules.list_modules()`的guidance改为实时调用该函数（tone/forbidden仍从`system_modules`表读取），因此expert classify/respond与fast共用的既有固定前缀组装点自动取到动态值，无需改动各调用点；`save_modules()`与`PUT /developer/system-modules`一旦收到guidance字段即拒绝（后者返回400并提示改用组织管理接口）。
+- 用户注册成功后自动关联"默认"组织：customer自助注册在`/auth/register`成功后调用`attach_user_to_default_organization()`；employee/reviewer/developer在`review_registration_request()`批准的同一事务内写入关联。**申请页不提供组织选择，所有新账号统一只关联"默认"组织**（此前实现过的申请时多选组织已按需求回退移除，含`registration_request_organizations`表、`organization_ids`请求字段和公开`GET /auth/organizations`端点）。
+- 修复`tests/conftest.py`清理遗漏：测试用户删除时同步清理`user_organizations`，避免回归反复运行在真实库堆积孤儿关联（本轮发现并清理了156条历史孤儿记录）。
+- `py_compile`通过；组织专项测试`10 passed`；权威`run_tests.bat -q`结果为`271 passed, 5 deselected`，无failed/skipped。真实HTTP验证：新建"财务"组织后guidance自动含"财务（发票报销、预算审批流程）"，删除后恢复为仅含"法律"；不带组织字段的员工申请经审批后仅关联"默认"组织；`GET /auth/organizations`确认已返回404。测试账号、申请记录与临时组织均已清理。
+
+## 2026-07-24 全量清空开发数据并将默认账号引导简化为仅保留0号
+- 执行既有`scripts/full_reset.py --confirm`完成全量清空（未新写清空逻辑）。清空前后真实计数：`users` 6→0、`registration_requests` 4→0（4条遗留申请记录一并清除，含1条pending）、`user_sessions` 5→0、`conversations` 16→0、`sessions` 5→0、`user_files` 1→0、`system_modules_nonempty` 3→0、`zhitian_memory` 2→0，`documents`与`zhitian_documents`本就为0。`organizations`种子数据（默认/法律）不在该脚本清空范围内，清空后完好。
+- `scripts/seed_dev_default_accounts.py`的`DEFAULT_ACCOUNTS`收窄为仅`("0", "developer")`，不再创建1/2/3三个测试角色账号；文件头注释与结束打印同步更新。执行后真实库账号总数为1，仅`username="0"`（developer、is_active=1、is_default_account=1）。
+- `scripts/deregister_packaging_default_accounts.py`未改动逻辑，仅在文件头补充现状说明：1/2/3今后不再被创建，该脚本在当前数据下会因找不到账号而全部跳过、成为无操作；保留以兼容仍存在历史1/2/3账号的旧数据库。
+- 本轮未改动"0号批准首个真实developer后自动失活"的既有事务逻辑，也未新增任何物理删除账号的功能。
+- `py_compile`通过；权威`run_tests.bat -q`结果为`271 passed, 5 deselected`，无failed/skipped，无测试依赖1/2/3默认账号（`test_account_batch5.py`使用的`remap_default_account_roles`为独立迁移脚本，测试自建0/1/2/3数据、与seed脚本无耦合，无需调整）。
+- 真实无reload后端验证：0号登录成功返回`role=developer`，已不存在的1号登录返回401；0号可访问developer专属端点且`registration_requests`为空；0号审批权限规则不受影响——审批reviewer申请返回403"默认开发者账号仅可审批开发者加入申请"，处理developer申请正常放行。验证造出的临时申请与验证码已清理，0号账号未被触碰，8000端口确认无残留监听。
+
+## 2026-07-24 新增注册密码强度校验
+- `layers/auth.py`新增`validate_password_strength(password) -> Optional[str]`：通过返回None，不通过返回统一提示`密码需至少10位，且包含大小写字母和数字`（常量`PASSWORD_MIN_LENGTH=10`与`PASSWORD_STRENGTH_HINT`）。规则为长度≥10且同时含大写、小写、数字，不要求特殊字符。
+- `POST /auth/register`与`POST /auth/register/request`在写入前调用该校验，不通过返回400并透传具体提示。校验位置刻意安排：**放在角色/邮箱格式检查之后**（保持既有测试对这两类错误提示的断言不变），**放在验证码与企业密码校验之前**（弱密码不应先消耗验证码尝试次数，真实验证确认拦截后同一验证码仍可用于重新提交）。
+- 该校验只作用于用户主动设置密码的时刻，不改动忘记密码、开发者重置密码这两条系统随机生成密码的流程，也不强制存量账号改密码。
+- 前端提示：`zhitian_admin/request-access.html`密码框下方新增`至少10位，需包含大小写字母和数字`（新增`.field-hint`样式），`request-access.js`新增`isStrongPassword()`预检；`zhitian_app`注册页密码框新增同文案`helperText`与`_strongPassword()`预检。两处前端预检仅用于减少无效请求，后端为唯一权威判断。
+- 新增`tests/test_password_strength.py`共9项：参数化覆盖长度不足/缺大写/缺小写/缺数字/全部满足五种情况，外加空值与None，以及两个注册端点各自的弱密码拒绝与强密码通过。
+- `py_compile`通过；Flutter `flutter analyze`无问题、`31 tests passed`；管理后台7个JavaScript文件`node --check`通过；权威`run_tests.bat -q`结果为`280 passed, 5 deselected`，无failed/skipped，较改动前271项增加9项。既有测试的`CodexTestPass123!`/`ApplicantPass123!`均已满足新规则，两处使用弱口令`Pass123!`的用例断言的是更早触发的角色/邮箱错误，故无需调整任何既有fixture。
+- 真实无reload后端HTTP验证：`/auth/register`与`/auth/register/request`对`weakpass1`均返回400及上述提示，对`Strongpass1`分别正常创建账号与pending申请。测试账号、申请与验证码已清理，真实库恢复为仅有默认账号0。
+- 排查记录（通用教训）：验证初期一度出现"弱密码被接受"的假象，`Get-CimInstance Win32_Process`确认8000端口实际由`.venv`主进程fork出的**系统Python子进程**（`ParentProcessId`指向`.venv`进程）持有并运行旧代码。此后停止后端须同时终止父子两个PID，仅杀父进程会留下仍在监听的子进程，导致后续验证命中过期代码。
+
+## 2026-07-24 补齐full_reset.py对email_verification_codes的清空覆盖
+- 修复`scripts/full_reset.py`的覆盖遗漏：`email_verification_codes`此前既不在`_snapshot()`计数中、也不在`_delete_tables()`清空列表中，导致"全量清空"后邮箱验证码记录仍残留（本次执行前真实残留1条已使用且已过期的记录，是上一次全量清空未覆盖到的历史数据）。
+- 按现有风格接入：`_snapshot()`新增`email_verification_codes`计数项（置于`registration_requests`之后），`_delete_tables(USERS_DB, ...)`元组新增同名表；沿用脚本原有的清空前后打印与"清空后仍非0即报错"的守卫，未改动清空方式或其他表行为。
+- `py_compile`通过。真实执行`scripts/full_reset.py --confirm`结果：`email_verification_codes`清空前`1`、清空后`0`，其余各表计数均正常打印且全部为0。该次执行同时清空了`users`（1→0），已随后执行`scripts/seed_dev_default_accounts.py`重新创建唯一默认账号0（developer）。
+- 权威`run_tests.bat -q`结果为`280 passed, 5 deselected`，无failed/skipped，与改动前一致。
+- 顺带修复本轮验证中暴露的测试泄漏：`tests/test_password_strength.py`注册customer成功后会自动关联"默认"组织，但清理只删了`users`、漏了`user_organizations`，导致**每跑一次权威回归就在真实库堆积一条孤儿关联**（本轮回归后实测新增1条，`user_id`已不存在于`users`）。已补充按`user_id`同步清理，并清除历史孤儿；连续执行两次`run_tests.bat -q`复验，`user_organizations`稳定为`0`，泄漏根除。与2026-07-24在`tests/conftest.py`修复的孤儿堆积属同一类问题，区别在于该测试文件未使用隔离DB fixture、直接操作真实库。
+- 遗留提示（本轮未改，待确认）：`user_organizations`仍不在`full_reset.py`清空范围内，若库中存在真实账号时执行全量清空，仍会留下孤儿关联。当前该表为0条，暂无实际影响。
+
+## 2026-07-25 新增邮箱发送量统计接口
+- 新增`GET /developer/email-usage-stats`（`require_developer`，reviewer/employee均403），返回`{used_today, daily_limit, business_day}`；`daily_limit`为模块常量`EMAIL_DAILY_LIMIT = 200`（对应DirectMail当前免费额度），按需求写死不做动态配置。
+- 业务日口径统一：`enterprise_password.py`新增`get_business_day_range(now)`，内部复用既有`get_business_day()`的凌晨4点边界判断并返回`[业务日04:00, 次日04:00)`时间窗，同时抽出`BUSINESS_DAY_START_HOUR = 4`常量替代散落的字面量；未重写任何日期边界算法。
+- `auth.py`新增`count_verification_codes_in_range(start_iso, end_iso)`，仅按时间窗统计`email_verification_codes`行数、不区分purpose（每行代表一次真实触发过的发送，发送失败不落库，因此不论后续是否被使用或过期均计入）。计数函数只接收时间窗参数、不感知业务日语义，规避`auth`与`enterprise_password`的循环导入（后者已import前者）。
+- 未新增数据表，直接复用`email_verification_codes.created_at`；该列以`datetime.isoformat()`写入，前19位定宽，字符串比较与时间顺序一致，可安全用于SQL范围过滤。
+- 新增`tests/test_email_usage_stats.py`共5项：业务日边界复用验证（3:59:59属前一业务日、4:00:00属当日，含窗口起止断言）、跨天窗口过滤（窗口起点含、止点不含、次日凌晨仍属当前业务日）、register与reset_password两种purpose均计入、接口仅developer可访问（reviewer/employee均403）、真实调用`create_verification_code`后计数递增。
+- `py_compile`通过；权威`run_tests.bat -q`结果为`285 passed, 5 deselected`，无failed/skipped，较改动前280项增加5项。
+- 真实HTTP验证：初始`used_today=0`；经`/auth/send-verification-code`真实触发两次DirectMail发送（purpose分别为register与reset_password，收件人为项目自有邮箱）后依次递增为1、2，`daily_limit=200`、`business_day=2026-07-25`均正确返回。这2条验证码记录属真实发送量，未作为测试数据清除。
+
+## 2026-07-25 企业密码校验前置到发送验证码环节
+- 修复真实安全缺口：`POST /auth/send-verification-code`此前只校验邮箱格式和purpose，企业密码要到"提交申请/忘记密码"才校验，攻击者可用大量不同虚假邮箱批量触发发送，消耗DirectMail每日200封额度（既有60秒/24小时限流按邮箱+purpose维度计算，只能防同一邮箱反复刷，防不住换邮箱刷）。`SendVerificationCodeRequest`新增必填字段`enterprise_password`，校验顺序为邮箱格式→purpose→企业密码→频率限制→生成并发送，比对复用`enterprise_password.get_current_enterprise_password()`+`secrets.compare_digest()`，与`/auth/register/request`、`/auth/forgot-password`两处完全一致，未复制任何推导逻辑。
+- 频率限制豁免规则：企业密码校验刻意放在频率限制**之前**，失败即返回403"企业密码错误"并直接结束请求。由于60秒冷却和24小时5次上限均由`email_verification_codes`表的历史行推导，而该表只在邮件真正发出后由`create_verification_code()`写入，因此错误密码请求既不占用真实用户的限流配额、也不计入`/developer/email-usage-stats`发送量统计——只有真正发出邮件才计入两者。
+- `/auth/register/request`与`/auth/forgot-password`的`enterprise_password`字段保持不变、继续各自独立校验：发送与提交是两次独立请求，前置校验不能替代最终提交时的校验（纵深防御）。本轮未引入CAPTCHA或任何第三方人机验证。
+- 管理后台`request-access.html`/`forgot-password.html`将企业密码输入框上移至验证码之前并加"发送验证码前需先填写"提示；`api.js::sendVerificationCode()`新增第三个参数透传`enterprise_password`；两页发送按钮未填企业密码时直接提示"请先填写企业密码"、不发起请求，企业密码错误时展示后端返回的具体提示（`request()`已透传`data.detail`）。
+- `tests/test_email_verification.py`新增5项并补齐既有`test_send_endpoint_stores_only_after_success`的新必填字段：错误密码403且不调用邮件服务/不落库/`used_today`不变、冷却期内错误密码仍返回403而非429且连续5次不产生任何记录（错误密码可无限重试）、正确密码发送后统计+1、发送→提交申请与发送→忘记密码两条端到端流程不受影响（其中申请路径同时断言提交环节的独立企业密码校验仍拦截）。
+- `py_compile`通过；管理后台8个JavaScript文件`node --check`通过；权威`run_tests.bat -q`结果为`290 passed, 5 deselected`，无failed/skipped，较改动前285项增加5项。真实HTTP验证（`.venv`无reload启动）：错误企业密码连续4次均返回403`{"detail":"企业密码错误"}`，缺失字段返回422，期间`email_verification_codes`未新增任何行（探针邮箱0行、总行数保持2）、`used_today`保持`2`未递增；随后用正确企业密码对真实邮箱触发一次DirectMail发送返回200`验证码已发送，请查收邮箱`，`used_today`由`2`递增为`3`，确认"只有真正发出邮件才计入统计"。该条验证码记录属真实发送量，未作为测试数据清除。
+- 端到端提交环节（发送→输入收到的验证码→提交申请/重置密码）的真实链路本轮未跑完：验证码只存bcrypt哈希、无法从库中反查明文，必须由用户从真实邮箱读取验证码后手动完成，正好与"当前等待用户手动创建四个真实测试账号"合并进行。该链路已由新增的两项端到端离线测试覆盖。
+
+## 2026-07-26 customer注册接入邮箱验证码并按用途拆分两套限流参数
+- customer自助注册此前完全无验证：`POST /auth/register`只校验角色/邮箱格式/密码强度，任何人可用任意邮箱直接建号。现新增必填字段`verification_code`，以`purpose="customer_register"`复用既有`verify_and_hold_code()`校验，错误或过期统一返回400`验证码错误或已过期`（与企业角色申请口径一致）。至此四类角色全部需要邮箱验证码，**仅企业角色（employee/reviewer/developer）额外需要企业密码**。
+- 验证码消费改为与建号同一事务：`auth.register_user()`新增可选参数`verification_purpose`，内部由`_connect()`改用`transaction(USERS_DB_PATH)`，在INSERT成功后调用`_mark_code_used_in_connection()`；邮箱重复等创建失败场景整体回滚、验证码不被消费，可在5分钟有效期内重试（与`create_registration_request()`既有写法一致，未新写消费逻辑）。
+- 限流参数按purpose拆成两套独立配置`VERIFICATION_SEND_RULES`：`customer_register`为180秒冷却+24小时5次，企业角色的`register`/`reset_password`为180秒冷却+24小时10次（此前两者共用60秒+5次，两个数字都已调整）。统计本就按`(email, purpose)`分组，因此新purpose天然与企业用途隔离，同一邮箱两类配额互不占用。
+- `email_verification_codes.purpose`原有CHECK约束只允许`register`/`reset_password`，新增`_migrate_verification_purpose_check()`按users表既有"建新表-搬数据-改名"方式幂等扩展到三个值；真实库迁移后CHECK已更新、6条历史行与查询索引完整保留、无残留中间表。
+- 邮件文案按场景区分：`customer_register`为`知天客户注册验证码`，企业角色`register`保持原有`知天注册验证验证码`不变，避免收件人混淆两条流程。
+- Flutter注册页新增验证码输入框与"发送验证码"按钮（`register_verification_code`/`register_send_code`两个Key），倒计时按新的180秒冷却显示剩余秒数并禁用按钮；`ApiService`新增`sendCustomerRegisterCode()`（请求体只含email与purpose，**不带企业密码**），`registerCustomer()`新增必填`verificationCode`参数。
+- 测试：后端新增7项（企业180秒/10次、customer180秒/5次、两类purpose计数互不干扰、customer发送不要求企业密码、验证码错误/过期返回400、成功后不可复用、创建失败不消费验证码），并同步更新`/auth/register`全部既有调用点（conftest新增`customer_register_payload()`辅助函数，并在`_cleanup_test_usernames()`补充清理验证码行，避免测试抬高真实邮件发送量统计）。Flutter新增4项（2项API序列化+2项注册页交互）。
+- `py_compile`通过；`flutter analyze`无问题、Flutter`35 tests passed`（原31项）；权威`run_tests.bat -q`结果为`297 passed, 5 deselected`，无failed/skipped，较改动前290项增加7项。
+- 真实HTTP+邮件验证（`.venv`无reload启动）：真实触发一次`customer_register`发送返回200，业务日发送量由6递增为7；邮件主题实际渲染为`知天客户注册验证码`，与企业场景`知天注册验证验证码`不同。端到端`/auth/register`：错误验证码400、正确验证码200并成功建号、同一验证码复用400、新账号可正常登录（role=customer）；验证用测试账号与其验证码已清理，真实库未残留。
+- 现场发现（非本轮改动）：真实库`users`表已由用户手动完成`987645344@qq.com`的developer注册审批，默认账号`0`已按既有事务逻辑自动失活（is_active=0），另有一条该邮箱的reviewer申请处于pending。因真实developer密码未知，本轮发送量核对改为直接调用`count_verification_codes_in_range()`（与`/developer/email-usage-stats`同一口径）而非登录调接口。

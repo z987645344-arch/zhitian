@@ -63,6 +63,44 @@ def test_enterprise_password_endpoints_are_role_isolated(client, auth_headers):
         assert client.get("/reviewer/enterprise-password", headers=headers).status_code == 403
 
 
+def test_manual_enterprise_password_refresh_changes_value_for_both_roles(
+    client, auth_headers
+):
+    developer_headers, _ = auth_headers("developer")
+    reviewer_headers, _ = auth_headers("reviewer")
+    employee_headers, _ = auth_headers("employee")
+
+    before = client.get(
+        "/developer/enterprise-password", headers=developer_headers
+    ).json()["password"]
+
+    forbidden = client.post(
+        "/developer/enterprise-password/refresh", headers=reviewer_headers
+    )
+    assert forbidden.status_code == 403
+    assert client.post(
+        "/developer/enterprise-password/refresh", headers=employee_headers
+    ).status_code == 403
+
+    refresh_response = client.post(
+        "/developer/enterprise-password/refresh", headers=developer_headers
+    )
+    assert refresh_response.status_code == 200
+    after = refresh_response.json()["password"]
+    assert after != before
+    assert after.isdigit()
+    assert len(after) == 8
+
+    developer_after = client.get(
+        "/developer/enterprise-password", headers=developer_headers
+    ).json()["password"]
+    reviewer_after = client.get(
+        "/reviewer/enterprise-password", headers=reviewer_headers
+    ).json()["password"]
+    assert developer_after == after
+    assert reviewer_after == after
+
+
 def test_headcount_snapshot_boundary_idempotence_and_delta(user_factory):
     user_factory("developer")
     user_factory("reviewer")

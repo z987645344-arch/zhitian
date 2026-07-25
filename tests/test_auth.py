@@ -7,7 +7,9 @@ import jwt
 
 import config
 import main
+from layers import auth
 from layers.auth import JWT_ALGORITHM
+from tests.conftest import CUSTOMER_REGISTER_CODE, customer_register_payload
 
 
 def test_register_success_for_customer(client, user_factory):
@@ -19,7 +21,12 @@ def test_register_rejects_privileged_roles(client):
     for role in ("employee", "reviewer", "developer"):
         response = client.post(
             "/auth/register",
-            json={"username": "blocked_%s@example.test" % role, "password": "Pass123!", "role": role},
+            json={
+                "username": "blocked_%s@example.test" % role,
+                "password": "Pass123!",
+                "role": role,
+                "verification_code": "123456",
+            },
         )
         assert response.status_code == 400
         assert response.json()["detail"] == "该角色需通过注册申请审批流程"
@@ -30,14 +37,14 @@ def test_duplicate_username_registration_fails(client, user_factory):
 
     response = client.post(
         "/auth/register",
-        json={
-            "username": user["username"],
-            "password": user["password"],
-            "role": "customer"
-        }
+        json=customer_register_payload(user["username"], user["password"]),
     )
 
     assert response.status_code == 400
+    # 账号创建失败时验证码不被消费，可在有效期内重试
+    assert auth.verify_and_hold_code(
+        user["username"], auth.CUSTOMER_REGISTER_PURPOSE, CUSTOMER_REGISTER_CODE
+    ) is True
 
 
 def test_login_success_returns_valid_jwt(client, user_factory):
@@ -141,22 +148,14 @@ def test_register_is_limited_to_ten_requests_per_hour(client):
             username = "test_rate_register_%s@example.test" % uuid.uuid4().hex
             created_usernames.append(username)
             response = client.post(
-                "/auth/register",
-                json={
-                    "username": username,
-                    "password": "CodexTestPass123!",
-                    "role": "customer",
-                },
+                "/auth/register", json=customer_register_payload(username)
             )
             assert response.status_code == 200, response.text
 
+        overflow_username = "test_rate_register_%s@example.test" % uuid.uuid4().hex
+        created_usernames.append(overflow_username)
         limited = client.post(
-            "/auth/register",
-            json={
-                "username": "test_rate_register_%s@example.test" % uuid.uuid4().hex,
-                "password": "CodexTestPass123!",
-                "role": "customer",
-            },
+            "/auth/register", json=customer_register_payload(overflow_username)
         )
         assert limited.status_code == 429
         assert limited.json()["detail"] == "请求过于频繁，请稍后重试"
@@ -188,7 +187,12 @@ def test_login_is_limited_to_ten_requests_per_hour(client, user_factory):
 def test_register_rejects_non_email_username(client):
     response = client.post(
         "/auth/register",
-        json={"username": "not-an-email", "password": "Pass123!", "role": "customer"},
+        json={
+            "username": "not-an-email",
+            "password": "Pass123!",
+            "role": "customer",
+            "verification_code": "123456",
+        },
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "用户名必须使用有效邮箱格式"

@@ -26,9 +26,30 @@ REGISTRATION_APPROVER_ROLES = {
     "reviewer": "developer",
     "developer": "developer",
 }
-VERIFICATION_PURPOSES = {"register", "reset_password"}
+# customer自助注册用途，与企业角色的register/reset_password严格区分：
+# 只有企业角色用途要求企业密码，且两类用途的发送计数按purpose天然隔离、互不干扰。
+CUSTOMER_REGISTER_PURPOSE = "customer_register"
+ENTERPRISE_VERIFICATION_PURPOSES = {"register", "reset_password"}
+VERIFICATION_PURPOSES = ENTERPRISE_VERIFICATION_PURPOSES | {CUSTOMER_REGISTER_PURPOSE}
+# 按purpose区分的两套独立限流参数：customer自助注册面向公开流量、每日上限更严，
+# 企业角色用途已有企业密码前置校验兜底，可放宽每日次数。
+VERIFICATION_SEND_RULES = {
+    CUSTOMER_REGISTER_PURPOSE: {"cooldown_seconds": 180, "daily_limit": 5},
+    "register": {"cooldown_seconds": 180, "daily_limit": 10},
+    "reset_password": {"cooldown_seconds": 180, "daily_limit": 10},
+}
 VERIFICATION_CODE_TTL_MINUTES = 5
 VERIFICATION_CODE_MAX_ATTEMPTS = 5
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_STRENGTH_HINT = "密码需至少10位，且包含大小写字母和数字"
+
+# 组织种子数据："默认"为受保护组织（所有用户注册后自动关联，不可改名/删除）；
+# "法律"为业务种子组织，guidance模块据此动态生成初始文案。
+DEFAULT_ORGANIZATION_NAME = "默认"
+_SEED_ORGANIZATIONS = (
+    (DEFAULT_ORGANIZATION_NAME, None, 1),
+    ("法律", "具体法条、司法解释、案例适用", 0),
+)
 
 
 def _unique_index_columns(conn: sqlite3.Connection, table: str) -> list[list[str]]:
@@ -84,6 +105,48 @@ def _migrate_users_unique_constraint(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE users_migrating RENAME TO users")
 
 
+def _migrate_verification_purpose_check(conn: sqlite3.Connection) -> None:
+    """将验证码purpose的CHECK约束幂等扩展到customer_register。
+
+    SQLite无法直接修改CHECK，沿用users表既有的"建新表-搬数据-改名"迁移方式；
+    历史验证码行原样保留。表被重建后由紧随其后的CREATE INDEX重新建立查询索引。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='email_verification_codes'"
+    ).fetchone()
+    if not row or CUSTOMER_REGISTER_PURPOSE in str(row["sql"]):
+        return
+    conn.execute("DROP TABLE IF EXISTS email_verification_codes_migrating")
+    conn.execute(
+        """
+        CREATE TABLE email_verification_codes_migrating (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            purpose TEXT NOT NULL
+                CHECK (purpose IN ('register', 'reset_password', 'customer_register')),
+            code_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used BOOLEAN NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO email_verification_codes_migrating (
+            id, email, purpose, code_hash, expires_at, used, attempts, created_at
+        )
+        SELECT id, email, purpose, code_hash, expires_at, used, attempts, created_at
+        FROM email_verification_codes
+        """
+    )
+    conn.execute("DROP TABLE email_verification_codes")
+    conn.execute(
+        "ALTER TABLE email_verification_codes_migrating RENAME TO email_verification_codes"
+    )
+
+
 def _migrate_registration_request_indexes(conn: sqlite3.Connection) -> None:
     expected = {
         "idx_registration_requests_pending_username": ["username", "requested_role"],
@@ -116,6 +179,22 @@ def _migrate_registration_request_indexes(conn: sqlite3.Connection) -> None:
         WHERE status = 'pending' AND email IS NOT NULL
         """
     )
+
+
+def _seed_default_organizations(conn: sqlite3.Connection) -> None:
+    """幂等插入组织种子数据，按name判断是否已存在，重复执行不重复插入。"""
+    for name, content, is_protected in _SEED_ORGANIZATIONS:
+        if conn.execute(
+            "SELECT 1 FROM organizations WHERE name = ?", (name,)
+        ).fetchone():
+            continue
+        conn.execute(
+            """
+            INSERT INTO organizations (name, content, is_protected, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, content, is_protected, datetime.now().isoformat()),
+        )
 
 
 def init_db() -> None:
@@ -225,7 +304,7 @@ def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     email TEXT NOT NULL,
                     purpose TEXT NOT NULL
-                        CHECK (purpose IN ('register', 'reset_password')),
+                        CHECK (purpose IN ('register', 'reset_password', 'customer_register')),
                     code_hash TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     used BOOLEAN NOT NULL DEFAULT 0,
@@ -234,19 +313,51 @@ def init_db() -> None:
                 )
                 """
             )
+            _migrate_verification_purpose_check(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_email_verification_codes_lookup
                 ON email_verification_codes(email, purpose, created_at DESC)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS organizations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    content TEXT,
+                    is_protected BOOLEAN NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_organizations (
+                    user_id TEXT NOT NULL,
+                    organization_id INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, organization_id)
+                )
+                """
+            )
+            _seed_default_organizations(conn)
     except Exception as e:
         logger.error("用户数据库初始化失败：error_type=%s", type(e).__name__)
         raise
 
 
-def register_user(username: str, password: str, role: str) -> dict:
-    """注册用户并保存bcrypt密码哈希。"""
+def register_user(
+    username: str,
+    password: str,
+    role: str,
+    verification_purpose: Optional[str] = None,
+) -> dict:
+    """注册用户并保存bcrypt密码哈希。
+
+    传入verification_purpose时，在同一事务内消费该用途的验证码：账号创建失败
+    （如邮箱重复）会整体回滚，验证码不被消费，可在有效期内重试。
+    """
     username = (username or "").strip()
     password = password or ""
     role = (role or "").strip()
@@ -260,7 +371,7 @@ def register_user(username: str, password: str, role: str) -> dict:
     user_id = str(uuid.uuid4())
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     try:
-        with _connect() as conn:
+        with transaction(USERS_DB_PATH) as conn:
             conn.execute(
                 """
                 INSERT INTO users (user_id, username, password_hash, role)
@@ -268,6 +379,11 @@ def register_user(username: str, password: str, role: str) -> dict:
                 """,
                 (user_id, username, password_hash, role)
             )
+            if verification_purpose:
+                if not _mark_code_used_in_connection(
+                    conn, username, verification_purpose
+                ):
+                    raise ValueError("验证码错误或已过期")
     except sqlite3.IntegrityError:
         raise ValueError("username已存在")
     except Exception as e:
@@ -292,6 +408,24 @@ def get_registration_approver_role(requested_role: str) -> str:
         return REGISTRATION_APPROVER_ROLES[role]
     except KeyError:
         raise ValueError("requested_role必须是employee、reviewer或developer")
+
+
+def validate_password_strength(password: str) -> Optional[str]:
+    """校验用户自设密码强度：通过返回None，不通过返回具体提示文案。
+
+    仅作用于用户主动设置密码的时刻（自助注册、企业角色申请），
+    不约束忘记密码/开发者重置密码这类系统随机生成的密码，
+    也不影响已有账号的历史密码。
+    """
+    value = password or ""
+    if (
+        len(value) < PASSWORD_MIN_LENGTH
+        or not any(char.isupper() for char in value)
+        or not any(char.islower() for char in value)
+        or not any(char.isdigit() for char in value)
+    ):
+        return PASSWORD_STRENGTH_HINT
+    return None
 
 
 def hash_registration_password(password: str) -> str:
@@ -323,9 +457,14 @@ def _now_iso(now: Optional[datetime] = None) -> str:
 def get_verification_send_limit(
     email: str, purpose: str, now: Optional[datetime] = None
 ) -> Optional[str]:
-    """返回 cooldown/daily 或 None；发送失败前只读检查，不产生限流副作用。"""
+    """返回 cooldown/daily 或 None；发送失败前只读检查，不产生限流副作用。
+
+    统计按 (email, purpose) 分组，因此customer与企业角色两类用途各自独立计数，
+    发送customer验证码不会占用同一邮箱申请企业角色的配额，反之亦然。
+    """
     normalized_email = _normalize_verification_email(email)
     normalized_purpose = _validate_verification_purpose(purpose)
+    rule = VERIFICATION_SEND_RULES[normalized_purpose]
     current = now or datetime.now()
     with _connect() as conn:
         rows = conn.execute(
@@ -341,9 +480,12 @@ def get_verification_send_limit(
             timestamps.append(datetime.fromisoformat(str(row["created_at"])))
         except ValueError:
             continue
-    if timestamps and current - timestamps[0] < timedelta(seconds=60):
+    if timestamps and current - timestamps[0] < timedelta(
+        seconds=rule["cooldown_seconds"]
+    ):
         return "cooldown"
-    if sum(1 for value in timestamps if current - value < timedelta(hours=24)) >= 5:
+    recent = sum(1 for value in timestamps if current - value < timedelta(hours=24))
+    if recent >= rule["daily_limit"]:
         return "daily"
     return None
 
@@ -637,6 +779,13 @@ def review_registration_request(
                 )
             except sqlite3.IntegrityError:
                 raise ValueError("用户名或邮箱已存在")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO user_organizations (user_id, organization_id, created_at)
+                SELECT ?, id, ? FROM organizations WHERE name = ?
+                """,
+                (user_id, now, DEFAULT_ORGANIZATION_NAME),
+            )
             status = "approved"
             if approver_role == "developer" and bool(approver["is_default_account"]):
                 conn.execute(
@@ -740,6 +889,24 @@ def reset_password_by_username(
         ):
             raise ValueError("验证码错误或已过期")
     return plaintext
+
+
+def count_verification_codes_in_range(start_iso: str, end_iso: str) -> int:
+    """统计[start_iso, end_iso)内创建的验证码记录数，不区分purpose。
+
+    每条记录代表一次真实触发过的发送动作（发送失败不落库），
+    因此无论后续是否被使用或过期都计入当日发送量。时间窗由调用方按
+    enterprise_password.get_business_day_range() 提供，此处不重复实现日期边界。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM email_verification_codes
+            WHERE created_at >= ? AND created_at < ?
+            """,
+            (start_iso, end_iso),
+        ).fetchone()
+    return int(row[0])
 
 
 def list_password_reset_events(limit: int = 20) -> list[dict]:

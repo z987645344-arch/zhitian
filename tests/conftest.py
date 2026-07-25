@@ -35,6 +35,23 @@ from layers import memory
 
 
 TEST_PASSWORD = "CodexTestPass123!"
+CUSTOMER_REGISTER_CODE = "123456"
+
+
+def customer_register_payload(username, password=TEST_PASSWORD):
+    """customer注册需邮箱验证码：先按customer_register用途落库一条，再返回请求体。
+
+    验证码行会随 _cleanup_test_usernames 一并清除，避免测试计入真实邮件发送量统计。
+    """
+    auth.create_verification_code(
+        username, auth.CUSTOMER_REGISTER_PURPOSE, CUSTOMER_REGISTER_CODE
+    )
+    return {
+        "username": username,
+        "password": password,
+        "role": "customer",
+        "verification_code": CUSTOMER_REGISTER_CODE,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -70,8 +87,17 @@ def _cleanup_test_usernames(usernames):
                 "DELETE FROM user_sessions WHERE user_id IN (%s)" % user_placeholders,
                 user_ids
             )
+            conn.execute(
+                "DELETE FROM user_organizations WHERE user_id IN (%s)" % user_placeholders,
+                user_ids
+            )
         conn.execute(
             "DELETE FROM users WHERE username IN (%s)" % placeholders,
+            list(usernames)
+        )
+        # customer注册测试会写入验证码行，不清理会持续抬高真实邮件发送量统计
+        conn.execute(
+            "DELETE FROM email_verification_codes WHERE email IN (%s)" % placeholders,
             list(usernames)
         )
 
@@ -84,12 +110,7 @@ def user_factory(client):
         username = "test_%s_%s@example.test" % (role, uuid.uuid4().hex)
         if role == "customer":
             response = client.post(
-                "/auth/register",
-                json={
-                    "username": username,
-                    "password": TEST_PASSWORD,
-                    "role": role
-                }
+                "/auth/register", json=customer_register_payload(username)
             )
             assert response.status_code == 200, response.text
             user_id = response.json()["user_id"]

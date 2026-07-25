@@ -15,17 +15,23 @@ class EmailServiceUnavailableError(RuntimeError):
 
 
 def _mail_subject_and_body(code: str, purpose: str) -> Tuple[str, str]:
-    if purpose == "register":
+    # customer自助注册与企业角色申请的文案必须可区分，避免收件人混淆两类流程
+    if purpose == "customer_register":
+        title = "客户注册"
+        scene = "知天客户注册"
+    elif purpose == "register":
         title = "注册验证"
+        scene = "知天注册验证"
     elif purpose == "reset_password":
         title = "密码重置验证"
+        scene = "知天密码重置验证"
     else:
         raise ValueError("验证码用途无效")
     subject = "知天%s验证码" % title
     body = (
-        "<p>您正在进行知天%s。</p>"
+        "<p>您正在进行%s。</p>"
         "<p>验证码：<strong>%s</strong></p>"
-        "<p>验证码 5 分钟内有效，请勿向他人泄露。</p>" % (title, code)
+        "<p>验证码 5 分钟内有效，请勿向他人泄露。</p>" % (scene, code)
     )
     return subject, body
 

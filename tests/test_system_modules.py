@@ -20,16 +20,22 @@ def isolated_system_modules(tmp_path, monkeypatch):
 
 def test_system_modules_store_overwrites_single_current_record():
     first = system_modules.save_modules(
-        {"guidance": "first", "tone": "tone", "forbidden": "forbidden"},
-        "reviewer-one",
+        {"tone": "tone-first", "forbidden": "forbidden"}, "reviewer-one"
     )
     second = system_modules.save_modules(
-        {"guidance": "second", "tone": "tone", "forbidden": "forbidden"},
-        "reviewer-two",
+        {"tone": "tone-second", "forbidden": "forbidden"}, "reviewer-two"
     )
-    assert first["guidance"].content == "first"
-    assert second["guidance"].content == "second"
-    assert second["guidance"].updated_by == "reviewer-two"
+    assert first["tone"].content == "tone-first"
+    assert second["tone"].content == "tone-second"
+    assert second["tone"].updated_by == "reviewer-two"
+
+
+def test_save_modules_rejects_guidance_key():
+    with pytest.raises(ValueError):
+        system_modules.save_modules(
+            {"guidance": "should be rejected", "tone": "t", "forbidden": "f"},
+            "reviewer-one",
+        )
 
 
 def test_system_modules_endpoints_require_developer(client, auth_headers):
@@ -41,7 +47,7 @@ def test_system_modules_endpoints_require_developer(client, auth_headers):
     denied_put = client.put(
         "/developer/system-modules",
         headers=reviewer_headers,
-        json={"guidance": "g", "tone": "t", "forbidden": "f"},
+        json={"tone": "t", "forbidden": "f"},
     )
     assert denied_get.status_code == 403
     assert denied_put.status_code == 403
@@ -49,18 +55,26 @@ def test_system_modules_endpoints_require_developer(client, auth_headers):
     saved = client.put(
         "/developer/system-modules",
         headers=developer_headers,
-        json={"guidance": "g", "tone": "t", "forbidden": "f"},
+        json={"tone": "t", "forbidden": "f"},
     )
     loaded = client.get("/developer/system-modules", headers=developer_headers)
     assert saved.status_code == 200
     assert loaded.status_code == 200
-    assert loaded.json()["guidance"]["content"] == "g"
+    assert loaded.json()["tone"]["content"] == "t"
+    assert loaded.json()["guidance"]["content"]
+
+    rejected = client.put(
+        "/developer/system-modules",
+        headers=developer_headers,
+        json={"guidance": "g", "tone": "t", "forbidden": "f"},
+    )
+    assert rejected.status_code == 400
 
     assert client.get("/reviewer/system-modules", headers=reviewer_headers).status_code == 404
     assert client.put(
         "/reviewer/system-modules",
         headers=reviewer_headers,
-        json={"guidance": "g", "tone": "t", "forbidden": "f"},
+        json={"tone": "t", "forbidden": "f"},
     ).status_code == 404
 
 
@@ -71,12 +85,13 @@ def test_modules_precede_rules_date_and_dynamic_content(monkeypatch):
         calls.append(messages)
         return {"choices": [{"message": {"tool_calls": []}}]}
 
+    monkeypatch.setattr(
+        system_modules.organizations,
+        "generate_guidance_content",
+        lambda: "GUIDANCE_MARKER",
+    )
     system_modules.save_modules(
-        {
-            "guidance": "GUIDANCE_MARKER",
-            "tone": "TONE_MARKER",
-            "forbidden": "FORBIDDEN_MARKER",
-        },
+        {"tone": "TONE_MARKER", "forbidden": "FORBIDDEN_MARKER"},
         "reviewer-test",
     )
     monkeypatch.setattr(planning.llm_provider, "chat_completion", fake_completion)
@@ -98,13 +113,16 @@ def test_modules_precede_rules_date_and_dynamic_content(monkeypatch):
     assert messages[-1]["content"] == "FAST_DYNAMIC"
 
 
-def test_fast_three_calls_share_module_order_and_keep_dynamic_content_outside_prefix():
+def test_fast_three_calls_share_module_order_and_keep_dynamic_content_outside_prefix(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        system_modules.organizations,
+        "generate_guidance_content",
+        lambda: "GUIDANCE_MARKER",
+    )
     system_modules.save_modules(
-        {
-            "guidance": "GUIDANCE_MARKER",
-            "tone": "TONE_MARKER",
-            "forbidden": "FORBIDDEN_MARKER",
-        },
+        {"tone": "TONE_MARKER", "forbidden": "FORBIDDEN_MARKER"},
         "reviewer-test",
     )
     state = planning._new_agent_state("module-fast-three", "FAST_QUERY", "fast")
@@ -136,12 +154,13 @@ def test_fast_three_calls_share_module_order_and_keep_dynamic_content_outside_pr
 
 def test_expert_document_metadata_stays_in_dynamic_message(monkeypatch):
     captured = {}
+    monkeypatch.setattr(
+        system_modules.organizations,
+        "generate_guidance_content",
+        lambda: "GUIDANCE_MARKER",
+    )
     system_modules.save_modules(
-        {
-            "guidance": "GUIDANCE_MARKER",
-            "tone": "TONE_MARKER",
-            "forbidden": "FORBIDDEN_MARKER",
-        },
+        {"tone": "TONE_MARKER", "forbidden": "FORBIDDEN_MARKER"},
         "reviewer-test",
     )
 

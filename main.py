@@ -27,11 +27,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, output, pdf_tools, perception, planning, system_modules
+from layers import attachments, auth, converter, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
 from utils.logger import get_logger
 from utils import observability
 
 logger = get_logger("main")
+
+# DirectMail 当前免费额度，仅用于展示对照，不做动态配置。
+EMAIL_DAILY_LIMIT = 200
 
 _request_gate_lock = threading.Lock()
 _active_http_requests = 0
@@ -148,9 +151,19 @@ class DebugRetrieveRequest(BaseModel):
 
 
 class SystemModulesRequest(BaseModel):
-    guidance: str = ""
+    guidance: Optional[str] = None
     tone: str = ""
     forbidden: str = ""
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    content: Optional[str] = None
+
+
+class OrganizationUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    content: Optional[str] = None
 
 
 class ToolConversionResponse(BaseModel):
@@ -204,6 +217,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     role: str
+    verification_code: str
 
 
 class LoginRequest(BaseModel):
@@ -234,6 +248,8 @@ class ForgotPasswordRequest(BaseModel):
 class SendVerificationCodeRequest(BaseModel):
     email: str
     purpose: str
+    # customer_register 用途不要求企业密码，因此这里可选；企业角色用途缺失即校验失败
+    enterprise_password: Optional[str] = None
 
 
 class PersonnelFlagRequest(BaseModel):
@@ -423,8 +439,22 @@ async def register(request: Request, payload: RegisterRequest):
         raise HTTPException(status_code=400, detail="该角色需通过注册申请审批流程")
     if not _is_basic_email(payload.username):
         raise HTTPException(status_code=400, detail="用户名必须使用有效邮箱格式")
+    password_error = auth.validate_password_strength(payload.password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
+    # 与企业角色申请同序：验证码校验放在弱密码拦截之后，弱密码不消耗验证码尝试次数
+    if not auth.verify_and_hold_code(
+        payload.username, auth.CUSTOMER_REGISTER_PURPOSE, payload.verification_code
+    ):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
     try:
-        user = auth.register_user(payload.username, payload.password, payload.role)
+        user = auth.register_user(
+            payload.username,
+            payload.password,
+            payload.role,
+            verification_purpose=auth.CUSTOMER_REGISTER_PURPOSE,
+        )
+        organizations.attach_user_to_default_organization(user["user_id"])
         return user
     except ValueError as e:
         logger.warning("/auth/register参数无效：username_len=%s error_type=%s", len(payload.username or ""), type(e).__name__)
@@ -472,6 +502,9 @@ async def request_registration(request: Request, payload: RegistrationApplicatio
         raise HTTPException(status_code=400, detail="申请角色无效")
     if not _is_basic_email(payload.username):
         raise HTTPException(status_code=400, detail="用户名必须使用有效邮箱格式")
+    password_error = auth.validate_password_strength(payload.password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
     if not auth.verify_and_hold_code(
         payload.username, "register", payload.verification_code
     ):
@@ -532,6 +565,15 @@ async def send_verification_code(
         raise HTTPException(status_code=400, detail="邮箱格式无效")
     if purpose not in auth.VERIFICATION_PURPOSES:
         raise HTTPException(status_code=400, detail="验证码用途无效")
+    # 企业密码前置校验，拦住"换邮箱批量刷验证码"消耗DirectMail每日额度的路径。
+    # 刻意放在频率限制之前：校验不通过即返回，既不写入 email_verification_codes，
+    # 也就不占用真实用户的冷却/24小时配额和每日发送量统计。
+    # customer自助注册本就不需要企业密码，只对企业角色用途要求。
+    if purpose in auth.ENTERPRISE_VERIFICATION_PURPOSES and not secrets.compare_digest(
+        payload.enterprise_password or "",
+        enterprise_password.get_current_enterprise_password(),
+    ):
+        raise HTTPException(status_code=403, detail="企业密码错误")
     limit = auth.get_verification_send_limit(email, purpose)
     if limit == "cooldown":
         raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
@@ -614,6 +656,30 @@ async def reviewer_enterprise_password(
     current_user: dict = Depends(require_reviewer),
 ):
     return _current_enterprise_password_response()
+
+
+@app.post("/developer/enterprise-password/refresh")
+async def refresh_enterprise_password(
+    current_user: dict = Depends(require_developer),
+):
+    enterprise_password.trigger_manual_refresh()
+    return _current_enterprise_password_response()
+
+
+@app.get("/developer/email-usage-stats")
+async def developer_email_usage_stats(
+    current_user: dict = Depends(require_developer),
+):
+    """当前业务日邮件发送量；业务日边界复用enterprise_password统一口径。"""
+    now = datetime.now()
+    start, end = enterprise_password.get_business_day_range(now)
+    return {
+        "used_today": auth.count_verification_codes_in_range(
+            start.isoformat(), end.isoformat()
+        ),
+        "daily_limit": EMAIL_DAILY_LIMIT,
+        "business_day": enterprise_password.get_business_day(now).isoformat(),
+    }
 
 
 @app.get("/developer/headcount-stats")
@@ -1804,8 +1870,62 @@ async def update_system_modules(
     request: SystemModulesRequest,
     current_user: dict = Depends(require_developer),
 ):
-    modules = system_modules.save_modules(request.model_dump(), current_user["user_id"])
+    if request.guidance is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="guidance模块已改为按组织自动生成，请通过组织管理接口调整",
+        )
+    modules = system_modules.save_modules(
+        {"tone": request.tone, "forbidden": request.forbidden},
+        current_user["user_id"],
+    )
     return {name: module.model_dump() for name, module in modules.items()}
+
+
+@app.get("/developer/organizations")
+async def list_organizations_endpoint(current_user: dict = Depends(require_developer)):
+    return {"organizations": organizations.list_organizations()}
+
+
+@app.post("/developer/organizations")
+async def create_organization_endpoint(
+    payload: OrganizationCreateRequest,
+    current_user: dict = Depends(require_developer),
+):
+    try:
+        return organizations.create_organization(payload.name, payload.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/developer/organizations/{organization_id}")
+async def update_organization_endpoint(
+    organization_id: int,
+    payload: OrganizationUpdateRequest,
+    current_user: dict = Depends(require_developer),
+):
+    try:
+        return organizations.update_organization(
+            organization_id, payload.name, payload.content
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="组织不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/developer/organizations/{organization_id}")
+async def delete_organization_endpoint(
+    organization_id: int,
+    current_user: dict = Depends(require_developer),
+):
+    try:
+        organizations.delete_organization(organization_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="组织不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"id": organization_id, "deleted": True}
 
 
 @app.post("/approve/{doc_id}")

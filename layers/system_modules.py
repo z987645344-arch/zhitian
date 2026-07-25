@@ -7,7 +7,7 @@ from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel
 
-from layers import auth
+from layers import auth, organizations
 
 
 MODULE_TYPES = ("guidance", "tone", "forbidden")
@@ -55,14 +55,19 @@ def list_modules() -> Dict[str, SystemModule]:
                 )
                 for module_type in MODULE_TYPES
             }
-        return {
+        result = {
             name: module.model_copy(deep=True)
             for name, module in _module_cache.items()
         }
+    result["guidance"].content = organizations.generate_guidance_content()
+    return result
 
 
 def save_modules(contents: Dict[str, str], updated_by: str) -> Dict[str, SystemModule]:
+    """保存tone/forbidden模块；guidance已改为按组织自动生成，不再接受手动传值。"""
     global _module_cache
+    if "guidance" in contents:
+        raise ValueError("guidance模块已改为按组织自动生成，请通过组织管理接口调整")
     invalid = set(contents) - set(MODULE_TYPES)
     if invalid:
         raise ValueError("不支持的系统模块类型")

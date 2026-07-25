@@ -92,6 +92,7 @@ def _snapshot() -> dict[str, int]:
         "users": _table_count(USERS_DB, "users"),
         "user_sessions": _table_count(USERS_DB, "user_sessions"),
         "registration_requests": _table_count(USERS_DB, "registration_requests"),
+        "email_verification_codes": _table_count(USERS_DB, "email_verification_codes"),
         "documents": _table_count(USERS_DB, "documents"),
         "system_modules_nonempty": _nonempty_system_module_count(),
         "conversations": _table_count(HISTORY_DB, "conversations"),
@@ -118,7 +119,13 @@ def main() -> None:
     _print_snapshot("清空前：", _snapshot())
     _delete_tables(
         USERS_DB,
-        ("registration_requests", "documents", "user_sessions", "users"),
+        (
+            "registration_requests",
+            "email_verification_codes",
+            "documents",
+            "user_sessions",
+            "users",
+        ),
     )
     _delete_tables(HISTORY_DB, ("conversations", "sessions"))
     _delete_tables(FILES_DB, ("user_files",))
