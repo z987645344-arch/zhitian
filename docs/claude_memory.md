@@ -265,4 +265,4 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |
 | 管理后台 | ✅ 静态网页（员工上传/录入 + 审核员审核/调试） |
-| Git 存档 | ✅ 三项目 v1.0/v2.0 均已 commit；v2.1已完成：后端`8dc9730`（账号注册审批体系Batch 0-6 + Tavily注入防护收尾）、管理后台`f9603eb`（developer/reviewer控制台重设计+账号自助服务前端）、客户端`8886e42`（customer邮箱注册+固定角色登录），三仓库均已推送并打tag v2.1，本地`.env`及运行产物持续被`.gitignore`排除未推送 |
+| Git 存档 | ✅ 三项目 v1.0/v2.0 均已 commit；v2.1：后端`8dc9730`、管理后台`f9603eb`、客户端`8886e42`，已推送并打tag v2.1。<br>**2026-07-26 最新存档**：后端`053fa67`（组织加入退出审批体系 + 文档组织归属机制 + 移除前端/后端模板文件夹 + GraphRAG评估记录，权威回归`317 passed, 5 deselected`）、管理后台`f014267`（组织大厅、审批队列与上传组织选择器，`node --check` 9个文件通过），两仓库均已推送至origin master。**客户端`zhitian_app`本批无改动**，仍停留在`9b2f904`（customer注册验证码 + 认证页重做），工作区clean。本地`.env`及运行产物持续被`.gitignore`排除未推送 |
