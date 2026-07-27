@@ -55,11 +55,11 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | ✅ 账号注册审批体系Batch 0-6（含企业密码展示）全部完成：开发者/审核员治理界面、企业申请审批、自助密码重置、DirectMail邮箱验证码与当前企业密码展示均已落地 |
-| 上一轮完成 | 2026-07-26：customer自助注册接入邮箱验证码（`/auth/register`新增必填`verification_code`，与建号同事务消费），并按purpose拆分两套限流参数（customer 180s/5次、企业角色 180s/10次）；Flutter注册页新增验证码输入与180秒倒计时。权威回归`297 passed, 5 deselected`，Flutter`35 tests passed` |
-| 当前等待 | **由用户继续手动走注册审批流程，补齐reviewer/employee/customer三个真实测试账号**（developer已建；developer批准reviewer，reviewer批准employee，customer自助注册）。注意两点新前提：①申请页/忘记密码页**必须先填企业密码才能发送验证码**；②customer注册现在也需要邮箱验证码，Flutter注册页先点"发送验证码"再填写 |
-| 真实账号现状 | 2026-07-26实测：`users`表有`0`（developer，**已因审批首个真实developer自动失活**`is_active=0`）和`987645344@qq.com`（developer，启用中）；`registration_requests`有3条（该邮箱的developer申请1条rejected、1条approved，reviewer申请1条**pending**）。reviewer/employee/customer真实账号仍为0。`email_verification_codes`有7条真实发送记录（业务日发送量`used_today=7`），属真实发送量非测试数据，未清除。**真实developer密码由用户掌握，AI侧不可知**，需要developer权限的真实验证只能改为直接查库或由用户操作 |
+| 上一轮完成 | 2026-07-26：文档新增组织归属（`documents.organization_id`）与管理端可见性隔离——上传须指定已加入组织、审核列表与审批按组织范围过滤，客户端检索链路零改动；并修复上一批遗留的测试写真实Chroma泄漏。权威回归`317 passed, 5 deselected`。<br>更早一轮：组织体系从"仅guidance标签"升级为真实工作资格门槛——新增`org_membership_requests`加入/退出审批（员工→本组织审核员、审核员→developer、组织无审核员时冷启动兜底转developer）、`lobby_content`大厅静态内容管理、四个业务端点的组织门槛，管理后台三页接入组织大厅与审批队列。权威回归`310 passed, 5 deselected` |
+| 当前等待 | **由用户手动验证真实审批链路**：真实developer密码AI侧不可知，本轮真实HTTP与浏览器验证均使用临时账号（已全部清理），真实账号上的组织审批需用户自己走一遍。<br>**注意本轮引入的行为变更**：真实的employee/reviewer账号是本功能之前创建的，尚未加入任何自定义组织，因此**现在上传文档/提交知识/审核文档都会返回403**，必须先在管理后台"组织大厅"申请加入"法律"（或新建组织）并完成审批。当前`法律`组织reviewer成员数为0，属冷启动场景——员工申请会路由到developer队列，用真实developer账号批准即可。<br>**2026-07-26追加**：加入组织后上传文档时还需选择归属组织（只加入一个时前端自动预填只读展示）；审核员只能看到并审核自己所属组织的文档，因此**员工与审核员必须加入同一个组织**，否则员工传上去的文档没有审核员看得到 |
+| 真实账号现状 | 2026-07-26实测：`users`表有`0`（developer，已因审批首个真实developer自动失活`is_active=0`）和`987645344@qq.com`的四个角色账号（developer/reviewer/employee/customer，均启用中），用户已完成四类真实账号创建。四个账号各自只关联"默认"组织，**均未加入任何自定义组织**。`documents`表0行、两个Chroma collection均为0——用户已手动清空全部历史文档，组织归属功能是在空库上上线的。组织表只有"默认"与"法律"。**真实账号密码由用户掌握，AI侧不可知**，需要真实登录的验证只能由用户操作或改为直接查库 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
-| 下一步 | 用户创建真实测试账号后：重新验证guidance简化后的12题法律路由准确率（此前07-19基线基于含search_documents指令的完整版guidance，本轮未测）；之后聚焦Agent能力深化：讨论DAG编排与稳定外部MCP生态接入 |
+| 下一步 | 用户走通真实组织审批链路后：重新验证guidance简化后的12题法律路由准确率（此前07-19基线基于含search_documents指令的完整版guidance，本轮未测）；之后聚焦Agent能力深化：讨论DAG编排与稳定外部MCP生态接入 |
 
 > 补充跨仓库完成记录（2026-07-23，Batch 5）：`zhitian_admin`已完成独立`developer.html`控制台重设计（角色人数统计、developer/reviewer详情、特别关注、备注、最近密码重置、系统模块与可观测性视图），`reviewer.html`已调整员工审批导航顺序并增加最近密码重置展示，公开`forgot-password.html`已接入自助重置流程。本记录此前只写入管理后台仓库CHANGELOG，现已同步至项目级状态文档。
 
@@ -136,6 +136,7 @@
 
 ### 第一优先：记忆与检索质量改进
 - 重要性评估、遗忘机制、hybrid search 和 DeepSeek 重排序已完成
+- 检索架构的下一档升级（GraphRAG）已讨论并**暂缓**，结论见下方「架构方向讨论记录」
 
 ### 第二优先：Agent 能力提升
 - 扩展工具集（数据库查询、API 调用、文件操作）
@@ -160,6 +161,42 @@
 
 ---
 
+## 架构方向讨论记录
+
+> 本节记录已讨论但**决定暂不实施**的架构方向，只作为未来重新评估时的参考依据，
+> 不代表任何近期开发计划。与「接下来规划」的区别：那里是准备做的，这里是明确暂缓的。
+
+### 2026-07-26 GraphRAG / PixelRAG 方向评估（暂缓，作为产品成熟后期的能力分支）
+
+**当前定位**：项目仍处于基础功能打磨阶段（账号治理、组织权限、检索质量），
+GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段的优先级。
+
+#### GraphRAG（知识图谱检索）
+
+- **定位**：从"平面检索"（NaiveRAG，chunk 独立打分）升级为"立体检索"（chunk 之间建立实体关系网络），解决"需要跨文档关联才能回答"的问题。现有 BM25+向量+DeepSeek 重排序架构属于**加强版 NaiveRAG**，符合行业 2026 年"先用最简单能 work 的方案：混合检索+重排序"的推荐路径。
+- **成本结构**：
+  - 建图阶段（文档入库时）需新增一次 DeepSeek 调用做实体关系抽取。这是"从 0 到 1"的新增开销，且属于**语义判断类工作，不能用代码规则写死**，无法省略——遵循既有编码原则第 7 条"不硬编码语义"。
+  - 查询阶段图遍历是**本地免费算力**，DeepSeek 调用次数与现状相同（只有最终统一重排序这一次），**查询延迟和成本不受影响**。
+  - 结论：成本只跟**文档上传频率**挂钩，与**查询次数**无关。
+- **若未来实施的推荐形态**：采用"向量召回 + 图关系扩展，最后统一交给 DeepSeek 分拣"的**串联融合模式**，优于"简单/复杂问题二选一分流"模式——因为串联不依赖一个可能判断错误的复杂度分类器。
+- **难度评估**：判断逻辑接入**难度中等**（可复用现有 `declare_complex_task` 式的语义判断模式，让 Agent 自主决定是否需要图检索）；图谱构建与维护**难度高**（实体关系抽取准确率无保障、增量更新工程复杂）。
+
+**明确的启动信号**（满足其一再评估，当前均未出现）：
+
+| 编号 | 信号 |
+|------|------|
+| ① | 真实使用中反复遇到需跨文档关联才能回答、现有检索答不出或答不全的问题 |
+| ② | 文档规模显著增长，远超当前几百 chunk 量级 |
+| ③ | 使用者主动反馈检索结果零散、缺乏逻辑关联 |
+
+#### PixelRAG（截图 + 视觉模型检索）
+
+- **定位**：把网页/PDF 渲染成截图 tile，用视觉模型理解内容，避免传统文字提取丢失表格、图表这类视觉排版信息。解决的是**"信息完整度"**问题，而非 GraphRAG 那种**"关联深度"**问题。
+- **判定为不做**：当前技术栈完全没有可用的视觉理解能力（2026-07-14 迁移 DeepSeek 时已移除 `GLM_VISION_MODEL` 配置）。若要接入需重新引入未经验证的新模型能力，**风险类比 MinerU 教训**——曾接入但因真实解析持续超时、从未产出可用结果而判定为不可交付并清理。
+- **例外条件**：除非未来文档中图表/表格内容显著增加、现有纯文字提取经常漏失关键数据，否则不建议投入。
+
+---
+
 ## 已知技术约束
 
 | 约束 | 说明 |
@@ -168,6 +205,12 @@
 | DeepSeek prompt caching | expert新增调用点必须按“固定角色/规则/工具说明 → 当日日期（仅原prompt需要时）→ 用户问题/上下文/检索结果”组织；固定前缀不得混入trace_id、精确时间戳等逐请求动态值。缓存由服务端自动尽力匹配；本轮重复长前缀实测命中2304 tokens、未命中92 tokens（约96.2%） |
 | 系统提示词模块 | `system_modules`表只保留tone/forbidden两类可编辑当前值；接口已迁移至`GET/PUT /developer/system-modules`并仅允许启用中的developer访问，不再需要二级密码。模型固定前缀按“规范→语气风格→禁用→原有规则→日期→逐请求动态内容”拼接，保存后缓存失效并从下一次请求生效；fast同样应用禁用模块 |
 | guidance按组织动态生成 | **guidance模块不再支持手动编辑**：`system_modules.list_modules()`的guidance每次实时调用`organizations.generate_guidance_content()`，只有tone/forbidden从`system_modules`表读取。`save_modules()`与`PUT /developer/system-modules`收到guidance字段即拒绝（接口返回400）。要调整guidance内容必须通过组织管理接口增删改组织，各调用点复用既有固定前缀组装点、无需单独改动。管理后台"规范模块"为只读展示 |
+| 组织=工作资格门槛 | **2026-07-26起组织不再只是guidance标签，而是真实的工作资格门槛**。"默认"组织＝大厅：全员自动在内、不可申请也不可退出、不出现在组织目录里，承载`lobby_content`单例表的三段公司级静态信息（工具规则/公告/行业准则，developer可编辑）。自定义组织＝功能群：加入/退出都要审批。**员工/审核员必须已加入至少一个非默认组织**才能调用`/documents/upload`、`/knowledge/input`、`/approve/{doc_id}`、`/reject/{doc_id}`，否则403。**账号注册审批（`/reviewer/registration-requests/*`）刻意不受此门槛限制**——账号是否存在与加入哪个工作组织是两条独立链路，已有测试锁定该行为，后续不要"顺手统一"加上门槛 |
+| 文档组织归属 | **2026-07-26起文档归属具体组织**（`documents.organization_id`，可空仅为兼容历史行，新上传必须显式传值）。上传时校验目标组织必须是上传者已加入的非默认组织，否则400；**服务端不做"只加入一个组织就自动推断"的默认**，前端预填、后端强制显式传值，缺字段422。管理端按组织隔离：`GET /pending`、`GET /documents/verified`只返回审核员所属组织范围内的文档（多组织取并集），`POST /approve|reject`跨组织返回403"无权操作其他组织的文档"。**未加入任何自定义组织的员工/审核员处于"流放"状态**：管理端看不到任何文档、不能上传也不能审核（列表返回空数组而非报错）。<br>**客户端检索完全不受影响**：`search_documents`不按`organization_id`过滤，仍只按`verified_doc_ids`筛选；`save_document`写入的organization_id仅是metadata备用字段。新增组织相关功能时不得把该字段引入检索过滤条件，已有专门测试（多组织verified文档同时被检索命中）锁定该行为 |
+| 文档历史数据 | 2026-07-26引入`organization_id`前，用户已手动清空全部历史文档：改动前`documents`表0行、Chroma `zhitian_documents` 0个chunk，**本次改动不涉及任何旧数据迁移或向量库回填**。因此库中不应存在`organization_id`为NULL的文档记录；若日后出现NULL记录，说明有绕过端点直接写库的路径，需要排查而不是补默认值 |
+| 测试写真实Chroma的坑 | 涉及`/knowledge/input`或`/documents/upload`**成功路径**的测试必须带上conftest的`isolated_chroma` fixture：这些端点会真实写入文档向量库，而多数测试文件只用monkeypatch隔离了`auth.USERS_DB_PATH`，Chroma仍指向真实`config.VECTORDB_PATH`。2026-07-26发现`test_org_membership.py`因此每跑一次回归就堆积一个孤儿chunk（SQLite无对应记录、检索不可达但持续累积），已修复并清理。与`user_organizations`孤儿关联属同一类问题：**隔离了SQLite不等于隔离了向量库** |
+| 组织审批路由 | 员工申请加入/退出 → 该组织内任一**审核员成员**处理；审核员申请 → 一律**developer**处理（developer凌驾于所有组织之上，不区分组织）。**冷启动兜底**：组织当前审核员成员数为0时，员工申请自动从reviewer队列消失、转入developer队列并带`cold_start_fallback`标记，reviewer强行调用返回403"该组织暂无审核员，请联系开发者处理"；组织补入审核员后同一条申请自动转回reviewer队列。申请记录在`org_membership_requests`表，用`WHERE status='pending'`的partial unique index保证同一用户对同一组织只有一条待审批记录。批准join/leave在同一事务内同步增删`user_organizations`，拒绝只改状态不动关联 |
+| 大厅内容双读取入口 | `GET /organizations/lobby-content`是employee/reviewer权限，developer**读不到**；developer侧必须用`GET /developer/lobby-content`（与`PUT`同权限）。这是编辑器需要回读当前值才能局部修改，沿用`/developer|/reviewer/enterprise-password`的双端点做法。新增类似"某角色可写但读走另一端点"的功能时注意同步补读取入口，否则编辑器会加载空白并覆盖已有内容 |
 | 组织管理 | `organizations`表（name唯一、content可空、is_protected）+ `user_organizations`多对多关联；种子数据按name幂等插入`默认`（受保护）和`法律`。"默认"组织受保护：不可重命名、不可删除、不可由开发者新建同名组织；开发者新建的组织`is_protected`恒为False。删除自定义组织会同步清除`user_organizations`关联但不影响账号本身。所有新账号（customer自助注册、employee/reviewer/developer审批通过）统一只自动关联"默认"组织；**申请页不提供组织选择**，曾实现的申请时多选组织已按需求回退移除 |
 | guidance内容简化说明 | guidance已从此前含“应优先调用search_documents核验知识库后再回答”等指令的完整版，简化为仅按组织拼接的命名句（`当前企业知识库已收录{组织列表}领域相关参考资料。`）。**2026-07-19验证过的12题法律路由准确率建议后续重新验证**，本轮未做该项测试 |
 | F10流式预分类 | 2026-07-20 WorkBuddy关于stream重复classify的审计结论已于2026-07-22通过git历史、prepared-state短路断言和真实runtime trace证伪；2026-07-17修复从未被后续改动破坏，后续不再将F10列为遗留问题 |
@@ -197,7 +240,7 @@
 | 邮箱验证码 | 邮箱验证码由DirectMail真实发送，验证码仅存bcrypt哈希；5分钟有效、5次错误后失效。**限流参数按purpose分两套独立配置**（`auth.VERIFICATION_SEND_RULES`，2026-07-26起）：`customer_register`为180秒冷却+24小时5次，企业角色的`register`/`reset_password`为180秒冷却+24小时10次（此前两者共用60秒+5次）。统计按`(email, purpose)`分组，两类用途配额天然隔离、互不占用。验证码只在注册申请或密码重置事务成功后消费，业务失败时可在有效期内重试；发送、验证码和收件邮箱全文不得写入日志。**`POST /auth/send-verification-code`对企业角色用途要求前置企业密码校验**（字段`enterprise_password`，2026-07-25起；**`customer_register`用途明确不要求企业密码**，该字段对customer场景为可选且不参与校验），顺序为邮箱格式→purpose→企业密码（仅企业用途）→频率限制→发送；企业密码错误返回403"企业密码错误"，且**不计入冷却/24小时频率限制、不计入`/developer/email-usage-stats`发送量统计**——两者都只由`create_verification_code()`写入的真实发送记录推导，只有真正发出邮件才计入。这是为了防"换邮箱批量刷验证码"消耗DirectMail每日200封额度（既有限流按邮箱+purpose维度，只防得住同一邮箱反复刷）。`/auth/register/request`与`/auth/forgot-password`提交时仍各自独立校验一次企业密码，属纵深防御，不得因发送环节已校验而省略 |
 | customer注册验证 | 2026-07-26起customer自助注册也需邮箱验证码：`POST /auth/register`新增必填`verification_code`，按`purpose="customer_register"`校验，错误/过期返回400"验证码错误或已过期"。**四类角色现在全部需要邮箱验证码，仅企业角色（employee/reviewer/developer）额外需要企业密码**——这是本次改动的核心定位变化（此前customer完全无验证）。验证码消费与建号在同一事务：`register_user(..., verification_purpose=...)`内部用`transaction()`包住INSERT与`_mark_code_used_in_connection()`，邮箱重复等失败场景整体回滚、验证码不消费可重试。`email_verification_codes.purpose`的CHECK约束已由`_migrate_verification_purpose_check()`幂等扩展到三个值，新增purpose必须同步该迁移否则真实库INSERT会被CHECK拒绝。Flutter注册页倒计时按180秒冷却显示，`sendCustomerRegisterCode()`请求体不带企业密码 |
 | 邮箱验证码离线测试隔离 | `send_verification_email`在调用前会检查`config.ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID`三项非空，任一为空即抛`EmailServiceUnavailableError`；凡是需要真实调用该函数（而非直接mock整个函数）的离线测试，必须monkeypatch这三项config属性为非空占位值，不能依赖本机`.env`是否配置真实密钥，否则本机通过、CI（无`.env`）必现失败 |
-| 开发数据重置 | `scripts/full_reset.py`必须显式传入`--confirm`且不接入启动流程。**`email_verification_codes`已于2026-07-24补充纳入清空范围**（此前遗漏，导致全量清空后邮箱验证码记录仍残留；2026-07-25复核确认该改动确实在磁盘代码中落地，`_snapshot()`计数项与`_delete_tables(USERS_DB, ...)`元组均已包含该表，无需再补）。当前覆盖：users、user_sessions、registration_requests、email_verification_codes、documents、conversations、sessions、user_files及物理文件、system_modules内容置空、两个Chroma collection。2026-07-24最近一次执行后已重新seed，users仅有唯一默认账号`0`（developer），其余全部为0。<br>**不在清空范围内**：`organizations`种子数据（默认/法律，属预期保留）；`user_organizations`（**属遗漏**，库中有真实账号时清空会留下孤儿关联，当前为0条暂无影响，待确认是否补入） |
+| 开发数据重置 | `scripts/full_reset.py`必须显式传入`--confirm`且不接入启动流程。**2026-07-26新增的`org_membership_requests`与`lobby_content`两张表同样未纳入清空范围**，与`user_organizations`属同一类待确认项（见本行末尾），本轮按"不擅自扩大既有待定决策"处理未改动。**`email_verification_codes`已于2026-07-24补充纳入清空范围**（此前遗漏，导致全量清空后邮箱验证码记录仍残留；2026-07-25复核确认该改动确实在磁盘代码中落地，`_snapshot()`计数项与`_delete_tables(USERS_DB, ...)`元组均已包含该表，无需再补）。当前覆盖：users、user_sessions、registration_requests、email_verification_codes、documents、conversations、sessions、user_files及物理文件、system_modules内容置空、两个Chroma collection。2026-07-24最近一次执行后已重新seed，users仅有唯一默认账号`0`（developer），其余全部为0。<br>**不在清空范围内**：`organizations`种子数据（默认/法律，属预期保留）；`user_organizations`（**属遗漏**，库中有真实账号时清空会留下孤儿关联，当前为0条暂无影响，待确认是否补入） |
 | 浏览器预览缓存 | 用浏览器验证管理后台前端改动时，预览面板存在**缓存旧脚本**的已知限制：页面行为与磁盘上的最新代码对不上时，优先怀疑缓存而不是代码逻辑错误。排查顺序为先比对磁盘文件实际内容（确认改动确实已写入），再强制刷新/硬重载页面重试；确认缓存已刷新后仍不一致，才开始排查代码本身 |
 | .env | 必须保持无 BOM UTF-8，否则 python-dotenv 无法正确识别首行环境变量名 |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |

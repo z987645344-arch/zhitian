@@ -658,3 +658,33 @@
 - `py_compile`通过；`flutter analyze`无问题、Flutter`35 tests passed`（原31项）；权威`run_tests.bat -q`结果为`297 passed, 5 deselected`，无failed/skipped，较改动前290项增加7项。
 - 真实HTTP+邮件验证（`.venv`无reload启动）：真实触发一次`customer_register`发送返回200，业务日发送量由6递增为7；邮件主题实际渲染为`知天客户注册验证码`，与企业场景`知天注册验证验证码`不同。端到端`/auth/register`：错误验证码400、正确验证码200并成功建号、同一验证码复用400、新账号可正常登录（role=customer）；验证用测试账号与其验证码已清理，真实库未残留。
 - 现场发现（非本轮改动）：真实库`users`表已由用户手动完成`987645344@qq.com`的developer注册审批，默认账号`0`已按既有事务逻辑自动失活（is_active=0），另有一条该邮箱的reviewer申请处于pending。因真实developer密码未知，本轮发送量核对改为直接调用`count_verification_codes_in_range()`（与`/developer/email-usage-stats`同一口径）而非登录调接口。
+
+## 2026-07-26 组织体系升级为真实工作资格门槛并接入加入/退出审批
+- 组织此前只影响guidance文本生成和developer后台的组织增删改，员工/审核员完全感知不到、实际工作也不受限。本批把闭环补完：**"默认"组织重新定位为大厅**（全员自动在内、不可申请也不可退出、承载公司级静态信息），自定义组织为**功能群**（加入/退出均需审批，加入后才具备实际工作资格）。文档本身仍不分类，组织只是人员归属与工作门槛，不是数据隔离机制。
+- 新增`org_membership_requests`表（user_id/organization_id/action(join|leave)/status/requested_at/approved_by/decided_at），并用**partial unique index**（`WHERE status='pending'`）保证同一用户对同一组织同时只有一条待审批记录；已决记录不受该约束。新增`lobby_content`单例表（tool_rules/company_announcements/industry_standards），沿用system_modules"固定行+就地更新"的思路，初始化时插入id=1。
+- 新增员工/审核员共用接口：`GET /organizations/directory`（只列非默认组织，含reviewer_count/employee_count与my_status四态none/pending_join/joined/pending_leave；人数只统计已建立关联且`is_active=1`的账号）、`GET /organizations/lobby-content`、`POST /organizations/{id}/join-request`与`/leave-request`。对"默认"组织发起申请一律400"默认组织无需申请，所有账号自动加入且不可退出"。
+- **审批路由**：员工申请由该组织内任一审核员成员处理（`GET/POST /reviewer/org-membership-requests`）；审核员申请一律由developer处理；**冷启动兜底**——组织当前审核员成员数为0时，员工申请从reviewer队列消失、转入developer队列并标记`cold_start_fallback`，reviewer强行调用返回403"该组织暂无审核员，请联系开发者处理"。批准join/leave在同一事务内同步增删`user_organizations`，拒绝只改申请状态、不动关联。
+- **工作资格门槛**：`/documents/upload`、`/knowledge/input`、`/approve/{doc_id}`、`/reject/{doc_id}`四个端点新增前置校验，必须已加入至少一个**非默认**组织，否则403（文案按动作区分：上传文档/提交知识/审核文档）。**刻意不给`/reviewer/registration-requests/{id}/approve|reject`加门槛**——账号注册审批与加入工作组织是两条独立链路，审核员未加入任何组织也应能审批员工注册申请，该行为有专门测试锁定。
+- 补充`GET /developer/lobby-content`：浏览器验证时发现developer能PUT却不能GET（`/organizations/lobby-content`是employee/reviewer权限），编辑器会加载空白并可能覆盖已有内容。沿用`/developer|/reviewer/enterprise-password`双端点的既有做法新增developer只读入口。
+- `delete_organization()`同步清除该组织的`org_membership_requests`，避免留下指向已删除组织的孤儿待审批记录。
+- 新增`tests/test_org_membership.py`共13项，覆盖目录状态与人数、重复/非法申请拦截、默认组织拒绝、批准join/leave正确增删关联、拒绝不改关联、reviewer无权处理无关组织、审核员申请只走developer、冷启动申请路由与补入审核员后自动转回reviewer队列、四个受限端点的门槛与放行、注册审批不受门槛影响、大厅内容读写权限。既有`tests/test_document_upload.py`7处上传用例改为先调用新增的`conftest.grant_work_organization()`满足门槛前置条件（这些用例验证的是上传校验本身，不是组织逻辑）。
+- `py_compile`通过；管理后台9个JavaScript文件`node --check`通过；权威`run_tests.bat -q`结果为`310 passed, 5 deselected`，无failed/skipped，较改动前297项增加13项。
+- 真实HTTP端到端验证（临时账号，验证后全部清理）：**20项断言全部通过**——未加入组织时上传/提交知识均403；审核员申请→developer批准→成为成员；员工申请→审核员批准→上传成功→审核员审核该文档成功；冷启动场景（新建空组织）申请不进reviewer队列、reviewer强行处理403、developer队列可见且标记兜底；默认组织拒绝申请、目录不含默认组织；大厅内容developer写入后员工可读。临时账号、临时组织、上传文档与大厅内容均已清理，真实账号与其pending申请未受影响。
+- 浏览器验证（管理后台静态服务 + 真实后端）：员工页大厅三段内容与组织卡片正确渲染、未加入时门槛提示可见且上传/录入入口被禁用、点击"申请加入"后卡片转为"加入审批中"；审核员页"员工组织申请"队列正确显示该申请并可批准，批准后队列清空、门槛提示消失。过程中发现并修复两处真实前端缺陷：①申请/审批成功提示被紧随其后的列表刷新清空（提示需在刷新之后再写）；②上述developer大厅内容GET权限缺口。
+
+## 2026-07-26 文档新增组织归属与管理端可见性隔离
+- `documents`表新增可空`organization_id`（`REFERENCES organizations(id)`），沿用`converted_from`既有的`PRAGMA table_info`幂等迁移风格；保留可空只为兼容历史行，本轮起两个上传端点都必须显式传值，不会产生新的NULL记录。
+- `/documents/upload`（multipart新增`organization_id: int = Form(...)`）与`/knowledge/input`（请求体新增必填`organization_id`）新增归属校验：目标组织必须是当前用户**已加入的非默认组织**，否则400"只能上传到你已加入的组织"。**刻意不实现"只加入一个组织就自动推断"的服务端默认**——前端可以预填，但值必须显式传上来，避免前后端各自推断产生不一致；缺字段直接422，有专门测试锁定。
+- 管理端按组织隔离可见性：`GET /pending`与`GET /documents/verified`只返回归属当前审核员所属组织的文档（多组织取并集，`list_pending_documents/list_verified_documents`新增`organization_ids`参数，None＝不过滤、空列表＝直接返回空）；`POST /approve|reject/{doc_id}`新增范围校验，跨组织操作返回403"无权操作其他组织的文档"。审核员未加入任何自定义组织时两个列表返回空数组而非报错，审批端点由既有`_require_custom_organization()`拦在前面返回403。
+- **客户端检索链路零改动**：`memory.save_document()`新增`organization_id`参数仅写入Chroma metadata备用，`search_documents`的查询与过滤逻辑一行未改，仍只按`verified_doc_ids`筛选。已用专门测试构造分属两个组织的verified文档，确认同一次检索能同时命中，证明未叠加组织过滤。
+- 列表与`get_document`改为`LEFT JOIN organizations`并返回`organization_name`供前端展示；`_document_row_to_dict()`按`row.keys()`按需附加组织字段，未JOIN组织表的既有调用点行为不变。
+- 新增`tests/test_document_organization.py`共7项：越权组织上传400、默认组织不是合法上传目标、上传成功写入正确organization_id（文件与文字录入两条路径）、缺字段422、审核员两个列表只含本组织文档、跨组织审批403且本组织放行、无组织审核员列表为空且审批403、客户检索同时命中不同组织的verified文档。既有`tests/test_document_upload.py`7处上传补传`organization_id`表单字段，两处`save_document/register_document`的monkeypatch stub同步补上新参数。
+- **修复上一批引入的测试泄漏**：`test_org_membership.py`中`/knowledge/input`放行分支会真实写入文档向量库（该文件只隔离了users.db、未隔离Chroma），导致每跑一次权威回归就在真实Chroma堆积一个孤儿chunk。本轮为该用例补上既有`isolated_chroma` fixture，并清理了已堆积的5个孤儿chunk（内容均为"一条测试知识"、source为`manual_input:`，SQLite无对应审核记录、检索链路上已不可达）。补后连续两次回归确认`zhitian_documents`稳定为0。
+- `py_compile`通过；管理后台9个JavaScript文件`node --check`通过；权威`run_tests.bat -q`结果为`317 passed, 5 deselected`，无failed/skipped，较改动前310项增加7项。
+- 真实HTTP验证（临时账号/组织/文档，验证后全部清理）：**11项断言全部通过**——员工上传到已加入组织成功且`organization_id`正确落库、上传到未加入组织400；法律组织审核员待审核列表可见该文档、财务组织审核员看不到、财务审核员跨组织审批403、法律审核员审批通过；两个审核员的已通过列表同样按组织隔离；**customer真实提问命中该文档并返回citation**，证明客户检索链路未受组织隔离影响。
+- 浏览器验证：员工只加入一个组织时上传区渲染只读"将上传至：法律"并附隐藏字段；加入两个组织后渲染下拉（法律/财务），选中"财务"后真实上传，回查`documents.organization_id`确为财务组织id，确认下拉选择值确实提交到后端。验证产生的文档、向量、临时账号与临时组织均已清理。
+- 前置核对：改动前`documents`表0行、`organization_id`字段不存在，符合"用户已手动清空历史文档"的前提，**本轮不涉及任何历史数据迁移或Chroma回填**。
+
+## 2026-07-26 讨论并记录GraphRAG/PixelRAG架构方向评估结论
+- 评估结论为**暂缓实施**，两项均作为产品成熟后期的能力分支，不进入近期开发计划；详见`docs/claude_memory.md`新增的「架构方向讨论记录」小节（含成本结构分析、推荐融合形态与三条明确启动信号）。
+- 本次无代码改动，不涉及测试与语法检查。

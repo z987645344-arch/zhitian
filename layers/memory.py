@@ -531,8 +531,13 @@ def save_document(
     chunks: list[str],
     doc_id: str,
     converted_from: str = "",
+    organization_id: Optional[int] = None,
 ) -> int:
-    """将文档切片写入独立Chroma Collection。"""
+    """将文档切片写入独立Chroma Collection。
+
+    organization_id仅作为metadata写入备用，search_documents不按该字段过滤：
+    组织隔离只作用于管理端可见性，客户端检索始终面向全部verified文档。
+    """
     if not source:
         raise ValueError("source不能为空")
     if not doc_id:
@@ -557,7 +562,8 @@ def save_document(
                     "converted_from": converted_from,
                     "chunk_index": i,
                     "total_chunks": total_chunks,
-                    "uploaded_at": uploaded_at
+                    "uploaded_at": uploaded_at,
+                    "organization_id": organization_id if organization_id else 0,
                 }
                 for i in range(total_chunks)
             ],

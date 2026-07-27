@@ -66,6 +66,30 @@ def client():
     return TestClient(main.app)
 
 
+def grant_work_organization(user_id, name="法律"):
+    """给测试账号补一个非默认组织关联，返回该组织id。
+
+    2026-07-26起员工/审核员必须加入至少一个非默认组织才能上传或审核，
+    且上传时必须显式传入归属组织；只想验证上传校验、审核流程等其他逻辑的
+    测试需先满足该前置条件。关联行随 _cleanup_test_usernames 一并清理。
+    """
+    with auth._connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM organizations WHERE name = ?", (name,)
+        ).fetchone()
+        if not row:
+            return None
+        organization_id = int(row["id"])
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO user_organizations (user_id, organization_id)
+            VALUES (?, ?)
+            """,
+            (user_id, organization_id),
+        )
+    return organization_id
+
+
 def _cleanup_test_usernames(usernames):
     if not usernames:
         return

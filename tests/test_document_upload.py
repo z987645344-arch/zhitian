@@ -12,6 +12,7 @@ import pytest
 import config
 import main
 from layers import converter
+from tests.conftest import grant_work_organization
 
 
 def test_text_sample_allows_multibyte_character_split_at_header_boundary():
@@ -62,7 +63,7 @@ def _pdf_bytes() -> bytes:
 def _stub_document_persistence(monkeypatch):
     monkeypatch.setattr(
         "main.memory.save_document",
-        lambda source, chunks, doc_id, converted_from="": len(chunks),
+        lambda source, chunks, doc_id, converted_from="", organization_id=None: len(chunks),
     )
     monkeypatch.setattr("main.auth.register_document", lambda *args, **kwargs: None)
 
@@ -75,7 +76,8 @@ def _office_zip_bytes(entry: str) -> bytes:
 
 
 def test_upload_rejects_forged_xlsx_before_parsing(client, auth_headers, monkeypatch):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     parsed = []
     monkeypatch.setattr("main.document_loader.load_document", lambda path: parsed.append(path))
 
@@ -83,6 +85,7 @@ def test_upload_rejects_forged_xlsx_before_parsing(client, auth_headers, monkeyp
         "/documents/upload",
         headers=headers,
         files={"file": ("report.xlsx", b"not an xlsx", "application/octet-stream")},
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 400
@@ -90,7 +93,8 @@ def test_upload_rejects_forged_xlsx_before_parsing(client, auth_headers, monkeyp
 
 
 def test_upload_rejects_unsupported_extension_before_parsing(client, auth_headers, monkeypatch):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     parsed = []
     monkeypatch.setattr("main.document_loader.load_document", lambda path: parsed.append(path))
 
@@ -98,6 +102,7 @@ def test_upload_rejects_unsupported_extension_before_parsing(client, auth_header
         "/documents/upload",
         headers=headers,
         files={"file": ("program.exe", b"MZbinary", "application/octet-stream")},
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 400
@@ -105,7 +110,8 @@ def test_upload_rejects_unsupported_extension_before_parsing(client, auth_header
 
 
 def test_upload_rejects_executable_renamed_as_text(client, auth_headers, monkeypatch):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     parsed = []
     monkeypatch.setattr("main.document_loader.load_document", lambda path: parsed.append(path))
 
@@ -113,6 +119,7 @@ def test_upload_rejects_executable_renamed_as_text(client, auth_headers, monkeyp
         "/documents/upload",
         headers=headers,
         files={"file": ("renamed.txt", b"MZ\x00\x00binary executable", "text/plain")},
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 400
@@ -125,7 +132,8 @@ def test_upload_rejects_oversized_file_and_removes_partial_copy(
     tmp_path,
     monkeypatch,
 ):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_MB", 1)
     content = b"a" * (1024 * 1024 + 1)
@@ -134,6 +142,7 @@ def test_upload_rejects_oversized_file_and_removes_partial_copy(
         "/documents/upload",
         headers=headers,
         files={"file": ("large.txt", content, "text/plain")},
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 413
@@ -158,7 +167,8 @@ def test_streaming_size_guard_handles_missing_upload_size(tmp_path, monkeypatch)
 
 
 def test_supported_upload_formats_reach_parser(client, auth_headers, monkeypatch):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     _stub_document_persistence(monkeypatch)
     samples = {
         "sample.txt": (b"plain text", "text/plain"),
@@ -175,6 +185,7 @@ def test_supported_upload_formats_reach_parser(client, auth_headers, monkeypatch
             "/documents/upload",
             headers=headers,
             files={"file": (filename, content, content_type)},
+            data={"organization_id": upload_org},
         )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "success"
@@ -197,7 +208,8 @@ def test_convertible_upload_converts_and_cleans_temp_files(
     content,
     target_format,
 ):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     saved = {}
 
@@ -220,14 +232,14 @@ def test_convertible_upload_converts_and_cleans_temp_files(
     monkeypatch.setattr("main.document_loader.load_document", lambda path: "converted text")
     monkeypatch.setattr(
         "main.memory.save_document",
-        lambda source, chunks, doc_id, converted_from="": saved.update(
+        lambda source, chunks, doc_id, converted_from="", organization_id=None: saved.update(
             source=source,
             converted_from=converted_from,
         ) or len(chunks),
     )
     monkeypatch.setattr(
         "main.auth.register_document",
-        lambda doc_id, source, uploaded_by, converted_from="": saved.update(
+        lambda doc_id, source, uploaded_by, converted_from="", organization_id=None: saved.update(
             db_converted_from=converted_from,
         ),
     )
@@ -236,6 +248,7 @@ def test_convertible_upload_converts_and_cleans_temp_files(
         "/documents/upload",
         headers=headers,
         files={"file": (filename, content, "application/octet-stream")},
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 200, response.text
@@ -254,7 +267,8 @@ def test_convertible_upload_failure_is_rejected_and_cleans_source(
     tmp_path,
     monkeypatch,
 ):
-    headers, _ = auth_headers("employee")
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(
         "main.converter.convert_file",
@@ -278,6 +292,7 @@ def test_convertible_upload_failure_is_rejected_and_cleans_source(
                 "application/msword",
             )
         },
+        data={"organization_id": upload_org},
     )
 
     assert response.status_code == 422

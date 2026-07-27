@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 import bcrypt
 import jwt
@@ -261,7 +261,8 @@ def init_db() -> None:
                     uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     reviewed_by TEXT,
                     reviewed_at DATETIME,
-                    converted_from TEXT
+                    converted_from TEXT,
+                    organization_id INTEGER REFERENCES organizations(id)
                 )
                 """
             )
@@ -271,6 +272,12 @@ def init_db() -> None:
             }
             if "converted_from" not in columns:
                 conn.execute("ALTER TABLE documents ADD COLUMN converted_from TEXT")
+            # 组织归属：保留可空以兼容历史记录，但新上传必须由端点显式传值
+            if "organization_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE documents ADD COLUMN organization_id INTEGER "
+                    "REFERENCES organizations(id)"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS registration_requests (
@@ -340,6 +347,45 @@ def init_db() -> None:
                     PRIMARY KEY (user_id, organization_id)
                 )
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS org_membership_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    organization_id INTEGER NOT NULL,
+                    action TEXT NOT NULL CHECK (action IN ('join', 'leave')),
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'rejected')),
+                    requested_at TEXT NOT NULL,
+                    approved_by TEXT,
+                    decided_at TEXT
+                )
+                """
+            )
+            # 同一用户对同一组织同时只允许一条pending，已决记录不受约束
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_org_membership_requests_pending
+                ON org_membership_requests(user_id, organization_id)
+                WHERE status = 'pending'
+                """
+            )
+            # 大厅静态内容为单例表，沿用system_modules"固定行+就地更新"的思路
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lobby_content (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    tool_rules TEXT NOT NULL DEFAULT '',
+                    company_announcements TEXT NOT NULL DEFAULT '',
+                    industry_standards TEXT NOT NULL DEFAULT '',
+                    updated_by TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO lobby_content (id) VALUES (1)"
             )
             _seed_default_organizations(conn)
     except Exception as e:
@@ -1030,8 +1076,13 @@ def register_document(
     source: str,
     uploaded_by: str,
     converted_from: str = "",
+    organization_id: Optional[int] = None,
 ) -> None:
-    """登记上传文档，默认进入pending审核状态。"""
+    """登记上传文档，默认进入pending审核状态。
+
+    organization_id为文档归属组织，决定管理端（待审核/文档管理/审批）的可见范围；
+    客户端检索不使用该字段。
+    """
     if not doc_id:
         raise ValueError("doc_id不能为空")
     if not source:
@@ -1044,11 +1095,12 @@ def register_document(
             conn.execute(
                 """
                 INSERT INTO documents (
-                    doc_id, source, trust_level, uploaded_by, converted_from
+                    doc_id, source, trust_level, uploaded_by, converted_from,
+                    organization_id
                 )
-                VALUES (?, ?, 'pending', ?, ?)
+                VALUES (?, ?, 'pending', ?, ?, ?)
                 """,
-                (doc_id, source, uploaded_by, converted_from or None)
+                (doc_id, source, uploaded_by, converted_from or None, organization_id)
             )
     except Exception as e:
         logger.error(
@@ -1060,18 +1112,39 @@ def register_document(
         raise
 
 
-def list_pending_documents() -> list[dict]:
-    """返回所有待审核文档。"""
+def _organization_scope_clause(organization_ids: Optional[List[int]]):
+    """把审核员的组织范围翻译成SQL条件；None表示不过滤。"""
+    if organization_ids is None:
+        return "", []
+    placeholders = ",".join("?" for _ in organization_ids)
+    return " AND d.organization_id IN (%s)" % placeholders, list(organization_ids)
+
+
+def list_pending_documents(
+    organization_ids: Optional[List[int]] = None,
+) -> list[dict]:
+    """返回待审核文档；传入组织范围时只返回归属这些组织的文档。
+
+    organization_ids为None表示不按组织过滤（保留给不涉及组织隔离的调用点）；
+    传入空列表表示范围为空，直接返回空列表。
+    """
+    if organization_ids is not None and not organization_ids:
+        return []
+    scope_sql, scope_params = _organization_scope_clause(organization_ids)
     try:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
-                       reviewed_by, reviewed_at, converted_from
-                FROM documents
-                WHERE trust_level = 'pending'
-                ORDER BY uploaded_at ASC
+                SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
+                       d.reviewed_by, d.reviewed_at, d.converted_from,
+                       d.organization_id, o.name AS organization_name
+                FROM documents d
+                LEFT JOIN organizations o ON o.id = d.organization_id
+                WHERE d.trust_level = 'pending'
                 """
+                + scope_sql
+                + " ORDER BY d.uploaded_at ASC",
+                scope_params,
             ).fetchall()
         return [_document_row_to_dict(row) for row in rows]
     except Exception as e:
@@ -1097,18 +1170,27 @@ def list_documents() -> list[dict]:
         raise
 
 
-def list_verified_documents() -> list[dict]:
-    """返回所有已审核通过的文档记录。"""
+def list_verified_documents(
+    organization_ids: Optional[List[int]] = None,
+) -> list[dict]:
+    """返回已审核通过的文档；语义与list_pending_documents的组织范围一致。"""
+    if organization_ids is not None and not organization_ids:
+        return []
+    scope_sql, scope_params = _organization_scope_clause(organization_ids)
     try:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
-                       reviewed_by, reviewed_at, converted_from
-                FROM documents
-                WHERE trust_level = 'verified'
-                ORDER BY reviewed_at DESC
+                SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
+                       d.reviewed_by, d.reviewed_at, d.converted_from,
+                       d.organization_id, o.name AS organization_name
+                FROM documents d
+                LEFT JOIN organizations o ON o.id = d.organization_id
+                WHERE d.trust_level = 'verified'
                 """
+                + scope_sql
+                + " ORDER BY d.reviewed_at DESC",
+                scope_params,
             ).fetchall()
         documents = [_document_row_to_dict(row) for row in rows]
         return [
@@ -1222,10 +1304,12 @@ def get_document(doc_id: str) -> dict | None:
         with _connect() as conn:
             row = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
-                       reviewed_by, reviewed_at, converted_from
-                FROM documents
-                WHERE doc_id = ?
+                SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
+                       d.reviewed_by, d.reviewed_at, d.converted_from,
+                       d.organization_id, o.name AS organization_name
+                FROM documents d
+                LEFT JOIN organizations o ON o.id = d.organization_id
+                WHERE d.doc_id = ?
                 """,
                 (doc_id,)
             ).fetchone()
@@ -1330,7 +1414,7 @@ def _review_document(doc_id: str, reviewer_user_id: str, trust_level: str) -> bo
 
 
 def _document_row_to_dict(row: sqlite3.Row) -> dict:
-    return {
+    result = {
         "doc_id": row["doc_id"],
         "source": row["source"],
         "trust_level": row["trust_level"],
@@ -1340,6 +1424,14 @@ def _document_row_to_dict(row: sqlite3.Row) -> dict:
         "reviewed_at": row["reviewed_at"],
         "converted_from": row["converted_from"] or ""
     }
+    # 组织字段按查询是否选出而定，避免影响未JOIN组织表的既有调用点
+    keys = row.keys()
+    if "organization_id" in keys:
+        value = row["organization_id"]
+        result["organization_id"] = int(value) if value is not None else None
+    if "organization_name" in keys:
+        result["organization_name"] = row["organization_name"]
+    return result
 
 
 def _user_row_to_dict(row: sqlite3.Row) -> dict:

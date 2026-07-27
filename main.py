@@ -142,6 +142,8 @@ class SessionRenameRequest(BaseModel):
 class KnowledgeInputRequest(BaseModel):
     content: str
     title: str = ""
+    # 文档归属组织，必填；服务端不做"只有一个组织就自动推断"的默认逻辑
+    organization_id: int
 
 
 class DebugRetrieveRequest(BaseModel):
@@ -164,6 +166,14 @@ class OrganizationCreateRequest(BaseModel):
 class OrganizationUpdateRequest(BaseModel):
     name: Optional[str] = None
     content: Optional[str] = None
+
+
+class LobbyContentRequest(BaseModel):
+    """三段大厅静态内容；未传字段保持原值，不做删除语义。"""
+
+    tool_rules: Optional[str] = None
+    company_announcements: Optional[str] = None
+    industry_standards: Optional[str] = None
 
 
 class ToolConversionResponse(BaseModel):
@@ -300,6 +310,44 @@ def require_developer(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user["role"] != "developer" or not current_user.get("is_active", False):
         raise HTTPException(status_code=403, detail="需要developer权限")
     return current_user
+
+
+def _require_custom_organization(current_user: dict, action_hint: str) -> None:
+    """工作资格门槛：必须加入至少一个非默认组织才能执行实际业务动作。
+
+    "默认"组织是所有账号自动在内的大厅，不构成工作资格；账号注册审批
+    （registration_requests那条链）刻意不受此门槛限制，属于另一条独立链路。
+    """
+    if not organizations.has_custom_organization(current_user["user_id"]):
+        raise HTTPException(
+            status_code=403, detail="请先加入至少一个组织后再%s" % action_hint
+        )
+
+
+def _require_upload_organization(current_user: dict, organization_id: int) -> int:
+    """校验上传目标组织必须是当前用户已加入的非默认组织。
+
+    刻意不做"只加入一个组织时自动推断"的服务端默认：前端可以预填，
+    但值必须显式传上来，避免前后端各自推断产生不一致。
+    """
+    allowed = organizations.get_user_organization_ids(
+        current_user["user_id"], include_default=False
+    )
+    if organization_id not in allowed:
+        raise HTTPException(status_code=400, detail="只能上传到你已加入的组织")
+    return organization_id
+
+
+def _reviewer_organization_scope(current_user: dict) -> List[int]:
+    """审核员的可见组织范围；未加入任何自定义组织时为空列表（列表接口返回空）。"""
+    return organizations.get_user_organization_ids(
+        current_user["user_id"], include_default=False
+    )
+
+
+def _require_document_in_scope(current_user: dict, document: dict) -> None:
+    if document.get("organization_id") not in _reviewer_organization_scope(current_user):
+        raise HTTPException(status_code=403, detail="无权操作其他组织的文档")
 
 
 def require_reviewer_or_developer(
@@ -1632,8 +1680,11 @@ async def split_pdf_tool_file(
 @app.post("/documents/upload")
 async def upload_document(
     file: UploadFile = File(...),
+    organization_id: int = Form(...),
     current_user: dict = Depends(require_employee)
 ):
+    _require_custom_organization(current_user, "上传文档")
+    _require_upload_organization(current_user, organization_id)
     filename = _safe_upload_filename(file.filename or "")
     logger.info("收到/documents/upload请求：filename_len=%s", len(filename))
     if not filename:
@@ -1690,12 +1741,14 @@ async def upload_document(
             chunks,
             doc_id=doc_id,
             converted_from=converted_from,
+            organization_id=organization_id,
         )
         auth.register_document(
             doc_id,
             filename,
             current_user["user_id"],
             converted_from=converted_from,
+            organization_id=organization_id,
         )
         return {
             "status": "success",
@@ -1716,6 +1769,8 @@ async def input_knowledge(
     request: KnowledgeInputRequest,
     current_user: dict = Depends(require_employee)
 ):
+    _require_custom_organization(current_user, "提交知识")
+    _require_upload_organization(current_user, request.organization_id)
     content = (request.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content不能为空")
@@ -1724,8 +1779,15 @@ async def input_knowledge(
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
     chunks = document_loader.chunk_text(content)
     doc_id = str(uuid.uuid4())
-    count = memory.save_document(source, chunks, doc_id=doc_id)
-    auth.register_document(doc_id, source, current_user["user_id"])
+    count = memory.save_document(
+        source, chunks, doc_id=doc_id, organization_id=request.organization_id
+    )
+    auth.register_document(
+        doc_id,
+        source,
+        current_user["user_id"],
+        organization_id=request.organization_id,
+    )
     return {
         "status": "success",
         "doc_id": doc_id,
@@ -1748,7 +1810,10 @@ async def list_documents(current_user: dict = Depends(require_employee)):
 @app.get("/documents/verified")
 async def list_verified_documents(current_user: dict = Depends(require_reviewer)):
     logger.info("收到GET /documents/verified请求：user_id=%s", current_user["user_id"])
-    documents = _merge_document_chunks(auth.list_verified_documents(), reviewer_mode=True)
+    documents = _merge_document_chunks(
+        auth.list_verified_documents(_reviewer_organization_scope(current_user)),
+        reviewer_mode=True,
+    )
     return {
         "documents": documents,
         "total": len(documents)
@@ -1844,7 +1909,8 @@ async def preview_document(doc_id: str, current_user: dict = Depends(require_rev
 
 @app.get("/pending")
 async def pending(current_user: dict = Depends(require_reviewer)):
-    documents = auth.list_pending_documents()
+    # 只展示归属自己所属组织的文档；未加入任何自定义组织时为空列表而非报错
+    documents = auth.list_pending_documents(_reviewer_organization_scope(current_user))
     return {
         "documents": documents,
         "total": len(documents)
@@ -1928,8 +1994,132 @@ async def delete_organization_endpoint(
     return {"id": organization_id, "deleted": True}
 
 
+@app.get("/organizations/directory")
+async def organizations_directory(current_user: dict = Depends(require_employee)):
+    """组织目录：只含非默认组织，"默认"是所有账号自动在内的大厅。"""
+    return {"organizations": organizations.list_directory(current_user["user_id"])}
+
+
+@app.get("/organizations/lobby-content")
+async def get_lobby_content_endpoint(current_user: dict = Depends(require_employee)):
+    return organizations.get_lobby_content()
+
+
+def _membership_request_or_http(current_user: dict, organization_id: int, action: str):
+    try:
+        return organizations.create_membership_request(
+            current_user["user_id"], organization_id, action
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="组织不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/organizations/{organization_id}/join-request")
+async def request_join_organization(
+    organization_id: int, current_user: dict = Depends(require_employee)
+):
+    return _membership_request_or_http(current_user, organization_id, "join")
+
+
+@app.post("/organizations/{organization_id}/leave-request")
+async def request_leave_organization(
+    organization_id: int, current_user: dict = Depends(require_employee)
+):
+    return _membership_request_or_http(current_user, organization_id, "leave")
+
+
+def _review_membership_or_http(
+    request_id: int, current_user: dict, approve: bool
+) -> dict:
+    try:
+        return organizations.review_membership_request(
+            request_id, current_user["user_id"], current_user["role"], approve
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/reviewer/org-membership-requests")
+async def reviewer_org_membership_requests(
+    current_user: dict = Depends(require_reviewer),
+):
+    return {
+        "requests": organizations.list_reviewer_pending_requests(
+            current_user["user_id"]
+        )
+    }
+
+
+@app.post("/reviewer/org-membership-requests/{request_id}/approve")
+async def reviewer_approve_org_membership(
+    request_id: int, current_user: dict = Depends(require_reviewer)
+):
+    return _review_membership_or_http(request_id, current_user, True)
+
+
+@app.post("/reviewer/org-membership-requests/{request_id}/reject")
+async def reviewer_reject_org_membership(
+    request_id: int, current_user: dict = Depends(require_reviewer)
+):
+    return _review_membership_or_http(request_id, current_user, False)
+
+
+@app.get("/developer/org-membership-requests")
+async def developer_org_membership_requests(
+    current_user: dict = Depends(require_developer),
+):
+    return {"requests": organizations.list_developer_pending_requests()}
+
+
+@app.post("/developer/org-membership-requests/{request_id}/approve")
+async def developer_approve_org_membership(
+    request_id: int, current_user: dict = Depends(require_developer)
+):
+    return _review_membership_or_http(request_id, current_user, True)
+
+
+@app.post("/developer/org-membership-requests/{request_id}/reject")
+async def developer_reject_org_membership(
+    request_id: int, current_user: dict = Depends(require_developer)
+):
+    return _review_membership_or_http(request_id, current_user, False)
+
+
+@app.get("/developer/lobby-content")
+async def developer_lobby_content(current_user: dict = Depends(require_developer)):
+    """与/organizations/lobby-content同一份数据的developer只读入口。
+
+    编辑器需要先回读当前内容才能局部修改，沿用企业密码双端点的既有做法。
+    """
+    return organizations.get_lobby_content()
+
+
+@app.put("/developer/lobby-content")
+async def update_lobby_content_endpoint(
+    payload: LobbyContentRequest,
+    current_user: dict = Depends(require_developer),
+):
+    return organizations.save_lobby_content(
+        payload.tool_rules,
+        payload.company_announcements,
+        payload.industry_standards,
+        current_user["user_id"],
+    )
+
+
 @app.post("/approve/{doc_id}")
 async def approve_document(doc_id: str, current_user: dict = Depends(require_reviewer)):
+    _require_custom_organization(current_user, "审核文档")
+    target = auth.get_document(doc_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_in_scope(current_user, target)
     approved = auth.approve_document(doc_id, current_user["user_id"])
     if not approved:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -1945,6 +2135,11 @@ async def approve_document(doc_id: str, current_user: dict = Depends(require_rev
 
 @app.post("/reject/{doc_id}")
 async def reject_document(doc_id: str, current_user: dict = Depends(require_reviewer)):
+    _require_custom_organization(current_user, "审核文档")
+    target = auth.get_document(doc_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_in_scope(current_user, target)
     rejected = auth.reject_document(doc_id, current_user["user_id"])
     if not rejected:
         raise HTTPException(status_code=404, detail="文档不存在")
