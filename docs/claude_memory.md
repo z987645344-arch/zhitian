@@ -161,6 +161,18 @@
 
 ---
 
+## README 现状（2026-07-26 刷新）
+
+后端`README.md`已按实际代码校准，下次改动涉及以下任一项时需同步更新：
+
+- 质量证据数字改为实测`317 passed, 5 deselected`（原为过时的`186 passed`）；里程碑标签范围改为`v1.1 至 v2.3`（原写`v1.0 至 v1.9`，且后端首个标签实际是v1.1而非v1.0）
+- `.env`示例补齐`ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID/ALIYUN_MAIL_ACCOUNT_NAME`与`CORS_ORIGINS`，并说明DirectMail三项缺失时只让验证码功能明确报错、不影响系统其余部分；`ALIYUN_MAIL_ACCOUNT_NAME`在README中一律用占位符，**不要写入config.py里的真实默认发件域名**
+- 权限表新增`developer`行；新增「组织体系」小节（加入/退出审批、工作资格门槛、文档按组织隔离管理端可见性、客户端检索不受限）
+- 顺带修正的过时描述：release徽章`v1.9`→`v2.3`、架构图后台角色补developer、fast模式调用次数由"最多两次"改为"无工具1次/证据不足2次/证据充分最多3次"、核心模块表补`layers/organizations.py`、评审路径第1步补审批与加入组织前提、关联仓库中`zhitian_admin`改为三角色后台
+- README列出的12个环境变量已逐项核对确认在`config.py`有真实`os.getenv`引用；`SECONDARY_DEV_PASSWORD`虽仍存在于config.py与`main.py::require_system_modules_access`，但该依赖已不被任何端点使用，属死配置，故未写入README
+
+---
+
 ## 架构方向讨论记录
 
 > 本节记录已讨论但**决定暂不实施**的架构方向，只作为未来重新评估时的参考依据，
@@ -265,4 +277,4 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows 桌面端跑通（登录/聊天/历史/citations） |
 | 管理后台 | ✅ 静态网页（员工上传/录入 + 审核员审核/调试） |
-| Git 存档 | ✅ 三项目 v1.0/v2.0 均已 commit；v2.1：后端`8dc9730`、管理后台`f9603eb`、客户端`8886e42`，已推送并打tag v2.1。<br>**2026-07-26 最新存档**：后端`053fa67`（组织加入退出审批体系 + 文档组织归属机制 + 移除前端/后端模板文件夹 + GraphRAG评估记录，权威回归`317 passed, 5 deselected`）、管理后台`f014267`（组织大厅、审批队列与上传组织选择器，`node --check` 9个文件通过），两仓库均已推送至origin master。**客户端`zhitian_app`本批无改动**，仍停留在`9b2f904`（customer注册验证码 + 认证页重做），工作区clean。本地`.env`及运行产物持续被`.gitignore`排除未推送 |
+| Git 存档 | ✅ 三项目 v1.0/v2.0 均已 commit；v2.1：后端`8dc9730`、管理后台`f9603eb`、客户端`8886e42`，已推送并打tag v2.1。<br>**2026-07-26 最新存档（tag v2.3）**：后端`4dbc0d8`（README刷新，v2.3标签指向此提交；上一条`053fa67`为组织加入退出审批体系 + 文档组织归属机制 + 移除前端/后端模板文件夹 + GraphRAG评估记录，权威回归`317 passed, 5 deselected`）、管理后台`f014267`（组织大厅、审批队列与上传组织选择器，`node --check` 9个文件通过，v2.3标签指向此提交），两仓库commit与v2.3标签均已推送至origin。**客户端`zhitian_app`本批无改动**，仍停留在`9b2f904`，标签保持`v2.2`未新增。本地`.env`及运行产物持续被`.gitignore`排除未推送 |
