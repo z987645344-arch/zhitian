@@ -97,6 +97,17 @@ MEMORY_FADE_OUT_NORMAL_DAYS = int(os.getenv("MEMORY_FADE_OUT_NORMAL_DAYS", "60")
 MEMORY_HARD_DELETE_HIGH_DAYS = int(os.getenv("MEMORY_HARD_DELETE_HIGH_DAYS", "540"))
 MEMORY_HARD_DELETE_NORMAL_DAYS = int(os.getenv("MEMORY_HARD_DELETE_NORMAL_DAYS", "90"))
 
+# GraphRAG：默认关闭，需显式设置 GRAPH_RAG_ENABLED=true 才生效。
+# 关闭时建图与图扩展两段逻辑都不执行，检索行为与接入前完全一致。
+GRAPH_RAG_ENABLED = os.getenv("GRAPH_RAG_ENABLED", "false").strip().lower() == "true"
+# 图扩展新增候选数上限倍数：不超过原候选数的该倍数，避免候选池无限膨胀
+GRAPH_EXPANSION_MAX_MULTIPLIER = float(os.getenv("GRAPH_EXPANSION_MAX_MULTIPLIER", "2.0"))
+GRAPH_EXTRACTION_TIMEOUT = float(os.getenv("GRAPH_EXTRACTION_TIMEOUT", "20.0"))
+# 图扩展候选的关系传播衰减：扩展候选自身没有向量/BM25分数，按"最强种子分×衰减"赋分。
+# 重排序只重排不改写score，而execution.py按RAG_SCORE_THRESHOLD过滤，若赋0分则图扩展
+# 候选必被滤掉、特性空转；该系数是让扩展候选与种子同台竞争的唯一旋钮，不改动阈值本身。
+GRAPH_PROPAGATION_DECAY = float(os.getenv("GRAPH_PROPAGATION_DECAY", "0.85"))
+
 # ReAct
 MAX_REACT_ROUNDS = 2
 MAX_COMPLEX_TASKS = int(os.getenv("MAX_COMPLEX_TASKS", "10"))

@@ -37,6 +37,13 @@ _output_anomaly_by_tier = {
 }
 _recent_requests = deque(maxlen=100)
 _active_requests = {}
+# GraphRAG：建图抽取成败计数，以及查询期图扩展的新增量与被重排序采纳量
+_graph_extraction_stats = {"success": 0, "failed": 0}
+_graph_expansion_stats = {
+    "queries": 0,
+    "added_total": 0,
+    "adopted_total": 0,
+}
 
 
 def set_trace_id(trace_id: str, mode: str = "fast") -> Token:
@@ -169,6 +176,20 @@ def record_output_anomaly_check_failed(tier: str) -> None:
             _output_anomaly_by_tier[tier]["failed"] += 1
 
 
+def record_graph_extraction(success: bool) -> None:
+    """建图阶段：单个chunk的实体抽取成功/失败计数。"""
+    with _stats_lock:
+        _graph_extraction_stats["success" if success else "failed"] += 1
+
+
+def record_graph_expansion(added: int, adopted: int) -> None:
+    """查询阶段：图扩展新增候选数，以及其中最终被重排序采纳进结果的数量。"""
+    with _stats_lock:
+        _graph_expansion_stats["queries"] += 1
+        _graph_expansion_stats["added_total"] += max(0, int(added))
+        _graph_expansion_stats["adopted_total"] += max(0, int(adopted))
+
+
 def metrics_snapshot() -> dict[str, Any]:
     """Return process-local counters. They reset on restart and are not multi-worker aggregated."""
     with _stats_lock:
@@ -192,6 +213,21 @@ def metrics_snapshot() -> dict[str, Any]:
             "output_anomaly_by_tier": {
                 tier: dict(values)
                 for tier, values in _output_anomaly_by_tier.items()
+            },
+            "graph_extraction": dict(_graph_extraction_stats),
+            "graph_expansion": {
+                **_graph_expansion_stats,
+                "average_added": round(
+                    _graph_expansion_stats["added_total"]
+                    / _graph_expansion_stats["queries"],
+                    2,
+                ) if _graph_expansion_stats["queries"] else 0,
+                # 命中率：图扩展新增的候选里最终被采纳进结果的比例
+                "adoption_rate": round(
+                    _graph_expansion_stats["adopted_total"]
+                    / _graph_expansion_stats["added_total"],
+                    4,
+                ) if _graph_expansion_stats["added_total"] else 0,
             },
             "provider_errors": {name: dict(values) for name, values in _provider_errors.items()},
             "latency_percentiles_ms": _latency_percentiles_by_mode(recent_requests),

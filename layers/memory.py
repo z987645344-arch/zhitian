@@ -569,7 +569,37 @@ def save_document(
             ],
             ids=[str(uuid.uuid4()) for _ in clean_chunks]
         )
+    # GraphRAG 建图：默认关闭；开启时逐 chunk 抽取实体关系，任何失败都只跳过
+    # 图谱增强，不影响文档本身已完成的保存与后续 BM25/向量检索。
+    if config.GRAPH_RAG_ENABLED:
+        _build_document_graph(doc_id, clean_chunks)
     return total_chunks
+
+
+def _cleanup_document_graph(doc_ids) -> None:
+    from layers import graph_store
+
+    removed = 0
+    for doc_id in doc_ids:
+        if doc_id:
+            try:
+                removed += graph_store.delete_document_graph(doc_id)
+            except Exception as exc:
+                logger.warning("图谱关联清理失败：error_type=%s", type(exc).__name__)
+    if removed:
+        logger.info("图谱chunk关联已清理：removed=%s", removed)
+
+
+def _build_document_graph(doc_id: str, chunks: list[str]) -> None:
+    from layers import graph_store
+
+    succeeded = 0
+    for index, chunk in enumerate(chunks):
+        if graph_store.build_chunk_graph(graph_store.chunk_key(doc_id, index), chunk):
+            succeeded += 1
+    logger.info(
+        "文档图谱构建完成：chunk_total=%s graph_succeeded=%s", len(chunks), succeeded
+    )
 
 
 def search_documents(
@@ -609,6 +639,15 @@ def search_documents(
     lexical_results = _build_bm25_search_results(bm25_candidates)
     results = _merge_document_results(vector_results, lexical_results)
 
+    # GraphRAG 图扩展：默认关闭。关闭时下面整段不执行，无任何额外查询开销。
+    graph_added = 0
+    if config.GRAPH_RAG_ENABLED:
+        stage_started_at = time.perf_counter()
+        results, graph_added = _apply_graph_expansion(results, allowed_doc_ids)
+        observability.log_stage(
+            "documents_graph_expand", int((time.perf_counter() - stage_started_at) * 1000)
+        )
+
     stage_started_at = time.perf_counter()
     results = _apply_title_source_boost(results, query)
     observability.log_stage("documents_title_match", int((time.perf_counter() - stage_started_at) * 1000))
@@ -619,14 +658,117 @@ def search_documents(
         results = _apply_document_rerank(query, results, tier=tier, timeout=timeout)
     observability.log_stage("documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    final_results = results[:safe_top_k]
+    if config.GRAPH_RAG_ENABLED:
+        adopted = sum(1 for item in final_results if item.get("graph_expanded"))
+        observability.record_graph_expansion(graph_added, adopted)
     logger.info(
         "文档hybrid检索完成：query_len=%s bm25_candidates=%s result_count=%s elapsed_ms=%s",
         len(query or ""),
         len(bm25_candidates),
-        len(results[:safe_top_k]),
+        len(final_results),
         elapsed_ms
     )
-    return results[:safe_top_k]
+    return final_results
+
+
+def _apply_graph_expansion(
+    results: list[dict], allowed_doc_ids: Optional[list[str]]
+) -> Tuple[list[dict], int]:
+    """由种子候选做一跳图扩展，把关联chunk并入候选池。
+
+    赋分说明：扩展候选没有自己的向量/BM25分数，按"最强种子分 × 传播衰减"赋一个
+    传播分，使其与种子在同一把尺子下参与既有阈值判断和同一次重排序；不新增模型调用。
+    """
+    from layers import graph_store
+
+    if not results:
+        return results, 0
+    seed_keys = [
+        graph_store.chunk_key(item.get("doc_id", ""), item.get("chunk_index", 0))
+        for item in results
+    ]
+    limit = graph_store.expansion_limit(len(results))
+    try:
+        new_keys = graph_store.expand_chunk_keys(seed_keys, limit)
+    except Exception as exc:
+        logger.warning("图扩展查询失败，保留原候选：error_type=%s", type(exc).__name__)
+        return results, 0
+    # 扩展候选必须同样受verified白名单约束，否则会把未审核文档带进回答
+    if allowed_doc_ids is not None:
+        allowed = set(allowed_doc_ids)
+        new_keys = [
+            key for key in new_keys
+            if graph_store.doc_id_from_chunk_key(key) in allowed
+        ]
+    if not new_keys:
+        return results, 0
+
+    seed_best = max(float(item.get("score", 0.0)) for item in results)
+    try:
+        decay = float(config.GRAPH_PROPAGATION_DECAY)
+    except (TypeError, ValueError):
+        decay = 0.85
+    propagated = round(max(0.0, seed_best) * max(0.0, decay), 6)
+
+    expanded = _fetch_chunks_by_keys(new_keys)
+    added = []
+    for item in expanded:
+        added.append({
+            "content": item["content"],
+            "source": item["source"],
+            "title": item.get("title", ""),
+            "doc_id": item["doc_id"],
+            "chunk_index": item["chunk_index"],
+            "score": propagated,
+            "vector_score": 0.0,
+            "title_boosted": False,
+            "final_score": propagated,
+            "graph_expanded": True,
+        })
+    logger.info(
+        "图扩展完成：seed=%s added=%s limit=%s propagated_score=%.4f",
+        len(results),
+        len(added),
+        limit,
+        propagated,
+    )
+    return results + added, len(added)
+
+
+def _fetch_chunks_by_keys(chunk_keys: list[str]) -> list[dict]:
+    """按 doc_id:chunk_index 键从 Chroma 取回 chunk 正文与元数据。"""
+    from layers import graph_store
+
+    wanted = set(chunk_keys)
+    doc_ids = sorted({graph_store.doc_id_from_chunk_key(key) for key in wanted})
+    if not doc_ids:
+        return []
+    with _chroma_lock:
+        collection = _get_document_collection()
+        payload = collection.get(
+            where={"doc_id": {"$in": doc_ids}},
+            include=["documents", "metadatas"],
+        )
+    documents = payload.get("documents") or []
+    metadatas = payload.get("metadatas") or []
+    fetched = []
+    for content, metadata in zip(documents, metadatas):
+        metadata = metadata or {}
+        doc_id = str(metadata.get("doc_id", ""))
+        chunk_index = int(metadata.get("chunk_index", 0))
+        if graph_store.chunk_key(doc_id, chunk_index) not in wanted:
+            continue
+        if not content:
+            continue
+        fetched.append({
+            "content": content,
+            "source": str(metadata.get("source", "")),
+            "title": str(metadata.get("title", "")),
+            "doc_id": doc_id,
+            "chunk_index": chunk_index,
+        })
+    return fetched
 
 
 def _build_document_search_results(
@@ -1122,9 +1264,17 @@ def delete_document(source: str) -> int:
             ids = result.get("ids", [])
             if not ids:
                 return 0
+            doc_ids = {
+                str((metadata or {}).get("doc_id", ""))
+                for metadata in (result.get("metadatas") or [])
+            }
             collection.delete(ids=ids)
             mark_document_bm25_dirty()
-            return len(ids)
+        # 同步清理图谱chunk关联，避免留下指向已删除chunk的孤儿行；
+        # 实体与关系可能被其他文档共享，不做级联删除。
+        if config.GRAPH_RAG_ENABLED:
+            _cleanup_document_graph(doc_ids)
+        return len(ids)
     except Exception as e:
         logger.error("Chroma文档删除失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
         raise

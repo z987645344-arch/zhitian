@@ -1153,15 +1153,21 @@ def list_pending_documents(
 
 
 def list_documents() -> list[dict]:
-    """返回所有登记过的文档审核记录。"""
+    """返回所有登记过的文档审核记录（含组织归属，供管理端展示）。
+
+    与list_pending_documents/list_verified_documents采用同样的LEFT JOIN方式，
+    仅补充展示字段，不引入任何组织过滤条件。
+    """
     try:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
-                       reviewed_by, reviewed_at, converted_from
-                FROM documents
-                ORDER BY uploaded_at DESC
+                SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
+                       d.reviewed_by, d.reviewed_at, d.converted_from,
+                       d.organization_id, o.name AS organization_name
+                FROM documents d
+                LEFT JOIN organizations o ON o.id = d.organization_id
+                ORDER BY d.uploaded_at DESC
                 """
             ).fetchall()
         return [_document_row_to_dict(row) for row in rows]

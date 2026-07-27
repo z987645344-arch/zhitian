@@ -102,6 +102,50 @@ def test_upload_requires_explicit_organization_even_with_single_membership(
     assert missing.status_code == 422
 
 
+def test_list_documents_returns_organization_fields_without_filtering(client, auth_headers):
+    """list_documents()补JOIN后应带组织字段，且不引入任何组织过滤。"""
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _register("all-legal", legal_id)
+    _register("all-finance", finance["id"], verified=True)
+
+    records = auth.list_documents()
+    by_id = {item["doc_id"]: item for item in records}
+    # 两个不同组织的文档都在结果里——该函数不做组织过滤
+    assert {"all-legal", "all-finance"} <= set(by_id)
+    assert by_id["all-legal"]["organization_id"] == legal_id
+    assert by_id["all-legal"]["organization_name"] == "法律"
+    assert by_id["all-finance"]["organization_name"] == "财务"
+
+    # 原有字段不受影响
+    for key in (
+        "doc_id", "source", "trust_level", "uploaded_by", "uploaded_at",
+        "reviewed_by", "reviewed_at", "converted_from",
+    ):
+        assert key in by_id["all-legal"], key
+    assert by_id["all-finance"]["trust_level"] == "verified"
+
+    # 组织被删除后关联置空，展示字段应为None而不是报错（前端渲染"—"）
+    organizations.delete_organization(finance["id"])
+    orphan = next(
+        item for item in auth.list_documents() if item["doc_id"] == "all-finance"
+    )
+    assert orphan["organization_name"] is None
+
+
+def test_employee_documents_endpoint_exposes_organization_name(client, auth_headers):
+    """员工"我的文档"接口应能拿到组织名，否则前端组织列无数据可显示。"""
+    headers, employee = auth_headers("employee")
+    legal_id = _org_id("法律")
+    _join(employee["user_id"], legal_id)
+    _register("mine-legal", legal_id, uploaded_by=employee["user_id"])
+
+    body = client.get("/documents", headers=headers).json()
+    mine = next(item for item in body["documents"] if item["doc_id"] == "mine-legal")
+    assert mine["organization_id"] == legal_id
+    assert mine["organization_name"] == "法律"
+
+
 # ---------------------------------------------------------------- 审核可见性
 
 
