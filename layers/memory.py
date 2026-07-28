@@ -1221,7 +1221,7 @@ def _distance_to_relevance_score(distance) -> float:
 
 
 def list_documents() -> list[dict]:
-    """列出已上传文档，按source去重并统计chunk数量。"""
+    """列出已上传文档，按doc_id精确统计chunk数量。"""
     try:
         with _chroma_lock:
             collection = _get_document_collection()
@@ -1233,68 +1233,74 @@ def list_documents() -> list[dict]:
     grouped = {}
     for metadata in result.get("metadatas", []):
         metadata = metadata or {}
-        source = str(metadata.get("source", ""))
-        if not source:
+        doc_id = str(metadata.get("doc_id", ""))
+        if not doc_id:
             continue
+        source = str(metadata.get("source", ""))
         uploaded_at = str(metadata.get("uploaded_at", ""))
-        if source not in grouped:
-            grouped[source] = {
+        if doc_id not in grouped:
+            grouped[doc_id] = {
+                "doc_id": doc_id,
                 "source": source,
                 "chunk_count": 0,
                 "uploaded_at": uploaded_at
             }
-        grouped[source]["chunk_count"] += 1
+        grouped[doc_id]["chunk_count"] += 1
         if uploaded_at and (
-            not grouped[source]["uploaded_at"] or uploaded_at < grouped[source]["uploaded_at"]
+            not grouped[doc_id]["uploaded_at"]
+            or uploaded_at < grouped[doc_id]["uploaded_at"]
         ):
-            grouped[source]["uploaded_at"] = uploaded_at
+            grouped[doc_id]["uploaded_at"] = uploaded_at
 
-    return sorted(grouped.values(), key=lambda item: item["source"])
+    return sorted(grouped.values(), key=lambda item: (item["source"], item["doc_id"]))
 
 
-def delete_document(source: str) -> int:
-    """删除指定source对应的全部文档chunk，返回删除数量。"""
-    if not source:
+def delete_document(doc_id: str) -> int:
+    """按doc_id精确删除单份文档的全部chunk，返回删除数量。"""
+    if not doc_id:
         return 0
 
     try:
         with _chroma_lock:
             collection = _get_document_collection()
-            result = collection.get(where={"source": source}, include=["metadatas"])
+            result = collection.get(where={"doc_id": doc_id}, include=["metadatas"])
             ids = result.get("ids", [])
             if not ids:
                 return 0
-            doc_ids = {
-                str((metadata or {}).get("doc_id", ""))
-                for metadata in (result.get("metadatas") or [])
-            }
             collection.delete(ids=ids)
             mark_document_bm25_dirty()
         # 同步清理图谱chunk关联，避免留下指向已删除chunk的孤儿行；
         # 实体与关系可能被其他文档共享，不做级联删除。
         if config.GRAPH_RAG_ENABLED:
-            _cleanup_document_graph(doc_ids)
+            _cleanup_document_graph({doc_id})
         return len(ids)
     except Exception as e:
-        logger.error("Chroma文档删除失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
+        logger.error(
+            "Chroma文档删除失败：doc_id=%s error_type=%s",
+            doc_id,
+            type(e).__name__,
+        )
         raise
 
 
-def get_document_chunks(source: str, doc_id: str = "") -> list[str]:
-    """读取指定文档的全部chunk，优先按doc_id过滤并按chunk_index排序。"""
-    if not source and not doc_id:
+def get_document_chunks(doc_id: str) -> list[str]:
+    """按doc_id读取单份文档的全部chunk，并按chunk_index排序。"""
+    if not doc_id:
         return []
 
     try:
-        where = {"doc_id": doc_id} if doc_id else {"source": source}
         with _chroma_lock:
             collection = _get_document_collection()
             result = collection.get(
-                where=where,
+                where={"doc_id": doc_id},
                 include=["documents", "metadatas"]
             )
     except Exception as e:
-        logger.error("Chroma文档预览读取失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
+        logger.error(
+            "Chroma文档预览读取失败：doc_id=%s error_type=%s",
+            doc_id,
+            type(e).__name__,
+        )
         raise
 
     documents = result.get("documents", [])

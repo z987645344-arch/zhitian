@@ -1,19 +1,7 @@
 # -*- coding: utf-8 -*-
 """组织加入/退出审批体系、审批路由（含冷启动兜底）与工作资格门槛。"""
 
-import pytest
-
 from layers import auth, organizations, system_modules
-
-
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    system_modules._module_cache = None
-    auth.init_db()
-    system_modules.init_db()
-    yield
-    system_modules._module_cache = None
 
 
 def _org_id(name):

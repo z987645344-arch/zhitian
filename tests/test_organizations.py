@@ -7,16 +7,6 @@ from layers import auth, enterprise_password, organizations, system_modules
 from tests.conftest import customer_register_payload
 
 
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    system_modules._module_cache = None
-    auth.init_db()
-    system_modules.init_db()
-    yield
-    system_modules._module_cache = None
-
-
 def _org_by_name(name):
     orgs = organizations.list_organizations()
     return next((item for item in orgs if item["name"] == name), None)
@@ -90,6 +80,53 @@ def test_delete_custom_organization_clears_membership_but_account_unaffected(
     fetched = auth.get_user(user["user_id"])
     assert fetched is not None
     assert fetched["is_active"] is True
+
+
+def test_delete_organization_with_documents_is_rejected_before_cleanup(
+    client, auth_headers, user_factory
+):
+    developer_headers, _ = auth_headers("developer")
+    created = organizations.create_organization("档案组织", "包含待处理知识资产")
+    employee = user_factory("employee")
+    with auth._connect() as conn:
+        conn.execute(
+            "INSERT INTO user_organizations (user_id, organization_id) VALUES (?, ?)",
+            (employee["user_id"], created["id"]),
+        )
+    auth.register_document(
+        "org-delete-pending",
+        "待审核制度.pdf",
+        employee["user_id"],
+        organization_id=created["id"],
+    )
+    auth.register_document(
+        "org-delete-verified",
+        "已通过制度.pdf",
+        employee["user_id"],
+        organization_id=created["id"],
+    )
+    auth.approve_document("org-delete-verified", "reviewer-for-org-delete")
+
+    denied = client.delete(
+        "/developer/organizations/%s" % created["id"],
+        headers=developer_headers,
+    )
+
+    assert denied.status_code == 400
+    assert denied.json()["detail"] == (
+        "该组织仍有2份文档，请先将这些文档转移到其他组织"
+        "或联系管理员处理后再删除"
+    )
+    assert _org_by_name("档案组织") is not None
+    with auth._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE organization_id = ?",
+            (created["id"],),
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM user_organizations WHERE organization_id = ?",
+            (created["id"],),
+        ).fetchone()[0] == 1
 
 
 def test_new_customer_registration_auto_attached_to_default_organization(client):

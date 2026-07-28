@@ -1176,6 +1176,61 @@ def list_documents() -> list[dict]:
         raise
 
 
+def count_documents_by_organization(
+    organization_ids: Optional[List[int]] = None,
+    uploaded_by: Optional[str] = None,
+    trust_level: Optional[str] = None,
+) -> list[dict]:
+    """按组织分组统计文档数量，只读统计，不改变任何既有过滤规则。
+
+    organization_ids为None表示不限组织；传入空列表表示范围为空、直接返回空结果，
+    语义与list_pending_documents/list_verified_documents保持一致。
+    uploaded_by限定上传者（员工端"我上传的"口径），trust_level限定审核状态。
+    只统计已归属组织的文档，organization_id为NULL的历史记录不计入。
+    """
+    if organization_ids is not None and not organization_ids:
+        return []
+    conditions = ["d.organization_id IS NOT NULL"]
+    params: list = []
+    if organization_ids is not None:
+        conditions.append(
+            "d.organization_id IN (%s)" % ",".join("?" for _ in organization_ids)
+        )
+        params.extend(organization_ids)
+    if uploaded_by:
+        conditions.append("d.uploaded_by = ?")
+        params.append(uploaded_by)
+    if trust_level:
+        conditions.append("d.trust_level = ?")
+        params.append(trust_level)
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.organization_id, o.name AS organization_name,
+                       COUNT(*) AS document_count
+                FROM documents d
+                LEFT JOIN organizations o ON o.id = d.organization_id
+                WHERE %s
+                GROUP BY d.organization_id
+                ORDER BY o.name ASC
+                """
+                % " AND ".join(conditions),
+                params,
+            ).fetchall()
+        return [
+            {
+                "organization_id": int(row["organization_id"]),
+                "organization_name": row["organization_name"],
+                "document_count": int(row["document_count"]),
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logger.error("按组织统计文档失败：error_type=%s", type(e).__name__)
+        raise
+
+
 def list_verified_documents(
     organization_ids: Optional[List[int]] = None,
 ) -> list[dict]:
@@ -1325,28 +1380,6 @@ def get_document(doc_id: str) -> dict | None:
         raise
 
 
-def get_documents_by_source(source: str) -> list[dict]:
-    """按source读取文档审核记录。"""
-    if not source:
-        return []
-    try:
-        with _connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT doc_id, source, trust_level, uploaded_by, uploaded_at,
-                       reviewed_by, reviewed_at, converted_from
-                FROM documents
-                WHERE source = ?
-                ORDER BY uploaded_at DESC
-                """,
-                (source,)
-            ).fetchall()
-        return [_document_row_to_dict(row) for row in rows]
-    except Exception as e:
-        logger.error("按source读取文档审核记录失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
-        raise
-
-
 def can_employee_delete_document(doc_id: str, user_id: str) -> bool:
     """判断员工是否有权撤销该文档：必须是自己上传的且状态为pending。"""
     document = get_document(doc_id)
@@ -1355,19 +1388,23 @@ def can_employee_delete_document(doc_id: str, user_id: str) -> bool:
     return document["uploaded_by"] == user_id and document["trust_level"] == "pending"
 
 
-def delete_document_records_by_source(source: str) -> int:
-    """删除指定source对应的审核记录。"""
-    if not source:
+def delete_document_record(doc_id: str) -> int:
+    """按doc_id精确删除单份文档的审核记录。"""
+    if not doc_id:
         return 0
     try:
         with _connect() as conn:
             cursor = conn.execute(
-                "DELETE FROM documents WHERE source = ?",
-                (source,)
+                "DELETE FROM documents WHERE doc_id = ?",
+                (doc_id,)
             )
         return cursor.rowcount
     except Exception as e:
-        logger.error("删除文档审核记录失败：source_len=%s error_type=%s", len(source or ""), type(e).__name__)
+        logger.error(
+            "删除文档审核记录失败：doc_id=%s error_type=%s",
+            doc_id,
+            type(e).__name__,
+        )
         raise
 
 

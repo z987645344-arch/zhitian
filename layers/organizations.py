@@ -111,7 +111,7 @@ def update_organization(
 
 def delete_organization(organization_id: int) -> None:
     """删除自定义组织，同步清除其在user_organizations中的关联记录；
-    账号本身不受影响。受保护组织拒绝删除。
+    账号本身不受影响。受保护组织或仍有关联文档时拒绝删除。
     """
     with auth._connect() as conn:
         row = _get_organization_row(conn, organization_id)
@@ -119,6 +119,18 @@ def delete_organization(organization_id: int) -> None:
             raise LookupError("组织不存在")
         if bool(row["is_protected"]):
             raise ValueError("默认组织不可删除")
+        document_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE organization_id = ?",
+                (organization_id,),
+            ).fetchone()[0]
+        )
+        if document_count:
+            # TODO: 若未来需要强制删除，可另行设计文档转移流程；当前禁止留下孤儿知识资产。
+            raise ValueError(
+                "该组织仍有%s份文档，请先将这些文档转移到其他组织"
+                "或联系管理员处理后再删除" % document_count
+            )
         conn.execute(
             "DELETE FROM user_organizations WHERE organization_id = ?",
             (organization_id,),

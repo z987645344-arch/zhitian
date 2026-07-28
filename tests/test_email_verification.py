@@ -11,12 +11,6 @@ import main
 from layers import auth, email_provider, enterprise_password
 
 
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    auth.init_db()
-
-
 def _store_code(email="verify@example.test", purpose="register", code="123456"):
     auth.create_verification_code(email, purpose, code)
     return email, purpose, code

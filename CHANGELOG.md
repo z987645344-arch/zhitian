@@ -719,3 +719,56 @@
 - **真实验证与如实结论**：开启开关后真实上传8份文档（3份竞业限制互引文档+5份同领域填充），真实建图成功——`graph_entities=32`、`graph_relationships=31`、`chunk_entities=42`，正确抽出跨文档引用（如"竞业限制条款--[经济补偿标准由该办法规定]-->竞业限制经济补偿办法"），跨文档共享实体如"用人单位"出现在4个文档。构造需跨三份文档才能完整回答的查询做开关A/B对比：**两种状态最终候选完全相同，无任何实质性差异**。量化原因有二：①语料仅8个chunk，而向量召回请求`top_k×BM25_CANDIDATE_MULTIPLIER`=20条，全库都成了种子，可扩展空间为0（top_k=2/5时实测新增均为0）；②top_k=1时确有2条扩展新增，但传播分0.579低于最强种子0.681，排序后被top_k截断，**最终采纳为0**。累计`adoption_rate=0.0`。
 - 结论：机制本身经单测与真实数据双重验证是通的，但**在当前语料规模下结构上不可能产生收益**——只有当语料chunk数显著超过`top_k×4`、使召回成为真子集时，图扩展才有发挥空间。这与此前"文档规模显著增长"这条启动信号一致。默认关闭是正确选择。
 - 验证用8份文档、图谱数据与2个临时账号已全部清理（documents/三张图谱表/Chroma均为0），3个组织、5个真实账号与8条组织关联未受影响。
+
+## 2026-07-28 锁定requirements.txt全部未锁定依赖版本
+- 实际核对发现未锁定项为**13项**而非预估的12项：除`python-multipart`、`pdfplumber`、`pypdf`、`python-docx`、`openpyxl`、`python-pptx`、`PyMuPDF`、`bcrypt`、`slowapi`、`rank_bm25`、`pytest`、`openai`外，还有一项`alibabacloud_dm20151123`（DirectMail SDK）此前也未锁定。
+- 逐项按`.venv`当前实际安装版本锁定，**不做任何升级**：`python-multipart==0.0.32`、`pdfplumber==0.11.10`、`pypdf==6.14.2`、`python-docx==1.2.0`、`openpyxl==3.1.5`、`python-pptx==1.0.2`、`PyMuPDF==1.28.0`、`bcrypt==5.0.0`、`slowapi==0.1.10`、`rank_bm25==0.2.2`、`pytest==9.1.1`、`openai==2.47.0`、`alibabacloud_dm20151123==1.11.0`。至此26项依赖全部锁定具体版本，格式与既有`==`写法一致，原有顺序与大小写保持不变。
+- 验证：现有`.venv`与全新环境`pip check`均为`No broken requirements found`。**关键验证**是在项目目录外新建纯净Python 3.10虚拟环境、仅按锁定后的`requirements.txt`从0安装：安装过程无版本解析冲突或报错，且逐项比对确认**26项声明依赖在新旧两个环境版本完全一致**。
+- 新环境执行权威回归（等效`run_tests.bat -q`口径，即`-m "not integration" -q`）结果`327 passed, 5 deselected`；原有`.venv`执行`run_tests.bat -q`同样`327 passed, 5 deselected`，双环境一致、无新增failed。临时虚拟环境验证后已删除，项目目录内无残留。
+- 注：临时环境目录刻意命名为`lockcheck.venv`——`tests/conftest.py`在收集阶段断言解释器路径必须包含`.venv`，否则新环境无法运行权威回归。今后若再做同类环境验证需沿用该命名约定。
+- 顺带修正`docs/zhitian_structure.md`中过时的"依赖列表（25项）"，实际为26项。
+
+## 2026-07-28 新增按组织分组的文档数量统计（员工端/审核员端）
+- `auth.py`新增只读统计函数`count_documents_by_organization(organization_ids, uploaded_by, trust_level)`：按组织分组返回`organization_id`/`organization_name`/`document_count`，三个过滤参数分别服务两端口径；`organization_ids`传空列表表示范围为空直接返回空结果，语义与`list_pending_documents`/`list_verified_documents`一致；`organization_id IS NULL`的历史记录不计入。未新增任何表或字段。
+- 新增`GET /employee/my-documents-by-organization`（`require_employee`）：按`uploaded_by`过滤当前用户，统计其在各组织上传的文档数（含全部审核状态）。按上传者过滤后天然只出现自己上传过的组织，无需额外组织归属校验。
+- 新增`GET /reviewer/documents-by-organization`（`require_reviewer`）：组织范围复用`_reviewer_organization_scope()`，与`/pending`、`/documents/verified`完全一致；统计各组织内**全部verified文档总数**。**口径明确为组织范围而非个人批准记录**——本次未新增、也不依赖任何"哪个审核员批准了哪份文档"的字段或表，有专门测试锁定该口径。
+- 前端：`employee.html`"已上传文档"区域、`reviewer.html`"文档管理"区域各新增`#orgDocSummary`小汇总（组织名+数量的chip列表，新增`.org-doc-summary`/`.org-doc-chip`样式）。加载失败只在本区域内提示，不影响页面其他部分。员工端新增`refreshDocumentViews()`统一入口，使上传/录入/撤销后列表与统计一起刷新，避免统计过期；审核员端在审批与删除后同样追加统计刷新。
+- 新增测试5项：员工端只统计自己上传的（同组织他人上传不计入）并按组织正确分组；审核员端按所属组织范围分组、无关组织条目完全不出现、pending不计入；**统计的是组织范围而非个人批准数**（两份均由另一审核员批准，当前审核员仍看到2）；未加入组织的审核员返回空列表；跨角色调用403（employee调reviewer接口403、customer两个接口均403，reviewer可调员工接口因`require_employee`本就含reviewer）。
+- `py_compile`通过；管理后台9个JavaScript文件`node --check`通过；权威回归`332 passed, 5 deselected`（较改动前327项增加5项）。
+- 真实HTTP验证：库中原本无任何真实文档（documents=0），故播种法律3份(2 verified)+财务2份(1 verified)、同一员工上传、双组织审核员。实测员工端返回法律=3/财务=2，审核员端返回法律=2/财务=1，与数据库实际分布逐项吻合；employee调reviewer接口返回403。浏览器实测两页chip分别渲染为"法律 3 / 财务 2"与"法律 2 / 财务 1"，审核员端统计数字与"文档管理"表格实际行数一致。验证数据与2个临时账号已全部清理，documents恢复为0。
+- 排查记录（通用教训）：用脚本批量替换`await loadDocuments();`为新的统一入口时，误将新增包装函数`refreshDocumentViews()`**内部**的调用一并替换，造成自递归。批量文本替换涉及新旧同名调用共存时，必须回读替换结果确认，不能只看替换计数。
+
+## 2026-07-28 静态审查报告前四项的真实运行时验证（只诊断，四项全部确认属实）
+- 背景：一份未经运行验证的静态审查报告列出7个高优先级问题。按"运行时验证优于静态分析"原则逐项用真实HTTP+真实数据核实，本轮不修复。**四项全部确认属实**，报告对这四项的判断准确。
+- **【1】禁用账号后旧Token仍可用——确认属实（高危）**。真实证据：临时员工登录取得token后，由developer经`POST /developer/users/{id}/disable`禁用（返回200，库中`is_active=0`），再用**禁用前的旧token**请求：`GET /documents`→200、`POST /knowledge/input`→**200且成功写入了一份新文档**、`GET /organizations/directory`→200。同时"禁用后重新登录"正确返回401。即**登录入口已拦截，但已签发的token不失效**。影响范围经代码与运行时双重确认：`verify_token()`虽查库并把`is_active`放进返回dict，但不据此拒绝；`get_current_user`、`require_employee`、`require_reviewer`均未检查该字段；**只有`require_developer`检查**——补测确认被禁用的developer用旧token调`GET /developer/users`返回403"需要developer权限"。
+- **【2】跨组织预览/删除/检索调试——确认属实（高危）**。真实证据（财务文档经**真实上传API**写入并由财务审核员批准）：只属"法律"组织的审核员A调用`POST /debug/retrieve`返回`total=5`，**命中并暴露了财务组织文档的source与doc_id**；`GET /documents/{doc_id}/preview`→**200并返回完整chunk正文**；`DELETE /documents/{source}`→**200且真实删除**（`deleted_records=1`，库中该文档消失）。对照：`GET /pending`与`GET /documents/verified`**组织过滤正常**（未出现财务文档）。即列表接口已隔离，**预览、删除、检索调试三个入口没有组织范围校验**。
+- **【3】按source删除误伤同名文件——确认属实（高危）**。真实证据：构造两份同名`制度.pdf`（不同doc_id、不同上传者、分属法律与财务），调用`DELETE /documents/制度.pdf`返回`deleted_chunks=2, deleted_records=2`，**两份全部被删**，删除后同名记录为空、Chroma该source的chunk数由2变0。
+- **【4】删除组织留下孤儿文档——确认属实（中危）**。真实证据：建临时组织(id=14)→上传文档→审核通过→`delete_organization(14)`。删除后该文档**仍在documents表且为verified**，`organization_id`**仍为14但组织表中该id已不存在**（孤儿外键引用），Chroma chunk仍在，**客户检索仍能命中该文档**；而管理端列表中`organization_name`变为`None`，审核员按组织统计返回空——**对管理端不可见、对客户仍可答**。
+- **【5】报告中"测试默认使用真实data/ SQLite"这一说法——不准确，实际取决于具体测试文件**。真实核对：`tests/conftest.py`本身**不隔离**`users.db`/`history.db`（只提供opt-in的`isolated_chroma`向量库隔离fixture，并按测试用户名清理真实库）；40个测试文件中**9个**自行`monkeypatch auth.USERS_DB_PATH`到`tmp_path`做隔离（test_account_batch5/test_account_governance/test_document_organization/test_email_usage_stats/test_email_verification/test_graph_rag/test_org_membership/test_organizations/test_system_modules），其余31个直接操作真实`data/`库。因此准确表述是"**默认不隔离，部分测试文件自行隔离users.db；history.db基本无隔离**"。报告把它说成一刀切的"默认使用真实data/"，与项目实际不符——这也印证了该报告需要逐项核实而非直接采信。
+- 方法学记录（通用教训）：第2项**首轮验证得出过错误的"不属实"结论**——当时财务文档是在诊断脚本自己的进程里用`memory.save_document()`直接写入的，`/debug/retrieve`在服务器进程执行时向量索引看不到这些新增向量（`collection.get()`能读到、`query()`读不到），导致命中为空。改为经真实上传API写入后立即复现。**跨进程验证Chroma相关行为时，数据必须经被测进程自己的写入路径产生，否则会得到假阴性。**
+- 本轮未修改任何代码。诊断用临时账号、临时组织与全部测试文档已清理（`audit%`账号残留0），用户的2份真实文档（`宪法要义.md`法律、`法律基础与民法典.txt`财务）与109个Chroma chunk完好未受影响。
+
+## 2026-07-28 修复F26/F27两项P0越权漏洞
+- **F26禁用账号旧Token失效**：`get_current_user()`现在消费`verify_token()`按`user_id`轻量查询得到的当前`is_active`，禁用或已失效身份统一返回401“账号已被禁用或不再有效，请重新登录”。所有依赖`get_current_user`的认证/角色依赖自动获得保护，`require_developer`原有独立检查继续保留，不在各`require_*`函数重复查库。
+- **F27文档组织隔离补齐**：`POST /debug/retrieve`复用`list_pending_documents()`/`list_verified_documents()`及`_reviewer_organization_scope()`生成当前审核员组织内的doc_id白名单；预览在读取chunk前复用`_require_document_in_scope()`；审核员按source删除前读取全部匹配记录的`organization_id`，只要有一条越界就以403整体拒绝，避免部分成功。未改变按source删除机制，也未处理F28/F29/F30。
+- 新增4项回归测试：旧Token禁用后401、禁用时登录401、恢复后新Token访问200；调试检索白名单排除其他组织；跨组织预览/删除403且文档保留、同组织操作正常；同source混合组织时整批拒绝且SQLite/Chroma均不删除。权威回归`run_tests.bat -q`为`336 passed, 5 deselected`，无新增failed。
+- 真实独立进程HTTP复验：F26修复前旧Token访问为200，修复后禁用再访问为401、禁用时重新登录401、恢复启用后新Token访问200；F27修复前跨组织调试/预览/删除均成功（预览与删除200，`deleted_records=1`），修复后调试接口仍为200但目标财务doc_id/source不再暴露，跨组织预览403、删除403且财务审核员随后预览仍为200，证明文档未被删除；法律组织自己的检索、预览和删除均正常（200）。
+- 真实HTTP验证使用隔离的临时SQLite/Chroma、临时账号和“法律/财务”双组织，文档均经被测服务的`/knowledge/input`真实写入；验证结束后服务进程、账号、组织、文档、向量和临时验证脚本/目录已全部清理，未触碰用户现有数据。
+
+## 2026-07-28 修复F28：文档删除、撤销与chunk统计统一改用doc_id
+- **从根本上移除source歧义**：`memory.delete_document(doc_id)`现在只删除SQLite中该`doc_id`的单一记录和Chroma metadata中同一`doc_id`的chunks；`auth.delete_document_record(doc_id)`同步改为精确删除，`memory.get_document_chunks()`不再保留source回退。`memory.list_documents()`由按source聚合改为按`doc_id`聚合并返回各自chunk数量，两份同名文件不会再合并统计。
+- API契约改为`DELETE /documents/{doc_id}`。审核员仍先校验目标文档组织归属，员工仍校验该`doc_id`属于自己且为pending；F27时期“同source只要一条跨组织就整批拒绝”的临时防线已移除，因为唯一`doc_id`只定位一份文档，不再存在整批歧义。该改动未涉及F29/F30。
+- 管理后台`employee.js`撤销按钮、`reviewer.js`删除按钮与`api.js`调用统一携带列表响应中的`doc_id`；`source`仅保留为确认提示中的展示文件名，不再URL编码后拼接进删除路径。项目结构文档中的端点与memory接口签名已同步更新。
+- 新增/改写回归覆盖：同一上传者重复上传同名文件时按`doc_id`分别统计2/3个chunks并只删除目标一份；不同上传者存在同名pending文档时员工撤销只影响自己一份、越权撤销仍403；双组织同名文件的跨组织删除仍403且本组织删除正常。`py_compile`通过，管理后台全部9个JavaScript文件`node --check`通过，定向回归`18 passed`，权威`run_tests.bat -q`为`337 passed, 5 deselected`。
+- 隔离环境真实HTTP+浏览器验证：经上传API创建法律/财务两组织、不同上传者的四份同名`制度.pdf`，列表按`doc_id`分别显示10/20/20/29个chunks；浏览器实际点击员工“撤销”后目标预览404，财务同名pending仍完整保留20个chunks；实际点击法律审核员“删除”后目标预览404，财务同名verified仍完整保留29个chunks。剩余隔离文档均按`doc_id`删除返回200，验证服务、临时账号/组织/SQLite/Chroma、脚本与目录已全部清理，未触碰用户现有数据。
+
+## 2026-07-28 修复F29：组织仍有关联文档时禁止删除
+- `organizations.delete_organization()`在清理成员关系前先于同一SQLite连接统计`documents.organization_id`，pending/verified/rejected全部计入；数量大于0时抛出包含准确份数的业务错误，API返回400“该组织仍有N份文档，请先将这些文档转移到其他组织或联系管理员处理后再删除”，组织、成员关系、申请与文档均保持不变。只有文档数为0时才继续既有的成员关系、组织申请和组织本身清理；保留TODO说明未来强制删除必须另行设计文档转移，本次未实现迁移功能。
+- 新增回归覆盖两份不同状态文档时返回400且准确提示2份、组织与成员关系未删除；既有空组织删除、受保护组织、成员清理与CRUD行为继续通过。F29定向回归`11 passed`，完整权威回归纳入后为`338 passed, 5 deselected`。
+- 隔离进程真实HTTP验证：developer创建组织，employee经`/documents/upload`上传PDF，reviewer审批200；首次删除组织返回400并准确提示1份且组织仍在；审核员按`doc_id`删除文档返回200后再次删除组织返回200且组织消失。验证服务、临时账号/组织/文档/向量/脚本及目录已全部清理。
+
+## 2026-07-28 修复F30：pytest默认统一隔离全部持久化存储
+- 审计40个测试文件确认：旧状态为9个文件使用模块级autouse手动切换`USERS_DB_PATH`，`test_account_data_foundation.py`另有按用例切库，`test_chat_history.py`自行切history；其余文件中既有经公共fixture间接写真实SQLite/Chroma/files的测试，也有纯逻辑或mock测试，**没有任何测试的意图要求操作真实data**，因此不设排除项，integration标记也不豁免存储隔离。
+- `tests/conftest.py`现在在导入`main`前先把`config`指向会话临时根目录，防止收集阶段模块级`init_db()`接触真实库；每个用例再由`isolated_persistent_storage(autouse=True)`独立覆盖users.db、history.db、Chroma、files.db及`user_files`物理目录，并重置Chroma/BM25与system_modules进程缓存。旧`isolated_chroma`保留为兼容别名，原9个重复users.db夹具已移除，新增测试默认无需声明隔离。
+- 代表性定向回归覆盖五类存储与旧手动隔离文件，结果`76 passed`；连续三次执行`run_tests.bat -q`结果均为`338 passed, 5 deselected`，后续轮次未因前一轮遗留产生差异。补充修正`conftest`被测试辅助函数显式导入时可能执行两次的问题，并关闭测试日志句柄后强制删除会话临时根目录，最终残留目录数为0。
+- 完整回归前及三轮回归后的四次只读快照完全一致：users.db共16张业务表均不变（关键计数users=5、documents=2、organizations=3、user_organizations=8），history.db为conversations=12/sessions=2，Chroma为zhitian_documents=109/zhitian_memory=0，files.db user_files=0、物理用户文件=0。证明测试套件不再在真实data留下记录。

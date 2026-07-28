@@ -1,17 +1,8 @@
 # -*- coding: utf-8 -*-
 """GraphRAG：默认关闭的回归安全网、实体去重、建图失败降级、图扩展上限与重排序接入。"""
 
-import pytest
-
 import config
 from layers import auth, graph_store, memory
-
-
-@pytest.fixture(autouse=True)
-def isolated_graph_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    auth.init_db()
-    graph_store.init_db()
 
 
 def _payload(entities, relationships=()):

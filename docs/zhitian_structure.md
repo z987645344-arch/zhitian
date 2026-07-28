@@ -10,7 +10,7 @@
 D:\zhiliao\zhitian\zhitian\
 ├── main.py                     ← FastAPI 主入口（2084行）
 ├── config.py                   ← 配置中心（83行）
-├── requirements.txt            ← 依赖列表（25项）
+├── requirements.txt            ← 依赖列表（26项，全部锁定具体版本）
 ├── Dockerfile                  ← Docker 打包配置
 ├── .env                        ← 敏感信息（DeepSeek/Tavily/JWT Key，禁止上传 git）
 ├── .gitignore
@@ -240,7 +240,7 @@ class ChatResponse(BaseModel):
 | GET | /documents | employee+ | 文档列表（employee 只看自己的） |
 | GET | /documents/verified | reviewer | 已审核通过文档列表 |
 | GET | /documents/{doc_id}/preview | reviewer | 预览文档 chunk 内容 |
-| DELETE | /documents/{source} | employee+ | 删除文档（employee 只能删自己 pending 的） |
+| DELETE | /documents/{doc_id} | employee+ | 按doc_id精确删除文档（employee 只能删自己 pending 的） |
 
 ### 文档审核
 
@@ -309,8 +309,8 @@ def search_session_memory(query, session_id, top_k=3) -> list[str]
 def save_document(source, chunks, doc_id) -> int
 def search_documents(query, top_k=5, verified_doc_ids=None) -> list[dict]
 def list_documents() -> list[dict]
-def delete_document(source) -> int
-def get_document_chunks(source, doc_id="") -> list[str]
+def delete_document(doc_id) -> int
+def get_document_chunks(doc_id) -> list[str]
 ```
 
 ### 信任分级

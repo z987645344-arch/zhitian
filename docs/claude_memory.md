@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-07-26**
+> **最后更新：2026-07-28**
 
 ---
 
@@ -54,12 +54,12 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | ✅ 账号注册审批体系Batch 0-6（含企业密码展示）全部完成：开发者/审核员治理界面、企业申请审批、自助密码重置、DirectMail邮箱验证码与当前企业密码展示均已落地 |
-| 上一轮完成 | 2026-07-26：文档新增组织归属（`documents.organization_id`）与管理端可见性隔离——上传须指定已加入组织、审核列表与审批按组织范围过滤，客户端检索链路零改动；并修复上一批遗留的测试写真实Chroma泄漏。权威回归`317 passed, 5 deselected`。<br>更早一轮：组织体系从"仅guidance标签"升级为真实工作资格门槛——新增`org_membership_requests`加入/退出审批（员工→本组织审核员、审核员→developer、组织无审核员时冷启动兜底转developer）、`lobby_content`大厅静态内容管理、四个业务端点的组织门槛，管理后台三页接入组织大厅与审批队列。权威回归`310 passed, 5 deselected` |
+| 状态 | ✅ 2026-07-28已修复F26-F30：账号有效性、文档组织隔离、doc_id精确删除、组织删除资产保护及测试持久化隔离均已闭环 |
+| 上一轮完成 | 2026-07-28修复F29/F30：自定义组织仍有关联文档时按准确数量返回400，文档为0才执行既有清理；pytest从收集阶段到每个用例默认隔离users.db、history.db、Chroma、files.db与物理用户文件，无真实数据测试排除项。代表性回归`76 passed`，连续三轮权威回归均为`338 passed, 5 deselected`，真实data各存储计数四次快照完全一致，pytest会话临时目录清理后残留0。<br>更早一轮：删除、撤销与chunk统计统一改用`doc_id`，根治F28同名文档误删 |
 | 当前等待 | **由用户手动验证真实审批链路**：真实developer密码AI侧不可知，本轮真实HTTP与浏览器验证均使用临时账号（已全部清理），真实账号上的组织审批需用户自己走一遍。<br>**注意本轮引入的行为变更**：真实的employee/reviewer账号是本功能之前创建的，尚未加入任何自定义组织，因此**现在上传文档/提交知识/审核文档都会返回403**，必须先在管理后台"组织大厅"申请加入"法律"（或新建组织）并完成审批。当前`法律`组织reviewer成员数为0，属冷启动场景——员工申请会路由到developer队列，用真实developer账号批准即可。<br>**2026-07-26追加**：加入组织后上传文档时还需选择归属组织（只加入一个时前端自动预填只读展示）；审核员只能看到并审核自己所属组织的文档，因此**员工与审核员必须加入同一个组织**，否则员工传上去的文档没有审核员看得到 |
-| 真实账号现状 | 2026-07-26实测：`users`表有`0`（developer，已因审批首个真实developer自动失活`is_active=0`）和`987645344@qq.com`的四个角色账号（developer/reviewer/employee/customer，均启用中），用户已完成四类真实账号创建。四个账号各自只关联"默认"组织，**均未加入任何自定义组织**。`documents`表0行、两个Chroma collection均为0——用户已手动清空全部历史文档，组织归属功能是在空库上上线的。组织表只有"默认"与"法律"。**真实账号密码由用户掌握，AI侧不可知**，需要真实登录的验证只能由用户操作或改为直接查库 |
+| 真实账号现状 | 2026-07-28只读快照：`users`表5行、`documents`表2行、`user_organizations`表8行、`organizations`表3行；Chroma `zhitian_documents`为109 chunks、`zhitian_memory`为0。真实账号密码由用户掌握，AI侧不可知；F30三轮完整回归前后四次快照中，上述计数及users.db其余业务表、history.db、files.db均完全不变 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
-| 下一步 | 用户走通真实组织审批链路后：重新验证guidance简化后的12题法律路由准确率（此前07-19基线基于含search_documents指令的完整版guidance，本轮未测）；之后聚焦Agent能力深化：讨论DAG编排与稳定外部MCP生态接入 |
+| 下一步 | 用户走通真实组织审批链路后，重新验证guidance简化后的12题法律路由准确率；其余按「接下来规划」继续评估 |
 
 > 补充跨仓库完成记录（2026-07-23，Batch 5）：`zhitian_admin`已完成独立`developer.html`控制台重设计（角色人数统计、developer/reviewer详情、特别关注、备注、最近密码重置、系统模块与可观测性视图），`reviewer.html`已调整员工审批导航顺序并增加最近密码重置展示，公开`forgot-password.html`已接入自助重置流程。本记录此前只写入管理后台仓库CHANGELOG，现已同步至项目级状态文档。
 
@@ -127,6 +127,8 @@
 | F21 | convert_document 工具调用无显式Agent层预算/超时，依赖上游整体请求超时兜底 | execution.py convert_document | P3 |
 | F22 | 2026-07-19 Flutter真实使用中短时间内观察到多次DeepSeek `APITimeoutError`（重排序、长期记忆重要性判断、一次trace_id=none的调用），均`attempts=1`未见重试；即使重排序超时降级为hybrid原始顺序，回答仍正确，暂未构成功能故障，但值得作为F16可观测性告警评估的真实触发案例持续观察 | llm_provider.py / memory.py | P3（观察中） |
 | F24 | Windows MCP进程树测试曾报告`UnicodeDecodeError`，但指定用例连续5次及`PYTHONUTF8=1`附加复测均通过；两个相关文件自2026-07-17创建后未修改。风险点是测试辅助函数`_pid_exists()`以`text=True`读取`tasklist`本地化输出，原失败堆栈未留存，当前按历史环境敏感波动观察而非近期回归 | tests/test_mcp_connector.py `_pid_exists` | P3（低优先观察） |
+
+> 2026-07-28：F26-F30均已修复，历史证据保留在CHANGELOG。
 
 ---
 
@@ -225,14 +227,16 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | guidance按组织动态生成 | **guidance模块不再支持手动编辑**：`system_modules.list_modules()`的guidance每次实时调用`organizations.generate_guidance_content()`，只有tone/forbidden从`system_modules`表读取。`save_modules()`与`PUT /developer/system-modules`收到guidance字段即拒绝（接口返回400）。要调整guidance内容必须通过组织管理接口增删改组织，各调用点复用既有固定前缀组装点、无需单独改动。管理后台"规范模块"为只读展示 |
 | GraphRAG | **默认关闭**：`config.GRAPH_RAG_ENABLED`读`.env`同名变量，非`true`即全程不执行建图与图扩展，检索行为与接入前完全一致、无额外查询开销。启用方式：`.env`加`GRAPH_RAG_ENABLED=true`并重启。图谱数据存在**users.db**的`graph_entities`/`graph_relationships`/`chunk_entities`三张表（`layers/graph_store.py`惰性`init_db()`创建），不使用图数据库、不引入图计算库。chunk关联键是**`doc_id:chunk_index`组合键**，不是Chroma的随机uuid（后者未落库、也不出现在检索结果里，无法关联）。失败降级：建图抽取失败重试1次后跳过，只记日志不抛异常，文档保存与BM25/向量检索不受影响；图扩展查询异常时保留原候选。扩展候选**必须受verified白名单约束**，新增扩展路径时不要漏掉这一条 |
 | GraphRAG赋分与收益边界 | 扩展候选没有向量/BM25分数，按`GRAPH_PROPAGATION_DECAY`（默认0.85）以"最强种子分×衰减"赋传播分。原因：重排序只重排不改写`score`，而`execution.py`按`RAG_SCORE_THRESHOLD`过滤`score`，赋0分则扩展候选必被滤掉、特性空转。**副作用：传播分恒低于最强种子分，扩展候选永远排在最强种子之后**。**收益边界（2026-07-27实测）**：只有当语料chunk数显著超过`top_k×BM25_CANDIDATE_MULTIPLIER`（当前为4）、召回是语料真子集时，图扩展才有空间；8个chunk的真实语料下开关A/B**最终候选完全相同、adoption_rate=0.0**。评估该特性效果前先确认语料规模，否则测不出差异属预期而非故障 |
+| 按组织统计口径 | `GET /employee/my-documents-by-organization`按`uploaded_by`统计"我上传的"（含全部审核状态）；`GET /reviewer/documents-by-organization`按审核员所属组织范围统计各组织的**verified总数**。**审核员端口径是组织范围，不是"我个人批准过"的数量**——项目不记录哪个审核员批准了哪份文档，也不为统计新增此类字段或表，有专门测试锁定。两者共用`auth.count_documents_by_organization()`，`organization_id IS NULL`的历史记录不计入。审核员组织范围复用`_reviewer_organization_scope()`，与`/pending`、`/documents/verified`保持同一判断方式，改动其中任一处需同步考虑三者一致性 |
 | 文档组织展示 | 三处文档列表（员工"我的文档"、审核员"待审核"与"文档管理"）均展示组织列，数据来自后端`organization_name`。三个列表函数`list_documents`/`list_pending_documents`/`list_verified_documents`**都已LEFT JOIN organizations**，新增列表函数时注意保持一致，否则前端组织列无数据。`_document_row_to_dict()`按`row.keys()`条件附加组织字段，未JOIN的查询不受影响。前端`organizationLabel()`对缺字段渲染"—"（孤儿chunk兜底行确实不含组织字段）。**注意`list_documents()`不含组织过滤**，可见性由main.py的`_list_documents_for_user`按角色/上传者控制，改动时不要误加过滤 |
 | 组织=工作资格门槛 | **2026-07-26起组织不再只是guidance标签，而是真实的工作资格门槛**。"默认"组织＝大厅：全员自动在内、不可申请也不可退出、不出现在组织目录里，承载`lobby_content`单例表的三段公司级静态信息（工具规则/公告/行业准则，developer可编辑）。自定义组织＝功能群：加入/退出都要审批。**员工/审核员必须已加入至少一个非默认组织**才能调用`/documents/upload`、`/knowledge/input`、`/approve/{doc_id}`、`/reject/{doc_id}`，否则403。**账号注册审批（`/reviewer/registration-requests/*`）刻意不受此门槛限制**——账号是否存在与加入哪个工作组织是两条独立链路，已有测试锁定该行为，后续不要"顺手统一"加上门槛 |
-| 文档组织归属 | **2026-07-26起文档归属具体组织**（`documents.organization_id`，可空仅为兼容历史行，新上传必须显式传值）。上传时校验目标组织必须是上传者已加入的非默认组织，否则400；**服务端不做"只加入一个组织就自动推断"的默认**，前端预填、后端强制显式传值，缺字段422。管理端按组织隔离：`GET /pending`、`GET /documents/verified`只返回审核员所属组织范围内的文档（多组织取并集），`POST /approve|reject`跨组织返回403"无权操作其他组织的文档"。**未加入任何自定义组织的员工/审核员处于"流放"状态**：管理端看不到任何文档、不能上传也不能审核（列表返回空数组而非报错）。<br>**客户端检索完全不受影响**：`search_documents`不按`organization_id`过滤，仍只按`verified_doc_ids`筛选；`save_document`写入的organization_id仅是metadata备用字段。新增组织相关功能时不得把该字段引入检索过滤条件，已有专门测试（多组织verified文档同时被检索命中）锁定该行为 |
+| 文档组织归属 | **2026-07-26起文档归属具体组织**（`documents.organization_id`，可空仅为兼容历史行，新上传必须显式传值）。上传时校验目标组织必须是上传者已加入的非默认组织，否则400；**服务端不做"只加入一个组织就自动推断"的默认**，前端预填、后端强制显式传值，缺字段422。管理端组织隔离现在覆盖四类入口：列表（`GET /pending`、`GET /documents/verified`）、预览、删除、检索调试，审批`POST /approve|reject`也继续受同一范围保护；跨组织预览/删除/审批返回403，调试检索只把所属组织doc_id交给检索层。删除端点先按唯一`doc_id`取得单一文档，再复用`_require_document_in_scope()`校验组织范围；F27时期按source匹配整批文档的临时防线已随F28根治而移除。**新增文档管理/调试接口时必须同样考虑组织隔离并复用`_reviewer_organization_scope()`/`_require_document_in_scope()`，不得只依赖列表页过滤。**<br>**客户端正式检索完全不受影响**：聊天使用的`search_documents`不按`organization_id`过滤，仍只按全局verified doc_id筛选；`save_document`写入的organization_id仅是metadata备用字段。已有专门测试锁定多组织verified文档可被客户端同时检索 |
+| 文档唯一标识 | **删除、员工撤销、Chroma chunk查询/删除及文档chunk数量聚合一律以`doc_id`为准**。`DELETE /documents/{doc_id}`只作用于单一SQLite记录及metadata中同一`doc_id`的chunks；`memory.list_documents()`也按`doc_id`分组，不能把同名文件的chunk数量合并。`source`仅是展示用文件名文本，不得再用于删除匹配、权限定位或聚合分组；新增调用方必须传列表接口返回的`doc_id` |
 | 文档历史数据 | 2026-07-26引入`organization_id`前，用户已手动清空全部历史文档：改动前`documents`表0行、Chroma `zhitian_documents` 0个chunk，**本次改动不涉及任何旧数据迁移或向量库回填**。因此库中不应存在`organization_id`为NULL的文档记录；若日后出现NULL记录，说明有绕过端点直接写库的路径，需要排查而不是补默认值 |
-| 测试写真实Chroma的坑 | 涉及`/knowledge/input`或`/documents/upload`**成功路径**的测试必须带上conftest的`isolated_chroma` fixture：这些端点会真实写入文档向量库，而多数测试文件只用monkeypatch隔离了`auth.USERS_DB_PATH`，Chroma仍指向真实`config.VECTORDB_PATH`。2026-07-26发现`test_org_membership.py`因此每跑一次回归就堆积一个孤儿chunk（SQLite无对应记录、检索不可达但持续累积），已修复并清理。与`user_organizations`孤儿关联属同一类问题：**隔离了SQLite不等于隔离了向量库** |
+| 测试持久化隔离 | `tests/conftest.py`在导入`main`前先把`config`切到会话级临时根目录，阻止模块级`init_db()`在收集阶段触碰真实data；随后`isolated_persistent_storage`以`autouse=True`为每个测试建立独立runtime，统一覆盖`auth.USERS_DB_PATH`、`config.HISTORY_DB_PATH`、`config.VECTORDB_PATH`与`config.BASE_DIR`，因此users.db、history.db、Chroma、files.db及`user_files`物理文件全部默认隔离。旧`isolated_chroma`保留为兼容别名，新增测试不需要显式声明；当前40个测试文件没有任何真实data排除项，integration标记也不豁免存储隔离。若未来确需验证真实环境，必须另开显式脚本/流程，不能在pytest中绕过默认夹具 |
 | 组织审批路由 | 员工申请加入/退出 → 该组织内任一**审核员成员**处理；审核员申请 → 一律**developer**处理（developer凌驾于所有组织之上，不区分组织）。**冷启动兜底**：组织当前审核员成员数为0时，员工申请自动从reviewer队列消失、转入developer队列并带`cold_start_fallback`标记，reviewer强行调用返回403"该组织暂无审核员，请联系开发者处理"；组织补入审核员后同一条申请自动转回reviewer队列。申请记录在`org_membership_requests`表，用`WHERE status='pending'`的partial unique index保证同一用户对同一组织只有一条待审批记录。批准join/leave在同一事务内同步增删`user_organizations`，拒绝只改状态不动关联 |
 | 大厅内容双读取入口 | `GET /organizations/lobby-content`是employee/reviewer权限，developer**读不到**；developer侧必须用`GET /developer/lobby-content`（与`PUT`同权限）。这是编辑器需要回读当前值才能局部修改，沿用`/developer|/reviewer/enterprise-password`的双端点做法。新增类似"某角色可写但读走另一端点"的功能时注意同步补读取入口，否则编辑器会加载空白并覆盖已有内容 |
-| 组织管理 | `organizations`表（name唯一、content可空、is_protected）+ `user_organizations`多对多关联；种子数据按name幂等插入`默认`（受保护）和`法律`。"默认"组织受保护：不可重命名、不可删除、不可由开发者新建同名组织；开发者新建的组织`is_protected`恒为False。删除自定义组织会同步清除`user_organizations`关联但不影响账号本身。所有新账号（customer自助注册、employee/reviewer/developer审批通过）统一只自动关联"默认"组织；**申请页不提供组织选择**，曾实现的申请时多选组织已按需求回退移除 |
+| 组织管理 | `organizations`表（name唯一、content可空、is_protected）+ `user_organizations`多对多关联；种子数据按name幂等插入`默认`（受保护）和`法律`。"默认"组织受保护：不可重命名、不可删除、不可由开发者新建同名组织；开发者新建的组织`is_protected`恒为False。删除自定义组织前会在同一连接内统计所有状态的关联文档：数量大于0时返回400并提示准确份数，不清理成员/申请/组织；只有文档数为0时才同步清除`user_organizations`、`org_membership_requests`和组织本身，账号不受影响。文档转移功能尚未实现，未来如需强制删除必须先单独设计资产迁移策略。所有新账号统一只自动关联"默认"组织；申请页不提供组织选择 |
 | guidance内容简化说明 | guidance已从此前含“应优先调用search_documents核验知识库后再回答”等指令的完整版，简化为仅按组织拼接的命名句（`当前企业知识库已收录{组织列表}领域相关参考资料。`）。**2026-07-19验证过的12题法律路由准确率建议后续重新验证**，本轮未做该项测试 |
 | F10流式预分类 | 2026-07-20 WorkBuddy关于stream重复classify的审计结论已于2026-07-22通过git历史、prepared-state短路断言和真实runtime trace证伪；2026-07-17修复从未被后续改动破坏，后续不再将F10列为遗留问题 |
 | LibreOffice转换 | 员工上传的`.doc/.xls/.xlsx/.ppt/.pptx`依赖本机LibreOffice `soffice`；当前开发机已安装26.2.4.2并通过`.env`配置实际路径，转换串行执行且默认30秒超时。DOC→DOCX、XLSX/PPTX→PDF、SQLite/Chroma元数据和真实HTTP审核链路均已验证；CI继续排除integration测试 |
@@ -242,6 +246,7 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；全链路默认120秒全局预算，各模型/搜索节点使用剩余预算，超时返回已完成步骤摘要。真实10项任务在121.85秒终止并保留4项结果 |
 | Flutter模式UI | 聊天页已提供”快速/专家”切换，默认fast，选择在本次应用运行期间保持；新建会话不重置，重启应用恢复fast |
 | Flutter认证页外壳 | 登录与注册页共用`lib/widgets/auth_shell.dart`（2026-07-26起），改动任一页的版式规范都应改外壳而非单页，否则两页会重新分头漂移。宽窗口>=960px为左品牌栏+右表单卡片，窄窗口退化为居中单卡片。注意两个坑：①外壳卡片Column为`CrossAxisAlignment.stretch`，放固定尺寸块必须用`Align`包住，否则被拉成整行宽；②认证表单在默认800x600测试窗口装不下，涉及点击提交按钮的widget测试必须先设桌面视口（见`test/auth_layout_test.dart`与`widget_test.dart`的`useDesktopViewport`） |
+| 依赖版本锁定 | ✅ 2026-07-28完成：`requirements.txt`**26项全部锁定具体版本**，不再有未锁定项（此前13项未锁定，含易被漏掉的`alibabacloud_dm20151123`）。锁定值取自当时`.venv`实际安装且已通过回归的版本，**不是升级**。已验证：项目目录外新建纯净Python 3.10环境仅按该清单从0安装无冲突，且26项版本与原`.venv`完全一致，新旧双环境权威回归均`327 passed, 5 deselected`。今后新增依赖必须同时写死版本；做同类"全新环境验证"时，临时环境目录名必须包含`.venv`（如`lockcheck.venv`），否则`tests/conftest.py`的解释器路径断言会让回归无法运行 |
 | mcp 版本 | 已正式升级至`mcp==1.28.1`，并联动精确锁定`uvicorn==0.51.0`和`PyJWT==2.13.0`；FastAPI 0.115.0、Starlette 0.38.6、sse-starlette 3.0.3保持不变。主环境`pip check`、154项离线测试、真实Uvicorn `/health`、JWT登录/对话和HTTP SSE正文→citations→`[DONE]`均通过；测试统一使用独立的32字节以上HMAC密钥，无PyJWT短密钥警告 |
 | MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
@@ -265,8 +270,10 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 浏览器预览缓存 | 用浏览器验证管理后台前端改动时，预览面板存在**缓存旧脚本**的已知限制：页面行为与磁盘上的最新代码对不上时，优先怀疑缓存而不是代码逻辑错误。排查顺序为先比对磁盘文件实际内容（确认改动确实已写入），再强制刷新/硬重载页面重试；确认缓存已刷新后仍不一致，才开始排查代码本身 |
 | .env | 必须保持无 BOM UTF-8，否则 python-dotenv 无法正确识别首行环境变量名 |
 | JWT_SECRET_KEY | 必须在 .env 配置随机强密钥，不能使用占位值 |
-| Codex 环境 | 运行时验证需用提权方式调用 .venv\Scripts\python.exe |
-| .venv | Python 3.10.11，可正常 import fastapi，环境状态正常 |
+| 认证账号有效性 | `get_current_user()`会在`verify_token()`完成JWT校验并按`user_id`读取当前账号后统一检查`is_active`；禁用账号即使持有禁用前签发的旧Token也返回401“账号已被禁用或不再有效，请重新登录”。所有新增的认证依赖点只要依赖`get_current_user`就自动获得这层保护，不需要在各`require_*`函数重复实现；`require_developer`仍保留原有纵深检查 |
+| Codex沙盒与本机用户身份 | **2026-07-28实测确认根因是身份/ACL隔离，不是解释器不存在，也不是间歇性损坏。**未提权命令身份为`zheng\CodexSandboxOnline`，不是路径中的`z9876`，且`GroupsMatchAdminSid=False`、`IsInRoleAdministrator=False`；该身份对`C:\Users\z9876\AppData\Local\Programs\Python\Python310\python.exe`执行`Test-Path`返回`True`，但直接运行报“程序python.exe无法运行: 拒绝访问”，`Get-Acl`也报`UnauthorizedAccessException`，项目`.venv\Scripts\python.exe --version`随之报`Unable to create process using '"...\Python310\python.exe" --version'`。沙盒外（工具参数中的“提权”）身份变为`zheng\z9876`，仍然**不是管理员**（两个管理员检测均False）；此时读到文件Owner/Group均为`ZHENG\z9876`，ACL只给`SYSTEM`、`Administrators`、`zheng\z9876` FullControl，基础解释器与`.venv`均正常输出`Python 3.10.11`。因此这里“提权”实际指**退出Codex文件执行沙盒、切换到真实文件所有者上下文**，不是UAC管理员提权。以后遇到同样报错应先记录`whoami`、`Test-Path`和直接执行结果，再用沙盒外方式重试项目`.venv`；**不要据此判断文件已删除，不要下载替代解释器，也不要临时改`pyvenv.cfg`** |
+| Codex沙盒PATH与Python解析 | 2026-07-28未提权会话的完整PATH包含`Python310\Scripts`、`Python310`（各重复两次，一组带尾反斜杠、一组不带）、`Python\Launcher`、`WindowsApps`及Codex override/fallback目录；`PYTHONHOME`、`PYTHONPATH`、`VIRTUAL_ENV`均未设置，Codex override/fallback中也没有`python*`文件。沙盒身份下`where python`、`where py`和`Get-Command python`均无结果；同一机器切到真实用户身份后，`where python`依次解析到真实`Python310\python.exe`与`WindowsApps\python.exe`，`where py`解析到Launcher，裸`python --version`为3.10.11。PATH中确有重复项和WindowsApps占位项，但真实Python310排在WindowsApps之前，**没有发现多个真实Python版本互相抢占；本次失败由ACL/身份造成，不是PATH冲突** |
+| .venv | `pyvenv.cfg`固定记录`home = C:\Users\z9876\AppData\Local\Programs\Python\Python310`、`version = 3.10.11`；该基础解释器真实存在且在`zheng\z9876`上下文可正常运行。Codex未提权沙盒不能执行它，因此验证项目运行时必须直接以沙盒外方式调用`.venv\Scripts\python.exe`，不要先在沙盒内失败后误判环境损坏 |
 | 完整回归口径 | 本地和CI一律以根目录`run_tests.bat`为唯一权威入口，默认执行非integration完整回归；不要直接调用`python -m pytest`或使用“系统Python + .venv site-packages”替代。`tests/conftest.py`在收集阶段强制项目`.venv` Python 3.10，避免MCP子进程隔离`PYTHONPATH`后产生伪失败 |
 | 日志轮转 | 已使用SafeTimedRotatingFileHandler容错Windows文件占用；重复初始化不会重复挂同一路径FileHandler |
 

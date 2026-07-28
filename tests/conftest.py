@@ -1,23 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Pytest fixtures for API tests.
+"""Pytest公共夹具：默认隔离SQLite、Chroma及用户文件存储。"""
 
-These tests use the project's real SQLite files under data/. Test users are
-created with a unique prefix and removed after each test, together with their
-session and document rows.
-"""
-
+import logging
+import os
 import pathlib
+import shutil
+import sqlite3
 import sys
+import tempfile
+import uuid
+
+# 测试文件历史上会显式import tests.conftest中的辅助函数。pytest也可能把本文件
+# 以顶层conftest名加载；提前注册别名，避免同一模块执行两次并创建两套临时根目录。
+if __name__ == "conftest":
+    sys.modules.setdefault("tests.conftest", sys.modules[__name__])
+elif __name__ == "tests.conftest":
+    sys.modules.setdefault("conftest", sys.modules[__name__])
 
 _py = pathlib.Path(sys.executable)
 assert ".venv" in str(_py).lower() and sys.version_info[:2] == (3, 10), (
     f"必须使用项目 .venv 的 Python 3.10 运行测试，当前解释器为 {sys.executable} "
     f"（版本 {sys.version_info[:2]}）。请使用根目录 run_tests.bat，不要直接调用 python -m pytest。"
 )
-
-import os
-import sqlite3
-import uuid
 
 # Test-only key. Keep tests isolated from the production secret loaded from .env.
 os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-at-least-32-bytes-2026"
@@ -29,9 +33,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
+
+# conftest会在测试模块收集前加载。先把config指向会话级临时根目录，再导入main，
+# 避免auth/memory/system_modules的模块级init_db()在fixture启动前触碰真实data/。
+_TEST_SESSION_ROOT = pathlib.Path(
+    tempfile.mkdtemp(prefix="zhitian-pytest-session-")
+).resolve()
+config.BASE_DIR = str(_TEST_SESSION_ROOT)
+config.HISTORY_DB_PATH = str(_TEST_SESSION_ROOT / "data" / "history.db")
+config.VECTORDB_PATH = str(_TEST_SESSION_ROOT / "data" / "vectordb")
+
 import main
-from layers import auth
-from layers import memory
+from layers import auth, graph_store, memory, system_modules
 
 
 TEST_PASSWORD = "CodexTestPass123!"
@@ -52,6 +65,51 @@ def customer_register_payload(username, password=TEST_PASSWORD):
         "role": "customer",
         "verification_code": CUSTOMER_REGISTER_CODE,
     }
+
+
+def _reset_memory_globals():
+    """清空进程内Chroma/BM25引用，防止跨用例复用前一个临时目录。"""
+    memory.close_resources()
+    with memory._chroma_lock:
+        memory._document_bm25_index = None
+        memory._document_bm25_entries = []
+        memory._document_bm25_dirty = True
+        memory._document_bm25_signature = None
+
+
+@pytest.fixture(autouse=True)
+def isolated_persistent_storage(tmp_path, monkeypatch):
+    """所有测试默认使用本用例独立的持久化目录。
+
+    覆盖users.db、history.db、Chroma、files.db与user_files物理文件。
+    当前没有任何测试被允许操作真实data/；新增测试无需再自行monkeypatch路径。
+    """
+    runtime_root = tmp_path / "runtime"
+    data_root = runtime_root / "data"
+    data_root.mkdir(parents=True, exist_ok=True)
+
+    _reset_memory_globals()
+    monkeypatch.setattr(config, "BASE_DIR", str(runtime_root))
+    monkeypatch.setattr(config, "HISTORY_DB_PATH", str(data_root / "history.db"))
+    monkeypatch.setattr(config, "VECTORDB_PATH", str(data_root / "vectordb"))
+    monkeypatch.setattr(auth, "USERS_DB_PATH", str(data_root / "users.db"))
+    system_modules._module_cache = None
+
+    auth.init_db()
+    memory.init_db()
+    system_modules.init_db()
+    graph_store.init_db()
+
+    yield {
+        "root": str(runtime_root),
+        "users_db": auth.USERS_DB_PATH,
+        "history_db": config.HISTORY_DB_PATH,
+        "vectordb": config.VECTORDB_PATH,
+        "files_db": str(data_root / "files.db"),
+    }
+
+    _reset_memory_globals()
+    system_modules._module_cache = None
 
 
 @pytest.fixture(autouse=True)
@@ -180,36 +238,31 @@ def test_session_id():
 
 
 @pytest.fixture
-def isolated_chroma(tmp_path, monkeypatch):
-    """Use an isolated temporary Chroma path and restore memory globals."""
-    old_path = config.VECTORDB_PATH
-    old_client = memory._chroma_client
-    old_memory_collection = memory._chroma_collection
-    old_document_collection = memory._document_collection
-    old_bm25_index = memory._document_bm25_index
-    old_bm25_entries = memory._document_bm25_entries
-    old_bm25_dirty = memory._document_bm25_dirty
-    old_bm25_signature = memory._document_bm25_signature
+def isolated_chroma(isolated_persistent_storage):
+    """兼容旧测试签名；Chroma现在已由默认autouse夹具统一隔离。"""
+    return isolated_persistent_storage["vectordb"]
 
-    test_path = str(tmp_path / "vectordb")
-    monkeypatch.setattr(config, "VECTORDB_PATH", test_path)
-    with memory._chroma_lock:
-        memory._chroma_client = None
-        memory._chroma_collection = None
-        memory._document_collection = None
-        memory._document_bm25_index = None
-        memory._document_bm25_entries = []
-        memory._document_bm25_dirty = True
-        memory._document_bm25_signature = None
 
-    yield test_path
-
-    with memory._chroma_lock:
-        memory._chroma_client = old_client
-        memory._chroma_collection = old_memory_collection
-        memory._document_collection = old_document_collection
-        memory._document_bm25_index = old_bm25_index
-        memory._document_bm25_entries = old_bm25_entries
-        memory._document_bm25_dirty = old_bm25_dirty
-        memory._document_bm25_signature = old_bm25_signature
-    monkeypatch.setattr(config, "VECTORDB_PATH", old_path)
+def pytest_sessionfinish(session, exitstatus):
+    """关闭测试资源并删除收集阶段使用的会话级临时目录。"""
+    _reset_memory_globals()
+    session_root = str(_TEST_SESSION_ROOT)
+    logger_objects = [logging.getLogger()]
+    logger_objects.extend(logging.Logger.manager.loggerDict.values())
+    for logger_object in logger_objects:
+        if not isinstance(logger_object, logging.Logger):
+            continue
+        for handler in list(logger_object.handlers):
+            filename = getattr(handler, "baseFilename", "")
+            if not filename:
+                continue
+            try:
+                in_test_root = (
+                    os.path.commonpath([session_root, filename]) == session_root
+                )
+            except ValueError:
+                in_test_root = False
+            if in_test_root:
+                logger_object.removeHandler(handler)
+                handler.close()
+    shutil.rmtree(_TEST_SESSION_ROOT)

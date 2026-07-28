@@ -7,17 +7,6 @@ from layers import auth, execution, planning, system_modules
 from layers.execution import Citation, ToolResult
 
 
-@pytest.fixture(autouse=True)
-def isolated_system_modules(tmp_path, monkeypatch):
-    old_cache = system_modules._module_cache
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    system_modules._module_cache = None
-    auth.init_db()
-    system_modules.init_db()
-    yield
-    system_modules._module_cache = old_cache
-
-
 def test_system_modules_store_overwrites_single_current_record():
     first = system_modules.save_modules(
         {"tone": "tone-first", "forbidden": "forbidden"}, "reviewer-one"

@@ -4,16 +4,9 @@
 from datetime import datetime
 
 import bcrypt
-import pytest
 
 from layers import auth, enterprise_password, headcount_snapshot
 from scripts import remap_default_account_roles
-
-
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    auth.init_db()
 
 
 def test_default_account_role_remap(user_factory):

@@ -1,19 +1,7 @@
 # -*- coding: utf-8 -*-
 """文档组织归属：上传校验、管理端按组织隔离可见性，客户端检索不受影响。"""
 
-import pytest
-
 from layers import auth, memory, organizations, system_modules
-
-
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    system_modules._module_cache = None
-    auth.init_db()
-    system_modules.init_db()
-    yield
-    system_modules._module_cache = None
 
 
 def _org_id(name):
@@ -125,13 +113,6 @@ def test_list_documents_returns_organization_fields_without_filtering(client, au
         assert key in by_id["all-legal"], key
     assert by_id["all-finance"]["trust_level"] == "verified"
 
-    # 组织被删除后关联置空，展示字段应为None而不是报错（前端渲染"—"）
-    organizations.delete_organization(finance["id"])
-    orphan = next(
-        item for item in auth.list_documents() if item["doc_id"] == "all-finance"
-    )
-    assert orphan["organization_name"] is None
-
 
 def test_employee_documents_endpoint_exposes_organization_name(client, auth_headers):
     """员工"我的文档"接口应能拿到组织名，否则前端组织列无数据可显示。"""
@@ -205,6 +186,342 @@ def test_reviewer_without_organization_sees_empty_lists_and_cannot_review(
         assert denied.json()["detail"] == "请先加入至少一个组织后再审核文档"
 
 
+# ---------------------------------------------------------------- 其他文档入口的组织隔离
+
+
+def test_debug_retrieve_only_uses_reviewer_organization_doc_ids(
+    client, auth_headers, monkeypatch
+):
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(reviewer["user_id"], legal_id)
+
+    _register("legal-verified-debug", legal_id, verified=True)
+    _register("legal-pending-debug", legal_id)
+    _register("finance-verified-debug", finance["id"], verified=True)
+    _register("finance-pending-debug", finance["id"])
+
+    captured = {}
+
+    def scoped_search(_query, **kwargs):
+        allowed = list(kwargs["verified_doc_ids"])
+        captured["allowed_doc_ids"] = allowed
+        return [
+            {
+                "source": "%s.txt" % doc_id,
+                "doc_id": doc_id,
+                "chunk_index": 0,
+                "score": 0.9,
+                "vector_score": 0.9,
+                "bm25_score": 0.0,
+                "bm25_relevance": 0.0,
+                "final_score": 0.9,
+            }
+            for doc_id in allowed
+        ]
+
+    monkeypatch.setattr(memory, "search_documents", scoped_search)
+    response = client.post(
+        "/debug/retrieve",
+        headers=reviewer_headers,
+        json={"query": "组织隔离", "top_k": 20, "include_pending": True},
+    )
+
+    assert response.status_code == 200
+    assert set(captured["allowed_doc_ids"]) == {
+        "legal-verified-debug",
+        "legal-pending-debug",
+    }
+    assert {
+        item["doc_id"] for item in response.json()["results"]
+    } == set(captured["allowed_doc_ids"])
+
+
+def test_reviewer_preview_and_delete_are_scoped_to_own_organization(
+    client, auth_headers, isolated_chroma
+):
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(reviewer["user_id"], legal_id)
+    shared_source = "制度.pdf"
+
+    memory.save_document(
+        shared_source,
+        ["法律组织内可预览和删除的正文"],
+        doc_id="legal-f27",
+        organization_id=legal_id,
+    )
+    memory.save_document(
+        shared_source,
+        ["财务组织正文不得被法律审核员预览或删除"],
+        doc_id="finance-f27",
+        organization_id=finance["id"],
+    )
+    auth.register_document(
+        "legal-f27", shared_source, "legal-uploader", organization_id=legal_id
+    )
+    auth.register_document(
+        "finance-f27",
+        shared_source,
+        "finance-uploader",
+        organization_id=finance["id"],
+    )
+
+    denied_preview = client.get(
+        "/documents/finance-f27/preview", headers=reviewer_headers
+    )
+    assert denied_preview.status_code == 403
+    assert denied_preview.json()["detail"] == "无权操作其他组织的文档"
+
+    denied_delete = client.delete(
+        "/documents/finance-f27", headers=reviewer_headers
+    )
+    assert denied_delete.status_code == 403
+    assert auth.get_document("finance-f27") is not None
+    assert memory.get_document_chunks("finance-f27") == [
+        "财务组织正文不得被法律审核员预览或删除"
+    ]
+
+    own_preview = client.get(
+        "/documents/legal-f27/preview", headers=reviewer_headers
+    )
+    assert own_preview.status_code == 200
+    assert own_preview.json()["chunks"] == ["法律组织内可预览和删除的正文"]
+
+    own_delete = client.delete(
+        "/documents/legal-f27", headers=reviewer_headers
+    )
+    assert own_delete.status_code == 200
+    assert own_delete.json()["deleted_records"] == 1
+    assert auth.get_document("legal-f27") is None
+    assert auth.get_document("finance-f27") is not None
+    assert memory.get_document_chunks("finance-f27") == [
+        "财务组织正文不得被法律审核员预览或删除"
+    ]
+
+
+def test_same_uploader_duplicate_source_counts_and_deletes_by_doc_id(
+    client, auth_headers, isolated_chroma
+):
+    employee_headers, employee = auth_headers("employee")
+    legal_id = _org_id("法律")
+    _join(employee["user_id"], legal_id)
+    shared_source = "制度.pdf"
+
+    memory.save_document(
+        shared_source,
+        ["第一份-段落1", "第一份-段落2"],
+        doc_id="duplicate-first",
+        organization_id=legal_id,
+    )
+    memory.save_document(
+        shared_source,
+        ["第二份-段落1", "第二份-段落2", "第二份-段落3"],
+        doc_id="duplicate-second",
+        organization_id=legal_id,
+    )
+    auth.register_document(
+        "duplicate-first",
+        shared_source,
+        employee["user_id"],
+        organization_id=legal_id,
+    )
+    auth.register_document(
+        "duplicate-second",
+        shared_source,
+        employee["user_id"],
+        organization_id=legal_id,
+    )
+
+    before = client.get("/documents", headers=employee_headers)
+    assert before.status_code == 200
+    before_by_id = {
+        item["doc_id"]: item for item in before.json()["documents"]
+    }
+    assert before_by_id["duplicate-first"]["source"] == shared_source
+    assert before_by_id["duplicate-first"]["chunk_count"] == 2
+    assert before_by_id["duplicate-second"]["source"] == shared_source
+    assert before_by_id["duplicate-second"]["chunk_count"] == 3
+
+    deleted = client.delete(
+        "/documents/duplicate-first", headers=employee_headers
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["doc_id"] == "duplicate-first"
+    assert deleted.json()["source"] == shared_source
+    assert deleted.json()["deleted_chunks"] == 2
+    assert deleted.json()["deleted_records"] == 1
+    assert auth.get_document("duplicate-first") is None
+    assert memory.get_document_chunks("duplicate-first") == []
+    assert auth.get_document("duplicate-second") is not None
+    assert memory.get_document_chunks("duplicate-second") == [
+        "第二份-段落1",
+        "第二份-段落2",
+        "第二份-段落3",
+    ]
+
+    after = client.get("/documents", headers=employee_headers).json()["documents"]
+    assert [item["doc_id"] for item in after] == ["duplicate-second"]
+    assert after[0]["chunk_count"] == 3
+
+
+def test_employee_revoke_does_not_touch_other_uploader_same_source(
+    client, auth_headers, isolated_chroma
+):
+    employee_headers, employee = auth_headers("employee")
+    _, other = auth_headers("employee")
+    legal_id = _org_id("法律")
+    _join(employee["user_id"], legal_id)
+    _join(other["user_id"], legal_id)
+    shared_source = "同名制度.pdf"
+
+    memory.save_document(
+        shared_source,
+        ["自己的文档"],
+        doc_id="employee-own-duplicate",
+        organization_id=legal_id,
+    )
+    memory.save_document(
+        shared_source,
+        ["他人的文档-1", "他人的文档-2"],
+        doc_id="employee-other-duplicate",
+        organization_id=legal_id,
+    )
+    auth.register_document(
+        "employee-own-duplicate",
+        shared_source,
+        employee["user_id"],
+        organization_id=legal_id,
+    )
+    auth.register_document(
+        "employee-other-duplicate",
+        shared_source,
+        other["user_id"],
+        organization_id=legal_id,
+    )
+
+    revoked = client.delete(
+        "/documents/employee-own-duplicate", headers=employee_headers
+    )
+    assert revoked.status_code == 200
+    assert auth.get_document("employee-own-duplicate") is None
+    assert memory.get_document_chunks("employee-own-duplicate") == []
+    assert auth.get_document("employee-other-duplicate") is not None
+    assert memory.get_document_chunks("employee-other-duplicate") == [
+        "他人的文档-1",
+        "他人的文档-2",
+    ]
+
+    denied = client.delete(
+        "/documents/employee-other-duplicate", headers=employee_headers
+    )
+    assert denied.status_code == 403
+    assert auth.get_document("employee-other-duplicate") is not None
+
+
+# ---------------------------------------------------------------- 按组织统计
+
+
+def test_employee_document_stats_only_count_own_uploads(client, auth_headers):
+    headers, employee = auth_headers("employee")
+    _, other = auth_headers("employee")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(employee["user_id"], legal_id)
+    _join(employee["user_id"], finance["id"])
+
+    _register("mine-legal-1", legal_id, uploaded_by=employee["user_id"])
+    _register("mine-legal-2", legal_id, uploaded_by=employee["user_id"])
+    _register("mine-finance", finance["id"], uploaded_by=employee["user_id"])
+    # 同组织下他人上传的文档不应计入我的统计
+    _register("others-legal", legal_id, uploaded_by=other["user_id"])
+
+    body = client.get(
+        "/employee/my-documents-by-organization", headers=headers
+    ).json()
+    counts = {
+        item["organization_name"]: item["document_count"]
+        for item in body["organizations"]
+    }
+    assert counts == {"法律": 2, "财务": 1}
+
+
+def test_reviewer_document_stats_scoped_to_own_organizations(client, auth_headers):
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(reviewer["user_id"], legal_id)  # 只属法律
+
+    _register("legal-ok", legal_id, verified=True)
+    _register("legal-pending", legal_id)  # 未通过，不计入
+    _register("finance-ok", finance["id"], verified=True)
+
+    body = client.get(
+        "/reviewer/documents-by-organization", headers=reviewer_headers
+    ).json()
+    counts = {
+        item["organization_name"]: item["document_count"]
+        for item in body["organizations"]
+    }
+    # 只统计所属组织范围内的verified文档，财务组织条目完全不出现
+    assert counts == {"法律": 1}
+    assert "财务" not in counts
+
+
+def test_reviewer_stats_count_organization_scope_not_personal_approvals(
+    client, auth_headers
+):
+    """口径确认：统计的是组织范围内全部verified文档，不是"我批准过"的数量。"""
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    _, peer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    _join(reviewer["user_id"], legal_id)
+
+    # 两份都由另一位审核员批准，当前审核员一份都没批过
+    _register("peer-approved-1", legal_id)
+    _register("peer-approved-2", legal_id)
+    auth.approve_document("peer-approved-1", peer["user_id"])
+    auth.approve_document("peer-approved-2", peer["user_id"])
+
+    body = client.get(
+        "/reviewer/documents-by-organization", headers=reviewer_headers
+    ).json()
+    assert body["organizations"][0]["document_count"] == 2
+
+
+def test_reviewer_without_organization_gets_empty_stats(client, auth_headers):
+    reviewer_headers, _ = auth_headers("reviewer")
+    _register("orphan", _org_id("法律"), verified=True)
+    body = client.get(
+        "/reviewer/documents-by-organization", headers=reviewer_headers
+    ).json()
+    assert body["organizations"] == []
+
+
+def test_document_stats_endpoints_enforce_role(client, auth_headers):
+    employee_headers, _ = auth_headers("employee")
+    reviewer_headers, _ = auth_headers("reviewer")
+    customer_headers, _ = auth_headers("customer")
+
+    # employee 调 reviewer 专属接口 403
+    assert client.get(
+        "/reviewer/documents-by-organization", headers=employee_headers
+    ).status_code == 403
+    # customer 两个接口都无权访问
+    assert client.get(
+        "/employee/my-documents-by-organization", headers=customer_headers
+    ).status_code == 403
+    assert client.get(
+        "/reviewer/documents-by-organization", headers=customer_headers
+    ).status_code == 403
+    # reviewer 可以访问员工接口（require_employee 本就含reviewer），返回自己上传的统计
+    assert client.get(
+        "/employee/my-documents-by-organization", headers=reviewer_headers
+    ).status_code == 200
+
+
 # ---------------------------------------------------------------- 客户端检索
 
 
@@ -235,5 +552,5 @@ def test_client_retrieval_ignores_organization_scope(isolated_chroma):
     assert {"doc-legal", "doc-finance"} <= returned
 
     # metadata里带上了organization_id，但仅作备用，不参与过滤
-    stored = memory.get_document_chunks("legal.txt", doc_id="doc-legal")
-    assert stored, "应能按source取回chunk"
+    stored = memory.get_document_chunks("doc-legal")
+    assert stored, "应能按doc_id取回chunk"

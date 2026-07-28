@@ -3,15 +3,7 @@
 
 from datetime import datetime, timedelta
 
-import pytest
-
 from layers import auth, enterprise_password
-
-
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    auth.init_db()
 
 
 def _insert_code(created_at, purpose="register", email="usage@example.test"):

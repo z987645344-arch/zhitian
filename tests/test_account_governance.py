@@ -5,15 +5,8 @@ import sqlite3
 import uuid
 
 import bcrypt
-import pytest
 
 from layers import auth, enterprise_password
-
-
-@pytest.fixture(autouse=True)
-def isolated_users_database(tmp_path, monkeypatch):
-    monkeypatch.setattr(auth, "USERS_DB_PATH", str(tmp_path / "users.db"))
-    auth.init_db()
 
 
 def _application_payload(role="employee", username=None, email=None):
@@ -189,6 +182,54 @@ def test_account_governance_and_self_guards(client, auth_headers, user_factory):
     users = client.get("/developer/users", headers=developer_headers)
     assert users.status_code == 200
     assert "password_hash" not in str(users.json())
+
+
+def test_disabled_account_old_token_is_rejected_and_enable_restores_access(
+    client, auth_headers
+):
+    developer_headers, _ = auth_headers("developer")
+    employee_headers, employee = auth_headers("employee")
+
+    disabled = client.post(
+        "/developer/users/%s/disable" % employee["user_id"],
+        headers=developer_headers,
+    )
+    assert disabled.status_code == 200
+
+    old_token_request = client.get("/documents", headers=employee_headers)
+    assert old_token_request.status_code == 401
+    assert (
+        old_token_request.json()["detail"]
+        == "账号已被禁用或不再有效，请重新登录"
+    )
+
+    blocked_login = client.post(
+        "/auth/login",
+        json={
+            "username": employee["username"],
+            "password": employee["password"],
+            "role": employee["role"],
+        },
+    )
+    assert blocked_login.status_code == 401
+    assert blocked_login.json()["detail"] == "账号已被禁用"
+
+    enabled = client.post(
+        "/developer/users/%s/enable" % employee["user_id"],
+        headers=developer_headers,
+    )
+    assert enabled.status_code == 200
+    relogin = client.post(
+        "/auth/login",
+        json={
+            "username": employee["username"],
+            "password": employee["password"],
+            "role": employee["role"],
+        },
+    )
+    assert relogin.status_code == 200
+    new_headers = {"Authorization": "Bearer %s" % relogin.json()["token"]}
+    assert client.get("/documents", headers=new_headers).status_code == 200
 
 
 def test_approval_reuses_existing_username_password_hash(client, auth_headers):

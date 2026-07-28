@@ -16,7 +16,6 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import List, Optional
-from urllib.parse import unquote
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -277,7 +276,15 @@ def get_current_user(authorization: str = Header(default="", alias="Authorizatio
     if not token:
         raise HTTPException(status_code=401, detail="未登录")
     try:
-        return auth.verify_token(token)
+        current_user = auth.verify_token(token)
+        # verify_token已按user_id查询当前账号状态；统一在认证入口拦截，
+        # 让所有依赖get_current_user的权限函数自动获得禁用账号保护。
+        if not current_user.get("is_active", False):
+            raise HTTPException(
+                status_code=401,
+                detail="账号已被禁用或不再有效，请重新登录",
+            )
+        return current_user
     except PermissionError as e:
         logger.warning("认证失败：error_type=%s", type(e).__name__)
         raise HTTPException(status_code=401, detail="认证失败，请重试")
@@ -1807,6 +1814,39 @@ async def list_documents(current_user: dict = Depends(require_employee)):
     }
 
 
+@app.get("/employee/my-documents-by-organization")
+async def employee_documents_by_organization(
+    current_user: dict = Depends(require_employee)
+):
+    """员工端：按组织分组统计"我上传的"文档数（含全部审核状态）。
+
+    按uploaded_by过滤后天然只会出现自己上传过的组织，无需额外组织归属校验。
+    """
+    return {
+        "organizations": auth.count_documents_by_organization(
+            uploaded_by=current_user["user_id"]
+        )
+    }
+
+
+@app.get("/reviewer/documents-by-organization")
+async def reviewer_documents_by_organization(
+    current_user: dict = Depends(require_reviewer)
+):
+    """审核员端：按所属组织范围统计各组织的verified文档总数。
+
+    口径是组织范围内的全部verified文档，**不是"我个人批准过"的数量**——
+    本项目不记录哪个审核员批准了哪份文档，也不为此新增字段或表。
+    组织范围复用与/pending、/documents/verified完全一致的判断方式。
+    """
+    return {
+        "organizations": auth.count_documents_by_organization(
+            organization_ids=_reviewer_organization_scope(current_user),
+            trust_level="verified",
+        )
+    }
+
+
 @app.get("/documents/verified")
 async def list_verified_documents(current_user: dict = Depends(require_reviewer)):
     logger.info("收到GET /documents/verified请求：user_id=%s", current_user["user_id"])
@@ -1837,8 +1877,19 @@ async def debug_retrieve(
         safe_top_k,
         bool(request.include_pending)
     )
-    verified_doc_ids = auth.get_verified_doc_ids()
-    pending_doc_ids = auth.get_pending_doc_ids() if request.include_pending else []
+    organization_scope = _reviewer_organization_scope(current_user)
+    verified_doc_ids = [
+        document["doc_id"]
+        for document in auth.list_verified_documents(organization_scope)
+    ]
+    pending_doc_ids = (
+        [
+            document["doc_id"]
+            for document in auth.list_pending_documents(organization_scope)
+        ]
+        if request.include_pending
+        else []
+    )
     allowed_doc_ids = verified_doc_ids + pending_doc_ids
     doc_status = {
         **{doc_id: "verified" for doc_id in verified_doc_ids},
@@ -1871,23 +1922,25 @@ async def debug_retrieve(
     }
 
 
-@app.delete("/documents/{source:path}")
-async def delete_document(source: str, current_user: dict = Depends(require_employee)):
-    decoded_source = unquote(source)
-    logger.info("收到DELETE /documents请求：source_len=%s", len(decoded_source or ""))
-    records = auth.get_documents_by_source(decoded_source)
-    if current_user["role"] != "reviewer":
-        if not records or not all(
-            auth.can_employee_delete_document(record["doc_id"], current_user["user_id"])
-            for record in records
-        ):
+@app.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, current_user: dict = Depends(require_employee)):
+    logger.info("收到DELETE /documents请求：doc_id=%s", doc_id)
+    document = auth.get_document(doc_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    if current_user["role"] == "reviewer":
+        _require_document_in_scope(current_user, document)
+    else:
+        if not auth.can_employee_delete_document(doc_id, current_user["user_id"]):
             raise HTTPException(status_code=403, detail="只能撤销自己上传且待审核的文档")
 
-    deleted_chunks = memory.delete_document(decoded_source)
-    deleted_records = auth.delete_document_records_by_source(decoded_source)
+    deleted_chunks = memory.delete_document(doc_id)
+    deleted_records = auth.delete_document_record(doc_id)
     memory.mark_document_bm25_dirty()
     return {
-        "source": decoded_source,
+        "doc_id": doc_id,
+        "source": document["source"],
         "deleted_chunks": deleted_chunks,
         "deleted_records": deleted_records,
         "status": "deleted" if deleted_chunks or deleted_records else "not_found"
@@ -1899,7 +1952,8 @@ async def preview_document(doc_id: str, current_user: dict = Depends(require_rev
     document = auth.get_document(doc_id)
     if not document:
         raise HTTPException(status_code=404, detail="文档不存在")
-    chunks = memory.get_document_chunks(document["source"], doc_id=doc_id)
+    _require_document_in_scope(current_user, document)
+    chunks = memory.get_document_chunks(doc_id)
     return {
         "doc_id": doc_id,
         "source": document["source"],
@@ -2175,12 +2229,12 @@ def _merge_document_chunks(
     include_orphan_chunks: bool = False
 ) -> list[dict]:
     chunk_info = {
-        item["source"]: item
+        item["doc_id"]: item
         for item in memory.list_documents()
     }
     documents = []
     for record in records:
-        chunks = chunk_info.get(record["source"], {})
+        chunks = chunk_info.get(record["doc_id"], {})
         item = {
             **record,
             "chunk_count": int(chunks.get("chunk_count", 0)),
@@ -2202,7 +2256,6 @@ def _merge_document_chunks(
     return [
         {
             **item,
-            "doc_id": "",
             "trust_level": "unknown",
             "uploaded_by": "",
             "reviewed_by": "",
@@ -2762,5 +2815,3 @@ if __name__ == "__main__":
         reload=False,
         timeout_graceful_shutdown=config.SHUTDOWN_GRACE_PERIOD_SECONDS,
     )
-
-
