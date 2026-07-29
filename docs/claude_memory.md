@@ -55,22 +55,12 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | ✅ 2026-07-29管理后台与Flutter客户端已按统一参考图完成舒缓办公视觉系统：暖灰白背景、蓝灰主操作和低饱和状态色；现有权限、接口与组织下钻流程不变 |
-| 上一轮完成 | 2026-07-29两套界面由纯黑白高对比调整为统一办公色板与组件层级；管理后台修复768px下员工双列表单和审核员检索区溢出，9个JavaScript文件`node --check`通过，真实浏览器桌面/768px均无页面级横向溢出；Flutter `analyze`无问题，完整回归`37 tests passed`。<br>更早一轮：F26-F30安全、数据一致性与测试隔离问题均已闭环 |
+| 上一轮完成 | 2026-07-29 **已完成三仓库v2.6正式存档并推送**：后端`35f15ca`（`GET /pending`、`GET /documents/verified`新增可选`organization_id`收窄参数，只允许在既有范围内做子集选择、越界403）、管理后台`a6d4da3`（审核员/员工组织下钻交互 + 企业密码显示隐藏切换 + 参考图驱动的舒缓办公视觉系统 + 768px溢出修复）、客户端`d02eddc`（同步设计令牌、聊天页移除右侧面板并把fast/expert切换常驻输入区）。本次实测：后端`339 passed, 5 deselected`、管理后台9个JS文件`node --check`全通过、客户端`flutter analyze`无问题且`37 tests passed`。<br>更早一轮：F26-F30安全、数据一致性与测试隔离问题均已闭环 |
 | 当前等待 | 用户在真实Windows客户端和带真实数据的三角色管理后台中确认最终视觉偏好；本轮未改变任何后端接口或权限行为。真实组织审批链路仍需用户使用自有developer密码完成一次人工验证 |
 | 真实账号现状 | 2026-07-28只读快照：`users`表5行、`documents`表2行、`user_organizations`表8行、`organizations`表3行；Chroma `zhitian_documents`为109 chunks、`zhitian_memory`为0。真实账号密码由用户掌握，AI侧不可知；F30三轮完整回归前后四次快照中，上述计数及users.db其余业务表、history.db、files.db均完全不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
 | 下一步 | 根据真实使用反馈微调信息密度或色彩强度；用户走通真实组织审批链路后，重新验证guidance简化后的12题法律路由准确率；其余按「接下来规划」继续评估 |
-
-### 2026-07-29 当前未提交工作区（交接必读）
-
-| 仓库 | 当前HEAD | 未提交内容与验证状态 |
-|------|---------|---------------------|
-| `zhitian` | `4addf7c`（HEAD未打新标签；最近正式安全存档仍为`v2.5`/`1e30790`） | `main.py`与`tests/test_document_organization.py`为上一批`GET /pending`、`GET /documents/verified`按单组织收窄；`CHANGELOG.md`含该能力、视觉重构补充验证及本轮跨仓库视觉交接记录；`docs/claude_memory.md`为本交接更新。接口定向回归`19 passed`，最近权威回归`339 passed, 5 deselected in 151.22s`。 |
-| `zhitian_admin` | `60ef88e`（tag `v2.5`） | 未提交内容同时包含按组织下钻、全中文黑白灰重构及本轮舒缓办公色板；核心为`css/style.css`、三角色页面和相关JS。9个JavaScript文件`node --check`通过；真实浏览器桌面与768×900均无页面级横向溢出。 |
-| `zhitian_app` | `9b2f904`（当前HEAD无新标签） | 未提交内容包含全中文桌面工作台重构及本轮统一色板，涉及主题、认证外壳、聊天/文件/设置页面、消息与输入组件及对应测试。`flutter analyze`无问题，`flutter test`为`37 tests passed`。 |
-
-> 上述三仓库改动均**尚未commit或push**，不得把`v2.5`误当成本轮视觉设计的存档点。接手者修改前应先执行三仓库`git status --short`，保留现有改动；是否提交、打标签和推送仍由用户在UI中确认。
 
 > 补充跨仓库完成记录（2026-07-23，Batch 5）：`zhitian_admin`已完成独立`developer.html`控制台重设计（角色人数统计、developer/reviewer详情、特别关注、备注、最近密码重置、系统模块与可观测性视图），`reviewer.html`已调整员工审批导航顺序并增加最近密码重置展示，公开`forgot-password.html`已接入自助重置流程。本记录此前只写入管理后台仓库CHANGELOG，现已同步至项目级状态文档。
 
@@ -305,4 +295,4 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；当前未提交界面已按统一参考图完成舒缓办公视觉，`flutter analyze`无问题、`flutter test`为`37 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；当前未提交界面已按统一参考图重构，9个JavaScript文件语法通过，桌面及768px无页面级横向溢出 |
-| Git 存档 | ✅ 历史存档仍有效，但**当前三仓库均有未提交改动**。最近正式安全存档：后端`v2.5`/`1e30790`、管理后台`v2.5`/`60ef88e`；客户端当前HEAD为`9b2f904`且本轮未新打标签。后端工作树HEAD已前进到`4addf7c`，但当前组织过滤、组织下钻和两轮视觉重构均未形成新commit/tag，完整范围与验证数字见上方“当前未提交工作区”。本地`.env`及运行产物持续由`.gitignore`排除，设计参考图位于三仓库外共享工作区。 |
+| Git 存档 | ✅ **2026-07-29最新存档：三仓库统一tag `v2.6`，均已commit并推送，工作区clean**——后端`35f15ca`（单组织收窄参数+视觉交接文档，`339 passed, 5 deselected`）、管理后台`a6d4da3`（组织下钻交互+企业密码显隐+舒缓办公视觉系统，9个JS文件`node --check`通过）、客户端`d02eddc`（同步设计令牌+聊天页重构，`flutter analyze`无问题、`37 tests passed`）。此前：`v2.5`后端`1e30790`/管理后台`60ef88e`（客户端当时无改动，停留在`v2.2`）；`v2.4`后端`0428ff3`（GraphRAG，仅后端）。**注意：三仓库CI结果本轮未经核实**——本机未安装`gh` CLI，需自行到GitHub Actions页面确认。本地`.env`及运行产物持续由`.gitignore`排除，设计参考图位于三仓库外共享工作区。 |
