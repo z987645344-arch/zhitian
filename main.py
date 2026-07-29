@@ -345,11 +345,21 @@ def _require_upload_organization(current_user: dict, organization_id: int) -> in
     return organization_id
 
 
-def _reviewer_organization_scope(current_user: dict) -> List[int]:
-    """审核员的可见组织范围；未加入任何自定义组织时为空列表（列表接口返回空）。"""
-    return organizations.get_user_organization_ids(
+def _reviewer_organization_scope(
+    current_user: dict, organization_id: Optional[int] = None
+) -> List[int]:
+    """返回审核员可见组织范围，并可安全收窄到其中一个组织。
+
+    organization_id只允许从既有范围内做子集选择，不能扩大审核员权限。
+    """
+    allowed = organizations.get_user_organization_ids(
         current_user["user_id"], include_default=False
     )
+    if organization_id is None:
+        return allowed
+    if organization_id not in allowed:
+        raise HTTPException(status_code=403, detail="无权查看其他组织的文档")
+    return [organization_id]
 
 
 def _require_document_in_scope(current_user: dict, document: dict) -> None:
@@ -1848,10 +1858,15 @@ async def reviewer_documents_by_organization(
 
 
 @app.get("/documents/verified")
-async def list_verified_documents(current_user: dict = Depends(require_reviewer)):
+async def list_verified_documents(
+    organization_id: Optional[int] = None,
+    current_user: dict = Depends(require_reviewer),
+):
     logger.info("收到GET /documents/verified请求：user_id=%s", current_user["user_id"])
     documents = _merge_document_chunks(
-        auth.list_verified_documents(_reviewer_organization_scope(current_user)),
+        auth.list_verified_documents(
+            _reviewer_organization_scope(current_user, organization_id)
+        ),
         reviewer_mode=True,
     )
     return {
@@ -1962,9 +1977,14 @@ async def preview_document(doc_id: str, current_user: dict = Depends(require_rev
 
 
 @app.get("/pending")
-async def pending(current_user: dict = Depends(require_reviewer)):
+async def pending(
+    organization_id: Optional[int] = None,
+    current_user: dict = Depends(require_reviewer),
+):
     # 只展示归属自己所属组织的文档；未加入任何自定义组织时为空列表而非报错
-    documents = auth.list_pending_documents(_reviewer_organization_scope(current_user))
+    documents = auth.list_pending_documents(
+        _reviewer_organization_scope(current_user, organization_id)
+    )
     return {
         "documents": documents,
         "total": len(documents)

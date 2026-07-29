@@ -772,3 +772,22 @@
 - `tests/conftest.py`现在在导入`main`前先把`config`指向会话临时根目录，防止收集阶段模块级`init_db()`接触真实库；每个用例再由`isolated_persistent_storage(autouse=True)`独立覆盖users.db、history.db、Chroma、files.db及`user_files`物理目录，并重置Chroma/BM25与system_modules进程缓存。旧`isolated_chroma`保留为兼容别名，原9个重复users.db夹具已移除，新增测试默认无需声明隔离。
 - 代表性定向回归覆盖五类存储与旧手动隔离文件，结果`76 passed`；连续三次执行`run_tests.bat -q`结果均为`338 passed, 5 deselected`，后续轮次未因前一轮遗留产生差异。补充修正`conftest`被测试辅助函数显式导入时可能执行两次的问题，并关闭测试日志句柄后强制删除会话临时根目录，最终残留目录数为0。
 - 完整回归前及三轮回归后的四次只读快照完全一致：users.db共16张业务表均不变（关键计数users=5、documents=2、organizations=3、user_organizations=8），history.db为conversations=12/sessions=2，Chroma为zhitian_documents=109/zhitian_memory=0，files.db user_files=0、物理用户文件=0。证明测试套件不再在真实data留下记录。
+
+## 2026-07-28 文档列表支持在审核员组织范围内按单个组织收窄
+- `_reviewer_organization_scope(current_user, organization_id)`新增可选组织参数：未传时保持原有全部所属组织范围；传入时只允许选择该范围内的组织，否则统一返回403“无权查看其他组织的文档”，因此查询参数只能缩小结果集、不能扩大权限。
+- `GET /pending`与`GET /documents/verified`新增可选`organization_id`查询参数，分别把待审核与已通过列表收窄到指定组织；不传参数时API契约与原行为完全兼容，审核、预览、删除等权限逻辑未改动。
+- 新增双组织回归测试：法律/财务各自过滤只返回本组织文档，传入未加入的人事组织时两个接口均返回403。组织相关定向回归`19 passed`，`py_compile`通过，完整权威回归`run_tests.bat -q`为`339 passed, 5 deselected`。
+- 隔离进程真实HTTP验证：`GET /pending?organization_id=2`仅返回法律组织文档且为200，越界`organization_id=9999`返回403；员工multipart上传后回查`documents.organization_id=2`、组织名为法律。验证进程、临时SQLite/Chroma、账号、组织和文档已全部清理，未触碰真实数据。
+
+## 2026-07-29 黑白灰界面重构后的组织下钻、权威回归与窄屏补充验证
+- 隔离环境真实浏览器回归全部通过：审核员初始看到法律/财务两张卡片且均为待审核1、已通过1；法律详情只含法律文档，批准后卡片变为0/2，删除一份已通过文档后变为0/1；财务始终保持1/1且内容未受影响。员工法律详情无组织选择器，浏览器真实上传后列表与卡片数量同步增加，HTTP回查新文档`organization_id=2`、组织为法律。未发现按钮不可点击、数量错误、组织混入或接口契约回归。
+- 权威回归以提权方式执行`run_tests.bat -q`，真实结果为`339 passed, 5 deselected in 151.22s`，与按组织下钻批次基线完全一致，无新增failed、测试数量无变化；本轮未修改任何`.py`业务代码。
+- 768×900窄视口：登录页、员工组织卡片、开发者页均无页面级横向溢出，组织卡片可正常显示与进入；开发者人员表等宽表在自身容器内横向滚动，功能仍可达。员工组织详情仍维持两列提交面板，每列约177px，导致“上传文档”“直接录入文字”等标题逐字竖排，属明显排版问题但不影响提交。
+- 768×900窄视口下审核员页存在页面级横向溢出：文档宽度`811px`、可视内容宽度`753px`，超出约58px，来源是检索调试区的“同时检查待审核内容”与“开始检查”按钮同排；“开始检查”需横向滚动后才能完整点击。组织卡片本身宽449px、显示正常；组织详情表格在局部滚动容器内横向滚动，预览/批准/拒绝/删除仍可访问。本轮按验证任务要求只记录样式问题，未修复。
+- 验证使用一次性账号、法律/财务组织、SQLite/Chroma与本地上传样本；浏览器标签、768px视口覆盖、后端/静态服务进程、辅助脚本及两个隔离目录均已清理，未触碰真实数据。因未发现功能性回归，`docs/claude_memory.md`未新增遗留问题。
+
+## 2026-07-29 统一舒缓办公视觉系统落地与交接同步
+- 统一设计参考图保存于共享工作区`D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`。管理后台与Flutter客户端以暖灰白、蓝灰`#64839A`、鼠尾草绿`#6F9284`、琥珀`#C69045`和砖红`#B76158`建立同一视觉语义，替代上一版大面积纯黑高对比；状态仍同时使用中文文字、边框或图标，不只靠颜色。
+- 管理后台在既有组织下钻DOM/API契约上调整`css/style.css`，侧栏选中态、组织/统计卡片、表格、表单、弹窗和认证页统一为舒缓办公风；1000px以下双列表单收为单列，820px以下切换顶部导航，修复此前768px员工标题竖排与审核员检索按钮超出页面。9个JavaScript文件`node --check`通过，真实浏览器768×900实测`scrollWidth=clientWidth=753`。
+- Flutter统一`AppColors`/`AppTheme`、认证外壳、聊天导航、消息、引用与输入器，主导航文案改为“知识问答”、品牌说明改为“企业知识助手”；`flutter analyze`无问题，完整`flutter test`为`37 tests passed`。本轮视觉改造未修改后端API或权限行为。
+- 交接状态已写入`docs/claude_memory.md`：明确三仓库当前HEAD、未提交改动范围、验证数字及设计参考图位置。当前三仓库改动均未commit/push，最近正式安全存档仍是后端/管理后台`v2.5`；接手者不得覆盖现有工作树，也不得把`v2.5`误认为本轮视觉设计存档。

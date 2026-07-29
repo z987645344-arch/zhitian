@@ -151,6 +151,54 @@ def test_reviewer_lists_only_own_organization_documents(client, auth_headers):
     assert [item["doc_id"] for item in verified] == ["legal-verified"]
 
 
+def test_reviewer_document_lists_can_narrow_to_joined_organization(
+    client, auth_headers
+):
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    outside = organizations.create_organization("人事", None)
+    _join(reviewer["user_id"], legal_id)
+    _join(reviewer["user_id"], finance["id"])
+
+    for prefix, organization_id in (
+        ("legal", legal_id),
+        ("finance", finance["id"]),
+        ("outside", outside["id"]),
+    ):
+        _register("%s-pending" % prefix, organization_id)
+        _register("%s-verified" % prefix, organization_id, verified=True)
+
+    legal_pending = client.get(
+        "/pending",
+        params={"organization_id": legal_id},
+        headers=reviewer_headers,
+    )
+    assert legal_pending.status_code == 200
+    assert [
+        item["doc_id"] for item in legal_pending.json()["documents"]
+    ] == ["legal-pending"]
+
+    finance_verified = client.get(
+        "/documents/verified",
+        params={"organization_id": finance["id"]},
+        headers=reviewer_headers,
+    )
+    assert finance_verified.status_code == 200
+    assert [
+        item["doc_id"] for item in finance_verified.json()["documents"]
+    ] == ["finance-verified"]
+
+    for path in ("/pending", "/documents/verified"):
+        denied = client.get(
+            path,
+            params={"organization_id": outside["id"]},
+            headers=reviewer_headers,
+        )
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "无权查看其他组织的文档"
+
+
 def test_reviewer_cannot_review_other_organization_documents(client, auth_headers):
     reviewer_headers, reviewer = auth_headers("reviewer")
     finance = organizations.create_organization("财务", None)
