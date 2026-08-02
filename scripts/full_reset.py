@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import config
+from layers.db_schema_version import enable_foreign_keys
 
 
 USERS_DB = ROOT / "data" / "users.db"
@@ -23,10 +24,16 @@ USER_FILES = (ROOT / "data" / "user_files").resolve()
 COLLECTIONS = ("zhitian_documents", "zhitian_memory")
 
 
+def _connect(database: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(database)
+    enable_foreign_keys(conn)
+    return conn
+
+
 def _table_count(database: Path, table: str) -> int:
     if not database.exists():
         return 0
-    with sqlite3.connect(database) as conn:
+    with _connect(database) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone()
@@ -36,7 +43,7 @@ def _table_count(database: Path, table: str) -> int:
 def _delete_tables(database: Path, tables: tuple[str, ...]) -> None:
     if not database.exists():
         return
-    with sqlite3.connect(database) as conn:
+    with _connect(database) as conn:
         existing = {
             row[0]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -49,7 +56,7 @@ def _delete_tables(database: Path, tables: tuple[str, ...]) -> None:
 def _nonempty_system_module_count() -> int:
     if not USERS_DB.exists():
         return 0
-    with sqlite3.connect(USERS_DB) as conn:
+    with _connect(USERS_DB) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_modules'"
         ).fetchone()
@@ -58,6 +65,29 @@ def _nonempty_system_module_count() -> int:
         return int(
             conn.execute(
                 "SELECT COUNT(*) FROM system_modules WHERE content <> ''"
+            ).fetchone()[0]
+        )
+
+
+def _nonempty_lobby_content_count() -> int:
+    if not USERS_DB.exists():
+        return 0
+    with _connect(USERS_DB) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lobby_content'"
+        ).fetchone()
+        if not exists:
+            return 0
+        return int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM lobby_content
+                WHERE tool_rules <> ''
+                   OR company_announcements <> ''
+                   OR industry_standards <> ''
+                   OR updated_by IS NOT NULL
+                   OR updated_at IS NOT NULL
+                """
             ).fetchone()[0]
         )
 
@@ -91,9 +121,24 @@ def _snapshot() -> dict[str, int]:
     result = {
         "users": _table_count(USERS_DB, "users"),
         "user_sessions": _table_count(USERS_DB, "user_sessions"),
+        "user_organizations": _table_count(USERS_DB, "user_organizations"),
+        "org_membership_requests": _table_count(
+            USERS_DB, "org_membership_requests"
+        ),
         "registration_requests": _table_count(USERS_DB, "registration_requests"),
         "email_verification_codes": _table_count(USERS_DB, "email_verification_codes"),
+        "password_reset_log": _table_count(USERS_DB, "password_reset_log"),
         "documents": _table_count(USERS_DB, "documents"),
+        "graph_relationships": _table_count(USERS_DB, "graph_relationships"),
+        "chunk_entities": _table_count(USERS_DB, "chunk_entities"),
+        "graph_entities": _table_count(USERS_DB, "graph_entities"),
+        "enterprise_password_manual_refresh": _table_count(
+            USERS_DB, "enterprise_password_manual_refresh"
+        ),
+        "daily_role_headcount_snapshot": _table_count(
+            USERS_DB, "daily_role_headcount_snapshot"
+        ),
+        "lobby_content_nonempty": _nonempty_lobby_content_count(),
         "system_modules_nonempty": _nonempty_system_module_count(),
         "conversations": _table_count(HISTORY_DB, "conversations"),
         "sessions": _table_count(HISTORY_DB, "sessions"),
@@ -120,10 +165,20 @@ def main() -> None:
     _delete_tables(
         USERS_DB,
         (
+            # GraphRAG子表必须先于被引用的graph_entities清空。
+            "graph_relationships",
+            "chunk_entities",
+            "graph_entities",
+            # 先清理账号/组织的逻辑子表，再清理文档及账号父记录。
+            "user_sessions",
+            "user_organizations",
+            "org_membership_requests",
+            "documents",
             "registration_requests",
             "email_verification_codes",
-            "documents",
-            "user_sessions",
+            "password_reset_log",
+            "enterprise_password_manual_refresh",
+            "daily_role_headcount_snapshot",
             "users",
         ),
     )
@@ -137,7 +192,17 @@ def main() -> None:
         shutil.rmtree(USER_FILES)
     USER_FILES.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(USERS_DB) as conn:
+    with _connect(USERS_DB) as conn:
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lobby_content'"
+        ).fetchone():
+            conn.execute(
+                """
+                UPDATE lobby_content
+                SET tool_rules='', company_announcements='',
+                    industry_standards='', updated_by=NULL, updated_at=NULL
+                """
+            )
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_modules'"
         ).fetchone():

@@ -12,6 +12,7 @@ import bcrypt
 import jwt
 
 import config
+from layers import db_schema_version
 from layers.db_transaction import transaction
 from utils.logger import get_logger
 
@@ -388,6 +389,11 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO lobby_content (id) VALUES (1)"
             )
             _seed_default_organizations(conn)
+        db_schema_version.initialize_schema_version(
+            USERS_DB_PATH,
+            "users.db",
+            db_schema_version.USERS_SCHEMA_VERSION,
+        )
     except Exception as e:
         logger.error("用户数据库初始化失败：error_type=%s", type(e).__name__)
         raise
@@ -1497,6 +1503,7 @@ def _require_jwt_secret() -> None:
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(USERS_DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    db_schema_version.enable_foreign_keys(conn)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
     return conn

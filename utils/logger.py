@@ -15,7 +15,7 @@ LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 PROJECT_LOGGERS = {
     "main", "execution", "planning", "memory", "llm_provider", "observability",
-    "mcp_client", "email_provider",
+    "mcp_client", "email_provider", "db_schema_version",
 }
 
 _configured = False

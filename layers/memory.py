@@ -7,7 +7,6 @@ import json
 import math
 import re
 import sqlite3
-import threading
 import time
 import uuid
 from datetime import datetime
@@ -18,7 +17,7 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import chromadb
 from rank_bm25 import BM25Okapi
 import config
-from layers import llm_provider
+from layers import chroma_sync, db_schema_version, llm_provider
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages
@@ -84,7 +83,7 @@ HIGH_INFORMATION_PATTERNS = (
 _chroma_client = None
 _chroma_collection = None
 _document_collection = None
-_chroma_lock = threading.RLock()
+_chroma_lock = chroma_sync.CHROMA_LOCK
 _document_bm25_index = None
 _document_bm25_entries = []
 _document_bm25_dirty = True
@@ -143,6 +142,11 @@ def init_db() -> None:
                 ON conversations(session_id, id)
                 """
             )
+        db_schema_version.initialize_schema_version(
+            config.HISTORY_DB_PATH,
+            "history.db",
+            db_schema_version.HISTORY_SCHEMA_VERSION,
+        )
     except Exception as e:
         logger.error("SQLite初始化失败：error_type=%s", type(e).__name__)
         raise
@@ -1489,6 +1493,7 @@ def _connect() -> sqlite3.Connection:
     """创建SQLite连接"""
     conn = sqlite3.connect(config.HISTORY_DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    db_schema_version.enable_foreign_keys(conn)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
     return conn
