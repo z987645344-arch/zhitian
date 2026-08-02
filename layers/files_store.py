@@ -64,6 +64,16 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def init_db() -> None:
+    """在导入时建好空的files库，与auth/memory两库的初始化时机保持一致。
+
+    F33：此前files.db只在首次个人文件操作时由_connect()懒创建，导致全新实例
+    在用过文件功能之前缺少该库，备份脚本按"三库必须存在"的前置检查直接拒绝。
+    这里复用_connect()的真实建表路径，不手工伪造无schema的空文件。
+    """
+    _connect().close()
+
+
 def _sanitize_filename(filename: str, file_format: str) -> str:
     normalized = str(filename or "").replace("\\", "/")
     basename = os.path.basename(normalized).strip()
@@ -228,3 +238,6 @@ def delete_file(file_id: str, requester_user_id: str) -> bool:
                     pass
             return False
         return True
+
+
+init_db()

@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
+from layers import attachments, auth, converter, db_schema_version, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
 from utils.logger import get_logger
 from utils import observability
 
@@ -43,6 +43,9 @@ _accepting_requests = True
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _accepting_requests
+    db_schema_version.initialize_and_validate_databases(
+        auth.USERS_DB_PATH, config.HISTORY_DB_PATH
+    )
     with _request_gate_lock:
         _accepting_requests = True
     try:
@@ -489,12 +492,26 @@ async def ready():
     """Check request-serving dependencies, distinct from the process liveness /health endpoint."""
     sqlite_ok = _check_sqlite_health()
     chroma_ok = _check_chroma_health()
+    libreoffice_ok = _check_libreoffice_health()
     payload = {
-        "status": "ready" if sqlite_ok and chroma_ok else "not_ready",
-        "dependencies": {"sqlite": sqlite_ok, "chroma": chroma_ok},
+        "status": (
+            "ready"
+            if sqlite_ok and chroma_ok and libreoffice_ok
+            else "not_ready"
+        ),
+        "dependencies": {
+            "sqlite": sqlite_ok,
+            "chroma": chroma_ok,
+            "libreoffice": libreoffice_ok,
+        },
         "timestamp": datetime.now().isoformat(),
     }
-    return JSONResponse(status_code=200 if sqlite_ok and chroma_ok else 503, content=payload)
+    return JSONResponse(
+        status_code=(
+            200 if sqlite_ok and chroma_ok and libreoffice_ok else 503
+        ),
+        content=payload,
+    )
 
 
 @app.post("/auth/register")
@@ -1310,7 +1327,8 @@ async def upload_chat_attachment(
             converted_path = conversion.output_path
             parse_path = converted_path
 
-        text = document_loader.load_document(parse_path)
+        # F35：解析同样下放线程池，与上面的转换保持一致，不占用事件循环
+        text = await asyncio.to_thread(document_loader.load_document, parse_path)
         if text.startswith("错误："):
             return JSONResponse(
                 status_code=422,
@@ -1741,7 +1759,13 @@ async def upload_document(
             parse_path = converted_path
             converted_from = filename
 
-        text = document_loader.load_document(parse_path)
+        # F35：解析、切分与向量化都是纯同步调用，此前直接跑在事件循环上。
+        # Chroma首次嵌入还会在线下载约83MB模型，实测把整个服务堵死约18分钟、
+        # 健康检查连续超时。三处统一下放线程池，与上面的转换保持同一模式。
+        # save_document内部已用layers/chroma_sync.CHROMA_LOCK这把进程内RLock
+        # 保护Chroma写入（memory.py的_chroma_lock即该锁），换到工作线程后该锁
+        # 才真正开始发挥串行化作用，不需要额外加锁。
+        text = await asyncio.to_thread(document_loader.load_document, parse_path)
         if text.startswith("错误："):
             return {
                 "status": "error",
@@ -1749,11 +1773,12 @@ async def upload_document(
                 "detail": text
             }
 
-        chunks = document_loader.chunk_text(text)
+        chunks = await asyncio.to_thread(document_loader.chunk_text, text)
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
 
-        count = memory.save_document(
+        count = await asyncio.to_thread(
+            memory.save_document,
             filename,
             chunks,
             doc_id=doc_id,
@@ -1794,10 +1819,15 @@ async def input_knowledge(
 
     title = (request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
-    chunks = document_loader.chunk_text(content)
+    # F35：与/documents/upload同因，切分与向量化一并下放线程池
+    chunks = await asyncio.to_thread(document_loader.chunk_text, content)
     doc_id = str(uuid.uuid4())
-    count = memory.save_document(
-        source, chunks, doc_id=doc_id, organization_id=request.organization_id
+    count = await asyncio.to_thread(
+        memory.save_document,
+        source,
+        chunks,
+        doc_id=doc_id,
+        organization_id=request.organization_id,
     )
     auth.register_document(
         doc_id,
@@ -2741,14 +2771,14 @@ def _check_memory_health() -> dict:
 
 
 def _check_sqlite_health() -> bool:
-    db_path = config.HISTORY_DB_PATH
-    if not os.path.isfile(db_path):
-        return False
-    if not os.access(db_path, os.R_OK | os.W_OK):
-        return False
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute("SELECT 1").fetchone()
+        for db_path in (auth.USERS_DB_PATH, config.HISTORY_DB_PATH):
+            if not os.path.isfile(db_path):
+                return False
+            if not os.access(db_path, os.R_OK | os.W_OK):
+                return False
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("SELECT 1").fetchone()
         return True
     except Exception as e:
         logger.error("health SQLite检查失败：error_type=%s", type(e).__name__)
@@ -2756,14 +2786,22 @@ def _check_sqlite_health() -> bool:
 
 
 def _check_chroma_health() -> bool:
-    vectordb_exists = os.path.isdir(config.VECTORDB_PATH)
     try:
         collection = memory._get_chroma_collection()
         collection.count()
-        return vectordb_exists
+        return os.path.isdir(config.VECTORDB_PATH)
     except Exception as e:
         logger.error("health Chroma检查失败：error_type=%s", type(e).__name__)
         return False
+
+
+def _check_libreoffice_health() -> bool:
+    soffice_path = (config.LIBREOFFICE_PATH or "").strip()
+    return bool(
+        soffice_path
+        and os.path.isfile(soffice_path)
+        and os.access(soffice_path, os.X_OK)
+    )
 
 
 def _count_sqlite_conversations() -> int:

@@ -222,9 +222,16 @@ def test_chat_requests_are_recorded_in_recent_requests(
 def test_ready_returns_200_and_503_for_dependency_state(client, monkeypatch):
     monkeypatch.setattr("main._check_sqlite_health", lambda: True)
     monkeypatch.setattr("main._check_chroma_health", lambda: True)
+    monkeypatch.setattr("main._check_libreoffice_health", lambda: True)
     assert client.get("/ready").status_code == 200
 
     monkeypatch.setattr("main._check_sqlite_health", lambda: False)
     response = client.get("/ready")
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
+
+    monkeypatch.setattr("main._check_sqlite_health", lambda: True)
+    monkeypatch.setattr("main._check_libreoffice_health", lambda: False)
+    response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["dependencies"]["libreoffice"] is False
