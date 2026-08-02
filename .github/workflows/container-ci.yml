@@ -1,0 +1,225 @@
+name: Backend Container CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: zhitian-api
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read image tags
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "VERSION格式无效: $version" >&2
+            exit 1
+          fi
+          short_sha="${GITHUB_SHA:0:7}"
+          {
+            echo "version=$version"
+            echo "short_sha=$short_sha"
+            echo "version_tag=${IMAGE_NAME}:${version}"
+            echo "commit_tag=${IMAGE_NAME}:sha-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build version and commit tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-reports
+          docker buildx build \
+            --load \
+            --metadata-file ci-reports/build-metadata.json \
+            --tag "${{ steps.image.outputs.version_tag }}" \
+            --tag "${{ steps.image.outputs.commit_tag }}" \
+            .
+
+      - name: Record image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(jq -r '."containerimage.digest" // ."containerimage.config.digest" // empty' ci-reports/build-metadata.json)"
+          if [ -z "$digest" ]; then
+            digest="$(docker image inspect --format '{{.Id}}' '${{ steps.image.outputs.version_tag }}')"
+          fi
+          {
+            echo "version_tag=${{ steps.image.outputs.version_tag }}"
+            echo "commit_tag=${{ steps.image.outputs.commit_tag }}"
+            echo "digest=$digest"
+          } | tee ci-reports/image-digest.txt
+          {
+            echo "### 后端容器镜像"
+            echo
+            echo "- 版本标签：\`${{ steps.image.outputs.version_tag }}\`"
+            echo "- 提交标签：\`${{ steps.image.outputs.commit_tag }}\`"
+            echo "- Digest：\`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify image security baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='${{ steps.image.outputs.version_tag }}'
+          env_files="$(docker run --rm --entrypoint sh "$image" -c \
+            'find / -type f -name ".env" -print 2>/dev/null || true')"
+          if [ -n "$env_files" ]; then
+            echo "镜像内发现.env文件:" >&2
+            echo "$env_files" >&2
+            exit 1
+          fi
+          docker run --rm --entrypoint sh "$image" -c \
+            'test -d /app/data && test -z "$(find /app/data -mindepth 1 -print -quit)"'
+          runtime_user="$(docker run --rm --entrypoint whoami "$image")"
+          runtime_uid="$(docker run --rm --entrypoint id "$image" -u)"
+          if [ "$runtime_user" = "root" ] || [ "$runtime_uid" = "0" ]; then
+            echo "镜像仍以root运行" >&2
+            exit 1
+          fi
+          test "$runtime_user" = "appuser"
+          printf '.env=absent\ndata=empty\nruntime_user=%s\nruntime_uid=%s\n' \
+            "$runtime_user" "$runtime_uid" | tee ci-reports/security-baseline.txt
+
+      - name: Verify application imports and API readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          # F32门禁：只构建成功不等于能跑。此前干净镜像把未声明的NumPy解析为2.x，
+          # chromadb导入即失败，而构建、pip check和安全基线全部通过，因此漏检。
+          # 这一步必须真实导入Chroma并启动API请求/ready，失败即整条流水线失败。
+          image='${{ steps.image.outputs.version_tag }}'
+
+          echo "== 关键第三方导入 =="
+          docker run --rm --entrypoint python "$image" -c '
+import chromadb, numpy, fastapi
+print("chromadb", chromadb.__version__)
+print("numpy", numpy.__version__)
+print("fastapi", fastapi.__version__)
+' | tee ci-reports/app-import.txt
+
+          echo "== 应用模块导入 =="
+          docker run --rm --entrypoint python -e ENTERPRISE_PASSWORD_SEED=ci-import-check \
+            -e JWT_SECRET_KEY=ci-import-check-secret-at-least-32-bytes "$image" \
+            -c 'import main; print("main imported")' | tee -a ci-reports/app-import.txt
+
+          echo "== 启动API并请求/ready =="
+          container="$(docker run -d -p 18000:8000 \
+            -e ENTERPRISE_PASSWORD_SEED=ci-readiness-check \
+            -e JWT_SECRET_KEY=ci-readiness-check-secret-at-least-32-bytes \
+            "$image")"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          ready=""
+          for _ in $(seq 1 60); do
+            code="$(curl -s -o /tmp/ready.json -w '%{http_code}' \
+              http://127.0.0.1:18000/ready || true)"
+            if [ "$code" = "200" ]; then ready=1; break; fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "API未在120秒内就绪，最后HTTP=$code" >&2
+            docker logs "$container" 2>&1 | tail -40 >&2
+            exit 1
+          fi
+          cat /tmp/ready.json | tee -a ci-reports/app-import.txt
+          # Chroma依赖必须真实就绪，不接受降级
+          python3 -c '
+import json, sys
+data = json.load(open("/tmp/ready.json"))
+chroma = data.get("dependencies", {}).get("chroma")
+if chroma is not True:
+    print("Chroma未就绪: %r" % (chroma,), file=sys.stderr)
+    sys.exit(1)
+print("chroma_ready=true")
+' | tee -a ci-reports/app-import.txt
+
+      - name: Set up Python for dependency audit
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install pinned pip-audit
+        run: python -m pip install pip-audit==2.10.1
+
+      - name: Audit Python dependencies
+        id: pip_audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pip_audit \
+            --progress-spinner off \
+            --format json \
+            --output ci-reports/pip-audit.json \
+            --requirement requirements.txt
+
+      - name: Scan image and save full Trivy report
+        id: trivy_report
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.version_tag }}
+          scanners: vuln
+          format: json
+          output: ci-reports/trivy-image.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Enforce high and critical image vulnerability policy
+        id: trivy_gate
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.version_tag }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Upload build and security reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-container-${{ steps.image.outputs.short_sha }}
+          path: ci-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Apply vulnerability policy after reports
+        if: always()
+        shell: bash
+        run: |
+          failed=0
+          if [ '${{ steps.pip_audit.outcome }}' = 'failure' ]; then
+            echo "pip-audit发现已知Python依赖漏洞；报告已上传。" >&2
+            failed=1
+          fi
+          if [ '${{ steps.trivy_report.outcome }}' = 'failure' ]; then
+            echo "Trivy完整报告生成失败；不能把扫描工具故障当作通过。" >&2
+            failed=1
+          fi
+          if [ '${{ steps.trivy_gate.outcome }}' = 'failure' ]; then
+            echo "Trivy发现HIGH或CRITICAL镜像漏洞；报告已上传。" >&2
+            failed=1
+          fi
+          exit "$failed"
