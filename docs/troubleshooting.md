@@ -56,7 +56,9 @@ docker compose ps
 
 已解决标准：三服务均`healthy`，`/api/ready`为200且三项依赖均为`true`，日志不再出现同类启动错误。
 
-### 干净镜像出现`np.float_`错误（F32）
+### 干净镜像出现`np.float_`错误（F32，已修复）
+
+> **状态：2026-08-01已修复**——`requirements.txt`已显式锁定`numpy==1.26.4`，干净构建不再解析到NumPy 2.x。本节保留作为同类问题（元数据合法但运行时不兼容）的排查范式。
 
 2026-07-31真实干净构建发现：`requirements.txt`锁定`chromadb==0.5.0`但未直接锁定NumPy，pip解析到`numpy==2.2.6`；Chroma导入时仍访问NumPy 2已移除的`np.float_`。`pip check`会报告“无损坏依赖”，但应用仍无法导入，这是包元数据约束不足而不是代码可运行的证明。
 
@@ -68,7 +70,7 @@ docker run --rm zhitian-api:dev-production python -c "import numpy; print(numpy.
 docker run --rm zhitian-api:dev-production python -c "import chromadb; print(chromadb.__version__)"
 ```
 
-当前失败组合为`numpy==2.2.6`和`chromadb==0.5.0`；本机历史可运行环境为`numpy==1.26.4`和`chromadb==0.5.0`。不要只在运行容器里临时`pip install`后宣称修复；应单独评估并精确锁定兼容版本，重建镜像，再执行完整权威回归、Chroma读写、三服务健康和容器CI扫描。
+当时的失败组合为`numpy==2.2.6`和`chromadb==0.5.0`，可运行组合为`numpy==1.26.4`和`chromadb==0.5.0`（现已写入`requirements.txt`）。不要只在运行容器里临时`pip install`后宣称修复；应单独评估并精确锁定兼容版本，重建镜像，再执行完整权威回归、Chroma读写、三服务健康和容器CI扫描。
 
 已解决标准：全新无缓存/无旧容器依赖的镜像可导入NumPy和Chroma，API新容器为`healthy`，备份脚本`--help`可执行，完整回归与安全扫描结果已记录。
 
@@ -91,17 +93,41 @@ docker compose run --rm --entrypoint sh zhitian-api -c 'id; ls -ld /app/data /ap
 
 已解决标准：`test -w /app/data`退出码为0，API不再出现`PermissionError`/SQLite只读错误，`/api/ready`恢复200，重启API后数据仍在。
 
-### 空白实例备份提示缺少`files.db`（F33）
+### 空白实例备份提示缺少`files.db`（F33，已修复）
 
-`files.db`当前由个人文件存储在第一次访问时懒创建，而备份脚本要求三库都存在。全新空卷即使`/api/ready=200`，尚未使用个人文件功能时也可能备份失败：
+> **状态：2026-08-01已修复**——`layers/files_store.py`已补模块级`init_db()`，与auth/memory两库时机一致，应用启动即建好三库。全新空卷零文件操作即可直接备份，实测通过。本节保留用于排查"启动初始化未生效"的情形。
+
+F33修复前，`files.db`由个人文件存储在第一次访问时懒创建，而备份脚本要求三库都存在，全新空卷即使`/api/ready=200`、尚未使用个人文件功能时也会备份失败。核查命令：
 
 ```powershell
 docker compose run --rm zhitian-api python -c "from pathlib import Path; print(Path('/app/data/files.db').is_file())"
 ```
 
-输出`False`时不要手工创建无schema的空文件。当前临时运营口径是先通过正常个人文件功能完成一次初始化并复查为`True`；长期修复应让应用启动显式初始化files库，或让备份脚本以受控方式处理缺失的空库。修复前该问题保持F33开放。
+正常启动过的实例应输出`True`。若仍为`False`，说明应用未成功启动或模块级初始化异常，应先查启动日志与`/app/data`权限；任何情况下都不要手工创建无schema的空文件绕过检查。
 
 已解决标准：全新实例不依赖人工文件操作即可立即完成三库备份，manifest包含`files.db`且恢复演练通过。
+
+## 3.5 新账号用申请时填的密码登录失败（多角色密码同步）
+
+**这是设计行为，不是故障。** 同一个邮箱可以同时拥有多个角色账号（`users`表唯一约束是`(username, role)`）。当该邮箱**已经存在**任一账号，再申请第二个及以后的角色时，审批通过的那一刻服务端会把新账号的密码**强制同步为该邮箱既有账号的密码**，申请表单里填写的密码直接失效。审批响应里会带一个显式提示：
+
+```json
+{"id": 3, "status": "approved", "user_id": "...", "password_sync": "密码已与该邮箱现有账号同步"}
+```
+
+现象是：注册申请返回200、审批返回200，但用申请时填的密码登录返回401「用户名、密码或账号类型不正确」。
+
+- **只有审批路径触发同步**：即`POST /developer/registration-requests/{id}/approve`与`POST /reviewer/registration-requests/{id}/approve`。
+- **customer自助注册不受影响**：`POST /auth/register`直接建号，用的就是注册时提交的密码，即使该邮箱下已有其他角色账号也不会被覆盖。
+- **处理方式**：改用该邮箱既有账号的密码登录；确实需要改密码时走`/auth/forgot-password`自助重置，重置结果同样会同步到该邮箱名下全部角色账号。
+
+排查时先确认该邮箱是否已有其他角色账号：
+
+```powershell
+docker compose exec zhitian-api python -c "import sqlite3;c=sqlite3.connect('/app/data/users.db');print([(r[0],r[1]) for r in c.execute('SELECT username, role FROM users')])"
+```
+
+已解决标准：确认登录使用的是该邮箱统一密码后可正常登录；不要为此重置数据库或重建账号。
 
 ## 4. DeepSeek不可用
 

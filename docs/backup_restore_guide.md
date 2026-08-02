@@ -9,7 +9,7 @@
 - 脚本不会自行加载宿主机`.env`；直接在宿主机运行时，应由当前进程安全注入该变量。Compose运行时则由`env_file`注入。
 - 恢复会先用同一密钥自动备份当前数据，再验证目标包，不能跳过安全备份。
 - `full_reset.py`是开发清空工具，不是恢复方案。
-- 当前脚本要求`users.db`、`history.db`、`files.db`三者都存在。全新实例的`files.db`直到第一次个人文件操作才懒创建；在F33修复前，首次备份前必须确认该文件已由正常业务路径生成。缺失时脚本会拒绝备份，不要手工伪造一个不含正确schema的空文件。
+- 脚本要求`users.db`、`history.db`、`files.db`三者都存在。F33曾使`files.db`直到第一次个人文件操作才懒创建，空白实例首次备份因此被拒；已于2026-08-01修复——`files_store`补了模块级`init_db()`，应用启动即建好三库，全新实例无需先使用个人文件功能。若日后仍遇到缺库报错，不要手工伪造一个不含正确schema的空文件，应查为什么启动初始化没有生效。
 
 ## 2. 备份内容与格式
 
@@ -24,7 +24,7 @@
 
 ## 3. Compose部署的日常人工备份
 
-在共享`docker-compose.yml`所在目录操作。先确认当前镜像确实包含脚本且Chroma可以导入，防止复用同名旧镜像或命中F32：
+在共享`docker-compose.yml`所在目录操作。先确认当前镜像确实包含脚本且Chroma可以导入——F32那类"构建成功但导入即失败"的问题已于2026-08-01修复，保留这组预检是为了防止复用同名旧镜像或引入新的依赖不兼容：
 
 ```powershell
 docker compose run --rm zhitian-api python -c "import numpy, chromadb; print(numpy.__version__); print(chromadb.__version__)"
@@ -33,7 +33,7 @@ docker compose run --rm zhitian-api python scripts/restore_data.py --help
 docker compose run --rm zhitian-api python -c "from pathlib import Path; print(Path('/app/data/files.db').is_file())"
 ```
 
-最后一条必须输出`True`；否则按F33先完成正常个人文件功能初始化，不能继续备份。
+最后一条必须输出`True`。F33修复后正常启动过的实例总是`True`；若输出`False`，说明应用未曾成功启动或启动初始化异常，应先排查原因，不能手工造库后继续备份。
 
 随后阻断入口并停止API：
 
