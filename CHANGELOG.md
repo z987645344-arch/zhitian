@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-07-16**
+> **最后追加：2026-08-01**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -791,3 +791,152 @@
 - 管理后台在既有组织下钻DOM/API契约上调整`css/style.css`，侧栏选中态、组织/统计卡片、表格、表单、弹窗和认证页统一为舒缓办公风；1000px以下双列表单收为单列，820px以下切换顶部导航，修复此前768px员工标题竖排与审核员检索按钮超出页面。9个JavaScript文件`node --check`通过，真实浏览器768×900实测`scrollWidth=clientWidth=753`。
 - Flutter统一`AppColors`/`AppTheme`、认证外壳、聊天导航、消息、引用与输入器，主导航文案改为“知识问答”、品牌说明改为“企业知识助手”；`flutter analyze`无问题，完整`flutter test`为`37 tests passed`。本轮视觉改造未修改后端API或权限行为。
 - 交接状态已写入`docs/claude_memory.md`：明确三仓库当前HEAD、未提交改动范围、验证数字及设计参考图位置。当前三仓库改动均未commit/push，最近正式安全存档仍是后端/管理后台`v2.5`；接手者不得覆盖现有工作树，也不得把`v2.5`误认为本轮视觉设计存档。
+
+## 2026-07-30 Docker构建上下文与非root运行安全基线
+- 修复前根目录`Dockerfile`仅有6行占位实现，且不存在`.dockerignore`；`COPY . .`会把本机`.env`、`data/`、`.venv/`等内容送入构建上下文并写入镜像层，存在密钥、真实数据和本地运行环境泄漏风险。
+- 新增`.dockerignore`排除`.env*`、`data/`、`.venv/`、`.git/`、Python/pytest缓存、日志、测试目录及非运行时设计参考目录；`requirements.txt`和后端业务代码继续进入构建上下文。
+- `Dockerfile`保持`python:3.10-slim`，先复制并以`--no-cache-dir`安装锁定依赖，再复制业务代码；创建并切换到非root的`appuser`，预建其可写的`/app/data`，启动命令改为显式`uvicorn main:app --host 0.0.0.0 --port 8000`。本轮按范围未安装LibreOffice或中文字体。
+- 静态断言确认COPY顺序、`USER appuser`、Uvicorn参数和全部忽略规则符合要求，敏感路径未写入Dockerfile；但当前机器未安装Docker Desktop/Docker CLI、Podman、nerdctl，也没有可用WSL，因此无法执行`docker build`和容器内`find/ls/whoami/import fastapi`实测。不得将本轮记录误读为镜像已构建通过；获得Docker环境后需用`zhitian-api:dev-security-baseline`补齐运行验证。
+
+## 2026-07-30 Docker安全基线真实构建与容器运行补充验证
+- 用户本机已安装Docker Desktop **29.6.2**与WSL2；执行`docker build -t zhitian-api:dev-security-baseline .`构建成功，构建上下文传输量为**961.30kB**，印证`.dockerignore`已排除`.env`、`data/`、`.venv/`等敏感及大体积本地内容。
+- 容器内四项真实检查全部通过：镜像内未找到`.env`，`/app/data`存在且为空目录，`whoami`返回`appuser`（非root），`python -c "import fastapi"`无报错。
+- 结论：Docker安全基线的代码实现与真实运行验证均已完成；后续可继续Phase A的Linux LibreOffice/中文字体及完整生产镜像工作。
+
+## 2026-07-31 生产一次性管理员初始化与真实孤儿数据只读摸底
+- 保留`scripts/seed_dev_default_accounts.py`作为本地开发固定密码123的独立脚本，新增生产/云端专用`scripts/seed_prod_admin.py`，两者互不调用。生产脚本使用`secrets`生成20位且同时包含大小写字母、数字和符号的一次性密码，复用`auth.hash_registration_password()`生成bcrypt哈希，以账号名0、角色developer、`is_default_account=1`创建占位账号；明文密码只输出到stdout，不写入`.env`、日志或其他持久化文件，脚本未接入`main.py`、容器入口或任何自动启动流程。
+- 生产seed在写入前检查启用中的非默认developer、全部documents、除“默认/法律”外的组织和history conversations；命中前两类条件分别报“检测到真实developer账号，拒绝重复初始化”或“检测到已有业务数据，拒绝初始化默认账号”。另对既有0号账号整体拒绝，避免重复执行悄然重置一次性密码。隔离临时SQLite验证结果：空库初始化成功，生成密码长度20且四类字符齐全，落库为bcrypt而非明文；真实developer、文档、非种子组织、会话及既有0号重复执行五种阻断场景均以非零退出码准确拒绝，临时库已清理。
+- 新增只读`scripts/check_orphan_data.py`，通过SQLite URI `mode=ro`和`PRAGMA query_only=ON`扫描真实`data/`，不导入会触发表初始化的业务模块、不创建/删除/修复数据。除`users.db`、`history.db`外，按真实schema额外读取存放`user_files`的`files.db`；当前`conversations/sessions`没有`user_id`字段，故对应关系按“不支持该引用”计0；GraphRAG以`chunk_entities.chunk_id`中的`doc_id:chunk_index`前缀核对documents，因为其余两张图表没有直接doc_id列。
+- 2026-07-31真实数据扫描结果：`user_organizations.organization_id→organizations.id=0`、`documents.organization_id→organizations.id=0`、`org_membership_requests.organization_id→organizations.id=0`、`org_membership_requests.user_id→users.user_id=0`、`user_files.owner_user_id→users.user_id=0`、`conversations.user_id→users.user_id=0`、`sessions.user_id→users.user_id=0`、`chunk_entities.chunk_id(doc_id)→documents.doc_id=0`，结论为“未发现孤儿数据”。扫描前后`users.db`、`history.db`、`files.db`的SHA-256均未变化，确认本次摸底只读；该结果仅作为后续评估外键约束的基线，本轮未启用外键、未修复或删除任何数据。
+- 两个脚本均通过项目Python 3.10 `py_compile`；本轮未修改认证端点、账号审批事务或数据库schema。
+
+## 2026-07-31 SQLite schema版本、启动外键检查与开发重置补全
+- **现状核对**：改动前项目没有任何schema版本号记录；`auth._connect()`、`memory._connect()`和`db_transaction.transaction()`均未执行`PRAGMA foreign_keys=ON`。SQLite现有DDL真正声明的外键只有documents→organizations，以及graph_relationships/chunk_entities→graph_entities；此前八类孤儿扫描均为0，但其中多项仍只是逻辑关联。本轮按范围启用并检查既有约束，未擅自重建表增加新外键。
+- 新增`layers/db_schema_version.py`：users.db和history.db各自维护独立单行`schema_version`表，当前版本均为1，代表“引入版本管理前的现状”。分库记录使单库备份仍可自描述；首次接入自动建表写入1，表结构损坏、多行/异常记录或版本不匹配均记录database与error_type后抛错，不静默启动。本轮没有实现升级迁移链。
+- 认证库、历史库和显式事务连接统一开启并确认`foreign_keys=ON`。FastAPI lifespan在接受请求前再次校验两库版本并执行`PRAGMA foreign_key_check`；违反日志只包含数据库名、表名和数量，不记录rowid或用户数据，随后抛出`ForeignKeyIntegrityError`拒绝启动。新增测试在临时users.db关闭外键后插入一条无效organization_id文档，真实进入`TestClient(main.app)` lifespan时以`documents:1`成功阻止启动；另有损坏`schema_version`表拒绝测试。
+- **真实启动验证**：启动前真实users.db/history.db均无版本表且`foreign_key_check=0`；以Uvicorn监听`127.0.0.1:18765`后应用startup complete，`GET /health`返回HTTP 200、整体status=ok。启动后两库分别新增`schema_version=1`，users.db业务表数16→17、history.db 2→3，外键违反均为0；再次执行八类只读孤儿扫描仍全部为0。验证进程和临时输出日志已关闭/清理，未执行真实数据重置。
+- `scripts/full_reset.py`补齐原有9个实际遗漏删除目标：user_organizations、org_membership_requests、password_reset_log、graph_entities、graph_relationships、chunk_entities、enterprise_password_manual_refresh、daily_role_headcount_snapshot，以及lobby_content内容重置；`system_modules`继续沿用原有“保留行、清空content/更新信息”模式。lobby同样保留固定id=1并清空三段内容，避免重置后必须重启才能再次保存。GraphRAG两个子表先于graph_entities删除，其他账号/组织逻辑子表先于users；所有重置SQLite连接也启用外键。organizations的“默认/法律”种子和两库schema_version明确保留。
+- 隔离完整数据实跑`full_reset.py --confirm`：13个users库删除目标、conversations/sessions、user_files、两项单例内容、两个Chroma集合及物理user_files均从1归零；organizations仍为“默认/法律”，两库版本仍为1，`foreign_key_check=0`，无删除顺序错误，临时目录已清理。
+- 项目Python 3.10 `py_compile`通过；新增4项版本/连接/坏外键/损坏版本表测试，定向`4 passed`；最终代码状态下权威`run_tests.bat -q`为`343 passed, 5 deselected in 257.26s`，较此前339基线只增加本轮4项，无failed。
+
+## 2026-07-31 完整后端生产镜像：LibreOffice、中文字体、就绪检查与优雅退出
+- 后端`Dockerfile`继续基于`python:3.10-slim`，新增`fontconfig`、`fonts-noto-cjk`及`libreoffice-writer-nogui`/`calc-nogui`/`impress-nogui`。选择nogui模块是因为服务端只需要Writer、Calc、Impress的headless文档转换能力，不安装LibreOffice桌面壳；安装使用`--no-install-recommends`，刷新字体缓存后删除apt列表。镜像设置`LIBREOFFICE_PATH=/usr/bin/soffice`、`HOME=/home/appuser`和`XDG_CONFIG_HOME=/home/appuser/.config`，并为非root `appuser`预建可写LibreOffice配置目录。
+- 既有`/health`存活/诊断契约保持不变；独立`GET /ready`在原SQLite、Chroma检查上增加LibreOffice可执行文件检查，并将SQLite范围补齐为users.db与history.db。三项全部正常返回200；任一异常返回503。Docker镜像新增调用`/ready`的`HEALTHCHECK`。
+- Uvicorn容器启动命令继续用`exec`让PID 1直接接收SIGTERM，并显式传入`--timeout-graceful-shutdown ${SHUTDOWN_GRACE_PERIOD_SECONDS:-30}`，与应用lifespan的在途请求门禁/等待期限一致。
+- 真实构建标签为`zhitian-api:dev-production`，构建上下文**520.42kB**，镜像大小**471,605,700字节（约449.8MiB / 471.6MB）**。容器内`whoami=appuser`，`/usr/bin/soffice --version`为LibreOffice 25.2.3.2，Noto Sans CJK字体文件存在，`~/.config/libreoffice`可写。
+- 中文转换真实验证：临时生成包含“企业知识安全流转，审核通过后方可检索”的DOCX，经容器内项目`layers.converter.convert_file()`调用soffice成功生成56,625字节PDF；文字层完整提取80处中文句子，目标中文原文精确命中，无乱码。临时文档只通过挂载进入验证容器，未进入镜像层。
+- 就绪与退出真实验证：正常容器`GET /ready`返回200且`sqlite/chroma/libreoffice=true`；临时设置`LIBREOFFICE_PATH=/missing/soffice`时返回503且仅`libreoffice=false`。限速上传制造确定的在途转换请求后执行`docker stop -t 30`，停止信号到达时请求仍为Running；容器等待**6.465秒**，请求最终返回HTTP 200，日志出现`Waiting for connections to close`后才完成应用关闭，证明SIGTERM优雅退出实际生效。
+- `tests/test_observability.py`补充LibreOffice就绪正反路径；后端权威回归`run_tests.bat -q`最终为`343 passed, 5 deselected in 172.09s`，无新增failed。
+
+## 2026-07-31 自用MVP三服务Docker Compose与网络闭环
+- **现状与落点**：改动前共享根目录不存在Compose编排文件，本机已有可用的`zhitian-api:dev-production`与`zhitian-admin:dev-production`镜像。新增共享层`D:\zhiliao\zhitian\docker-compose.yml`，同时声明`image`与`build`：本地验收可用`--no-build`复用已验证标签，换机部署可由同一文件从两个子仓库Dockerfile重现构建。共享根目录本身不是有效Git仓库，因此没有擅自初始化新的父仓库；独立反向代理配置放在受Git管理的后端仓库`deploy/compose-nginx.conf`，满足配置纳入版本控制的要求。
+- **网络与入口**：单实例API、管理后台和`nginx:stable-alpine`反向代理组成三服务；API只加入backend网络，管理后台只加入`internal` frontend网络，代理同时加入两网且以非root `nginx`运行。只有代理映射宿主机`80:8080`，`/api/`去前缀后转发`zhitian-api:8000`，`/`转发`zhitian-admin:8080`。backend保留出站能力供DeepSeek、Tavily和DirectMail使用，但API不发布宿主机端口。真实检查中`/`、`/login.html`、`/api/health`和`/api/ready`均为HTTP 200，ready报告SQLite/Chroma/LibreOffice正常；`127.0.0.1:8000`与`:8080`均连接超时，只有80可达，`nginx -t`通过。
+- **持久化与边界**：具名卷`zhitian-mvp-data`统一挂载`/app/data`，同时覆盖users/history/files SQLite、Chroma和`user_files`；选择单一数据卷是为了让同一应用的数据一致备份并避免Windows/Linux嵌套挂载和权限歧义。`/app/data/tmp_uploads`由256MiB tmpfs覆盖，既不持久化转换中间文件又有明确容量上限。API限制2GiB内存、512MiB reservation和2 CPU（为FastAPI/Chroma常驻量、LibreOffice转换尖峰及计入内存的tmpfs留余量）；管理后台与代理各限制128MiB/0.5 CPU。三服务均配置`unless-stopped`、`json-file`单文件10MiB/最多3个、`no-new-privileges`和capabilities清空；API停止宽限期45秒。真实运行用户分别为`appuser`、`nginx`、`nginx`。
+- **重启与数据恢复实测**：在全新具名卷创建一次性审核员、员工、法律/财务成员关系并确认`schema_version=1`；`docker compose restart zhitian-api`后账号UUID、4条成员关系和schema版本完全一致，ready仍为200。执行不带`-v`的`docker compose down`再`up -d --no-build`后数据再次完整恢复、三服务均healthy，证明卷不是依赖容器可写层的偶然保留。
+- **真实浏览器与清理**：通过反向代理80端口分别登录审核员和员工，均看到法律/财务组织卡片并可进入法律组织详情，审核员的待审核/已通过区和员工的上传/文字录入/我的文档区正常加载，控制台无error/warn。验证结束执行`docker compose down -v`，测试卷、测试账号和容器全部清理；宿主机真实`data/`从未挂载或触碰，两套生产镜像保留。本轮只改编排与文档，没有修改Python业务代码，未重复运行后端权威pytest，最近基线仍为`343 passed, 5 deselected`。
+
+## 2026-07-31 自用生产配置模板与密钥注入规范
+- **现状核对**：后端原先没有`.env.example`；真实`.env`当前包含17个变量，`CORS_ORIGINS`仍包含`null`，与`config.py`注释及交接约束一致，仅用于兼容`file://`协议或桌面壳本地调试。users/history/files SQLite、Chroma和`user_files`路径目前不是环境变量，而是固定在项目`data/`下并由Compose统一挂载`/app/data`；本轮没有虚构代码不识别的数据库路径变量，也没有修改`.env`、`config.py`、`main.py`或CORS实际逻辑。
+- 新增根目录`.env.example`，覆盖当前真实`.env`的完整键集合：Tavily；服务端口、CORS与`/chat`、`/chat/stream`限流；DeepSeek API及fast/expert模型；LibreOffice；聊天附件大小/有效期；JWT、企业密码种子及历史兼容二级开发者密码；DirectMail AccessKey ID/Secret、region与已验证发件地址。每项均给出用途和格式，所有赋值都是`CHANGE_ME_*`占位符；JWT密钥和企业密码种子附带`secrets.token_urlsafe(32)`生成命令，且明确不得复用。
+- CORS模板明确说明：本地`file://`/桌面壳调试可按需包含`null`，**生产环境部署时必须改为实际管理后台域名且不应包含`null`**。真正按HTTPS正式域名收紧仍留待Phase B，不在本轮提前改变开发环境行为。
+- 新增`docs/production_configuration.md`作为运维配置入口：本地开发使用Git忽略的`.env`；开发机Docker Compose继续通过`env_file`运行时注入；未来真实服务器必须重新生成实例独立密钥，使用Git工作树和Docker构建上下文之外的服务器私有配置或Secret注入，不得复制开发机`.env`。镜像和Git任何时候均不得包含真实密钥，继续由`.gitignore`与`.dockerignore`提供防误提交/打包边界。
+- 安全与编码校验：真实/模板变量数均为17，缺失0、多余0、非占位赋值0；模板未命中真实敏感值，真实域名/邮箱模式扫描无命中；UTF-8严格解码通过且BOM为False。仅新增模板与文档，未修改代码或真实配置，未运行pytest。
+
+## 2026-07-31 加密一致性备份与人工恢复闭环
+- **现状与同步机制**：改动前项目没有任何备份/恢复脚本，`full_reset.py`仅用于开发清空，不能承担生产恢复。新增`scripts/backup_data.py`与`scripts/restore_data.py`，均为人工显式命令、不接入应用启动、CI或定时调度。将`memory.py`原有Chroma全局RLock移动到无副作用的`layers/chroma_sync.py`并继续以`memory._chroma_lock`别名复用，业务与备份引用同一锁对象，没有创建第二套锁。该锁只在单进程内有效，两个命令都要求`--confirm-service-stopped`，未先停止后端或暂停全部写入时明确拒绝，避免把进程内锁误当成跨进程在线快照能力。
+- **备份格式与一致性**：users/history/files三库逐一使用官方`sqlite3.Connection.backup()`热备API；持有共享Chroma RLock期间复制`vectordb`目录，另复制`user_files`物理目录。快照先用ZIP-deflate压缩，再用`cryptography==48.0.1`的流式AES-256-GCM加密为单一时间戳`.ztbackup`包；选择流式GCM是为了同时提供篡改认证并避免Fernet对大型向量库/用户文件整包驻留内存。32字节密钥只从`BACKUP_ENCRYPTION_KEY`读取，`.env.example`新增URL-safe Base64占位项和`secrets.token_bytes(32)`生成方法，真实`.env`未修改。
+- **manifest与保留策略**：包内`manifest.json`记录UTC备份时间、users/history/files各自schema版本、全部业务表行数、所有Chroma collection数量，以及压缩前每个文件的大小和SHA-256、文件总数与总字节数。默认输出`backups/`并保留最近7份，`--retention`可调整；小于1按1处理，成功生成新包后才清理旧包，恢复目标包会被保护不因恢复前安全备份的保留清理而消失。`backups/`和恢复候选/回退目录已同时加入`.gitignore`与`.dockerignore`。
+- **恢复安全网**：恢复前必须用同一个`BACKUP_ENCRYPTION_KEY`自动备份当前数据；随后验证GCM认证、ZIP路径安全、manifest文件集合/大小/SHA-256及候选数据完整性，任何预检失败都不切换当前数据。通过后在同一文件系统构建候选data目录并以目录重命名切换；完成后再次执行三库`PRAGMA integrity_check`、`PRAGMA foreign_key_check`和Chroma collection数量比对。若恢复后出现差异，明确逐项报告并保留已恢复数据、安全备份和原数据临时回退目录，不自动删除或覆盖等待人工判断。
+- **隔离完整演练**：临时数据包含users库organizations/users/documents各2行、history conversations=2/sessions=1、files user_files=2、schema版本users=1/history=1/files无版本表、Chroma documents=3/memory=2及2个物理文件。生成包manifest为14个原始快照文件、521,114字节；执行“备份→清空三库业务行/向量目录/物理文件→恢复→重新查询”后所有行数、两个collection数量和文件正文逐项恢复，且恢复前安全备份真实生成。翻转加密包中间1字节后，恢复在AES-GCM认证阶段明确拒绝、当前隔离数据保持不变；连续生成5份且N=3时只保留最新3份，N=0时仍保留1份。
+- **真实data只读备份**：确认8000/18765无监听且Compose无运行服务后，只对真实源执行备份和解密manifest检查，未执行恢复或删除。manifest为31个压缩前快照文件、24,288,200字节；schema为users=1/history=1/files无版本表；Chroma documents=109、memory=0。users库当前行数：users=5、documents=2、organizations=3、user_organizations=8、user_sessions=2、registration_requests=4、org_membership_requests=4、email_verification_codes=9、daily_role_headcount_snapshot=6、enterprise_password_manual_refresh=2、system_modules=3、lobby_content=1，password_reset_log及三张GraphRAG表均为0；history当前conversations=18、sessions=3；files user_files=0。账号/文档/组织/Chroma数字与已知真实快照吻合；history较2026-07-28的12/2旧快照增加到18/3，属于后续真实使用后的当前状态。备份范围25个真实源文件在操作前后数量和聚合SHA-256指纹完全一致，验证包及临时密钥已清理。
+- **自动回归**：新增3项隔离测试覆盖完整往返与manifest、篡改拒绝且源数据不变、共享锁身份/服务停止门禁/保留策略；项目Python 3.10 `py_compile`通过，`pip check`无损坏依赖，权威`run_tests.bat -q`为`346 passed, 5 deselected in 166.82s`，较此前343基线只增加本轮3项，无failed。
+
+## 2026-07-31 自用MVP容器CI/CD构建、检查与安全扫描
+- **现状与范围**：改动前后端仅有既有`.github/workflows/ci.yml`，负责Windows/Python 3.10、敏感文本检查、`py_compile`和`run_tests.bat -q`，没有Docker构建或漏洞扫描。既有测试工作流保持原样；新增独立`container-ci.yml`，只在GitHub runner本地构建和扫描，不登录、不推送任何registry，不接触真实服务器，也不要求DeepSeek、Tavily或DirectMail Secret。
+- 新增根目录`VERSION=2.6.0`作为容器版本标签唯一来源；每次push/PR同时构建`zhitian-api:2.6.0`和`zhitian-api:sha-<7位commit>`。Buildx把构建metadata、镜像digest、安全检查和扫描JSON统一上传为保留14天的artifact；普通日志与artifact均不包含`.env`内容或真实密钥。
+- 镜像安全基线自动化复用本地已验证口径：容器内全盘找不到`.env`、`/app/data`为空、`whoami=appuser`且UID非0才通过。依赖扫描固定使用`pip-audit==2.10.1`；Trivy Action固定到官方`v0.36.0`不可变提交SHA，并同时生成全等级JSON报告和HIGH/CRITICAL门禁。扫描步骤即使发现漏洞也先继续上传完整报告，最后统一失败，避免前一步红灯导致后续证据丢失。
+- **真实GitHub Actions验证**：临时分支`codex-ci-phase-a-20260731`的push运行[30619781231](https://github.com/z987645344-arch/zhitian/actions/runs/30619781231)真实完成镜像构建、双标签、digest和安全检查；标签为`zhitian-api:2.6.0`/`zhitian-api:sha-7620d23`，digest=`sha256:afbea84985001e05032e9d109615557c43758a55e257f65826032d278432596e`，artifact记录`.env=absent`、`data=empty`、`runtime_user=appuser`、`runtime_uid=999`。
+- **扫描结果如实记录，当前后端门禁为红灯**：`pip-audit`命令报告7个包中31条已知漏洞记录（JSON按package+ID去重为27项），涉及Starlette、LangChain/LangGraph/LangSmith、langchain-core/text-splitters和python-dotenv。Trivy共报告418项：CRITICAL 7、HIGH 59、MEDIUM 121、LOW 203、UNKNOWN 28；其中可修复项分别为1/12/16/3/0。CRITICAL包括可升级修复的`langchain-core` CVE-2025-68664，以及当前Debian源尚未给出修复版本的`perl-base`、`libglib2.0-0t64`、`libxml2`问题。最终策略步骤同时确认`pip_audit.outcome=failure`和`trivy_gate.outcome=failure`并正确让运行失败；这是扫描发现真实风险后的预期阻断，不是构建或工作流故障。本轮按任务范围未擅自升级业务依赖或更换基础镜像，修复需单独做兼容性评估与完整回归。
+- 新增`integration-manual.yml`，触发器只有`workflow_dispatch`。现有代码真实收集为5项integration：1项附件DeepSeek、2项LibreOffice转换、1项DeepSeek生成PDF、1项DeepSeek聊天；只有3项外部模型测试需要GitHub Repository Secret `DEEPSEEK_API_KEY`，当前5项不调用Tavily或DirectMail，因此没有虚构或注入无消费方的凭据。工作流在Windows runner建立项目`.venv`、安装LibreOffice后仍经权威`run_tests.bat -q -m integration`运行并上传JUnit；普通push实际只产生`Backend Container CI`运行，手动integration未被误触发。
+
+## 2026-07-31 F31首批依赖漏洞修复与容器复扫
+- `requirements.txt`将`python-dotenv`从1.0.0升至1.2.2并移除全源码未使用的`langchain==0.2.0`顶层依赖；真实卸载后按清单重装，`langchain`与`langchain-text-splitters`均未再出现，`langgraph==0.1.1`、`langchain-core==0.2.43`、`langsmith==0.1.147`保持原版本。`load_dotenv()`的UTF-8变量解析、真实`config.py`导入和认证回归正常，`pip check`无冲突。
+- FastAPI 0.115.0限定Starlette `<0.39.0`，与两个目标修复版无交集，因此采用联动升级。初选`FastAPI==0.116.1`/`Starlette==0.47.2`已修复`CVE-2024-47874`和`CVE-2025-54121`，但首次复扫新增发现知天`FileResponse`下载链路可触达的`CVE-2025-62727`；最终收敛为PyPI元数据中首个允许Starlette 0.49.1的`FastAPI==0.120.1`与`Starlette==0.49.1`，三项CVE均消失。`uvicorn==0.51.0`、`PyJWT==2.13.0`、`sse-starlette==3.0.3`未改动。
+- 分项验证真实通过：第一次上传/认证/SSE局部回归`77 passed`，dotenv认证回归`14 passed`，移除LangChain后的规划链路`65 passed`；最终组合的上传、认证、SSE、FileResponse下载回归为`94 passed, 1 deselected`。两轮最终候选均通过项目Python 3.10全源码`py_compile`，最终权威`run_tests.bat -q`为`346 passed, 5 deselected in 165.92s`，与基线完全一致、无新增failed。
+- 最终容器CI运行[30630174343](https://github.com/z987645344-arch/zhitian/actions/runs/30630174343)真实构建提交`944db77`，镜像digest=`sha256:c760096989ac031e49a35cd6b2f3179ec57c67959ddd4d90b23b5c5852e7925b`且安全基线仍为`.env=absent/data=empty/appuser uid=999`。原始artifact显示pip-audit由`7包31条（27唯一项）`降为`4包19条（16唯一项）`，目标Starlette三项、python-dotenv、langchain及text-splitters记录均为0；Trivy由418降至410（CRITICAL 7、HIGH 56、MEDIUM 116、LOW 203、UNKNOWN 28）。剩余CRITICAL仍是`langchain-core`1项与Debian系统层6项，故最终策略红灯符合预期，F31继续开放。
+- 已删除后端、管理后台原`codex-ci-phase-a-20260731`以及本轮额外`codex-f31-final-20260731`验证分支；两个仓库本地与GitHub远程分支均已核对只剩`master`。CI验证提交只存在于已删除临时分支，本轮主工作区改动仍待用户统一存档。
+
+## 2026-07-31 自用云端MVP运维文档与从零部署走查
+- **文档现状与新增入口**：改动前`docs/`只有项目结构、协作记忆、编码规范和生产密钥说明，后端/管理后台README仅覆盖开发态快速运行，没有独立的云端安装、备份恢复、升级回滚或故障排查手册。新增`docs/deployment_guide.md`、`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`；明确当前交付结构是后端/管理后台两个独立Git仓库加共享根目录`docker-compose.yml`，单独clone后端仓库不是完整部署包。四份文档只覆盖自用单实例MVP，真实域名/HTTPS、服务器私有Secret、定时异地备份和registry发布均明确留到Phase B。
+- **覆盖范围**：安装指南记录Docker/Compose已验证版本、2 vCPU/4 GiB最低建议与LibreOffice转换尖峰依据、`.env.example`、随机0号developer初始化、三服务健康和日常启停；备份指南按真实CLI记录`--confirm-service-stopped`、`--backup-dir`、默认保留7份、AES-GCM/manifest只读校验、Compose卷内生成后立即`compose cp`导出卷外，以及恢复前安全备份和恢复后完整性检查；升级指南说明schema当前仅版本1、未来版本2必须用独立人工迁移且不能手改版本号，并明确CI双标签/digest当前只用于追踪、因不推送registry不能直接拉取回滚；故障指南覆盖启动、卷权限、DeepSeek、DirectMail、LibreOffice、反向代理、Codex PATH/身份、`.env` BOM和Python 3.10语法。
+- **真实Compose走查**：当前本机为Docker Client/Server 29.6.2、Compose 5.3.1，`docker compose config --quiet`通过。复用此前镜像执行`up -d --no-build`后三服务均healthy；`/`、`/login.html`、`/api/health`、`/api/ready`均为200，ready返回SQLite/Chroma/LibreOffice全true，宿主机8000/8080不可直连；`appuser uid=999`对`/app/data`可写，soffice 25.2.3.2可执行，`nginx -t`通过。当前源码的`backup_data.py --help`和`restore_data.py --help`与文档参数逐项一致。
+- **F32从零镜像阻断（本轮只诊断、未改依赖）**：`docker compose up -d --build`在Codex执行器中826秒超时无输出，随后直接`docker build --progress=plain`在904秒命令超时前实际完成并生成新镜像`sha256:48a84086...`（462,942,093字节，含备份/恢复脚本）。该干净镜像解析到`numpy==2.2.6`，而`chromadb==0.5.0`导入时访问NumPy 2已移除的`np.float_`并抛`AttributeError`，新API容器无法启动；`pip check`仍错误地表现为“无冲突”。本机历史可运行组合为NumPy 1.26.4/Chroma 0.5.0。现有容器CI只构建/扫描、不做Chroma导入或API启动，因而漏过该问题。已登记F32为P0云端从零部署阻断；失败镜像保留为`zhitian-api:f32-clean-build-20260731`，本机`dev-production`仅为额外安装NumPy 1.26.4的临时可运行层，未进入Git且不能视为可复现发布修复。
+- **F33空白实例首次备份边界**：全新卷启动会创建users.db/history.db，但files.db由个人文件功能首次访问时懒创建；备份脚本要求三库同时存在，首次尝试准确报“缺少必须备份的SQLite文件”。通过现有`files_store`正常连接路径初始化空files库后，Compose原始备份命令真实生成`zhitian-backup-20260731T133252744117Z.ztbackup`：manifest为10个原始文件、401,408字节，schema users=1/history=1/files=None，Chroma documents=0/memory=0；只读AES-GCM+manifest校验通过，`docker compose cp`成功导出，卷外SHA-256=`C4E8C92C46C6A49D6D378E6A6D6C8ED6424067B07803B15DCFC6D8C7BCD34B7E`，服务恢复后ready仍为200。F33保持P2开放，文档要求首次备份前预检files.db且禁止手工伪造无schema空文件。
+- 本轮只修改Markdown文档，没有修改`requirements.txt`、Dockerfile、Compose或Python业务代码；未运行pytest。文档交付本身已完成，但F32修复并通过干净镜像启动前，自用云端MVP仍不能宣称可从零部署。
+
+## 2026-08-01 修复F32（NumPy/Chroma干净镜像阻断）与F33（空白实例首次备份）
+- **F32根因**：`chromadb==0.5.0`的元数据只声明`numpy>=1.22.5`、**没有上界**，因此干净环境解析到NumPy 2.x完全"合法"，`pip check`也报无冲突；不兼容发生在运行时——chromadb代码访问NumPy 2已移除的`np.float_`，`import chromadb`即抛`AttributeError`。这解释了为何依赖审计和安全基线全部通过却仍漏检。
+- **锁定选型**：`requirements.txt`新增`numpy==1.26.4`（并附注释说明原因）。选它不只因为"本机能跑"：1.26.4是NumPy 1.x的最后一个版本，不存在更新的1.x；镜像内真正约束numpy的只有`onnxruntime>=1.21.6`与`rank-bm25`（无上界），均被满足；`openai`的`numpy>=2.0.2`仅属未安装的`voice-helpers` extra，不构成约束。因此1.26.4是满足全部约束的最新可行版本。
+- **真正的干净构建验证**：`docker build --no-cache`全量重建（未复用任何旧层），构建日志显示`Collecting numpy==1.26.4`，镜像内`docker history`确认**无任何额外numpy安装层**，即版本来自requirements解析而非补丁。容器`GET /ready`返回200且`sqlite/chroma/libreoffice`三项均为true。**真实Chroma读写往返**：容器内写入1个chunk→`search_documents`命中该doc（score 0.4767）→删除1个chunk，全链路正常。
+- **容器CI补应用门禁**：`.github/workflows/container-ci.yml`在安全基线之后、依赖审计之前新增`Verify application imports and API readiness`，包含三段硬失败检查——真实`docker run`导入`chromadb/numpy/fastapi`、导入应用`main`模块、启动容器轮询`/ready`并断言`dependencies.chroma is True`。步骤使用`set -euo pipefail`且无`continue-on-error`，失败即整条流水线失败。
+- **门禁有效性实证**（用真实故障镜像而非模拟）：对保留的`zhitian-api:f32-clean-build-20260731`（numpy 2.2.6）执行门禁第1步，`docker run`以退出码1失败并输出`np.float_`错误；执行启动检查，容器30秒内未就绪且状态为`Exited (1)`。对修复镜像同两步分别返回退出码0与`/ready` 200。证明该门禁确实能拦住F32这类问题。
+- **F33选型与修复**：采用方案A。`files.db`此前是三库中唯一没有模块级初始化的——`auth.py`与`memory.py`都在模块末尾调用`init_db()`，而files库的建表只写在`_connect()`里、靠首次个人文件操作懒触发。`layers/files_store.py`新增`init_db()`并在模块末尾调用，复用`_connect()`的真实建表路径（不手工伪造无schema空文件），使三库初始化时机一致。选A而非改备份脚本，是因为问题根源就是这处不一致；改脚本会在备份与恢复两侧长期留下特例分支。
+- **F33验证**：全新具名卷启动容器、**不执行任何文件操作**，`ls /app/data`即可见users.db/history.db/files.db三库齐备；随后在该空白实例上真实执行`backup_data.py --confirm-service-stopped`，成功生成`zhitian-backup-20260731T154345056676Z.ztbackup`（10个原始文件、401,408字节），不再出现"缺少必须备份的SQLite文件"。解出manifest核对：`data/files.db`及其`-shm/-wal`均在文件清单内，`schema_versions`为`{"users.db":1,"history.db":1,"files.db":null}`——files库确实没有`schema_version`表，`null`是如实记录而非伪造。
+- **临时产物清理**：本机`zhitian-api:dev-production`此前带有一层临时`pip install numpy==1.26.4`补丁，现已用本批修复镜像重建，`docker history`确认不再有额外numpy层；中间验证镜像`f32-fix-verify`已删除。**保留`zhitian-api:f32-clean-build-20260731`**：它是唯一能立即复现F32的真实故障镜像，本批就是用它证明新CI门禁有效，后续回归门禁时仍可直接复用，无需再花约10分钟重建坏镜像。
+- **过程记录（通用教训）**：首次验证镜像是在F33代码改动之前启动的后台构建，因此空白卷里仍缺files.db；发现后重建并在同一镜像上复验两项修复，不以先后不同的镜像拼凑结论。后台长构建期间通过检查日志行数与`Collecting numpy==1.26.4`确认真实进度，未因暂时无输出而掐断重试。
+- `py_compile`通过；权威回归`run_tests.bat -q`结果为`346 passed, 5 deselected`，与基线`346 passed, 5 deselected`完全一致，无新增failed。本批未触碰langgraph/langchain-core/langsmith（F31剩余部分），也未发现除NumPy外其他导致容器无法启动的未声明传递依赖。
+
+## 2026-08-01 Phase A「发布前真实验收」：全新干净Compose环境端到端走查（新增F34–F37）
+- **验收口径**：自用MVP范围，不含真实域名/HTTPS（留Phase B）。全程在隔离环境完成——API容器只挂载具名卷`zhitian-mvp-data → /app/data`，反向代理只只读绑定`compose-nginx.conf`，宿主机`zhitian/data`最后修改时间停留在2026-07-31 15:58（验收始于08-01 08:58），自始至终未被挂载或改动。收尾已`down -v`，容器/卷/网络零残留，后端仓库`git status`与验收前一致。
+- **步骤0 环境与构建（通过）**：起点无遗留卷与三服务容器。`docker compose build`从当前源码重建。按`deployment_guide.md`§5预检：容器内`numpy 1.26.4`/`chromadb 0.5.0`导入成功；`backup_data.py --help`与`restore_data.py --help`真实退出码均为0。三服务启动后`/`、`/login.html`、`/api/health`、`/api/ready`全部200，`sqlite/chroma/libreoffice`三项均true，`docker compose ps`三项healthy。**F33复验通过**：零文件操作下`/app/data`即含三库。
+- **步骤1 一次性管理员引导（通过）**：`seed_prod_admin.py`生成0号developer与20位一次性密码（仅stdout，未落任何文件）。登录200，`is_default_account=true`，用户/组织/待审列表可读。
+- **步骤2 首个真实developer接管（通过）**：`/auth/register/request`→0号批准→新developer创建。**0号立即失活**：`is_active=false`，旧token调用返回401「账号已被禁用或不再有效，请重新登录」。
+- **步骤3 组织与角色链路（通过）**：建测试组织；developer批准reviewer、reviewer批准employee；两人入组。**入组审批冷启动兜底真实触发并自愈**：reviewer尚未入组时employee申请落到developer队列并带`cold_start_fallback=true`；reviewer入组后同一条申请自动迁回reviewer队列且标记消失。验证码180秒冷却真实拦截（连续429后放行）。
+- **步骤4 文档上传与检索（部分未达成）**：employee上传→reviewer预览（正文含唯一核对句）→批准为`verified`。customer经真实邮箱验证码自助注册成功（不需企业密码）。**但customer检索该文档得到0条引用，本项验收未达成**，根因见F37；已排除权限因素——`claude_memory.md`「文档组织归属」明确记载聊天检索按设计不按组织过滤。
+- **步骤5 权限边界（通过）**：reviewer对他组织文档的预览/批准/拒绝/删除全部403「无权操作其他组织的文档」；`/pending`与`/debug/retrieve`均不含他组织文档；同组织内预览200。禁用账号旧token 401、重新登录401「账号已被禁用」，恢复启用后登录200。
+- **步骤6 转换与模型（通过）**：中文DOCX→PDF经LibreOffice真实转换1.0秒，下载63,699字节，pypdf提取文字层含「七十三个月」「ZT-ACC-20260801」「橙色标签档案」，无乱码。fast 4.2秒、expert 14.2秒，均真实返回，expert带reasoning。
+- **步骤7 重启与持久化（通过）**：`docker compose restart`后三服务healthy、四个旧token仍有效、组织关系/文档/个人文件/检索全部正常；`docker compose down`（不带`-v`）+`up`后具名卷保留、数据完整。
+- **步骤8 备份恢复演练（备份通过，就地恢复失败）**：备份成功生成`.ztbackup`（19文件/3,845,787字节原始，压缩加密后1,644,993字节），manifest的全表行数、Chroma计数与验收前独立采集的基线**逐项完全一致**，三库`integrity_check=ok`、外键违规0，`files.db`及`-shm/-wal`在清单内、`schema_version=null`如实反映该库本无版本表。按指南§3导出卷外并记录SHA-256、§4只读manifest校验均通过。随后按真实API路径删除测试数据（删文档、删组织、禁用账号）后执行恢复——**恢复失败，退出码1，见F34**。原数据已正确回退、无残留目录、恢复前安全备份完整（同为19文件），失败后服务重启即healthy、功能正常。
+- **新增F34（P0，发布阻断）**：具名卷部署下**备份可用但就地恢复不可用**。`scripts/restore_data.py`的`_activate_candidate()`以`os.replace(data_dir, rollback)`整目录换名激活恢复结果，而Compose下`/app/data`是具名卷挂载点，rename直接失败。实证：容器内对`/app/data`执行`os.replace`返回`errno=16 (EBUSY) Device or resource busy`，`/proc/self/mountinfo`确认该路径为`zhitian-mvp-data`挂载点。隔离对照：同一个备份包恢复到**非挂载点**目录`/tmp/rt/data`退出码0、「SQLite与Chroma完整性检查通过」，且恢复出的行数与备份前基线逐项一致——证明备份包与恢复逻辑本身无缺陷，唯一障碍是激活方式与容器部署形态不兼容。`backup_restore_guide.md`§5把这套Compose恢复流程写成可用步骤，实为从未端到端跑通。
+- **新增F35（P1）**：全新实例首次上传触发Chroma默认嵌入模型在线下载（`all-MiniLM-L6-v2`，83,178,821字节），且`main.py`的`load_document`/`chunk_text`/`memory.save_document`是async处理器内的**同步调用**（同文件的LibreOffice转换却已用`asyncio.to_thread`下放线程），下载与向量化全部占用事件循环。实测09:18:08进入→09:32:45落库→约09:36`/ready`恢复，**全服务不可用约18分钟**，期间健康检查连续超时、`zhitian-api`与`reverse-proxy`双双被判`unhealthy`。缓存位于`/home/appuser/.cache`，**不在具名卷内**：实测`down`+`up`重建容器后该文件MISSING，即每次容器重建或镜像升级都会重演该窗口。第二次上传仅0.4秒，证明这是纯一次性成本。无出网的服务器将直接挂死而非快速失败。三份运维文档均无此预警。
+- **新增F36（P2）**：上述首次上传中，客户端120秒读超时未拿到任何响应，服务端却在09:32:45成功落库且文档正常可见。真实用户会判定失败并重传，产生重复文档。
+- **新增F37（P2）**：中文语义检索区分度不足。同一份已通过文档实测：逐字原文查询0.5889、原文标题0.5947、完全无关中文「今天北京的天气怎么样」0.4463、英文近义句0.3621，而阈值`RAG_SCORE_THRESHOLD=0.55`正落在这条噪声带里；`bm25_score`在**所有**用例恒为0（日志`bm25_candidates=0`），混合检索实际退化为纯向量。步骤4失败的直接原因是fast模型把用户问题改写后的检索词得分仅0.5130，低于阈值被拒答（日志「文档检索低置信度拒答 best_score=0.5130 threshold=0.5500」）。默认嵌入模型为英文模型，中文并非其适用域。
+- **文档待修项**：①同一邮箱新增角色账号时，审批路径会强制把新账号密码同步为该邮箱既有密码并返回`password_sync`，申请时提交的密码直接失效（自助注册路径则不同步），四份文档与`claude_memory.md`均未记载；②`deployment_guide.md`§2.2「约471.6MB」未标注度量口径——本次`docker image inspect .Size`为442.9MB（同口径吻合），而`docker images`显示1.78GB；③`deployment_guide.md`§1/§6、`backup_restore_guide.md`§1、`troubleshooting.md`§2/§3仍将F32/F33描述为当前阻断，与2026-08-01已修复状态不符。
+- **其他观察**：系统只有禁用账号端点、没有删除账号端点，测试账号无法经API彻底清除；`anonymized_telemetry=False`下Chroma仍输出telemetry警告，与`backup_restore_guide.md`§4记载一致。
+- 本批为验收走查，**未修改任何应用代码**；F34–F37均只登记不修复。
+
+## 2026-08-01 F34修复：恢复激活改为data目录内部就地替换
+- **根因复述**：`restore_data.py`原用`os.replace(data_dir, rollback)`对整个`/app/data`改名来激活恢复结果。Compose部署下该目录就是具名卷`zhitian-mvp-data`的挂载点，内核不允许对挂载点自身rename，返回`errno=16 EBUSY`。验收时已用隔离测试证明备份包与恢复核心逻辑本身没问题（同一个包恢复到普通目录完全正常），问题精确落在"整目录换名"这一个动作。
+- **新方案**：不再触碰`/app/data`目录本身，改为只替换其内部条目。暂存目录`.zhitian-restore-staging-<随机>`与回滚目录`.zhitian-restore-rollback-<随机>`都建在`/app/data`**内部**——只有挂载点内部的路径才与卷同处一个文件系统，rename才成立。激活时逐条`os.replace`：先把旧条目移入回滚目录，再把暂存条目移入正式位置。全部动作都是同一文件系统内的原子rename，不含复制，保留了原方案"激活与留旧都靠rename"的优点。
+- **管理条目共11项**：`users.db`/`history.db`/`files.db`各自连同`-wal`/`-shm`整族一起移出再放入新库，避免出现"新库文件配旧WAL"这种同库内的新旧混合；另加`vectordb/`与`user_files/`两个目录。`user_files`在源目录不存在时也能正确创建（本次复跑起始状态即如此）。
+- **不再整份复制当前data**：旧实现先`copytree`整个data再覆盖，会把`backups/`下已有的`.ztbackup`全部复制一遍。新实现只暂存待恢复条目，`logs/`、`backups/`、`tmp_uploads/`原地不动。
+- **中间态防护**：激活期间在`/app/data`写`.zhitian-restore-inprogress.json`，正常结束即删除。进程内任一步失败按已完成的相反顺序整体撤销（先把已移入的新条目退回暂存，再把已移出的旧条目移回原位），data回到恢复前状态；撤销本身失败时明确报出并要求人工处理，不继续。若该文件残留（进程被强杀），下次恢复在**做安全备份之前**就直接拒绝执行并指名回滚目录，避免把混合状态固化进安全备份。
+- **安全性未退化**：恢复前安全备份、AES-GCM认证、manifest文件集合/大小/SHA-256、三库`integrity_check`/`foreign_key_check`/表行数/schema版本、Chroma数量核对全部保留；暂存内容在激活前还要再跑一次同样的完整性预检，恢复后对正式目录复查不变。
+- **真实容器复跑（具名卷挂载场景，非普通目录）**：全新卷+重建镜像，走完整链路——`seed_prod_admin.py`引导0号→首个真实developer接管（0号旧token 401）→reviewer/employee经审批建号→建组织并双方入组→employee上传中文DOCX（1.3秒）→reviewer批准→转换生成个人文件PDF（57,762字节）。停服采基线后备份成功（15文件/2,147,462字节，`zhitian-backup-20260801T124102903038Z.ztbackup`，exit=0）。
+- **真实API删除**：`DELETE /documents/{doc_id}`删文档（deleted_chunks=1）、`DELETE /developer/organizations/3`删组织、`POST /developer/users/{id}/disable`禁用reviewer与employee（reviewer旧token立即401）。删除后实测`documents=0`、`organizations=2`、`user_organizations=3`、Chroma `zhitian_documents=0`，确认数据真的丢了。
+- **恢复结果**：`restore_data.py` **exit=0**，输出"SQLite与Chroma完整性检查通过，schema versions: {files.db: null, history.db: 1, users.db: 1}"。逐项对比恢复前基线**差异项数=0**：Chroma计数、三库全部表行数、`integrity_check`均为`["ok"]`、`foreign_key_violations`均为0、`user_files_on_disk`全部一致；`/app/data`下**无任何`.zhitian-restore*`残留**，唯一新增条目是备份步骤产生的`backups/`。`check_orphan_data.py`八项孤儿检查全为0且exit=0。
+- **重启后功能验证**：三服务healthy、`/api/ready`三依赖全true；developer/reviewer/employee三个角色重新登录均200（禁用状态随恢复回退）；组织3及2名成员回来、已通过文档回来、个人文件回来；`/debug/retrieve`命中恢复后的向量（score=0.605621）；预览正文含唯一核对语句"七十三个月"。
+- **故意失败演练**：把备份包中间第36285字节由45翻转为44得到`tampered.ztbackup`，恢复**exit=1**并报"备份包认证失败：密钥错误或文件已被篡改"；随后逐项对比**差异项数=0**、`data_entries`完全相同、无`.zhitian-restore*`残留，原数据未受任何影响。另伪造一份未清理的`.zhitian-restore-inprogress.json`，恢复被直接拒绝（exit=1）并提示按记录的回滚目录人工复位。
+- **回归**：`py_compile`通过；`run_tests.bat -q`结果`346 passed, 5 deselected in 166.74s`，与基线346完全一致，无新增failed。现有两个恢复用例走的是普通目录路径，新实现同样通过。
+- **文档**：重写`docs/backup_restore_guide.md`§5，新增§5.0说明就地内部替换机制与中断残留处理，§5.1补充`BACKUP_ENCRYPTION_KEY`必须显式注入（`zhitian/.env`默认不含该项，本次复跑即因此需要`-e`传入）以及"安全备份先于解密创建、失败时backups/也会多一份"的顺序说明。
+- **隔离**：全程使用具名卷`zhitian-mvp-data`，`docker inspect`确认挂载为volume而非宿主机bind；宿主机`zhitian/data`最新修改时间自始至终停在2026-07-31 15:58，未被触碰。收尾`docker compose down -v`已删除卷与全部容器。
+- 本批只处理F34，未改动`requirements.txt`、`Dockerfile`及F31/F32/F33相关内容；F35/F36/F37仍开放。
+
+## 2026-08-01 F35修复：解析/向量化下放线程池 + 构建期预置嵌入模型
+- **两个独立成因**：①`main.py`把`load_document`/`chunk_text`/`memory.save_document`直接写在async处理器里同步执行（同文件的LibreOffice转换早已用`asyncio.to_thread`），整段解析与向量化占用事件循环；②Chroma默认嵌入模型`all-MiniLM-L6-v2`（约83MB）在首次嵌入时才在线下载，且缓存位于`/home/appuser/.cache`、不在具名卷内，容器一重建就重演。两者叠加造成验收时实测的**全服务不可用约18分钟**、健康检查连续超时、`zhitian-api`与`reverse-proxy`双双`unhealthy`。
+- **任务1：6处调用点全部下放线程池**——`/documents/upload`三处（load_document/chunk_text/save_document）、`/knowledge/input`两处（chunk_text/save_document）、`/chat/attachments`一处（load_document）。此前只有`/files/{id}/preview`与两处转换用了`to_thread`。
+- **共享状态核查结论：不需要新增锁**。`layers/memory.py:86`的`_chroma_lock`就是`layers/chroma_sync.CHROMA_LOCK`（进程内`threading.RLock`），`save_document`的Chroma写入本就在该锁内；`document_loader.load_document`/`chunk_text`无任何全局状态，是对入参的纯函数。换到工作线程后这把锁反而**第一次真正开始发挥串行化作用**——此前业务路径全在事件循环单线程上，彼此不可能竞争，锁只在与备份脚本同进程调用时才有意义。
+- **任务2选型：只用方案A（构建期预置），刻意不与方案B（缓存纳入卷）结合**。理由：Docker只在具名卷**为空**时才用镜像内容播种它；一旦卷已存在，升级到新镜像后卷里的旧缓存会**遮蔽**镜像中预置的模型，恰好毁掉A在"升级镜像后首次上传"这个最关键场景下的保证。而A成立后B不再提供任何增量价值——模型随镜像层存在于每个新容器，`down`+`up`天然幸存，零出网也可用；B还会多出一份需要备份、恢复和权限管理的持久路径。
+- **Dockerfile实现**：在创建appuser之后、`COPY . .`之前新增一层，执行`ONNXMiniLM_L6_V2()(['warmup'])`触发下载（下载发生在`__call__`而非`__init__`，因此必须真的调用一次），随后删除`onnx.tar.gz`并把`.cache`归属appuser。删tar包是安全的：chromadb的`_download_model_if_not_exists()`只检查解压出的`onnx/`目录内6个文件是否齐全，与tar包无关，实测删除后不会触发重新下载。该层放在代码COPY之前，改代码不会使其失效。
+- **镜像体积（`docker image inspect .Size`同口径）**：442.9MB（464,370,869字节）→ **522.1MB（547,487,931字节）**，增加**79.3MB（+17.9%）**。若不删tar包会再多约79MB。
+- **构建期新增依赖，如实说明**：这一步让构建新增一个必须可达的出网目标（Chroma模型下载地址）。构建本就需要联网装apt包与PyPI依赖，所以并非从"可离线构建"变成"不可离线构建"；变的是**必须可达的主机多了一个**——若某环境只镜像了Debian源与PyPI却拦截该地址，构建会从此失败。刻意让它硬失败而非`|| true`降级：宁可在构建期暴露，也不要留到生产首次上传时才发现。
+- **干净构建验证**：`docker build --no-cache` exit=0，总耗时1555秒；其中模型下载层单独耗时92.4秒（约940KiB/s，比运行时实测的约80KB/s快一个量级）。镜像内确认6个模型文件齐全、属主`appuser`、无tar包。
+- **离线可用性验证**：`docker run --network none`下`ONNXMiniLM_L6_V2()(['断网验证'])`成功返回384维向量，exit=0；以运行时身份（uid 999）加载耗时1.01秒，且缓存目录**内容零变化**，证明未发生任何下载。
+- **全新Compose环境首次上传**：全新具名卷+全新容器，小文档上传**1.81秒**（2个切片），对比修复前的**约18分钟**。
+- **大文档并发验证（关键证据）**：375个切片的文档上传耗时**66.39秒**，期间持续并发探活`/ready`与`/health`共**208次，全部200，零超时零异常**，探活耗时最大1.731秒、平均0.075秒（健康检查超时阈值为5秒）。`docker inspect`显示`zhitian-api`与`reverse-proxy`全程`healthy`、`FailingStreak=0`、健康检查非0退出**0次**——与修复前"连续超时、双双unhealthy"形成直接对照。
+- **容器重建后模型仍可用**：`docker compose down`（不带`-v`）+`up`后，新容器内6个模型文件完好、时间戳仍为镜像层的`Mar 30 2023`、目录内**没有tar包**，证明未发生重新下载；随即上传成功。
+- **功能正确性**：线程池改造后文档审批、检索（命中score=0.711609）、预览（正文含唯一核对语句）均正常。
+- **回归**：`py_compile`通过；`run_tests.bat -q`为`346 passed, 5 deselected in 172.10s`，与基线346完全一致，无新增failed。
+- **隔离**：全程使用具名卷，宿主机`zhitian/data`最新修改时间自始至终停在2026-07-31 15:58未被触碰；收尾`docker compose down -v`已删卷与全部容器，临时验证镜像tag已清理。
+- **过程记录**：验证期间发现0号默认developer账号**只能审批developer申请**（"默认开发者账号仅可审批开发者加入申请"），因此无法用它直接批出reviewer，账号链路必须先完成developer接管；另注意到`registration_requests`的pending唯一索引是按`(email, requested_role)`而非仅`email`，同一邮箱可同时挂不同角色的待审申请。DirectMail本日出现多次瞬时502与一次"接受但延迟投递"，属外部服务波动。
+- 本批只处理F35，未触碰F36（客户端超时语义）、F37（检索阈值与中文分词）及`RAG_SCORE_THRESHOLD`等检索配置。

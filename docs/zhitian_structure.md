@@ -262,6 +262,7 @@ class ChatResponse(BaseModel):
 |------|------|------|
 | GET | / | 服务状态 |
 | GET | /health | 五层详细健康状态 + 统计 |
+| GET | /ready | SQLite、Chroma与LibreOffice生产依赖就绪检查；任一异常返回503 |
 
 ---
 
