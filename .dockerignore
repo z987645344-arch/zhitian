@@ -1,0 +1,13 @@
+.env
+.env.*
+data/
+backups/
+.zhitian-restore-*/
+.venv/
+.git/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+tests/
+docs/design_reference/
