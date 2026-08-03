@@ -940,3 +940,45 @@
 - **隔离**：全程使用具名卷，宿主机`zhitian/data`最新修改时间自始至终停在2026-07-31 15:58未被触碰；收尾`docker compose down -v`已删卷与全部容器，临时验证镜像tag已清理。
 - **过程记录**：验证期间发现0号默认developer账号**只能审批developer申请**（"默认开发者账号仅可审批开发者加入申请"），因此无法用它直接批出reviewer，账号链路必须先完成developer接管；另注意到`registration_requests`的pending唯一索引是按`(email, requested_role)`而非仅`email`，同一邮箱可同时挂不同角色的待审申请。DirectMail本日出现多次瞬时502与一次"接受但延迟投递"，属外部服务波动。
 - 本批只处理F35，未触碰F36（客户端超时语义）、F37（检索阈值与中文分词）及`RAG_SCORE_THRESHOLD`等检索配置。
+
+## 2026-08-02 按角色请求限流配置（对话接口）
+- **现状核查先于动手**：`slowapi==0.1.10`早已在`requirements.txt`锁定并随生产镜像运行，`main.py`也已有`Limiter`+`SlowAPIMiddleware`+从JWT取user_id的`_rate_limit_key`，`RateLimitExceeded`处理器本就返回429与「请求过于频繁，请稍后重试」，`/chat`与`/chat/stream`已挂限流装饰器。真正缺的只是设计里写的那一步——把固定的`config.RATE_LIMIT_PER_MINUTE`升级为按角色可配置。因此本批不新增依赖、不重建限流骨架。
+- **新增`rate_limit_config`表（users.db）**：字段为`role`（四角色CHECK约束）、`requests_per_minute`、`updated_by`、`updated_at`，四行种子数据。放users.db而非新建第四个库，因为角色本身存在这里，且备份/恢复的`SQLITE_FILENAMES`是固定三库契约，新增库会连带影响F33/F34已验证的备份恢复链路与运维文档。
+- **schema_version维持1，未升到2**：`initialize_schema_version()`只在全新库首次写入版本号，一旦库内记录与程序常量不符就抛`SchemaVersionError`拒绝启动，**没有任何迁移路径**。升到2会让所有既有实例（含本地真实`data/users.db`）直接起不来。新增表沿用本库既有惯例（`organizations`、`lobby_content`、`email_verification_codes`均如此）用`CREATE TABLE IF NOT EXISTS`幂等建表，纳入users.db的版本管辖但不递增版本号。若日后确需递增，须先给`db_schema_version.py`补迁移机制。
+- **默认值依据**：customer/employee各20，与此前全局`.env`的`RATE_LIMIT_PER_MINUTE=20`一致，保证升级后这两类角色实际体验不变；reviewer/developer各60，因其需要连续审阅与排查。取值范围限定1–6000，下限防止把角色配成完全不可用，上限挡住误填导致限流形同虚设。
+- **动态限流值**：`_chat_rate_limit(key)`作为`limiter.limit()`的可调用参数。slowapi在`limit_value`可调用且签名含`key`时，会在每次请求用当前限流键调用它（`slowapi/wrappers.py`的`LimitGroup.__iter__`配合`with_request`逐请求求值），**因此配置改完立即生效，不需要重启，也不需要额外缓存失效机制**。`_rate_limit_key`改为返回`角色:身份`两段，让限流值函数无需再查一次库就能拿到角色；身份段仍是user_id，分桶粒度与改动前一致。
+- **刻意不加进程内缓存**：`get_role_rate_limit()`每次实读四行小表的单行查询，相对同一请求内的LLM调用可忽略，换来天然实时生效、无缓存一致性问题、不污染测试隔离。
+- **接口**：`GET/PUT /developer/rate-limits`，均`Depends(require_developer)`；全部走Pydantic模型（`RateLimitConfigItem`/`RateLimitConfigResponse`/`RateLimitConfigUpdateRequest`），无裸dict。PUT要求四角色一次性整体提交，任一数值越界即整批拒绝不做部分写入。
+- **日志脱敏**：429处理器新增一行只记`role=<角色> throttled=true`，不含路径参数、请求体或任何用户内容；配置更新只记被改角色集合。
+- **管理后台**：`developer.html`新增「按角色请求限流」设置卡片（侧边导航同步），四个数字输入框+保存按钮+状态提示；`js/api.js`新增`rateLimits`/`saveRateLimits`，`js/developer.js`新增加载与保存逻辑，前端先做整数与下限校验再提交。
+- **新增8项测试**（`tests/test_rate_limit_config.py`）：种子值与设计一致、按角色取值不同且未知角色回落最保守值、非developer与未认证访问配置接口被拒（403/401）、developer可读写、越界与缺角色被拒（400/422）、**customer压到2/分钟后第3次`/chat`真实返回429**、**同进程内改配置后无需重启即刻生效**、**customer被限死时reviewer仍按自身额度放行**。
+- **回归**：`py_compile`通过；`run_tests.bat -q`为`354 passed, 5 deselected in 203.43s`，即基线346加本批8项，无新增failed。
+- **过程中发现并处理的测试污染**：首次全量回归出现5项无关失败（test_system_modules、test_tool_conversion），且这些文件单独跑全部通过。根因是`main._accepting_requests`为模块级全局，`with TestClient(...)`退出时lifespan会置其为False，而套件中不少测试不用上下文管理器构造TestClient、不会重跑startup，于是全部收到503。本批新测试是少数正常走完启动/关闭流程的用例，因而暴露了这个既有隐患。按最小改动原则，在新测试的autouse夹具里保存并还原该全局，未改动共享conftest；该全局的脆弱性本身作为观察项记录，未在本批扩大修复范围。
+- **真实浏览器验证**：全新Compose环境登录0号developer控制台，卡片正确加载种子值20/20/60/60；改为customer=33、reviewer=77后点击保存，页面提示「已保存，立即生效」；从服务端独立复查`rate_limit_config`表确认真实落库并记录了修改人与时间。另经真实HTTP复验：未认证GET返回401、越界PUT返回400「每分钟上限须在1到6000之间」、缺角色PUT返回422。
+
+## 2026-08-02 文档调用量统计（命中次数与实际引用次数）
+- **现状核查**：动手前确认无任何既有实现（`email_usage_stats`是无关的邮件用量端点）；`reviewer.html`文档列表当时为6列表格，由`js/reviewer.js`的`loadDocuments()`渲染。
+- **新增`document_usage_stats`表，放在users.db**。取舍理由与同期限流表不同、未机械照搬：`documents`权威表就在users.db，因此可以建**真正的外键**`FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE`——SQLite不支持跨库外键，若放history.db，删文档后会残留一类无外键保护的孤儿引用，既躲不过`check_orphan_data.py`，也让启动时的`check_foreign_key_integrity`失去对它的约束能力。字段为`doc_id TEXT`、`year_month TEXT`（YYYY-MM）、`hit_count INTEGER`、`cited_count INTEGER`，复合主键`PRIMARY KEY (doc_id, year_month)`按文档与月份分桶。
+- **schema_version维持1**：与限流表同一硬约束——`initialize_schema_version()`没有迁移路径，库内版本与程序常量不符即抛`SchemaVersionError`拒绝启动，升版会让所有既有实例起不来。沿用本库既有惯例（`organizations`、`lobby_content`等）用`CREATE TABLE IF NOT EXISTS`幂等建表。
+- **两个计数口径的埋点位置不在同一层，这是本批最关键的判断**：
+  - **命中**埋在`layers/execution.py`的`_search_documents()`，紧跟`memory.search_documents()`返回的`results`之后（`document_usage.record_hit_candidates(...)`）。该处是召回候选，阈值筛选在其后才发生，符合"只要chunk进入候选列表、不管最终有没有通过重排/阈值筛选"的口径。
+  - **引用**埋在`main.py`，取最终返回给用户的`citations`（`cited_doc_ids = [item["doc_id"] for item in citations]`），`/chat`与`/chat/stream`两条路径各自在请求出口`finally`中落库。**不能在execution层计数**：`layers/planning.py`在证据过滤与降级路径上会清空`state["citations"]`，在execution层计数会把被判定证据不足、根本没展示给用户的文档也算成"实际引用"。此事在真实链路上被直接观测到——一次`/chat`中检索`result_count=3`确实召回了文档，但`evidence_sufficient=false`导致最终citations为空。
+- **命中按文档级去重，一次请求同一文档最多计1次**。依据：一份切成数十个chunk的文档若按chunk计，一次提问就会记数十次命中，数字变成切片粒度的函数而非"被用到的程度"，长短文档之间也失去可比性；去重后两个计数口径一致，都表示"在多少次请求中出现过"。
+- **埋点时机与并发安全**：命中在请求期间只写`contextvars.ContextVar`持有的集合（`record_hit_candidates`不做任何IO），与引用一起在请求出口由`flush_request()`一次性`INSERT ... ON CONFLICT(doc_id, year_month) DO UPDATE`落库。检索路径因此不写库；同一请求内多次调用检索也不会重复计数。统计写入失败只记`error_type`不影响主流程；`doc_id`在检索后被删除时外键会拒绝插入，逐条隔离处理。
+- **接口与前端**：`GET /documents/{doc_id}/usage`（可选`year_month`参数）依赖`require_reviewer`并沿用与预览/删除相同的组织范围校验，返回`DocumentUsageResponse`（`total_hit_count`/`total_cited_count`/`selected_month`/`months`）。文档列表另由`document_usage.list_usage()`批量取回总量并合并进`GET /documents/verified`响应，避免前端按行逐个请求。`reviewer.html`文档表新增"命中 / 引用"列与月份下拉（累计总量 + 最近12个月）。
+- **真实容器验证**：一次真实`/chat`请求中，被实际引用的`docC`得到`hit +1, cited +1`，而进入候选但未被引用的`docA`、`docB`为`hit +1, cited +0`——两个口径在真实链路上被干净区分。`docA`含2个chunk但一次请求仍只`+1`，文档级去重成立。前端展示`docC 1 / 1`、`docA/docB 6 / 0`，与直接查库的原始行逐项一致；月份下拉切到2025-09全部归零、切回累计恢复原值，分桶正确。删除`docB`后其统计行随`ON DELETE CASCADE`自动清除，`PRAGMA foreign_key_check`违规数为0，`check_orphan_data.py`八项孤儿检查全为0且exit=0。
+- **回归**：`py_compile`通过；`run_tests.bat -q`为`364 passed, 5 deselected`，即上一基线354加本批10项，无新增failed。
+- **验证过程说明**：中文提问受F37影响拿不到引用（fast模型把36字问句改写为20字后`best_score=0.5221`低于阈值0.5500被拒答），改用英文文档与英文提问验证`cited_count`的真实增长，**未触碰`RAG_SCORE_THRESHOLD`或任何检索配置**。
+
+## 2026-08-03 新增customer网页客户端（第一阶段：知天原风格测试版）
+- **第0步核查结论**：`/chat/attachments`的权限依赖是`get_current_user`（任何已认证用户），**不是**`require_employee`，因此customer本就具备聊天附件权限，本批据此把附件功能纳入范围，未新增任何权限。其余接口契约核实为：`/auth/send-verification-code`对`customer_register`用途不要求企业密码；`/auth/register`需`username/password/role/verification_code`；`/auth/login`返回`{token, role}`；`/chat/stream`的SSE载荷有三种形状——`{"chunk": "片段"}`逐段正文并以`{"chunk": "[DONE]"}`收尾、`{"type": "citations", "citations": [...]}`、`{"error": "..."}`。
+- **新增`web_client/`目录**：命名理由是与`deploy/`、`scripts/`、`docs/`同为顶层职能目录且直述用途；不用`static/`或`public/`是因为那类名字暗示由FastAPI托管，而实际交付形态是独立Nginx容器，会产生误导。含`login.html`、`register.html`、`chat.html`、`config.js`、`css/style.css`、`js/{api,login,register,chat}.js`，多HTML+共享CSS/JS，无框架，与管理后台组织方式一致。
+- **视觉**：完全沿用管理后台`login.html`的设计变量与组件（`--bg #f6f7f5`、`--surface #ffffff`、`--text #252a2e`等整套取值、`auth-shell`双栏结构、`form-stack`/`message`/`password-field`等类）。**任务描述称管理后台为"暗色主题"与实际不符**，实际是浅色舒缓办公配色，经确认后按实际体系实现。本阶段未引入任何站点专属品牌元素或"皮肤"抽象。
+- **后端地址配置**：`config.js`沿用管理后台运行时配置模式，默认同源`/api`，`js/api.js`不硬编码任何地址。
+- **token存储**：沿用管理后台的localStorage方案，键名加`zt_web_`前缀与管理后台隔离。**已知安全取舍并在代码内标注**：localStorage对XSS无抵抗力，HttpOnly Cookie理论上更稳妥，但后端当前是无状态JWT、既未签发Cookie也无CSRF防护，单方面改用Cookie需要后端配套改动，超出本批"不改后端"约束，故沿用并留待后续统一评估。
+- **范围限定**：仅customer、仅fast模式（无expert切换）、不含文档上传与知识库录入等企业角色能力。
+- **不掩盖后端真实行为**：拒答、空正文、SSE `error`分别以原文、明确提示、失败样式展示；引用区块只在后端真正返回citations时出现，字段（文件名、doc_id前8位、相关度、片段序号）全部来自响应，不做任何补全或美化。
+- **真实浏览器验证**（全新Compose环境，页面临时拷入管理后台容器`/web`子路径以获得同源，未改仓库与编排）：未登录访问`chat.html`正确重定向到`login.html`；用真实邮箱验证码完成customer自助注册并自动登录；流式对话正常；**F37拒答如实展示**——中文提问返回"未找到可靠依据，无法确认答案"，无引用区块无伪造；附件上传成功（提取54字、chip正确、发送后清空）且回答正确引用附件内容答出"七十三个月"；**引用来源展示验证通过**——新建会话下英文提问返回"引用来源（1）· webdoc.docx · 文档 bb4355e9 · 相关度 0.742 · 片段 #0"，与服务端doc_id一致。控制台零报错；桌面与390px窄屏三页均无横向溢出、响应式规则生效。
+- **验证过程记录**：中文提问受F37影响拿不到引用（与此前批次结论一致），改用英文文档+英文提问验证引用UI，**未触碰`RAG_SCORE_THRESHOLD`或任何检索配置**。另观察到：同一会话内的聊天附件上下文会走`_answer_from_supplied_context`分支，该分支不产生citations，因而会遮蔽知识库检索的引用展示；新建会话后即正常。这是既有后端行为，本批只如实记录不修改。`seed_prod_admin.py`因已有对话数据按设计拒绝执行，改用项目自带的`seed_dev_default_accounts.py`完成验证环境账号引导。
+- **容器化交付意图（本批不实施，供后续批次参考）**：建议复用`zhitian_admin`现有Dockerfile模式——`nginx:stable-alpine`基础镜像、非root运行、`COPY`静态资源到`/usr/share/nginx/html`——为`web_client/`单独构建一个镜像，并在共享`docker-compose.yml`中作为第四个服务接入，由现有反向代理按独立路径（如`/app/`）或独立域名转发；不建议与管理后台合并进同一容器，因为两者面向的用户群与后续演进节奏不同（管理后台面向企业内部角色，本客户端后续还要分化出售卖版与知了hub专属皮肤版）。
+- 本批未修改任何后端代码或权限逻辑。
