@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, db_schema_version, document_loader, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
+from layers import attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
 from utils.logger import get_logger
 from utils import observability
 
@@ -183,6 +183,22 @@ class SystemModulesRequest(BaseModel):
     guidance: Optional[str] = None
     tone: str = ""
     forbidden: str = ""
+
+
+class DocumentUsageMonthItem(BaseModel):
+    """单个月份分桶的命中与实际引用次数。"""
+
+    year_month: str
+    hit_count: int
+    cited_count: int
+
+
+class DocumentUsageResponse(BaseModel):
+    doc_id: str
+    total_hit_count: int
+    total_cited_count: int
+    selected_month: Optional[DocumentUsageMonthItem] = None
+    months: List[DocumentUsageMonthItem] = Field(default_factory=list)
 
 
 class RateLimitConfigItem(BaseModel):
@@ -952,6 +968,8 @@ async def chat(
     )
     trace_id = str(uuid.uuid4())
     trace_token = observability.set_trace_id(trace_id, mode=mode)
+    usage_token = document_usage.begin_request()
+    cited_doc_ids: List[str] = []
     try:
         layer_trace = ["perception", "planning", "execution", "output"]
         logger.info(
@@ -980,6 +998,10 @@ async def chat(
         layer_trace = list(dict.fromkeys(layer_trace))
         final_data = final_state["response"]
         citations = _serialize_citations(final_state.get("citations", []))
+        # 以最终返回给用户的citations为准：planning在证据过滤与降级路径上会清空
+        # state["citations"]，若在execution层计数，会把证据不足、根本没展示给
+        # 用户的文档也算成"实际引用"。
+        cited_doc_ids = [str(item.get("doc_id", "")) for item in citations]
         has_error = bool(final_state.get("error"))
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
 
@@ -1041,6 +1063,10 @@ async def chat(
         observability.record_request("error", error_type=type(e).__name__, trace_id=trace_id, mode=mode)
         return ChatResponse(**response_data)
     finally:
+        # 命中与引用在此一次性落库：检索路径不写库，同一请求内多次调用检索也
+        # 不会重复计数
+        document_usage.flush_request(cited_doc_ids)
+        document_usage.end_request(usage_token)
         observability.reset_trace_id(trace_token)
 
 
@@ -1948,6 +1974,14 @@ async def list_verified_documents(
         ),
         reviewer_mode=True,
     )
+    # 调用量总数一次批量取回并合并进列表，避免前端按行逐个请求
+    usage = document_usage.list_usage(
+        str(item.get("doc_id", "")) for item in documents
+    )
+    for item in documents:
+        stats = usage.get(str(item.get("doc_id", "")), {})
+        item["total_hit_count"] = int(stats.get("total_hit_count", 0))
+        item["total_cited_count"] = int(stats.get("total_cited_count", 0))
     return {
         "documents": documents,
         "total": len(documents)
@@ -2099,6 +2133,22 @@ async def update_system_modules(
         current_user["user_id"],
     )
     return {name: module.model_dump() for name, module in modules.items()}
+
+
+@app.get("/documents/{doc_id}/usage", response_model=DocumentUsageResponse)
+async def get_document_usage(
+    doc_id: str,
+    year_month: Optional[str] = None,
+    current_user: dict = Depends(require_reviewer),
+):
+    """单份文档的调用量统计；沿用与预览/删除相同的组织范围校验。"""
+    document = auth.get_document(doc_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    _require_document_in_scope(current_user, document)
+    if year_month is not None and not re.fullmatch(r"\d{4}-\d{2}", year_month):
+        raise HTTPException(status_code=400, detail="年月格式须为YYYY-MM")
+    return DocumentUsageResponse(**document_usage.get_usage(doc_id, year_month))
 
 
 def _rate_limit_config_response() -> RateLimitConfigResponse:
@@ -2539,6 +2589,7 @@ def _chat_stream_events(
     attachment_ids: List[str],
 ):
     trace_token = observability.set_trace_id(trace_id, mode=request.mode)
+    usage_token = document_usage.begin_request()
     layer_trace = ["perception", "planning", "execution", "output"]
     chunks = []
     citations = []
@@ -2723,6 +2774,11 @@ def _chat_stream_events(
             trace_id=trace_id,
             mode=request.mode,
         )
+        # 与/chat同一口径：以最终推送给客户端的citations为准，一次性落库
+        document_usage.flush_request(
+            str(item.get("doc_id", "")) for item in (citations or [])
+        )
+        document_usage.end_request(usage_token)
         observability.reset_trace_id(trace_token)
 
 

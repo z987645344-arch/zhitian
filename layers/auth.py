@@ -420,6 +420,25 @@ def init_db() -> None:
                 )
                 """
             )
+            # 文档调用量统计。放users.db的理由与限流表不同：`documents`权威表
+            # 就在本库，因此可以建真正的外键并带ON DELETE CASCADE——SQLite不支持
+            # 跨库外键，若放history.db，删文档后这里会残留一类无外键保护的孤儿
+            # 引用，既躲不过`check_orphan_data.py`，也会让启动时的
+            # `check_foreign_key_integrity`失去对它的约束能力。
+            # schema_version同样维持1：该机制无迁移路径，版本不符即拒绝启动。
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_usage_stats (
+                    doc_id TEXT NOT NULL,
+                    year_month TEXT NOT NULL,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    cited_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (doc_id, year_month),
+                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
             for seed_role, seed_limit in RATE_LIMIT_ROLE_DEFAULTS.items():
                 conn.execute(
                     """

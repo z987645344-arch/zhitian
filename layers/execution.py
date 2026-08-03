@@ -12,7 +12,7 @@ from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 import config
-from layers import attachments, auth, converter, files_store, llm_provider, memory, system_modules, web_search_provider
+from layers import attachments, auth, converter, document_usage, files_store, llm_provider, memory, system_modules, web_search_provider
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -398,6 +398,11 @@ def _search_documents(
         tier=tier,
         enable_rerank=rerank_enabled,
         timeout=timeout,
+    )
+    # 命中埋点：只要chunk进入召回候选就算，与下面的阈值筛选无关。这里只写
+    # 进程内缓存、不落库，由请求出口统一入库并按文档级去重。
+    document_usage.record_hit_candidates(
+        str(item.get("doc_id", "")) for item in results
     )
     if not results and context and generate_answer:
         return _answer_from_supplied_context(query, context, tier, timeout=timeout)
