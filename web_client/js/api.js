@@ -1,0 +1,212 @@
+// customer网页客户端的后端调用封装。
+// 仅覆盖customer角色能力范围：自助注册、登录、对话、聊天附件。
+// 不包含文档上传、知识库录入、审批等企业角色接口。
+const API = (() => {
+  const configuredUrl = window.ZHITIAN_CONFIG?.apiBaseUrl;
+  const backendUrl = (
+    typeof configuredUrl === 'string' && configuredUrl.trim()
+      ? configuredUrl.trim()
+      : '/api'
+  ).replace(/\/+$/, '');
+
+  // 与管理后台一致使用localStorage保存token。安全取舍：localStorage对XSS无
+  // 抵抗力，理论上HttpOnly Cookie更稳妥，但后端当前是无状态JWT、未签发Cookie
+  // 也未做CSRF防护，单方面改用Cookie需要后端配套改动，超出本批"不改后端"的
+  // 约束。因此沿用现有方式，并在此标注为已知取舍，待后续统一评估。
+  const TOKEN_KEY = 'zt_web_token';
+  const ROLE_KEY = 'zt_web_role';
+  const NAME_KEY = 'zt_web_username';
+
+  function token() {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  }
+
+  function currentUsername() {
+    return localStorage.getItem(NAME_KEY) || '';
+  }
+
+  function saveSession(authToken, username) {
+    localStorage.setItem(TOKEN_KEY, authToken);
+    localStorage.setItem(ROLE_KEY, 'customer');
+    localStorage.setItem(NAME_KEY, username);
+  }
+
+  function logout() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(ROLE_KEY);
+    localStorage.removeItem(NAME_KEY);
+  }
+
+  function headers(json = true) {
+    const result = {};
+    if (json) result['Content-Type'] = 'application/json';
+    const authToken = token();
+    if (authToken) result.Authorization = `Bearer ${authToken}`;
+    return result;
+  }
+
+  async function request(path, options = {}) {
+    const { skipAuthRedirect = false, json = options.body !== undefined, ...rest } = options;
+    const response = await fetch(`${backendUrl}${path}`, {
+      ...rest,
+      headers: { ...headers(json), ...(rest.headers || {}) },
+    });
+    if (response.status === 401 && !skipAuthRedirect) {
+      logout();
+      sessionStorage.setItem('zt_web_notice', '登录已过期，请重新登录');
+      location.replace('./login.html');
+      throw new Error('登录已过期，请重新登录');
+    }
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      throw new Error(data.detail || `请求失败：HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  return {
+    backendUrl,
+    token,
+    currentUsername,
+    saveSession,
+    logout,
+    request,
+
+    login: (username, password) => request('/auth/login', {
+      method: 'POST',
+      skipAuthRedirect: true,
+      body: JSON.stringify({ username, password, role: 'customer' }),
+    }),
+
+    // customer自助注册用途，后端不要求企业密码
+    sendCode: (email) => request('/auth/send-verification-code', {
+      method: 'POST',
+      skipAuthRedirect: true,
+      body: JSON.stringify({ email, purpose: 'customer_register' }),
+    }),
+
+    register: (username, password, verificationCode) => request('/auth/register', {
+      method: 'POST',
+      skipAuthRedirect: true,
+      body: JSON.stringify({
+        username,
+        password,
+        role: 'customer',
+        verification_code: verificationCode,
+      }),
+    }),
+
+    // 仅fast模式：customer侧不提供expert切换
+    chat: (sessionId, message, attachmentIds) => request('/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: sessionId,
+        message,
+        mode: 'fast',
+        attachment_ids: attachmentIds || [],
+      }),
+    }),
+
+    async uploadAttachment(sessionId, file) {
+      const form = new FormData();
+      form.append('session_id', sessionId);
+      form.append('file', file);
+      const response = await fetch(`${backendUrl}/chat/attachments`, {
+        method: 'POST',
+        headers: headers(false),
+        body: form,
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!response.ok) {
+        throw new Error(data.detail || data.error_type || `上传失败：HTTP ${response.status}`);
+      }
+      return data;
+    },
+
+    // 流式对话：后端SSE载荷有三种形状——
+    //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
+    //   {"type": "citations", "citations": [...]} 引用来源
+    //   {"error": "..."} 服务端异常
+    async chatStream(sessionId, message, attachmentIds, handlers) {
+      const response = await fetch(`${backendUrl}/chat/stream`, {
+        method: 'POST',
+        headers: headers(true),
+        body: JSON.stringify({
+          session_id: sessionId,
+          message,
+          mode: 'fast',
+          attachment_ids: attachmentIds || [],
+        }),
+      });
+      if (response.status === 401) {
+        logout();
+        location.replace('./login.html');
+        throw new Error('登录已过期，请重新登录');
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        let detail = `请求失败：HTTP ${response.status}`;
+        try {
+          const parsed = text ? JSON.parse(text) : {};
+          detail = parsed.detail || detail;
+        } catch (error) {
+          // 非JSON错误体保留原始状态码提示
+        }
+        throw new Error(detail);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) {
+          const line = block.split('\n').find((item) => item.startsWith('data: '));
+          if (!line) continue;
+          let payload;
+          try {
+            payload = JSON.parse(line.slice(6));
+          } catch (error) {
+            continue;
+          }
+          if (payload.error) {
+            handlers.onError?.(payload.error);
+            return;
+          }
+          if (payload.type === 'citations') {
+            handlers.onCitations?.(payload.citations || []);
+            continue;
+          }
+          if (payload.chunk === '[DONE]') {
+            handlers.onDone?.();
+            return;
+          }
+          if (payload.reasoning) {
+            handlers.onReasoning?.(payload.reasoning);
+            continue;
+          }
+          if (typeof payload.chunk === 'string' && payload.chunk) {
+            handlers.onChunk?.(payload.chunk);
+          }
+        }
+      }
+      handlers.onDone?.();
+    },
+  };
+})();
+
+function briefError(error) {
+  const text = String(error?.message || error || '操作失败');
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
+}

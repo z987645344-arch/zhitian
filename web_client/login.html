@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · 知天</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-intro" aria-label="产品说明">
+        <div>
+          <div class="brand-mark" aria-hidden="true">知</div>
+          <h1>企业知识，问一句就能用。</h1>
+          <p>基于企业已审核通过的知识库作答，并标注答案所依据的文档来源。</p>
+          <div class="auth-assurances">
+            <span>回答附带可核对的引用来源</span>
+            <span>没有可靠依据时如实说明</span>
+            <span>仅使用已通过审核的内容</span>
+          </div>
+        </div>
+        <small>知天企业知识助手</small>
+      </section>
+      <div class="auth-form-area">
+        <section class="auth-card">
+          <div class="auth-heading">
+            <p class="eyebrow">账号登录</p>
+            <h1>开始提问</h1>
+            <p class="muted">使用注册时的邮箱与密码登录。</p>
+          </div>
+          <form id="loginForm" class="form-stack">
+            <label>
+              <span>邮箱</span>
+              <input id="username" name="username" type="email" autocomplete="username" placeholder="请输入注册邮箱" required />
+            </label>
+            <label>
+              <span>密码</span>
+              <span class="password-field">
+                <input id="password" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required />
+                <button id="togglePassword" type="button" aria-label="显示密码" aria-pressed="false">显示</button>
+              </span>
+            </label>
+            <p id="message" class="message" aria-live="polite"></p>
+            <button id="loginButton" type="submit" class="btn-block">登录</button>
+          </form>
+          <div class="auth-link"><a href="./register.html">还没有账号？立即注册</a></div>
+          <p class="auth-footer">知天企业知识助手</p>
+        </section>
+      </div>
+    </main>
+    <script src="./config.js"></script>
+    <script src="./js/api.js"></script>
+    <script src="./js/login.js"></script>
+  </body>
+</html>

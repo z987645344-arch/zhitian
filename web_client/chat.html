@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>提问 · 知天</title>
+    <link rel="stylesheet" href="./css/style.css" />
+  </head>
+  <body class="chat-page">
+    <header class="chat-header">
+      <div class="chat-header-id">
+        <div class="brand-mark" aria-hidden="true">知</div>
+        <div>
+          <strong>知天企业知识助手</strong>
+          <small id="currentUser">-</small>
+        </div>
+      </div>
+      <button id="logoutButton" class="secondary" type="button">退出登录</button>
+    </header>
+
+    <div id="chatLog" class="chat-log" aria-live="polite">
+      <div class="chat-log-inner" id="chatLogInner">
+        <p class="chat-empty">向知识库提问，回答会标注所依据的文档来源。<br />若没有可靠依据，助手会如实说明而不是猜测。</p>
+      </div>
+    </div>
+
+    <div class="chat-composer">
+      <form id="composer" class="composer-inner">
+        <div id="attachmentChips" class="attachment-chips"></div>
+        <div class="composer-row">
+          <textarea id="messageInput" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行" required></textarea>
+          <button id="attachButton" type="button" class="secondary">附加文件</button>
+          <button id="sendButton" type="submit">发送</button>
+        </div>
+        <input id="attachmentInput" type="file" accept=".txt,.md,.pdf,.docx,.doc,.xls,.xlsx,.ppt,.pptx" hidden />
+        <p id="composerHint" class="composer-hint">支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 20MB。</p>
+      </form>
+    </div>
+
+    <script src="./config.js"></script>
+    <script src="./js/api.js"></script>
+    <script src="./js/chat.js"></script>
+  </body>
+</html>
