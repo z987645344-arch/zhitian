@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import bcrypt
 import jwt
@@ -20,6 +20,20 @@ logger = get_logger("auth")
 
 USERS_DB_PATH = os.path.join(config.BASE_DIR, "data", "users.db")
 VALID_ROLES = {"customer", "employee", "reviewer", "developer"}
+# 按角色的每分钟请求上限种子值。customer/employee沿用此前全局`.env`的
+# RATE_LIMIT_PER_MINUTE=20，使升级为按角色可配置后这两类角色的实际体验不变；
+# reviewer/developer需要连续审阅与排查，给到60。四行都是可由developer在管理
+# 后台调整的种子数据，不是硬上限。
+RATE_LIMIT_ROLE_DEFAULTS = {
+    "customer": 20,
+    "employee": 20,
+    "reviewer": 60,
+    "developer": 60,
+}
+# 下限1保证不会把某个角色配成完全不可用；上限6000相当于每秒100次，
+# 足够覆盖自用场景，同时挡住误填天文数字导致限流形同虚设。
+RATE_LIMIT_MIN_PER_MINUTE = 1
+RATE_LIMIT_MAX_PER_MINUTE = 6000
 JWT_ALGORITHM = "HS256"
 JWT_PLACEHOLDER = "请替换为随机强密钥"
 REGISTRATION_APPROVER_ROLES = {
@@ -388,6 +402,32 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO lobby_content (id) VALUES (1)"
             )
+            # 按角色限流配置。放在users.db而不是新建第四个库：角色本身就存在
+            # 这里，且备份/恢复的`SQLITE_FILENAMES`是固定三库契约，新增库会连带
+            # 影响F33/F34已验证的备份恢复链路与运维文档。
+            # schema_version维持1：`initialize_schema_version()`没有迁移路径，
+            # 版本号一旦与库内记录不符就拒绝启动，因此新增表沿用本库既有惯例
+            # （organizations、lobby_content等均如此）用IF NOT EXISTS幂等建表。
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rate_limit_config (
+                    role TEXT PRIMARY KEY
+                        CHECK (role IN ('customer', 'employee', 'reviewer', 'developer')),
+                    requests_per_minute INTEGER NOT NULL
+                        CHECK (requests_per_minute >= 1),
+                    updated_by TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            for seed_role, seed_limit in RATE_LIMIT_ROLE_DEFAULTS.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO rate_limit_config
+                        (role, requests_per_minute) VALUES (?, ?)
+                    """,
+                    (seed_role, seed_limit),
+                )
             _seed_default_organizations(conn)
         db_schema_version.initialize_schema_version(
             USERS_DB_PATH,
@@ -1325,6 +1365,78 @@ def approve_document(doc_id: str, reviewer_user_id: str) -> bool:
 def reject_document(doc_id: str, reviewer_user_id: str) -> bool:
     """审核拒绝文档。"""
     return _review_document(doc_id, reviewer_user_id, "rejected")
+
+
+def list_rate_limits() -> List[Dict[str, Any]]:
+    """返回四个角色当前的每分钟上限及最后修改信息，按角色名排序。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT role, requests_per_minute, updated_by, updated_at
+            FROM rate_limit_config ORDER BY role ASC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_role_rate_limit(role: str) -> int:
+    """读取单个角色的每分钟上限；未知角色或缺行时回落到最保守的种子值。
+
+    刻意不加进程内缓存：这是四行小表的单行查询，相对同一请求内的LLM调用可以
+    忽略，而每次实读天然保证developer改完配置立即生效，也不引入缓存一致性与
+    测试隔离问题。
+    """
+    normalized = (role or "").strip()
+    fallback = RATE_LIMIT_ROLE_DEFAULTS["customer"]
+    if normalized not in VALID_ROLES:
+        return fallback
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT requests_per_minute FROM rate_limit_config WHERE role = ?",
+                (normalized,),
+            ).fetchone()
+    except Exception as exc:
+        # 限流配置读不到时不能放行无限流量，回落到最保守值并记录类型
+        logger.error("限流配置读取失败：role=%s error_type=%s", normalized, type(exc).__name__)
+        return fallback
+    if row is None:
+        return RATE_LIMIT_ROLE_DEFAULTS.get(normalized, fallback)
+    return int(row["requests_per_minute"])
+
+
+def update_rate_limits(
+    limits: Dict[str, int], updated_by: str
+) -> List[Dict[str, Any]]:
+    """整体更新四个角色的上限；任一角色或数值非法则整批拒绝，不做部分写入。"""
+    normalized_by = str(updated_by or "").strip()
+    if not normalized_by:
+        raise ValueError("缺少修改人")
+    if set(limits) != VALID_ROLES:
+        raise ValueError("必须同时提供全部四个角色的限流值")
+    for role, value in limits.items():
+        limit_value = int(value)
+        if not (
+            RATE_LIMIT_MIN_PER_MINUTE
+            <= limit_value
+            <= RATE_LIMIT_MAX_PER_MINUTE
+        ):
+            raise ValueError(
+                "每分钟上限须在%s到%s之间"
+                % (RATE_LIMIT_MIN_PER_MINUTE, RATE_LIMIT_MAX_PER_MINUTE)
+            )
+    now = datetime.now().isoformat()
+    with transaction(USERS_DB_PATH) as conn:
+        for role, value in limits.items():
+            conn.execute(
+                """
+                UPDATE rate_limit_config
+                SET requests_per_minute = ?, updated_by = ?, updated_at = ?
+                WHERE role = ?
+                """,
+                (int(value), normalized_by, now, role),
+            )
+    return list_rate_limits()
 
 
 def get_verified_doc_ids() -> list[str]:

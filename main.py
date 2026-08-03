@@ -89,16 +89,38 @@ def _active_request_count() -> int:
         return _active_http_requests
 
 def _rate_limit_key(request: Request) -> str:
+    """限流分桶键，统一为`角色:身份`两段。
+
+    角色前缀让`_chat_rate_limit()`无需再查一次库就能拿到角色；身份段仍是
+    user_id（未认证时退化为token前缀或客户端IP），因此每个账号仍然各自一个
+    桶，分桶粒度与改动前一致。
+    """
     authorization = request.headers.get("Authorization", "")
     if authorization.startswith("Bearer "):
         token = authorization.removeprefix("Bearer ").strip()
         try:
             user = auth.verify_token(token)
-            return str(user.get("user_id") or token[:16])
+            role = str(user.get("role") or "")
+            identity = str(user.get("user_id") or token[:16])
+            if role in auth.VALID_ROLES:
+                return "%s:%s" % (role, identity)
+            return "anonymous:%s" % identity
         except Exception:
-            return token[:16] or "anonymous"
-    client = request.client.host if request.client else "anonymous"
-    return client
+            return "anonymous:%s" % (token[:16] or "unknown")
+    client = request.client.host if request.client else "unknown"
+    return "anonymous:%s" % client
+
+
+def _chat_rate_limit(key: str) -> str:
+    """按请求者角色返回slowapi限流串。
+
+    slowapi在limit_value可调用且签名含`key`参数时，会在**每次请求**用当前
+    限流键调用本函数（slowapi/wrappers.py的LimitGroup.__iter__配合
+    with_request逐请求求值），因此developer在管理后台改完配置后立刻生效，
+    不需要重启服务，也不需要额外的缓存失效机制。
+    """
+    role = str(key or "").split(":", 1)[0]
+    return "%d/minute" % auth.get_role_rate_limit(role)
 
 
 limiter = Limiter(key_func=_rate_limit_key)
@@ -108,6 +130,9 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    # 只记角色与命中事实，不记路径参数、请求体或任何用户内容
+    role = _rate_limit_key(request).split(":", 1)[0]
+    logger.warning("限流已触发：role=%s throttled=true", role)
     return JSONResponse(
         status_code=429,
         content={"detail": "请求过于频繁，请稍后重试"}
@@ -158,6 +183,30 @@ class SystemModulesRequest(BaseModel):
     guidance: Optional[str] = None
     tone: str = ""
     forbidden: str = ""
+
+
+class RateLimitConfigItem(BaseModel):
+    """单个角色的限流配置与最后修改信息。"""
+
+    role: str
+    requests_per_minute: int
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class RateLimitConfigResponse(BaseModel):
+    limits: List[RateLimitConfigItem]
+    min_per_minute: int
+    max_per_minute: int
+
+
+class RateLimitConfigUpdateRequest(BaseModel):
+    """四个角色的每分钟上限，必须一次性整体提交。"""
+
+    customer: int
+    employee: int
+    reviewer: int
+    developer: int
 
 
 class OrganizationCreateRequest(BaseModel):
@@ -888,7 +937,7 @@ async def reset_user_password(user_id: str, current_user: dict = Depends(require
 
 
 @app.post("/chat", response_model=ChatResponse)
-@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute")
+@limiter.limit(_chat_rate_limit)
 async def chat(
     request: Request,
     chat_request: ChatRequest,
@@ -996,7 +1045,7 @@ async def chat(
 
 
 @app.post("/chat/stream")
-@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute")
+@limiter.limit(_chat_rate_limit)
 async def chat_stream(
     request: Request,
     chat_request: ChatRequest,
@@ -2050,6 +2099,44 @@ async def update_system_modules(
         current_user["user_id"],
     )
     return {name: module.model_dump() for name, module in modules.items()}
+
+
+def _rate_limit_config_response() -> RateLimitConfigResponse:
+    return RateLimitConfigResponse(
+        limits=[RateLimitConfigItem(**item) for item in auth.list_rate_limits()],
+        min_per_minute=auth.RATE_LIMIT_MIN_PER_MINUTE,
+        max_per_minute=auth.RATE_LIMIT_MAX_PER_MINUTE,
+    )
+
+
+@app.get("/developer/rate-limits", response_model=RateLimitConfigResponse)
+async def get_rate_limits(current_user: dict = Depends(require_developer)):
+    return _rate_limit_config_response()
+
+
+@app.put("/developer/rate-limits", response_model=RateLimitConfigResponse)
+async def update_rate_limits(
+    request: RateLimitConfigUpdateRequest,
+    current_user: dict = Depends(require_developer),
+):
+    try:
+        auth.update_rate_limits(
+            {
+                "customer": request.customer,
+                "employee": request.employee,
+                "reviewer": request.reviewer,
+                "developer": request.developer,
+            },
+            current_user["user_id"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # 只记录哪些角色被改动，不记录具体数值以外的任何请求内容
+    logger.info(
+        "限流配置已更新：roles=%s",
+        ",".join(sorted(auth.VALID_ROLES)),
+    )
+    return _rate_limit_config_response()
 
 
 @app.get("/developer/organizations")
