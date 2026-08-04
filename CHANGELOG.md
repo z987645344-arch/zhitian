@@ -982,3 +982,17 @@
 - **验证过程记录**：中文提问受F37影响拿不到引用（与此前批次结论一致），改用英文文档+英文提问验证引用UI，**未触碰`RAG_SCORE_THRESHOLD`或任何检索配置**。另观察到：同一会话内的聊天附件上下文会走`_answer_from_supplied_context`分支，该分支不产生citations，因而会遮蔽知识库检索的引用展示；新建会话后即正常。这是既有后端行为，本批只如实记录不修改。`seed_prod_admin.py`因已有对话数据按设计拒绝执行，改用项目自带的`seed_dev_default_accounts.py`完成验证环境账号引导。
 - **容器化交付意图（本批不实施，供后续批次参考）**：建议复用`zhitian_admin`现有Dockerfile模式——`nginx:stable-alpine`基础镜像、非root运行、`COPY`静态资源到`/usr/share/nginx/html`——为`web_client/`单独构建一个镜像，并在共享`docker-compose.yml`中作为第四个服务接入，由现有反向代理按独立路径（如`/app/`）或独立域名转发；不建议与管理后台合并进同一容器，因为两者面向的用户群与后续演进节奏不同（管理后台面向企业内部角色，本客户端后续还要分化出售卖版与知了hub专属皮肤版）。
 - 本批未修改任何后端代码或权限逻辑。
+
+## 2026-08-04 customer网页客户端容器化与反向代理接入
+- **第0步核查**：`web_client/`原有9个静态文件、无容器定义；HTML内资源全部是相对路径（`./css/`、`./js/`、`./config.js`），`config.js`中`apiBaseUrl`是绝对路径`/api`。管理后台容器模式为`nginx:stable-alpine` + 移除默认站点 + 临时目录改到`/tmp/nginx/*`并归属nginx + `USER nginx` + 监听8080。
+- **新增`web_client/Dockerfile`与`web_client/nginx.conf`**。放在`web_client/`内而非后端仓库根目录：与其静态资源同目录、构建上下文自然收窄，且根目录已有API的Dockerfile，再放一个会混淆。容器化模式与`zhitian_admin`完全一致（非root nginx、无目录浏览、安全响应头、HTML不缓存/静态资源1小时），未因新增而降低安全基线。
+- **CSP按实际引用逐项核对后收紧，未照搬管理后台**：审计确认web_client无内联`<script>`、无内联`style`属性与`<style>`块、无外部域资源、无`<img>`与CSS `url()`、字体只用系统字体名。因此`script-src`/`style-src`都不需要`'unsafe-inline'`，且`img-src`去掉了管理后台有的`data:`——比管理后台更严。`connect-src 'self'`覆盖对同源`/api`的fetch，含`/chat/stream`的流式读取。
+- **docker-compose.yml新增第四个服务`zhitian-web`**：仅加入`frontend`内部网络、不映射任何宿主机端口、无volume（纯静态站点无持久化需求），沿用与管理后台相同的资源限制（128m/0.5 CPU）、`no-new-privileges`、`cap_drop: ALL`与健康检查；`reverse-proxy`的`depends_on`增加对它的`service_healthy`条件。
+- **反向代理新增`/customer/`路径转发**。选路径前缀而非把前缀烤进镜像，并与既有`/api/`同一手法在代理层`rewrite`剥掉前缀：这样Phase B改为子域名分流时前缀整个消失，镜像无需重建。裸路径`/customer`与`/customer/`显式301到`/customer/login.html`（本站点没有index.html，入口是login.html）。
+- **修复自引缺陷**：最初的`return 301`让nginx用监听端口生成绝对Location，泄露出容器内部端口（`http://host:8080/customer/login.html`），而宿主机只映射80、浏览器跟随会连接被拒。已在server块加`absolute_redirect off`改为相对Location并复验。
+- **`apiBaseUrl`实测而非推断**：浏览器在`/customer/login.html`下读到`window.ZHITIAN_CONFIG.apiBaseUrl === '/api'`，该绝对路径不受`/customer/`前缀影响，仍命中代理的`/api/`规则直达后端；页面内相对路径资源则解析到`/customer/css|js/...`并被一并剥前缀。两者都经真实请求确认。
+- **真实构建与启动**：`docker compose build`成功，新镜像`zhitian-web:dev-production`体积**24.9 MB**（26,071,507字节，`docker image inspect .Size`口径），与管理后台的24.9 MB持平。`docker compose up -d`后**四个服务全部healthy**（api / admin / web / reverse-proxy）。
+- **真实完整客户端流程（全程经反向代理`/customer/`路径）**：裸路径301跳转正确、CSS与config.js正常加载 → 注册页触发真实邮箱验证码 → 完成customer自助注册并自动登录跳转`/customer/chat.html` → 英文提问获得正确回答 → **引用来源展示「pathdoc.docx · 文档 48ae7796 · 相关度 0.741 · 片段 #0」，与服务端doc_id一致**。控制台零报错，CSP未拦截任何资源。
+- **安全基线与回归验证**：`/customer/css/`与`/customer/js/`目录浏览均404；响应头含收紧后的CSP、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`；HTML为`no-cache`、CSS为`max-age=3600`。回归确认`/`、`/login.html`、`/api/health`、`/api/ready`以及管理后台自身的`/css/style.css`、`/js/api.js`、`/config.js`全部未受影响。
+- **路由方案的阶段性**：当前是单域名+路径转发的**本地验证方案**，不是最终形态。Phase B真实域名阶段需重新设计为子域名分流（知了hub根域名、知天admin与api子域名），届时`/customer/`前缀与本批的rewrite规则都会被替换。本批未涉及CORS，因为同域名同源请求不需要跨域配置。
+- 本批未改动`web_client/`内任何业务逻辑代码。
