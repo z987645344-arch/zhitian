@@ -996,3 +996,15 @@
 - **安全基线与回归验证**：`/customer/css/`与`/customer/js/`目录浏览均404；响应头含收紧后的CSP、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`；HTML为`no-cache`、CSS为`max-age=3600`。回归确认`/`、`/login.html`、`/api/health`、`/api/ready`以及管理后台自身的`/css/style.css`、`/js/api.js`、`/config.js`全部未受影响。
 - **路由方案的阶段性**：当前是单域名+路径转发的**本地验证方案**，不是最终形态。Phase B真实域名阶段需重新设计为子域名分流（知了hub根域名、知天admin与api子域名），届时`/customer/`前缀与本批的rewrite规则都会被替换。本批未涉及CORS，因为同域名同源请求不需要跨域配置。
 - 本批未改动`web_client/`内任何业务逻辑代码。
+
+## 2026-08-04 F31收尾：LangGraph依赖组整体升级合入master
+- **升级内容**：`langgraph 0.1.1→1.0.10`、`langchain-core 0.2.43→1.5.3`、`langsmith 0.1.147→0.10.15`。langgraph 1.x把checkpoint/prebuilt/sdk拆为独立包并强制安装，因此一并精确锁定`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`，避免传递依赖漂移。**依赖面由3个包扩到6个，这是本次升级的真实代价**；其中`langgraph-sdk`必须≥0.3.15（`CVE-2026-48776`修复线）——0.1.1时代该包未安装、此前按错误映射处理，升级后它成为真实安装包，该约束开始生效。
+- **解开了此前记录的版本死锁**：`langgraph==0.1.1`声明`langchain-core>=0.2,<0.3`，导致`CVE-2025-68664`（Trivy唯一有修复版的CRITICAL）无法通过单独升级core来修复。整组迁移后该约束消失。
+- **漏洞消除（本机以CI同版本`pip-audit==2.10.1`分别扫升级前后的requirements.txt对照）**：langgraph 3条、langchain-core 6条、langsmith 3条**全部归零**，三个新引入子包**零新增漏洞**；总数由22条/5包降至10条/2包。剩余10条与本组无关：Starlette 7条（F31首批已评估调用面、当前平台不使用对应能力）与新登记的F38 cryptography 3条。
+- **先隔离验证后合并**：在分支`f31-langgraph-upgrade-verify`完成全部验证，确认无回退后才以`--no-ff`合入master（合并commit `0cdfd9a`），保留三个原始commit（`215f232`升级+自环测试、`b797cc7`验证记录、`4466257`补齐构建数据）而非squash，因为它们是三个清晰的逻辑单元。
+- **评估阶段唯一的运行时不确定项已实测确认**：`checkpoint`节点那条自指向条件边（`{"checkpoint": "checkpoint", ...}`）在新调度器下**精确循环**，要求3次即3次不多不少；`compile()`不传checkpointer仍可正常invoke；"全局重规划只用一次、第二轮转入执行"的状态机语义不变。新增`tests/test_langgraph_selfloop.py`三项固化这些结论。
+- **真实验证数据**：合并后在master上**独立复跑**权威回归（未复用分支结果）`367 passed, 5 deselected`，即基线364加新增3项，零新增失败；`docker build --no-cache`重建成功，镜像`522.2MB→529.9MB`（+7.7MB，`docker image inspect .Size`口径）；容器内六个包版本逐一确认，`import main`成功，`/ready`首次轮询即200且三依赖全true；Compose四服务全部healthy，`/api/health`与`/api/ready`均200。GitHub Actions干净runner上镜像构建与应用导入/就绪门禁亦通过。
+- **门禁仍红，且不会因本组升级转绿**：`Apply vulnerability policy after reports`继续失败，原因是Starlette与cryptography的Python层记录，加上Trivy的6个系统层CRITICAL（`perl-base`×4、`libglib2.0-0t64`、`libxml2`，当前Debian源无修复版本）。本次升级的目标始终是"消除LangGraph依赖组的已知漏洞"，不是"让容器CI转绿"，这与升级前的评估预判一致。
+- **未取得的数据**：CI artifact `backend-container-215f232`需认证token下载，匿名API取不到，因此**Trivy的具体条数与CRITICAL数量本次没有拿到**；上述pip-audit数据来自本机同版本工具复现，不是CI artifact原文。
+- **新登记F38**：验证过程顺带扫出`cryptography==48.0.1`3条漏洞（`CVE-2026-69247/69248/69249`，修复版49.0.0或50.0.0），独立于本组。评估为P2而非P1，依据是实际调用面——全项目仅`scripts/backup_data.py`使用该库的AES-GCM对称加解密，完全不涉及漏洞所在的X.509证书链验证与PKCS7解密。本次不处理。
+- 验证分支已在合并确认后删除，完整历史保留在master。
