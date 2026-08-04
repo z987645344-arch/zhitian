@@ -187,6 +187,47 @@
 - `libxml2` / `CVE-2026-6653`：不可信Office文件确实会进入LibreOffice转换，但静态代码不能证明或排除其走到受影响的DTD/实体解析函数；需要在隔离容器内用专门构造的恶意OOXML/Office样例验证，并等待Debian提供修复版本后重建复扫。
 - `starlette` / `CVE-2026-54283`：现有端点以multipart为主，但需用畸形`application/x-www-form-urlencoded`请求确认FastAPI在认证依赖与请求体验证之间的实际解析顺序及资源消耗；当前0.49.1仍在报告范围内。
 
+#### LangGraph依赖组升级可行性评估（2026-08-04，仅评估未改代码）
+
+**数据来源**：PyPI JSON API取真实版本与`requires_dist`、`pip install --dry-run --report`用真实解析器验证、OSV.dev查漏洞、直接解包langgraph wheel读源码。**不是凭记忆判断**——本项目时间线晚于AI知识截止，涉及的CVE编号多在截止之后。
+
+**当前实际调用面（决定了迁移工作量的上限）**：全项目对这三个包**只有一处导入**——`layers/planning.py:9`的`from langgraph.graph import END, StateGraph`；`langchain-core`与`langsmith`**无任何直接导入**，纯属传递依赖。用到的builder API只有5个：`StateGraph(AgentState)`、`add_node(名, 函数)`×10、`add_edge`×4、`add_conditional_edges`×5、`set_entry_point`、`compile()`（不传checkpointer）。`AgentState`是纯`TypedDict`，未用`Annotated`/reducer/`add_messages`等高级特性。
+
+**候选组合（三者均经pip真实解析验证，Python 3.10下无冲突）**：三个候选解析出的`langchain-core`与`langsmith`**完全相同**，差异只在langgraph自身与两个子包。
+
+| 候选 | langgraph | langchain-core | langsmith | 新引入子包 | 取舍 |
+|---|---|---|---|---|---|
+| A 最小可行 | **1.0.10** | 1.5.3 | 0.10.15 | checkpoint 4.1.1 / prebuilt 1.0.13 / **sdk 0.3.15** | 刚好越过`<=1.0.9`的CVE范围，改动面最小；但sdk恰为`CVE-2026-48776`修复线`>=0.3.15`的边界值，无缓冲 |
+| B 折中 | 1.1.0 | 1.5.3 | 0.10.15 | 同A | 与A解析结果几乎一致，无明显额外收益 |
+| C 最新 | **1.2.10** | 1.5.3 | 0.10.15 | checkpoint 4.1.1 / prebuilt 1.1.0 / **sdk 0.4.2** | sdk有版本缓冲；但`langgraph>=1.2`把core约束收紧为`<2,>=1.4.7`，未来core小版本波动更易被牵动 |
+
+**漏洞消除效果（OSV.dev实测）**：当前组合`langgraph 0.1.1`3条 + `langchain-core 0.2.43`12条 + `langsmith 0.1.147`5条 = **20条**；候选A与候选C**六个包全部为0条**（含三个新引入子包）。`CVE-2025-68664`（Trivy唯一有修复版的CRITICAL）由core 1.5.3覆盖。
+
+**Breaking change核查（解包langgraph 1.0.10 wheel读源码，非推断）**：
+- `from langgraph.graph import END, StateGraph`在1.0.10仍成立，`__init__.py`照常导出两者 → **导入行不用改**
+- `compile()`的`checkpointer`参数默认`None`、**非必填**，新版**不强制要求checkpointer** → 现有`builder.compile()`不用改
+- `add_node`保留`(node: str, action)`位置参数重载 → 现有`add_node("classify", classify_node)`兼容
+- `add_edge(start_key, end_key)`、`set_entry_point(key)`签名未变，两者均**无弃用标记**
+- `add_conditional_edges(source, path, path_map)`签名未变，`path`仍接受普通Callable → 现有lambda与`next_after_execute`写法兼容
+- **结论：静态层面看，planning.py很可能一行都不用改**；`execution.py`等其余文件根本不导入这三个包，不受影响
+
+**新增的三个子包是本次评估最重要的发现**：升级后`langgraph-checkpoint`/`langgraph-prebuilt`/`langgraph-sdk`会被**强制安装**（0.1.1时代它们不存在）。这有两个后果：①此前记录的"`CVE-2026-48776`影响`langgraph-sdk<0.3.15`，该包未安装属错误映射"**不再成立**——升级后它成为真实安装包，必须确保解析到≥0.3.15（候选A恰好0.3.15、候选C为0.4.2）；②依赖面从3个包扩大到6个，后续CVE暴露面随之扩大，安全维护成本上升。这是升级的真实代价，不应只看"20条归零"。
+
+**回归测试覆盖**：直接触及编排链路的测试共12个文件，其中`test_planning.py`31例、`test_execution_search.py`19例、`test_complex_planning.py`12例是主力；测试通过`planning.run_graph_state`（18处）、`planning._new_agent_state`（20处）、以及对`classify_node`/`checkpoint_node`/`respond_node`的直接调用覆盖各节点。**升级后这三个文件是重点验证对象**。建议新增的测试：一是断言`compile()`在不传checkpointer时仍可用（防止未来版本收紧该默认值而无人察觉）；二是断言条件边在新版路由语义下的实际走向，特别是`checkpoint`节点那条自指向边（`{"checkpoint": "checkpoint"}`），自环在新版调度器下的行为是静态读源码看不出来的。
+
+**工作量与风险的诚实评估**：调用面极窄（1处导入、5个API、无高级特性）且静态核查未发现不兼容点，**乐观情况下确实可能在一批指令内完成**——改`requirements.txt`三行加三行新子包锁定、跑权威回归、干净镜像重建、容器CI复扫。但**我不建议按"一批搞定"来安排**，理由是下面这些必须实测才能确定的项：
+
+**必须实际升级并跑测试才能知道的不确定项（评估阶段无法确定）**：
+1. **运行时行为差异**：静态签名兼容 ≠ 运行时语义相同。0.1.1到1.x跨了一个大版本，节点调度顺序、状态合并语义（TypedDict字段的覆盖vs合并）、`add_conditional_edges`返回值到`path_map`的映射时机都可能有未在签名体现的变化。`checkpoint`节点的自环边尤其需要实测。
+2. **`langchain-core` 0.2→1.5 跨两个大版本**：虽然项目不直接导入它，但langgraph运行时依赖其Runnable基础设施，其内部行为变化可能间接影响图执行。
+3. **权威回归的真实通过率**：当前基线364 passed，升级后能否保持零失败，只有真跑才知道。12个编排相关文件中任何一个出现失败都需要逐个定位。
+4. **镜像体积与构建时间**：新增三个子包及`ormsgpack`/`xxhash`/`zstandard`等传递依赖，对当前522.1MB镜像的影响未评估。
+5. **容器CI复扫的最终数字**：OSV显示这六个包为0条，但pip-audit与Trivy用的漏洞库不同、口径也不同（此前就出现过Trivy把`langchain-community`错误映射的情况），实际能把CRITICAL 7降到几，必须以真实CI artifact为准，不能用OSV结果替代。
+
+**建议的执行方式**：拆成两批。第一批在隔离分支只做依赖升级与回归验证，产出真实的回归数字、镜像体积与容器CI复扫结果；确认无回退后第二批再合并到master并考虑打标签。若第一批发现运行时不兼容，改动量会立刻从"改三行依赖"变成"重写图编排"，两者不应放在同一批指令里承诺。
+
+**与其他F31剩余项的关系**：即使本组升级完全成功、pip-audit的16唯一项清零，**门禁仍不会转绿**——Trivy的6个系统层CRITICAL（`perl-base`×4、`libglib2.0-0t64`、`libxml2`）当前Debian源无修复版本，与本组无关。因此本次升级的目标应表述为"消除Python依赖层全部已知漏洞"，而不是"让容器CI转绿"。
+
 **总体结论**：首批可独立处理项已经完成，pip-audit从31降至19、Trivy从418降至410，但门禁仍因CRITICAL 7与其他HIGH项红灯。下一批重点是`langgraph/langchain-core/langsmith`整组兼容迁移；基础镜像盲目刷新仍不能解决`FixedVersion`为空的6个系统层CRITICAL，应等待Debian修复并单独实测libxml2的LibreOffice可达性。Starlette剩余记录保持可见，其中urlencoded路径继续列为待验证，不把部分修复误写成F31整体关闭。
 
 > 2026-07-28：F26-F30均已修复，历史证据保留在CHANGELOG。
