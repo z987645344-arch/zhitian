@@ -228,6 +228,40 @@
 
 **与其他F31剩余项的关系**：即使本组升级完全成功、pip-audit的16唯一项清零，**门禁仍不会转绿**——Trivy的6个系统层CRITICAL（`perl-base`×4、`libglib2.0-0t64`、`libxml2`）当前Debian源无修复版本，与本组无关。因此本次升级的目标应表述为"消除Python依赖层全部已知漏洞"，而不是"让容器CI转绿"。
 
+#### 隔离分支升级验证结果（2026-08-04，**验证完成，等待用户决定是否合并**）
+
+**分支**：`f31-langgraph-upgrade-verify`，commit `215f232`（已推送origin，**未合并master、未打标签**）。基线对照分支为master `83f903e`。
+
+**实际锁定版本**（采用评估阶段的候选A）：`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`，连同langgraph 1.x强制引入的`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`一并精确锁定。**真实安装时另外多出两个dry-run报告未体现的传递依赖**：`langchain-protocol==0.0.18`与`uuid-utils==0.17.0`（未写入requirements，由上游自行解析）。`pip check`无冲突，`layers.planning`导入成功、图编译为`CompiledStateGraph`。
+
+**自指向边运行时验证（评估阶段唯一无法静态确认的项）——结论：行为与升级前一致，未发现不兼容**。新增`tests/test_langgraph_selfloop.py`三项：①`checkpoint`状态机的"全局重规划只用一次、第二轮转入执行"约束保持；②用最小可复现图还原`add_conditional_edges("checkpoint", path, {"checkpoint": "checkpoint", ...})`结构，要求循环3次即**精确循环3次**，不多不少；③`compile()`不传checkpointer仍可正常invoke，把评估阶段的静态结论落到运行时。
+> 过程中的一次自身错误：第一版测试用`monkeypatch.setattr(planning, "checkpoint_node", ...)`想替换已编译图里的节点，结果测试发起了真实Tavily/DeepSeek调用并失败。根因是`planning.py`在**模块级**执行`graph = builder.compile()`，节点函数在import时即绑定进图，之后替换模块属性对已编译图无效——**这与langgraph版本无关，0.1.1同理**，是测试测错了对象。改用最小可复现图隔离验证库本身后通过。未通过放宽断言来使测试变绿。
+
+**权威回归**：`367 passed, 5 deselected in 214.85s`，即基线364加本批新增3项，**零新增失败**。
+
+**pip-audit真实对照（本机用CI同版本`pip-audit==2.10.1`分别扫master与本分支的requirements.txt）**：
+
+| 包 | 升级前 | 升级后 |
+|---|---|---|
+| langgraph 0.1.1→1.0.10 | 3条 | **0** |
+| langchain-core 0.2.43→1.5.3 | 6条 | **0** |
+| langsmith 0.1.147→0.10.15 | 3条 | **0** |
+| starlette 0.49.1（本组无关） | 7条 | 7条 |
+| cryptography 48.0.1（本组无关） | 3条 | 3条 |
+| **合计** | **22条/5包** | **10条/2包** |
+
+**本组目标12条全部消除，三个新引入子包未带来任何新漏洞**，与评估阶段OSV.dev结论一致。但**总数未归零**：pip-audit口径下仍有starlette 7条（F31首批已评估调用面、当前平台不使用对应能力，修复版1.0.1/1.1.0/1.3.0/1.3.1）与`cryptography 48.0.1` 3条。**`cryptography`这3条是本次扫描的新发现**，此前F31记录中没有它，`CVE-2026-69247/69248/69249`，修复版49.0.0或50.0.0，属独立于本组的新事项，需单独排期评估。
+
+**容器CI（分支run#17，提交`215f232`，[链接](https://github.com/z987645344-arch/zhitian/actions/runs/30885191250)）**：结论仍为failure，但关键步骤全部通过——`Build version and commit tags`成功（**证明升级后的依赖能在干净runner上真实构建**）、`Verify application imports and API readiness`成功（**证明容器内能真实导入并使API就绪**），唯一失败仍是`Apply vulnerability policy after reports`。
+> **明确区分**：门禁未转绿**不是**因为本组升级失败，而是starlette/cryptography的Python层记录加上Trivy的6个系统层CRITICAL（`perl-base`×4、`libglib2.0-0t64`、`libxml2`，当前Debian源无修复版）。这与评估阶段的预判一致——本次升级的目标是"消除LangGraph依赖组的已知漏洞"，从来不是"让容器CI转绿"。
+> **未能取得的数据**：CI的artifact `backend-container-215f232`（243,966字节）存在但**匿名GitHub API无法下载**（需认证token），因此Trivy的具体条数与CRITICAL数量本次**没有拿到**；且`continue-on-error`步骤在API中一律显示success，无法据此区分pip-audit在CI内的真实结论。上表的pip-audit数据来自本机同版本工具复现，**不是CI artifact原文**，口径可能存在差异，如需CI内的权威数字须用认证token下载artifact。
+
+**本机干净构建**：`docker build --no-cache`首次失败，停在F35的嵌入模型预置层（`ONNXMiniLM_L6_V2()`下载），属本机网络问题、与依赖升级无关；**重跑一次即成功**（耗时4,365秒，模型层下载79.3MB用时488.8秒），同一份Dockerfile与requirements在GitHub runner上亦构建成功，双向印证。<br>**镜像体积**：`zhitian-api:dev-production` 547,524,790字节（522.2MB）→ `zhitian-api:f31-verify` 555,607,747字节（**529.9MB**），**增量7.7MB**（`docker image inspect .Size`口径）。增量来自新增的三个langgraph子包与`ormsgpack`/`xxhash`/`zstandard`/`uuid-utils`等传递依赖。<br>**容器内真实验证**：六个包版本逐一确认（langgraph 1.0.10、langchain-core 1.5.3、langsmith 0.10.15、checkpoint 4.1.1、prebuilt 1.0.13、sdk 0.3.15）；补齐必需环境变量后`import main`成功（exit=0）；启动容器请求`/ready`**首次轮询即返回200**，`sqlite`/`chroma`/`libreoffice`三依赖全为true。（首次不带环境变量的导入失败是`config.py`的`ENTERPRISE_PASSWORD_SEED`校验按设计生效，非升级问题。）
+
+**副作用提醒**：项目`.venv`为三分支共享、不随`git checkout`切换，真实安装已将其升级。若决定不合并，需回滚venv；升级前的156包清单已备份。
+
+**总体判断**：静态与运行时均未发现不兼容，回归零失败，本组目标漏洞全部消除。**未完成项**：仅剩Trivy具体数字（CI artifact需认证token下载）；镜像体积与容器就绪验证已补齐。**新发现待办**：cryptography 3条漏洞。**分支保持原样，等待用户决定是否合并。**
+
 **总体结论**：首批可独立处理项已经完成，pip-audit从31降至19、Trivy从418降至410，但门禁仍因CRITICAL 7与其他HIGH项红灯。下一批重点是`langgraph/langchain-core/langsmith`整组兼容迁移；基础镜像盲目刷新仍不能解决`FixedVersion`为空的6个系统层CRITICAL，应等待Debian修复并单独实测libxml2的LibreOffice可达性。Starlette剩余记录保持可见，其中urlencoded路径继续列为待验证，不把部分修复误写成F31整体关闭。
 
 > 2026-07-28：F26-F30均已修复，历史证据保留在CHANGELOG。
