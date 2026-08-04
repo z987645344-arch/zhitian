@@ -2,7 +2,18 @@ fastapi==0.120.1
 python-multipart==0.0.32
 uvicorn==0.51.0
 pydantic==2.13.4
-langgraph==0.1.1
+# F31：LangGraph依赖组整体升级，消除langgraph/langchain-core/langsmith的
+# 20条已知漏洞（OSV.dev实测：升级后这6个包均为0条）。
+# langgraph 1.x起把checkpoint/prebuilt/sdk拆为独立包并强制安装，依赖面由3个
+# 扩到6个，因此一并精确锁定，避免传递依赖自行漂移。其中langgraph-sdk必须
+# >=0.3.15（CVE-2026-48776修复线）——0.1.1时代该包未安装、此前按错误映射
+# 处理，升级后它成为真实安装包，这条约束开始生效。
+langgraph==1.0.10
+langchain-core==1.5.3
+langsmith==0.10.15
+langgraph-checkpoint==4.1.1
+langgraph-prebuilt==1.0.13
+langgraph-sdk==0.3.15
 chromadb==0.5.0
 # F32：chromadb 0.5.0 声明 numpy>=1.22.5 无上界，干净环境会解析到 NumPy 2.x，
 # 而其代码使用 NumPy 2 已移除的 np.float_，import 即 AttributeError；pip check
