@@ -24,6 +24,9 @@
     sessionStorage.setItem(SESSION_KEY, sessionId);
   }
 
+  // F36：与后端config.MAX_UPLOAD_SIZE_MB保持一致，改动时需同步
+  const MAX_ATTACHMENT_MB = 2;
+
   let pendingAttachments = [];
   let sending = false;
 
@@ -119,12 +122,23 @@
     const file = attachmentInput.files && attachmentInput.files[0];
     attachmentInput.value = '';
     if (!file) return;
-    hint.textContent = `正在上传 ${file.name}...`;
+    // 前端先拦，不让超限请求发到后端
+    if (file.size > MAX_ATTACHMENT_MB * 1024 * 1024) {
+      const shown = (file.size / 1024 / 1024).toFixed(1);
+      hint.textContent = `这个文件 ${shown}MB，超过了 ${MAX_ATTACHMENT_MB}MB 的上限，换个小一点的吧`;
+      return;
+    }
+    if (file.size > 512 * 1024) {
+      hint.textContent = `正在上传 ${file.name}，文件较大，解析可能要等一会儿...`;
+    } else {
+      hint.textContent = `正在上传 ${file.name}...`;
+    }
     attachButton.disabled = true;
     try {
       const data = await API.uploadAttachment(sessionId, file);
       if (!data.success) {
-        hint.textContent = `上传失败：${data.error_type || '未知原因'}`;
+        // 后端detail是可直接展示的说明（如具体MB上限），没有时再退回error_type
+        hint.textContent = `上传失败：${data.detail || data.error_type || '未知原因'}`;
         return;
       }
       pendingAttachments.push(data);
