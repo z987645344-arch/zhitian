@@ -1858,6 +1858,16 @@ async def upload_document(
         chunks = await asyncio.to_thread(document_loader.chunk_text, text)
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
+        # F37：切分成本可忽略，向量化才是大头，因此在向量化之前按切片数拒绝。
+        # 体积达标但内容极密的文档只有到这一步才拦得住。
+        if len(chunks) > config.MAX_DOCUMENT_CHUNKS:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"文档内容过多（{len(chunks)}个片段，上限"
+                    f"{config.MAX_DOCUMENT_CHUNKS}个），请拆分后再上传"
+                ),
+            )
 
         count = await asyncio.to_thread(
             memory.save_document,
@@ -1903,6 +1913,15 @@ async def input_knowledge(
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
     # F35：与/documents/upload同因，切分与向量化一并下放线程池
     chunks = await asyncio.to_thread(document_loader.chunk_text, content)
+    # F37：与/documents/upload同一约束，文字录入同样按切片数设上限
+    if len(chunks) > config.MAX_DOCUMENT_CHUNKS:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"内容过多（{len(chunks)}个片段，上限"
+                f"{config.MAX_DOCUMENT_CHUNKS}个），请分次提交"
+            ),
+        )
     doc_id = str(uuid.uuid4())
     count = await asyncio.to_thread(
         memory.save_document,

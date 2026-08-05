@@ -35,6 +35,12 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+# F37：换bge-small-zh-v1.5后向量化实测降到21.2切片/秒（旧模型62.7），
+# 因此在F36的2MB基础上再下调到1MB。1MB按典型密度1.87切片/KB约1,915切片、
+# 约90秒，仍在F36设定的"1–2分钟"预期内。
+# 体积上限只是**廉价预筛**，真正的成本控制是下面的MAX_DOCUMENT_CHUNKS——
+# F36已记录同为1MB的文件切片数可相差约9倍，体积无法约束最坏情况。
+# 以下为F36原始依据，保留备查：
 # F36低成本缓解：由20MB下调到2MB，使处理时长与用户等待预期相称。
 # 依据是实测而非估计——向量化约61.3切片/秒（429切片7.00秒），文件体积到切片数
 # 的密度实测在0.69~6.09切片/KB之间（多样中文TXT最低、高度重复中文DOCX最高）。
@@ -44,7 +50,12 @@ RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 # 重复文本，真实文档罕见。
 # 注意：文件大小只是切片数的弱代理，同为1MB的文件切片数可相差约9倍。更精确的
 # 控制是切片数上限，待异步任务化批次一并处理。
-MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2"))
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1"))
+# F37：切片数上限——比体积上限精确，因为耗时与切片数线性而与体积只是弱相关。
+# 解析与切分合计不到0.3秒，因此"先切分、再按切片数拒绝"的代价可以忽略，
+# 却能挡住体积达标但切片畸多的极端文档（实测最坏密度6.09切片/KB，1MB可达6,236切片）。
+# 取2000：按实测21.2切片/秒约94秒，落在F36设定的"1–2分钟"预期内。
+MAX_DOCUMENT_CHUNKS = int(os.getenv("MAX_DOCUMENT_CHUNKS", "2000"))
 PREVIEW_MAX_CHARS = int(os.getenv("PREVIEW_MAX_CHARS", "20000"))
 PDF_MERGE_MAX_FILES = int(os.getenv("PDF_MERGE_MAX_FILES", "10"))
 PDF_SPLIT_MAX_PAGES = int(os.getenv("PDF_SPLIT_MAX_PAGES", "200"))
@@ -91,6 +102,11 @@ if WEB_SEARCH_PROVIDER not in {"tavily"}:
 
 # 记忆
 MAX_HISTORY_LENGTH = 20
+# F37：嵌入模型改用bge-small-zh-v1.5的ONNX导出。默认路径对应Dockerfile构建期
+# 导出阶段的落点；本机开发可用环境变量指向自行导出的目录。
+EMBEDDING_MODEL_DIR = os.getenv(
+    "EMBEDDING_MODEL_DIR", os.path.join(BASE_DIR, "models", "bge-small-zh-v1.5")
+)
 RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.55"))
 BM25_SCORE_SCALE = float(os.getenv("BM25_SCORE_SCALE", "20.0"))
 TITLE_BOOST_MAX_QUERY_LENGTH = int(os.getenv("TITLE_BOOST_MAX_QUERY_LENGTH", "12"))
