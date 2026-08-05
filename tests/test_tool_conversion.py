@@ -128,6 +128,8 @@ def test_tool_conversion_success_download_permissions_and_source_cleanup(
         "download_filename": "quarterly.pdf",
         "converted_from_format": "xlsx",
         "converted_to_format": "pdf",
+        # F36新增：detail承载可直接展示的说明，成功路径应为空串
+        "detail": "",
         "error_type": "",
         "download_url": "/files/%s" % payload["file_id"],
     }

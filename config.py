@@ -35,7 +35,16 @@ CORS_ORIGINS = [
     if origin.strip()
 ]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
-MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
+# F36低成本缓解：由20MB下调到2MB，使处理时长与用户等待预期相称。
+# 依据是实测而非估计——向量化约61.3切片/秒（429切片7.00秒），文件体积到切片数
+# 的密度实测在0.69~6.09切片/KB之间（多样中文TXT最低、高度重复中文DOCX最高）。
+# 按最坏密度，20MB约需34分钟、2MB约3.4分钟；按典型的多样中文DOCX密度
+# （1.60切片/KB），2MB约53秒。选2MB而非1MB：1MB虽把最坏压到102秒，但典型文档
+# 只需27秒，代价是把大量正常文档挡在门外；6.09那个最坏值来自人工构造的极端
+# 重复文本，真实文档罕见。
+# 注意：文件大小只是切片数的弱代理，同为1MB的文件切片数可相差约9倍。更精确的
+# 控制是切片数上限，待异步任务化批次一并处理。
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "2"))
 PREVIEW_MAX_CHARS = int(os.getenv("PREVIEW_MAX_CHARS", "20000"))
 PDF_MERGE_MAX_FILES = int(os.getenv("PDF_MERGE_MAX_FILES", "10"))
 PDF_SPLIT_MAX_PAGES = int(os.getenv("PDF_SPLIT_MAX_PAGES", "200"))

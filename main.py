@@ -251,6 +251,9 @@ class ToolConversionResponse(BaseModel):
     converted_to_format: str = ""
     error_type: str = ""
     download_url: str = ""
+    # F36：error_type是给程序判断的稳定标识，detail补一句可直接展示给用户的
+    # 说明（例如超限时带上具体的MB数），前端无需自己拼限制值。
+    detail: str = ""
 
 
 class PdfToolFile(BaseModel):
@@ -279,6 +282,8 @@ class ChatAttachmentResponse(BaseModel):
     original_filename: str = ""
     char_count: int = 0
     error_type: str = ""
+    # F36：同ToolConversionResponse，detail用于直接展示给用户的可读说明
+    detail: str = ""
 
 
 class UserFileListItem(BaseModel):
@@ -1374,6 +1379,7 @@ async def upload_chat_attachment(
                 success=False,
                 original_filename=filename,
                 error_type="file_too_large",
+                detail=f"附件不能超过{config.MAX_UPLOAD_SIZE_MB}MB",
             ).model_dump(),
         )
 
@@ -1507,6 +1513,7 @@ async def convert_tool_file(
                 converted_from_format=source_format,
                 converted_to_format=target_format,
                 error_type="file_too_large",
+                detail=f"文件不能超过{config.MAX_UPLOAD_SIZE_MB}MB",
             ).model_dump(),
         )
     file_id = str(uuid.uuid4())
