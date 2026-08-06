@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-08-05**
+> **最后追加：2026-08-06**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -1022,3 +1022,22 @@
 - **为后续异步任务化留的技术参考**：项目已有可复用的SSE心跳机制（2026-07-16批次）——`/chat/stream`用`asyncio.Queue`承接线程池产出的事件，`asyncio.wait_for`按`config.SSE_HEARTBEAT_INTERVAL_SECONDS`（默认15秒、可经环境变量配置）超时后下发`": heartbeat"`注释帧（SSE注释，后随空行）刷新连接，**且不干扰事件顺序**（心跳是SSE注释，不会成为聊天内容）。未来做上传异步化时，**建议优先复用这套SSE+心跳的既有机制传递进度**，而不是另起一套轮询加任务表的设计，可显著减少新增故障面。
 - 本批**只调整限制数值与提示文案，未改动向量化处理逻辑本身**；异步任务化仍待后续规划。
 - **2026-08-05合并入master**：本项改动此前与F37的嵌入模型改动混在同一工作区未提交，本次逐文件判定归属后拆分为独立分支`f36-upload-limit-fix`。其中`config.py`、`main.py`、`web_client/chat.html`、`web_client/js/chat.js`为真正的混合文件——尤其`chat.html`的体积提示被F36改成2MB、又被F37改成1MB，是**同一行的两次修改、无法拆成两个独立hunk**，因此按"从最终态反向移除F37增量"重建出F36的自洽中间态。合并前确认该分支不含任何F37代码（`layers/embedding.py`、`scripts/export_embedding_onnx.py`不存在，`Dockerfile`与`layers/memory.py`为master原样）。上文的真实验证数据取自隔离环境，本次合并另在master上独立复跑回归确认。
+
+## 2026-08-06 缓解Starlette CVE-2026-54283：上传端点在解析前拒绝urlencoded请求体
+- **问题不是"代码有没有主动调用"，而是外部未认证请求就能触发**。Starlette的`request.form()`对`application/x-www-form-urlencoded`**静默忽略**`max_fields`与`max_part_size`（`MultiPartParser.__init__`带这三个参数，而urlencoded的`FormParser.__init__`签名只有`headers, stream`，一个限制都没有）。对照实验证明解析发生在认证之前：向`/documents/upload`发**无凭据**请求，同为6.2MB的体，`application/x-www-form-urlencoded`耗时**2.242秒**、`application/octet-stream`仅**0.005秒**，**相差488倍**且两者都返回401——开销在解析而非收包。这推翻了此前"调用面暂不使用"的结论。
+- **中间件实现**：`main.py`新增`reject_urlencoded_on_upload_endpoints`，在请求体解析之前按**请求体的Content-Type**判断，媒体类型为urlencoded且路径属于受保护集合时直接返回**415**。只取媒体类型本身并转小写，故`; charset=utf-8`、大小写与前后空白变体均能匹配；**只看Content-Type，不涉及query string、cookie或其他请求头**，避免误伤。
+- **受保护路径由应用自身路由表推导而非写死清单**：`_collect_multipart_only_paths()`遍历`route.dependant`寻找`Form`/`File`参数，当前命中5个——`/documents/upload`、`/chat/attachments`、`/tools/convert`、`/tools/pdf/merge`、`/tools/pdf/split`。这5个**全部声明了`File(...)`即都是文件上传，multipart是其唯一合法的请求体类型**，urlencoded对它们从来不是合法输入。将来新增Form/File端点会自动纳入保护，不会因为有人忘了同步清单而漏掉。推导放在模块末尾而不是lifespan里，因为部分测试不经TestClient的上下文管理器启动lifespan，那样中间件会静默失效。
+- **缓解前后真实对照**（复现评估阶段同一实验，无凭据请求`/documents/upload`）：
+
+| 字段数 | body大小 | 缓解前 | 缓解后 |
+|---|---|---|---|
+| 10 | 59字节 | 0.004秒 → 401 | 0.0023秒 → 415 |
+| 100,000 | 1.38MB | 0.647秒 → 401 | 0.0024秒 → 415 |
+| 400,000 | 6.18MB | **2.242秒** → 401 | **0.0038秒** → 415 |
+
+  **耗时不再随字段数增长**，40万字段那档快约**590倍**。
+- **误伤检查**：`/auth/login`收到urlencoded与JSON均返回422而非415（中间件不介入该路径）；上传端点带query string且请求体为multipart时正常放行；`GET /health?x=1`为200。真实已认证multipart功能验证——`/documents/upload`与`/chat/attachments`均**200**、`/tools/convert`**200**，两个PDF端点为422（探针传的是伪造PDF内容被内容校验拒绝）**均非415**。
+- **新增6项测试固化行为**（`tests/test_urlencoded_rejection.py`），含一项直接断言耗时不随字段数线性增长，用于捕捉"又走回表单解析"这类回归。权威回归`373 passed, 5 deselected`，即基线367加新增6项，零失败。
+- **这是缓解不是根治**：`CVE-2026-54283`本身仍存在于`starlette==0.49.1`。根治需升级到Starlette 1.3.1，而当前`fastapi==0.120.1`声明`starlette<0.50.0,>=0.40.0`，必须连同FastAPI一起跨大版本迁移（较新FastAPI改为`starlette>=0.46.0`无上界，可容纳1.3.1，该版本OSV已知漏洞为0）；该迁移规模类比F31的LangGraph整组升级，另行排期。本次只是关上了知天这一侧唯一能触发它的门。
+- **Starlette其余4条CVE状态不受本次改动影响**：`CVE-2026-48817`（HTTPEndpoint经getattr派发任意方法）、`CVE-2026-48818`（Windows下StaticFiles的UNC路径）、`CVE-2026-48710`与`CVE-2026-54282`（Host/path污染`request.url`）仍为不可达——全仓无`HTTPEndpoint`与`StaticFiles`、无任何`request.url`读取、生产镜像基于`python:3.10-slim`即Linux、且项目无以斜杠结尾的路由使`redirect_slashes`永不触发。
+- **同批落档F38决定**：维持`cryptography==48.0.1`不升级。上游`alibabacloud-tea-openapi`（阿里云DirectMail传递依赖，已是最新版0.4.5）硬锁`cryptography<49.0.0`，且不存在任何允许更高版本的上游发行版；而那3条CVE全部位于X.509链验证与PKCS7解密面上，项目只用AES-GCM对称加解密，调用面不可触达、真实风险为零。升级只能换来门禁数字好看，代价却是知情留下依赖元数据不一致。待上游放宽上界后重启，本次未改动`requirements.txt`。
