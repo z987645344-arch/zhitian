@@ -88,6 +88,73 @@ def _active_request_count() -> int:
     with _request_gate_lock:
         return _active_http_requests
 
+
+# F31/CVE-2026-54283缓解：Starlette的request.form()对
+# application/x-www-form-urlencoded**静默忽略**max_fields与max_part_size
+# （只有MultiPartParser带这些参数，urlencoded的FormParser签名里根本没有），
+# 未认证请求即可用超大urlencoded体消耗CPU。实测同为6.2MB的体，urlencoded耗时
+# 2.242秒而octet-stream仅0.005秒，且两者都返回401——**解析发生在认证之前**。
+#
+# 本中间件是缓解不是根治：根治需升到Starlette 1.3.1，而当前fastapi==0.120.1锁
+# `starlette<0.50.0`，需要FastAPI与Starlette联动跨大版本迁移，另行排期。
+#
+# 只针对**请求体**的Content-Type判断，不涉及query string、cookie或请求头中的
+# 任何其他内容；也只作用于声明了Form/File的端点——其余路径不会触发表单解析，
+# 无需拦截，避免过度阻断将来可能合法接收urlencoded的接口。
+_URLENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
+
+
+def _collect_multipart_only_paths(application: FastAPI) -> frozenset:
+    """从应用自身路由表推导需要保护的路径，而不是写死清单。
+
+    这样将来新增Form/File端点会自动纳入保护，不会因为有人忘了同步清单而漏掉。
+    当前命中的5个端点全部声明了File(...)，即都是文件上传，multipart是其唯一
+    合法的请求体类型。
+    """
+    from fastapi import params as fastapi_params
+
+    protected = set()
+    for route in application.routes:
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        stack = [dependant]
+        while stack:
+            current = stack.pop()
+            for param in current.body_params:
+                if isinstance(
+                    param.field_info, (fastapi_params.Form, fastapi_params.File)
+                ):
+                    protected.add(route.path)
+                    stack = []
+                    break
+            else:
+                stack.extend(current.dependencies)
+    return frozenset(protected)
+
+
+_MULTIPART_ONLY_PATHS = frozenset()
+
+
+@app.middleware("http")
+async def reject_urlencoded_on_upload_endpoints(request: Request, call_next):
+    content_type = request.headers.get("content-type", "")
+    # 只取媒体类型本身，忽略charset等参数；大小写不敏感
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if (
+        media_type == _URLENCODED_MEDIA_TYPE
+        and request.url.path in _MULTIPART_ONLY_PATHS
+    ):
+        # 在任何表单解析之前返回，这正是本缓解要达成的效果
+        logger.warning(
+            "拒绝上传端点上的urlencoded请求：path=%s", request.url.path
+        )
+        return JSONResponse(
+            status_code=415,
+            content={"detail": "该接口只接受 multipart/form-data 格式的文件上传"},
+        )
+    return await call_next(request)
+
 def _rate_limit_key(request: Request) -> str:
     """限流分桶键，统一为`角色:身份`两段。
 
@@ -3013,6 +3080,12 @@ def _overall_health_status(layers: dict) -> str:
     if any(status != "healthy" for status in statuses):
         return "degraded"
     return "ok"
+
+
+# 路由全部注册完毕后再推导受保护路径。放在模块末尾而不是lifespan里，是因为
+# 部分测试不经由TestClient的上下文管理器启动lifespan，那样中间件会静默失效。
+_MULTIPART_ONLY_PATHS = _collect_multipart_only_paths(app)
+logger.info("仅接受multipart的上传端点：count=%d", len(_MULTIPART_ONLY_PATHS))
 
 
 if __name__ == "__main__":
