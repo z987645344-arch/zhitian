@@ -1,3 +1,30 @@
+# ---------------------------------------------------------------------------
+# 阶段一：从BAAI/bge-small-zh-v1.5（MIT，模型卡明示可商用）自行导出ONNX权重。
+# 不取用第三方已导出的ONNX镜像仓库，是因为那些仓库多未声明license，而本项目
+# Phase C之后可能随产品外售，许可链必须干净。
+# torch/transformers只存在于本阶段，运行镜像不含它们——这正是选ONNX路径的目的：
+# 若改用sentence-transformers在运行时加载，需多带约910MB依赖。
+# ---------------------------------------------------------------------------
+FROM python:3.10-slim AS model-export
+
+WORKDIR /build
+# 用CPU轮子源取torch本体，避免拉进数GB的CUDA依赖；但该源只放torch系列，
+# 其依赖（typing-extensions等）仍需从PyPI解析，故用extra-index-url叠加而非替换。
+# torch的CPU轮子超过200MB，慢速网络下默认15秒读超时容易中断，故放宽超时并重试。
+RUN python -m pip install --no-cache-dir --timeout 180 --retries 10 \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple \
+        torch==2.13.0 \
+    && python -m pip install --no-cache-dir --timeout 180 --retries 10 \
+        transformers==4.57.1 onnx==1.22.0
+
+COPY scripts/export_embedding_onnx.py ./
+RUN python export_embedding_onnx.py /export
+
+
+# ---------------------------------------------------------------------------
+# 阶段二：运行镜像
+# ---------------------------------------------------------------------------
 FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -26,21 +53,15 @@ RUN groupadd --system appuser \
     && mkdir -p /app/data /home/appuser/.config/libreoffice \
     && chown -R appuser:appuser /app /home/appuser
 
-# F35：构建期预置Chroma默认嵌入模型all-MiniLM-L6-v2。
-# 不预置时，全新容器的首次上传/检索才会触发运行时下载（约83MB），实测使整个
-# 服务不可用约18分钟且健康检查连续超时；该缓存位于/home/appuser/.cache、不在
-# 具名卷内，容器一重建（升级镜像、down+up）就会重演。放进镜像层后任何新容器
-# 自带模型，无需运行时联网。
-# 上面ENV已设HOME=/home/appuser，构建期以root执行时Path.home()同样解析到该目录。
-# chromadb只按解压出的onnx/目录内6个文件判断是否已就绪，与tar包无关，因此解压后
-# 立即删除tar包，省去约83MB体积。
-# 注意：这一步让构建新增一个出网依赖（Chroma模型下载地址）；构建环境无法访问时
-# 会直接失败，这是刻意的——宁可构建期暴露，也不要留到生产首次上传时才发现。
-RUN python -c "from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2; ONNXMiniLM_L6_V2()(['warmup'])" \
-    && rm -f /home/appuser/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz \
-    && chown -R appuser:appuser /home/appuser/.cache
-
 COPY --chown=appuser:appuser . .
+
+# F37：放入阶段一导出的嵌入模型。放在COPY . .之后，避免被应用代码覆盖。
+# 这一层同时**取代**了F35原本预置chromadb默认模型all-MiniLM-L6-v2的那一步：
+# 两个Collection都已改用layers/embedding.py的自研EF，chromadb内置EF不再被实例化，
+# 因此原来那个"构建期下载Chroma模型"的出网依赖连同其失败模式一并消失
+# （该依赖曾在2026-08-05真实导致构建失败）。模型改由阶段一从HuggingFace导出，
+# 出网目标由Chroma的下载地址换成HuggingFace，仍是构建期暴露而非运行期。
+COPY --from=model-export --chown=appuser:appuser /export /app/models/bge-small-zh-v1.5
 
 USER appuser
 

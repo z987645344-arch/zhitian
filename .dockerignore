@@ -11,3 +11,6 @@ backups/
 *.log
 tests/
 docs/design_reference/
+# F37：嵌入模型由多阶段构建的导出阶段提供，本地开发副本不进构建上下文，
+# 否则COPY . .会先写入一层约90MB、再被COPY --from覆盖，白白撑大镜像。
+models/

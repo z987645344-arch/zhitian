@@ -16,3 +16,6 @@ build/
 # Local-only diagnostic corpus and one-off document backups.
 /临时信息库/
 *.bak-????-??-??
+
+# F37：嵌入模型由构建期从HuggingFace导出，本地开发用副本不入库（约90MB二进制）
+models/

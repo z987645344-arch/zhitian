@@ -17,7 +17,7 @@ os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import chromadb
 from rank_bm25 import BM25Okapi
 import config
-from layers import chroma_sync, db_schema_version, llm_provider
+from layers import chroma_sync, db_schema_version, embedding, llm_provider
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages
@@ -1554,7 +1554,8 @@ def _get_chroma_collection():
                 settings=settings
             )
             _chroma_collection = _chroma_client.get_or_create_collection(
-                name=COLLECTION_NAME
+                name=COLLECTION_NAME,
+                embedding_function=embedding.get_embedding_function(),
             )
         except Exception as e:
             logger.error("Chroma初始化失败：error_type=%s", type(e).__name__)
@@ -1580,7 +1581,8 @@ def _get_document_collection():
                     settings=settings
                 )
             _document_collection = _chroma_client.get_or_create_collection(
-                name=DOCUMENT_COLLECTION_NAME
+                name=DOCUMENT_COLLECTION_NAME,
+                embedding_function=embedding.get_embedding_function(),
             )
         except Exception as e:
             logger.error("Chroma文档Collection初始化失败：error_type=%s", type(e).__name__)

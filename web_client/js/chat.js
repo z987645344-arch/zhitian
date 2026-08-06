@@ -25,7 +25,7 @@
   }
 
   // F36：与后端config.MAX_UPLOAD_SIZE_MB保持一致，改动时需同步
-  const MAX_ATTACHMENT_MB = 2;
+  const MAX_ATTACHMENT_MB = 1;
 
   let pendingAttachments = [];
   let sending = false;
