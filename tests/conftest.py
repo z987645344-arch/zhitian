@@ -44,7 +44,51 @@ config.HISTORY_DB_PATH = str(_TEST_SESSION_ROOT / "data" / "history.db")
 config.VECTORDB_PATH = str(_TEST_SESSION_ROOT / "data" / "vectordb")
 
 import main
-from layers import auth, graph_store, memory, system_modules
+from layers import auth, embedding, graph_store, memory, system_modules
+
+
+# F37：测试统一使用确定性嵌入桩，不加载真实ONNX模型。
+# 起因是一次真实回归——`models/`按设计被.gitignore排除（90MB二进制不入库），
+# 于是CI的离线测试套件拿不到模型，10项触碰Chroma的用例以FileNotFoundError失败，
+# 而本地因为有导出好的模型而全绿。**这类"本地过、干净环境挂"正是F32的教训**。
+# 之所以无条件替换而不是"模型缺失时才替换"：条件替换会让本地与CI行为分叉，
+# 而分叉正是这个bug当初藏起来的原因。
+# 桩只需满足Chroma的要求——同文本得同向量、不同文本得不同向量；失败的那批用例
+# 断言的是组织隔离、图扩展、成员权限等逻辑，均不依赖语义相似度。
+# 真实嵌入实现另由tests/test_embedding_real_model.py覆盖，模型缺失时明确skip。
+# 与真实模型同维度，避免维度差异掩盖问题
+_STUB_EMBEDDING_DIM = 512
+
+
+class _DeterministicEmbeddingFunction:
+    """按文本哈希生成稳定向量，无需模型文件。
+
+    从哈希字节直接映射到[-1, 1]而不是解释成float32——后者可能产生NaN或inf，
+    会让Chroma写入报出与本意无关的错误。
+    """
+
+    def __call__(self, input):
+        import hashlib
+
+        vectors = []
+        for text in list(input):
+            raw = b""
+            counter = 0
+            seed = str(text).encode("utf-8")
+            while len(raw) < _STUB_EMBEDDING_DIM:
+                raw += hashlib.sha256(seed + bytes([counter & 0xFF])).digest()
+                counter += 1
+            values = [(byte - 127.5) / 127.5 for byte in raw[:_STUB_EMBEDDING_DIM]]
+            norm = sum(v * v for v in values) ** 0.5 or 1.0
+            vectors.append([v / norm for v in values])
+        return vectors
+
+    def name(self) -> str:
+        return "test-deterministic-stub"
+
+
+_STUB_EMBEDDING = _DeterministicEmbeddingFunction()
+embedding.get_embedding_function = lambda: _STUB_EMBEDDING
 
 
 TEST_PASSWORD = "CodexTestPass123!"
