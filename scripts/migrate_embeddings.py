@@ -142,16 +142,25 @@ def _require_recent_backup(data_dir: Path) -> Path:
     迁移会整体替换向量库，一旦新库有问题而旧库已被替换，没有备份就无法回到
     迁移前状态。这里只校验备份存在性与可读性，不代替人工确认其内容。
     """
-    backup_dir = data_dir / "backups"
-    if not backup_dir.is_dir():
+    # 备份包的默认落点由backup_data决定（项目根backups/），不是data目录内部；
+    # 早期版本写死`data_dir/"backups"`，在隔离测试里因手工建了该目录而没暴露，
+    # 真实执行时才发现找不到备份。这里以backup_data的权威常量为准，并兼容
+    # 把备份放在data目录内的部署方式。
+    candidates = []
+    for folder in (backup_data.DEFAULT_BACKUP_DIR, data_dir / "backups"):
+        if folder.is_dir():
+            candidates.append(folder)
+    if not candidates:
         raise MigrationError(
-            "未找到备份目录 %s。迁移前必须先执行 "
-            "`python scripts/backup_data.py --confirm-service-stopped`" % backup_dir
+            "未找到备份目录（已查 %s 与 %s）。迁移前必须先执行 "
+            "`python scripts/backup_data.py --confirm-service-stopped`"
+            % (backup_data.DEFAULT_BACKUP_DIR, data_dir / "backups")
         )
     # 用backup_data导出的BACKUP_GLOB而不是自己拼扩展名——备份包实际是
     # .ztbackup，写死通配会导致"有备份却认不出"，这类脱节必须靠共用常量避免。
     packages = sorted(
-        backup_dir.glob(backup_data.BACKUP_GLOB), key=lambda p: p.stat().st_mtime
+        (pkg for folder in candidates for pkg in folder.glob(backup_data.BACKUP_GLOB)),
+        key=lambda p: p.stat().st_mtime,
     )
     if not packages:
         raise MigrationError(
