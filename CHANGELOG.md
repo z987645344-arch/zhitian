@@ -1093,3 +1093,13 @@
 - **F40修复**：补`grant_work_organization(user["user_id"])`建立组织关联，两处`client.post`加`data={"organization_id": upload_org}`，写法对齐`test_document_upload.py`。**修复后测试真正走到LibreOffice**——日志可见5次真实转换全部成功（`.doc→docx` 2107ms、`.xls→pdf` 1498ms、`.xlsx→pdf` 1449ms、`.ppt→pdf` 1296ms、`.pptx→pdf` 1489ms）。**后续断言全部仍然成立、未放宽任何一条**：`converted_from`（docx为空串、其余为原文件名）、`uploaded_by`归属、Chroma每个chunk的`converted_from`元数据、`len(uploaded_doc_ids) == 6`均通过。
 - **F42修复，并更正一处前提**：该用例断言`422`原意是验证超限被拒，但缺参数同样返回422，等于从未真正测到。修复中**一度按"F36已把超限返回码改为413"改成413，实测失败**——真实响应是`422 {"detail":"文件超过转换大小限制"}`。查明**存在两条互不相干的体积限制**：`MAX_UPLOAD_SIZE_MB`在`main.py:1880`返回**413**（F36改的是这条），`MAX_CONVERSION_FILE_SIZE_MB`在`layers/converter.py:54`返回**422**（F36从未改动）。本用例设的是后者，**422一直是正确返回码，改成413反而是错的**。最终保留422并**新增`detail`文案断言**，以区分"因超限被拒"与"因缺参数被拒"这两种同码不同因的422——这正是原断言的根本缺陷。
 - **验证**：单独运行该测试通过（14.65秒）；`-m integration`**5项全部通过**（88.07秒，此前为4/5）；常规回归`376 passed, 5 deselected`与改动前一致。**仅改测试文件，未动任何生产代码**。
+
+## 2026-08-08 Compose容器重建：运行环境切换到含F36/F37/构建改造的新镜像
+- **重建前核对**：四个容器此前已停止（Docker Desktop重启所致），API镜像为不含F36/F37的旧`zhitian-api:dev-production`；compose全文确认API服务只有`zhitian_data:/app/data`一处具名卷挂载、**无任何指向本机`./zhitian/data`的绑定**；具名卷`zhitian-mvp-data`状态符合方案A预期——三个db文件存在但表未建、0条向量、无`zhitian_documents`集合，即"初始化过但从未产生业务数据"。
+- **构建**：`docker compose build zhitian-api`退出码0，日志中`pip install torch`/`download.pytorch.org`/`Collecting torch`**零命中**，走的是新的`model-fetch`阶段。**下载第1次失败、第2次成功后`model.tar.gz: OK`**——本次改造加的3次重试真实起了作用，印证了重试不是多余设计。新镜像504.3MB。
+- **切换**：`docker compose down`（**不带`-v`**）后确认卷仍在，`up -d`四服务全部healthy。
+- **验证新代码确已生效**：容器内`MAX_UPLOAD_SIZE_MB=1`、`MAX_DOCUMENT_CHUNKS=2000`、`RAG_SCORE_THRESHOLD=0.55`、`EMBEDDING_MODEL_DIR=/app/models/bge-small-zh-v1.5`；`import torch`与`import transformers`均报`ModuleNotFoundError`（确认走model-fetch而非旧的model-export）；模型5个文件在位；`/ready`返回200且`sqlite/chroma/libreoffice`三依赖全为true。
+- **具名卷保持空白（方案A）**：重建后卷内`users.db`与`history.db`的表由启动初始化建好但均为**0行**，未被本机`data/`内容污染。**理由**：本机`data/`那109条是纸质法律书整理的测试数据、用户已确认后续要用`full_reset.py`清空换正式内容，把测试数据同步进生产用途的具名卷没有意义，反而会让两边状态纠缠。两者长期分离的架构决定维持不变。
+- **全新空卷引导复验**：按`deployment_guide.md`执行`docker compose run --rm zhitian-api python scripts/seed_prod_admin.py`创建0号账号并打印一次性密码，随后0号登录返回**HTTP 200**——确认新镜像在全新空卷下能完整初始化并正常认证，本次改造未引入回归。
+- **F37中文检索容器内实测**（走真实`memory.save_document`/`search_documents`，写入具名卷）：向量维度**512**；"公民有哪些基本权利"→宪法要义0.7277、"民事活动应当遵循什么原则"→民法典要点0.7239、"多久要换一次密码"→信息安全守则0.6528，**三问全部命中正确文档**；"今天北京的天气怎么样"0.4102、"推荐一部好看的科幻电影"0.3983，**均正确拒答**。
+- 镜像体积、断网嵌入等此前已充分验证过的项本次未重复执行，验证重点是容器化部署这一层是否正确接入新代码。
