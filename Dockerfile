@@ -1,25 +1,45 @@
 # ---------------------------------------------------------------------------
-# 阶段一：从BAAI/bge-small-zh-v1.5（MIT，模型卡明示可商用）自行导出ONNX权重。
-# 不取用第三方已导出的ONNX镜像仓库，是因为那些仓库多未声明license，而本项目
-# Phase C之后可能随产品外售，许可链必须干净。
-# torch/transformers只存在于本阶段，运行镜像不含它们——这正是选ONNX路径的目的：
-# 若改用sentence-transformers在运行时加载，需多带约910MB依赖。
+# 阶段一：取回bge-small-zh-v1.5的ONNX权重。
+#
+# 原先这里现场安装torch+transformers再跑scripts/export_embedding_onnx.py导出。
+# 那个做法要拉200MB+的torch轮子，**实测累计4次构建因传输损坏或读超时失败**
+# （每次得到的哈希都不同，且在纯净python:3.10-slim里单跑pip download同样复现，
+# 与项目代码无关，是该网络路径对大文件的稳定性问题）。现改为下载一次性导出好的
+# 固定资产：体积由200MB+降到55MB，且带SHA256强校验。
+#
+# 资产来源可追溯：由同一个export_embedding_onnx.py从BAAI原仓库（MIT，模型卡
+# 明示可商用）导出，提取自已验证镜像zhitian-api:f37，发布为独立于代码版本的
+# 资产tag。许可链与原方案一致——仍是我们自己从MIT原仓库导出，不取用未声明
+# license的第三方ONNX镜像仓库。
+#
+# 用Python而不是curl/wget下载：python:3.10-slim**不自带curl也不自带wget**
+# （实测），装它们要多一次到Debian源的网络往返——而本次改造的目的正是减少
+# 构建期网络依赖，为下载工具再引入一个下载步骤是自相矛盾的。该镜像自带
+# tar/sha256sum/gzip，且Python本身就在，足够完成下载、校验与解包。
+#
+# 构建期出网目标由download.pytorch.org换成github.com（下载会重定向到
+# GitHub的资产CDN），受限网络需相应放行。
 # ---------------------------------------------------------------------------
-FROM python:3.10-slim AS model-export
+FROM python:3.10-slim AS model-fetch
 
-WORKDIR /build
-# 用CPU轮子源取torch本体，避免拉进数GB的CUDA依赖；但该源只放torch系列，
-# 其依赖（typing-extensions等）仍需从PyPI解析，故用extra-index-url叠加而非替换。
-# torch的CPU轮子超过200MB，慢速网络下默认15秒读超时容易中断，故放宽超时并重试。
-RUN python -m pip install --no-cache-dir --timeout 180 --retries 10 \
-        --index-url https://download.pytorch.org/whl/cpu \
-        --extra-index-url https://pypi.org/simple \
-        torch==2.13.0 \
-    && python -m pip install --no-cache-dir --timeout 180 --retries 10 \
-        transformers==4.57.1 onnx==1.22.0
+ARG MODEL_ASSET_URL=https://github.com/z987645344-arch/zhitian/releases/download/embedding-model-bge-small-zh-v1.5-v1/bge-small-zh-v1.5-onnx.tar.gz
+ARG MODEL_ASSET_SHA256=c05ddb2b56dd0f869d3c4c8a3401ae0b8b017d80e39cc0c8211d197efa9ea32d
 
-COPY scripts/export_embedding_onnx.py ./
-RUN python export_embedding_onnx.py /export
+WORKDIR /fetch
+# 重试3次覆盖偶发抖动；三次都失败时文件不存在，紧接着的sha256sum -c会以非0退出，
+# 构建随之中止——校验失败绝不放行，对应编码规范"不静默吞异常"。
+RUN for attempt in 1 2 3; do \
+        echo "下载嵌入模型资产（第 $attempt 次）..." \
+        && python -c "import sys,urllib.request; urllib.request.urlretrieve(sys.argv[1], 'model.tar.gz')" \
+             "$MODEL_ASSET_URL" \
+        && break || { echo "第 $attempt 次下载失败"; rm -f model.tar.gz; sleep 5; }; \
+    done \
+    && echo "$MODEL_ASSET_SHA256  model.tar.gz" > model.tar.gz.sha256 \
+    && sha256sum -c model.tar.gz.sha256 \
+    && mkdir -p /export \
+    && tar -xzf model.tar.gz -C /export \
+    && rm -f model.tar.gz model.tar.gz.sha256 \
+    && ls -l /export
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +81,7 @@ COPY --chown=appuser:appuser . .
 # 因此原来那个"构建期下载Chroma模型"的出网依赖连同其失败模式一并消失
 # （该依赖曾在2026-08-05真实导致构建失败）。模型改由阶段一从HuggingFace导出，
 # 出网目标由Chroma的下载地址换成HuggingFace，仍是构建期暴露而非运行期。
-COPY --from=model-export --chown=appuser:appuser /export /app/models/bge-small-zh-v1.5
+COPY --from=model-fetch --chown=appuser:appuser /export /app/models/bge-small-zh-v1.5
 
 USER appuser
 

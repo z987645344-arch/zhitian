@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
-"""构建期从MIT原始仓库导出bge-small-zh-v1.5的ONNX权重。
+"""从MIT原始仓库导出bge-small-zh-v1.5的ONNX权重。
 
-只在Docker多阶段构建的导出阶段运行，运行镜像不包含torch/transformers。
+**本脚本已不在常规构建路径上**：Dockerfile改为下载一次性导出好的固定资产
+（见docs/embedding_model_asset.md），因为现场导出要拉200MB+的torch轮子，
+实测累计4次构建因传输损坏或读超时失败。保留本脚本是为了将来升级模型时
+手动重新导出一份新资产——导出方式不变，变的只是"每次构建都导"还是"导一次
+发布成资产"。
+
 从BAAI原仓库自行导出而非取用第三方ONNX镜像仓库，是为了保持许可链干净
 （BAAI原仓库为MIT并明示可商用，第三方再导出仓库多未声明license）。
+本脚本需要torch/transformers/onnx，运行镜像里没有这些依赖，请在本机
+或临时环境执行。
 
 用法：python scripts/export_embedding_onnx.py <输出目录>
+
+升级模型的完整流程见 docs/embedding_model_asset.md。
 """
 import os
 import sys

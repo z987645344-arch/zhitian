@@ -1064,3 +1064,11 @@
   **关键在中间两行**：旧模型把两个民法典问题都以0.62–0.70的高分指向了**宪法要义**——分数高、看似自信、文档完全错误，这正是F37"中文区分度不足"在真实数据上的表现。新模型两个都命中正确文档。无关问题两者都拒答，但新模型余量更大（0.43–0.44对0.49–0.53，后者已逼近阈值）。
 - **两项如实说明**：①"宪法的地位和效力"新旧模型都被拒答（0.4875→0.5301），查看命中片段发现原文OCR自纸质书、噪声明显（"家法算保降公民基本取和与又务的报本大法"），语料里可能本就没有对应内容，**属语料质量而非模型问题**；②**HTTP层的真实账号登录未完成**——尝试的密码不适用于该库且未继续猜测，检索验证是通过真实检索层`memory.search_documents`（含BM25混合与阈值过滤，即生产实际代码路径）完成的，非HTTP端到端。
 - **回滚库保留**：`data/vectordb-rollback-249ed276141649e0a0d396f503a604f8`占用23.8MB，**建议保留观察期后再删除**，期间它与备份包构成双重安全网。
+
+## 2026-08-07 Docker构建可靠性：ONNX模型改为下载固定资产，不再现场拉torch导出
+- **问题**：构建阶段装`torch==2.13.0`+transformers再跑`export_embedding_onnx.py`导出模型，torch的CPU轮子超200MB，**累计4次构建失败**（两次读超时、两次哈希不匹配即传输损坏，每次`Got`哈希都不同）；在纯净`python:3.10-slim`里单跑`pip download torch`同样复现，确认与项目代码无关，是该网络路径对大文件的稳定性问题。该问题阻塞Compose容器重建。
+- **改造**：Dockerfile阶段一由`model-export`改为`model-fetch`，下载一次性导出好的固定资产并强校验。URL与SHA256提为`ARG`（`MODEL_ASSET_URL`/`MODEL_ASSET_SHA256`），将来升级模型只改这两行。资产发布为独立于代码版本的tag `embedding-model-bge-small-zh-v1.5-v1`，**打包方式`tar -czf`，55,370,556字节，整包SHA256 `c05ddb2b56dd0f869d3c4c8a3401ae0b8b017d80e39cc0c8211d197efa9ea32d`**；逐文件SHA256见新增的`docs/embedding_model_asset.md`。
+- **许可链未变**：资产仍由我们自己用`scripts/export_embedding_onnx.py`从BAAI/bge-small-zh-v1.5（MIT，模型卡明示可商用）导出，提取自已验证镜像`zhitian-api:f37`，不取用未声明license的第三方ONNX镜像仓库。该脚本保留未删，改为升级模型时的手动工具，docstring已注明不在常规构建路径上。
+- **未用curl/wget而用Python下载**：实测`python:3.10-slim`**既无curl也无wget**（自带tar/sha256sum/gzip），装curl要多一次到Debian源的网络往返——而本次改造的目的正是减少构建期网络依赖，为下载工具再引入下载步骤是自相矛盾的。基础镜像本身是Python，`urllib`足够；校验仍用`sha256sum -c`。
+- **出网目标变化**：移除`download.pytorch.org`，新增`github.com`；传输量由200MB+降到55MB。受限网络需相应放行。
+- **真实验证**：`docker build --no-cache`成功，日志中torch/transformers/pytorch.org**零命中**，下载**第1次即成功**且`model.tar.gz: OK`；镜像**504.3MB**对F37已验证的504.2MB（差0.10MB）；容器内`import torch`与`import transformers`仍报`ModuleNotFoundError`；`--network none`断网生成512维向量、**相关0.8561/无关0.1813/区分度+0.6749与F37记录逐位相同**，断网检索两问命中正确文档（0.7255/0.6593）、无关问题拒答（0.4473）。**故意传入错误SHA256复测：`model.tar.gz: FAILED`、构建退出码1、镜像未生成**，确认校验失败会硬中止而非静默继续。完整回归`376 passed, 5 deselected`。
