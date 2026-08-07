@@ -171,10 +171,11 @@
 | .env BOM 污染 | python-dotenv 无法识别首行变量名 | .env 改动后确认无 BOM |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |
 | Codex 沙盒 PATH | 与本机不一致 | 运行时验证需用提权方式调 .venv\Scripts\python.exe |
-| Python 3.10 | 不支持 `X | Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
+| Python 3.10 | 不支持 `X \| Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
 | LibreOffice 转换 | `.doc/.xls/.xlsx/.ppt/.pptx` 转换依赖本机 `soffice`，并采用进程级串行锁和默认 30 秒超时 | 复用 `layers/converter.py` 和 `LIBREOFFICE_PATH`，不得绕过锁、超时及临时文件清理 |
 | 聊天附件双生命周期 | 提取文本只在单进程内存中按 session 保存并默认 30 分钟过期；原始文件独立持久化到用户文件库 | 不要把文本 TTL 当成原始文件保留期，也不要把附件正文写入 SQLite、Chroma 或日志 |
 | MCP 外部子进程 | `mcp_connector.py` 当前仅支持 stdio；直接继承完整环境会污染子进程，Windows 仅终止直接子进程会留下进程树 | 使用安全环境白名单并默认排除 `PYTHONPATH`；超时或取消必须终止整棵进程树并真实检查无残留 |
+| 验证环境"富裕"掩盖缺陷 | F32（本机能装出NumPy 2.x但元数据层面合法，容器构建才暴露）与F37（本机有嵌入模型文件，CI因`.gitignore`排除该文件才暴露10 failed）为同一类问题：验证机器比目标环境（CI/容器）多出某个文件或依赖，导致改动在验证时"通过"，到目标环境才失败 | 任何改动依赖本机额外文件、环境变量或已安装依赖时，必须在等价于目标环境的条件下复测（如临时移走该文件模拟CI/容器环境），不能只在开发机验证通过就判定完成 |
 
 ---
 

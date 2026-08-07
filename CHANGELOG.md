@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-08-07**
+> **最后追加：2026-08-08**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -1065,6 +1065,14 @@
 - **两项如实说明**：①"宪法的地位和效力"新旧模型都被拒答（0.4875→0.5301），查看命中片段发现原文OCR自纸质书、噪声明显（"家法算保降公民基本取和与又务的报本大法"），语料里可能本就没有对应内容，**属语料质量而非模型问题**；②**HTTP层的真实账号登录未完成**——尝试的密码不适用于该库且未继续猜测，检索验证是通过真实检索层`memory.search_documents`（含BM25混合与阈值过滤，即生产实际代码路径）完成的，非HTTP端到端。
 - **回滚库保留**：`data/vectordb-rollback-249ed276141649e0a0d396f503a604f8`占用23.8MB，**建议保留观察期后再删除**，期间它与备份包构成双重安全网。
 
+## 2026-08-07 F37合并后CI真实回归修复（conftest嵌入桩强制化）
+- **触发**：`94048c2`（修正迁移脚本备份目录查找）推送后，`CI`工作流转为failure，"Run offline test suite"步骤`10 failed, 363 passed`，全部报`FileNotFoundError: 嵌入模型文件缺失`。
+- **根因**：`models/`按设计被`.gitignore`排除不入库，CI离线套件拿不到模型文件，所有真正触碰Chroma嵌入的用例失败。F37合并当时验证得到"373 passed"，但那是在本机有模型文件的机器上跑的——**验证环境比CI目标环境"富裕"，掩盖了代码对该文件的隐性依赖**，与F32那次Docker镜像numpy解析问题同一类教训。
+- **修复**：`tests/conftest.py`**无条件**替换为确定性嵌入桩（512维、同文本同向量、从哈希字节映射到`[-1,1]`避免NaN/inf）。刻意不做"模型缺失时才替换"的条件分支——条件替换会让本地与CI行为分叉，而分叉正是这个bug的藏身之处。
+- 新增`tests/test_embedding_real_model.py`独立覆盖真实ONNX实现（形状/归一化/中文区分度），模型缺失时`skipif`明确跳过（skip在CI输出可见，不会伪装成通过）。
+- **双向验证**：有模型`376 passed`（373加新增3项）；移走`models/`模拟CI离线环境`373 passed, 3 skipped`，原10项失败全部恢复。
+- 提交`ce8d68f`推送后复核：`CI`工作流**success**（run 31150366424）；`Backend Container CI`仍为既有的`Apply vulnerability policy after reports`门禁failure（run 31150366419），与历次记录完全一致，确认非本批引入。
+
 ## 2026-08-07 Docker构建可靠性：ONNX模型改为下载固定资产，不再现场拉torch导出
 - **问题**：构建阶段装`torch==2.13.0`+transformers再跑`export_embedding_onnx.py`导出模型，torch的CPU轮子超200MB，**累计4次构建失败**（两次读超时、两次哈希不匹配即传输损坏，每次`Got`哈希都不同）；在纯净`python:3.10-slim`里单跑`pip download torch`同样复现，确认与项目代码无关，是该网络路径对大文件的稳定性问题。该问题阻塞Compose容器重建。
 - **改造**：Dockerfile阶段一由`model-export`改为`model-fetch`，下载一次性导出好的固定资产并强校验。URL与SHA256提为`ARG`（`MODEL_ASSET_URL`/`MODEL_ASSET_SHA256`），将来升级模型只改这两行。资产发布为独立于代码版本的tag `embedding-model-bge-small-zh-v1.5-v1`，**打包方式`tar -czf`，55,370,556字节，整包SHA256 `c05ddb2b56dd0f869d3c4c8a3401ae0b8b017d80e39cc0c8211d197efa9ea32d`**；逐文件SHA256见新增的`docs/embedding_model_asset.md`。
@@ -1072,3 +1080,16 @@
 - **未用curl/wget而用Python下载**：实测`python:3.10-slim`**既无curl也无wget**（自带tar/sha256sum/gzip），装curl要多一次到Debian源的网络往返——而本次改造的目的正是减少构建期网络依赖，为下载工具再引入下载步骤是自相矛盾的。基础镜像本身是Python，`urllib`足够；校验仍用`sha256sum -c`。
 - **出网目标变化**：移除`download.pytorch.org`，新增`github.com`；传输量由200MB+降到55MB。受限网络需相应放行。
 - **真实验证**：`docker build --no-cache`成功，日志中torch/transformers/pytorch.org**零命中**，下载**第1次即成功**且`model.tar.gz: OK`；镜像**504.3MB**对F37已验证的504.2MB（差0.10MB）；容器内`import torch`与`import transformers`仍报`ModuleNotFoundError`；`--network none`断网生成512维向量、**相关0.8561/无关0.1813/区分度+0.6749与F37记录逐位相同**，断网检索两问命中正确文档（0.7255/0.6593）、无关问题拒答（0.4473）。**故意传入错误SHA256复测：`model.tar.gz: FAILED`、构建退出码1、镜像未生成**，确认校验失败会硬中止而非静默继续。完整回归`376 passed, 5 deselected`。
+
+## 2026-08-07 首次真跑5项integration测试：4项通过、1项因测试过时失败
+- **背景**：`run_tests.bat`默认带`-m "not integration"`，这就是历次回归里`5 deselected`的来源——这5项**从未在常规回归中执行过**，CI侧`integration-manual.yml`也只有`workflow_dispatch`手动触发且从未跑过。本次逐项单独运行并记录真实输出。
+- **通过4项**：`test_real_chat_smoke_returns_non_error`（真实DeepSeek fast，6.41秒）、`test_real_fast_and_expert_read_uploaded_docx`（附件被fast与expert双模式真实读取，35.39秒）、`test_real_expert_generates_downloadable_pdf`（expert生成可下载PDF，21.50秒）、`test_real_soffice_toolbox_conversion_stays_outside_knowledge_base`（真实LibreOffice，18.63秒）。**本机凭据齐全，无一项因缺凭据而未运行**；顺带确认`deepseek-v4-flash`与`deepseek-v4-pro`两个模型名当前均有效、接口未变——这两点此前从未验证过。
+- **失败1项，且是测试自身过时而非生产缺陷**：`test_real_soffice_uploads_doc_xlsx_and_pptx`调用`/documents/upload`时只传`files`未传`data={"organization_id": ...}`，而端点签名为`organization_id: int = Form(...)`必填，实测返回**422 `{"type":"missing","loc":["body","organization_id"]}`**，**根本没走到LibreOffice**。追溯到`053fa67`（组织加入退出审批体系＋文档组织归属机制）把该字段改为必填，而测试文件最后一次改动是更早的`71ddb48`。判定为测试维护缺失：端点要求该字段是有意设计，管理后台与真实上传流程都在正确传它，F36批次已用真实HTTP栈验证该端点返回200。**本次只记录未修，未改动任何断言让测试变绿**。
+- **新登记两条遗留项**：**F40**（该测试待修，P2；修复不一定只是补一个参数，还需确认其后续关于`converted_from`、`doc_id`归属、跨组织可见性的断言在当前组织机制下是否仍成立）、**F41**（`053fa67`完整波及面待审计，P3；已确认至少漏改一处测试，需排查是否还有其他调用方仍按旧签名调用）。
+- **本次最值得记住的结论**：从未执行过的测试**不但没在保护代码，自己还会烂掉而无人知晓**——5项里唯一失败的这项，恰恰是被一次正常功能演进甩下的，而常规回归`376 passed`完全无法暴露它，因为它只覆盖被执行到的路径。
+
+## 2026-08-08 修复两处因组织归属机制上线而过时的转换集成测试（F40+F42）
+- **背景**：`053fa67`（组织加入退出审批＋文档组织归属）把`/documents/upload`的`organization_id`改为必填，但`tests/test_converter_integration.py`未同步，因integration测试从不在常规回归执行而长期无人发现。F41审计确认该提交的破坏性变更只有两处端点，遗漏点全部集中在这一个测试函数内。
+- **F40修复**：补`grant_work_organization(user["user_id"])`建立组织关联，两处`client.post`加`data={"organization_id": upload_org}`，写法对齐`test_document_upload.py`。**修复后测试真正走到LibreOffice**——日志可见5次真实转换全部成功（`.doc→docx` 2107ms、`.xls→pdf` 1498ms、`.xlsx→pdf` 1449ms、`.ppt→pdf` 1296ms、`.pptx→pdf` 1489ms）。**后续断言全部仍然成立、未放宽任何一条**：`converted_from`（docx为空串、其余为原文件名）、`uploaded_by`归属、Chroma每个chunk的`converted_from`元数据、`len(uploaded_doc_ids) == 6`均通过。
+- **F42修复，并更正一处前提**：该用例断言`422`原意是验证超限被拒，但缺参数同样返回422，等于从未真正测到。修复中**一度按"F36已把超限返回码改为413"改成413，实测失败**——真实响应是`422 {"detail":"文件超过转换大小限制"}`。查明**存在两条互不相干的体积限制**：`MAX_UPLOAD_SIZE_MB`在`main.py:1880`返回**413**（F36改的是这条），`MAX_CONVERSION_FILE_SIZE_MB`在`layers/converter.py:54`返回**422**（F36从未改动）。本用例设的是后者，**422一直是正确返回码，改成413反而是错的**。最终保留422并**新增`detail`文案断言**，以区分"因超限被拒"与"因缺参数被拒"这两种同码不同因的422——这正是原断言的根本缺陷。
+- **验证**：单独运行该测试通过（14.65秒）；`-m integration`**5项全部通过**（88.07秒，此前为4/5）；常规回归`376 passed, 5 deselected`与改动前一致。**仅改测试文件，未动任何生产代码**。

@@ -9,6 +9,7 @@ from docx import Document
 
 import config
 from layers import auth, memory
+from tests.conftest import grant_work_organization
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -95,6 +96,8 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
     monkeypatch,
 ):
     headers, user = auth_headers("employee")
+    # 053fa67起上传必须显式传归属组织，且员工需先加入非默认组织
+    upload_org = grant_work_organization(user["user_id"])
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path / "runtime"))
     samples = _build_real_samples(tmp_path)
     uploaded_doc_ids = []
@@ -105,6 +108,7 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
                 "/documents/upload",
                 headers=headers,
                 files={"file": (os.path.basename(sample_path), sample_file, "application/octet-stream")},
+                data={"organization_id": upload_org},
             )
         assert response.status_code == 200, response.text
         payload = response.json()
@@ -138,8 +142,15 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
                     "application/msword",
                 )
             },
+            data={"organization_id": upload_org},
         )
-    assert rejected_response.status_code == 422
+    # 这里断言的422来自**转换层**的体积门槛（layers/converter.py的
+    # MAX_CONVERSION_FILE_SIZE_MB检查，返回"文件超过转换大小限制"），
+    # 与F36改成413的那个MAX_UPLOAD_SIZE_MB上传体积检查是两条独立路径，不要混淆。
+    # 补上organization_id之前，缺参数同样返回422，这条断言等于没测到超限逻辑；
+    # 现在同时核对detail文案，确保测到的是"因超限被拒"而非"因缺参数被拒"。
+    assert rejected_response.status_code == 422, rejected_response.text
+    assert rejected_response.json()["detail"] == "文件超过转换大小限制"
     upload_dir = tmp_path / "runtime" / "data" / "tmp_uploads"
     assert not list(upload_dir.glob("**/*"))
     assert len(uploaded_doc_ids) == 6
