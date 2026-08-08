@@ -1,4 +1,7 @@
-fastapi==0.120.1
+# Starlette根治：0.49.1起的5条CVE（含CVE-2026-54283的urlencoded表单DoS）
+# 在1.3.1才被官方修复，而fastapi<0.133.0声明starlette<0.50.0挡住升级路径，
+# 故两者必须同步升。fastapi 0.133.0起去掉starlette上界，此处取双方最新。
+fastapi==0.141.1
 python-multipart==0.0.32
 uvicorn==0.51.0
 pydantic==2.13.4
@@ -25,7 +28,7 @@ tavily-python==0.3.3
 python-dotenv==1.2.2
 sniffio==1.3.1
 mcp==1.28.1
-starlette==0.49.1
+starlette==1.4.1
 sse-starlette==3.0.3
 PyJWT==2.13.0
 pdfplumber==0.11.10

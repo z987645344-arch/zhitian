@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""F31/CVE-2026-54283缓解：上传端点拒绝urlencoded请求体。
+"""urlencoded表单输入校验：上传端点拒绝urlencoded请求体。
 
-Starlette的request.form()对application/x-www-form-urlencoded静默忽略
-max_fields与max_part_size，未认证请求即可用超大urlencoded体消耗CPU。
-本组用例固化缓解行为，避免日后被无意改回。
+受保护的都是声明了File(...)的文件上传端点，multipart/form-data是它们唯一
+合法的请求体类型。本组用例固化该校验行为，避免日后被无意改回。
+
+沿革：本校验最初作为CVE-2026-54283的缓解措施引入，该漏洞已随升级到
+Starlette 1.4.1由官方根治；用例保留是因为输入校验价值独立于漏洞本身。
 """
 import time
 from io import BytesIO
