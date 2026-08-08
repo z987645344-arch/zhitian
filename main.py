@@ -197,18 +197,21 @@ def _active_request_count() -> int:
         return _active_http_requests
 
 
-# F31/CVE-2026-54283缓解：Starlette的request.form()对
-# application/x-www-form-urlencoded**静默忽略**max_fields与max_part_size
-# （只有MultiPartParser带这些参数，urlencoded的FormParser签名里根本没有），
-# 未认证请求即可用超大urlencoded体消耗CPU。实测同为6.2MB的体，urlencoded耗时
-# 2.242秒而octet-stream仅0.005秒，且两者都返回401——**解析发生在认证之前**。
-#
-# 本中间件是缓解不是根治：根治需升到Starlette 1.3.1，而当前fastapi==0.120.1锁
-# `starlette<0.50.0`，需要FastAPI与Starlette联动跨大版本迁移，另行排期。
+# urlencoded表单输入校验：受保护的都是声明了File(...)的文件上传端点，
+# multipart/form-data是它们唯一合法的请求体类型，urlencoded从来不是合法输入。
+# 与其让请求走完表单解析再因缺字段报错，不如在解析前就以415明确拒绝——
+# 语义更准确，也省掉一次无意义的解析。
 #
 # 只针对**请求体**的Content-Type判断，不涉及query string、cookie或请求头中的
 # 任何其他内容；也只作用于声明了Form/File的端点——其余路径不会触发表单解析，
 # 无需拦截，避免过度阻断将来可能合法接收urlencoded的接口。
+#
+# 沿革：本中间件最初于2026-08-06作为CVE-2026-54283的缓解措施引入（当时
+# Starlette的urlencoded FormParser静默忽略max_fields/max_part_size，未认证
+# 请求即可用超大体消耗CPU：6.2MB的体urlencoded耗时2.242秒、octet-stream仅
+# 0.005秒，两者都返回401，说明解析发生在认证之前）。该漏洞已随升级到
+# Starlette 1.4.1由官方根治，此处保留是因为上述输入校验价值独立于漏洞本身，
+# **不再作为CVE缓解措施**。
 _URLENCODED_MEDIA_TYPE = "application/x-www-form-urlencoded"
 
 
@@ -253,7 +256,7 @@ async def reject_urlencoded_on_upload_endpoints(request: Request, call_next):
         media_type == _URLENCODED_MEDIA_TYPE
         and request.url.path in _MULTIPART_ONLY_PATHS
     ):
-        # 在任何表单解析之前返回，这正是本缓解要达成的效果
+        # 在任何表单解析之前返回，避免为一个必然失败的请求做无谓解析
         logger.warning(
             "拒绝上传端点上的urlencoded请求：path=%s", request.url.path
         )
