@@ -1129,4 +1129,4 @@
 - **权威回归**：`381 passed, 5 deselected, 1 warning in 276.17s`，与升级前基线的381完全一致、零新增失败。唯一警告是`StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated`，`pytest.ini`只有ignore规则无error升级，故为噪音；顺带确认该文件第3行那条`python_multipart`的ignore规则**在升级前就已失效**（0.49.1与1.4.1的`formparsers.py`都不再发该警告），与本次无关。
 - **两项过程中的自身错误，均已修正而非放宽断言**：①首版真实uvicorn脚本把LLM桩打在`stream_chat`/`stream_completion`/`chat_stream`三个**根本不存在的函数名**上，导致真实调用照常发生、撞上空API密钥抛`ValueError`，聊天流的3帧其实是错误路径瞬时返回——这与F31"替换已编译图的模块属性无效"是同一类"测错了对象"。改为替换真实存在的`llm_provider.chat_completion`（planning.py持有的是模块引用，setattr确实生效）并加`assert hasattr`防止再次失效。②HTTP层脚本的CORS预检用了`http://localhost:3000`，而配置允许的是`localhost:8080`/`127.0.0.1:8080`/`null`，400是正确行为；用旧版本跑同一检查得到逐字节相同的`400 Disallowed CORS origin`，证明并非回归。
 - **一项与本次无关的新发现**：`pypdf==6.14.2`存在`CVE-2026-71852`与`CVE-2026-71870`两条漏洞、修复版6.15.0，此前任何记录中都没有它，需单独排期评估。另记一项工具限制：本机GBK区域设置下`pip-audit`无法解析含中文注释的`requirements.txt`（`UnicodeDecodeError`），本次以剥离注释的等价文件替代，CI在Linux/UTF-8下不受影响。
-
+- **已合并master**：以`--no-ff`合入，合并commit `b566c47`。merge-base即master当时的HEAD（master自建分支起未移动），故两点与三点差异完全一致、合并无冲突，改动量5文件40增17删与分支贡献逐项相符。验证分支已删除。
