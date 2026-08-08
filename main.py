@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules
+from layers import attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
 from utils.logger import get_logger
 from utils import observability
 
@@ -40,12 +40,120 @@ _active_http_requests = 0
 _accepting_requests = True
 
 
+def _purge_partial_document(doc_id: str) -> None:
+    """清掉半成品文档：Chroma切片与documents登记都要删。
+
+    F41审计时发现过孤儿向量（向量库有doc_id而documents表无对应记录），
+    这里两侧都清就是为了不再制造同类残留。任一侧失败都记日志但继续，
+    因为留下一半比两边都尝试过更糟。
+    """
+    if not doc_id:
+        return
+    try:
+        memory.delete_document(doc_id)
+    except Exception as exc:
+        logger.warning("清理半成品向量失败：doc_id=%s error_type=%s",
+                       doc_id[:8], type(exc).__name__)
+    try:
+        auth.delete_document_record(doc_id)
+    except Exception as exc:
+        logger.warning("清理半成品文档登记失败：doc_id=%s error_type=%s",
+                       doc_id[:8], type(exc).__name__)
+
+
+def _recover_interrupted_tasks() -> None:
+    """启动时把上次没跑完的任务判为interrupted，并清掉它们的半成品。
+
+    pending与processing都算——进程没了就不会再有人推进它们。
+    interrupted不是done，因此不会触发去重拦截，用户可以直接重传。
+    """
+    try:
+        unfinished = task_store.list_unfinished()
+    except Exception as exc:
+        logger.warning("读取未完成任务失败：error_type=%s", type(exc).__name__)
+        return
+    for task in unfinished:
+        _purge_partial_document(task.result_doc_id)
+        try:
+            task_store.update_task(
+                task.task_id,
+                status="interrupted",
+                error_message="服务重启导致任务中断，半成品数据已清理，请重新提交",
+                result_doc_id="",
+            )
+        except Exception as exc:
+            logger.warning("标记中断任务失败：task_id=%s error_type=%s",
+                           task.task_id[:8], type(exc).__name__)
+    if unfinished:
+        logger.info("启动恢复：中断任务数=%s", len(unfinished))
+
+
+def _run_ingest_task(
+    task_id: str,
+    doc_id: str,
+    source: str,
+    chunks: List[str],
+    converted_from: str,
+    organization_id: Optional[int],
+    uploaded_by: str,
+) -> None:
+    """后台执行向量化与登记。**在工作线程内同步跑**，由BackgroundTasks调度。
+
+    错误分级按既有规范：向量化失败按Level1重试1次，仍失败则标记failed并
+    记录error_type，同时清掉可能已写入的半成品，避免留下孤儿切片。
+    """
+    task_store.update_task(
+        task_id, status="processing", total_chunks=len(chunks), progress=0
+    )
+    last_error = None
+    for attempt in (1, 2):
+        try:
+            count = memory.save_document(
+                source,
+                chunks,
+                doc_id=doc_id,
+                converted_from=converted_from,
+                organization_id=organization_id,
+            )
+            auth.register_document(
+                doc_id,
+                source,
+                uploaded_by,
+                converted_from=converted_from,
+                organization_id=organization_id,
+            )
+            task_store.update_task(
+                task_id,
+                status="done",
+                progress=100,
+                processed_chunks=count,
+                result_doc_id=doc_id,
+            )
+            logger.info("入库任务完成：task_id=%s chunks=%s", task_id[:8], count)
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "入库任务第%d次失败：task_id=%s error_type=%s",
+                attempt, task_id[:8], type(exc).__name__,
+            )
+            # 重试前先清掉可能写了一半的切片，避免第二次写入产生重复
+            _purge_partial_document(doc_id)
+    task_store.update_task(
+        task_id,
+        status="failed",
+        error_message="入库失败（%s），请重试" % type(last_error).__name__,
+        result_doc_id="",
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _accepting_requests
     db_schema_version.initialize_and_validate_databases(
         auth.USERS_DB_PATH, config.HISTORY_DB_PATH
     )
+    _recover_interrupted_tasks()
     with _request_gate_lock:
         _accepting_requests = True
     try:
@@ -1863,6 +1971,7 @@ async def split_pdf_tool_file(
 
 @app.post("/documents/upload")
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     organization_id: int = Form(...),
     current_user: dict = Depends(require_employee)
@@ -1882,6 +1991,22 @@ async def upload_document(
         raise HTTPException(
             status_code=413,
             detail=f"文件大小不能超过{config.MAX_UPLOAD_SIZE_MB}MB",
+        )
+
+    # F36异步化：先按内容哈希在**同组织内**去重。跨组织不去重——不同组织的
+    # 知识库本就隔离，同一份文件各自入库是合理的。
+    payload = await file.read()
+    await file.seek(0)
+    file_hash = task_store.compute_content_hash(payload)
+    existing = task_store.find_done_by_hash(file_hash, organization_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该文件内容已在本组织入库，无需重复上传",
+                "doc_id": existing.result_doc_id,
+                "source": existing.source_name,
+            },
         )
 
     doc_id = str(uuid.uuid4())
@@ -1936,28 +2061,30 @@ async def upload_document(
                 ),
             )
 
-        count = await asyncio.to_thread(
-            memory.save_document,
-            filename,
-            chunks,
-            doc_id=doc_id,
-            converted_from=converted_from,
-            organization_id=organization_id,
+        # F36异步化：转换/解析/切分都在秒级，留在请求内同步完成；
+        # 只有向量化是真正的瓶颈（实测21.2切片/秒、2000切片上限约94秒），
+        # 因此从这里开始转入后台，请求立即带task_id返回。
+        task = task_store.create_task(
+            "upload", file_hash, filename, organization_id, current_user["user_id"]
         )
-        auth.register_document(
+        background_tasks.add_task(
+            _run_ingest_task,
+            task.task_id,
             doc_id,
             filename,
+            chunks,
+            converted_from,
+            organization_id,
             current_user["user_id"],
-            converted_from=converted_from,
-            organization_id=organization_id,
         )
         return {
-            "status": "success",
+            "status": "accepted",
+            "task_id": task.task_id,
             "doc_id": doc_id,
             "source": filename,
             "converted_from": converted_from,
-            "chunks": count,
-            "trust_level": "pending"
+            "chunks": len(chunks),
+            "trust_level": "pending",
         }
     finally:
         await file.close()
@@ -1968,6 +2095,7 @@ async def upload_document(
 @app.post("/knowledge/input")
 async def input_knowledge(
     request: KnowledgeInputRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_employee)
 ):
     _require_custom_organization(current_user, "提交知识")
@@ -1975,6 +2103,19 @@ async def input_knowledge(
     content = (request.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content不能为空")
+
+    # F36异步化：与上传同一口径，按内容哈希在本组织内去重
+    file_hash = task_store.compute_content_hash(content.encode("utf-8"))
+    existing = task_store.find_done_by_hash(file_hash, request.organization_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "相同内容已在本组织入库，无需重复提交",
+                "doc_id": existing.result_doc_id,
+                "source": existing.source_name,
+            },
+        )
 
     title = (request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
@@ -1990,26 +2131,105 @@ async def input_knowledge(
             ),
         )
     doc_id = str(uuid.uuid4())
-    count = await asyncio.to_thread(
-        memory.save_document,
-        source,
-        chunks,
-        doc_id=doc_id,
-        organization_id=request.organization_id,
+    task = task_store.create_task(
+        "knowledge_input", file_hash, source,
+        request.organization_id, current_user["user_id"],
     )
-    auth.register_document(
+    background_tasks.add_task(
+        _run_ingest_task,
+        task.task_id,
         doc_id,
         source,
+        chunks,
+        "",
+        request.organization_id,
         current_user["user_id"],
-        organization_id=request.organization_id,
     )
     return {
-        "status": "success",
+        "status": "accepted",
+        "task_id": task.task_id,
         "doc_id": doc_id,
         "source": source,
-        "chunks": count,
-        "trust_level": "pending"
+        "chunks": len(chunks),
+        "trust_level": "pending",
     }
+
+
+async def _task_progress_events(task_id: str, owner_user_id: str):
+    """轮询任务状态并作为SSE事件下发，结构与/chat/stream的心跳机制一致。
+
+    这里没有复用同一个函数，而是复用同一套**形状**：asyncio.Queue不需要了
+    （生产者就是本协程自己的轮询），但心跳的必要性一样——向量化期间可能几十秒
+    没有状态变化，中间设备会掐掉静默连接。心跳用SSE注释帧，不会被当成数据。
+    """
+    last_signature = None
+    idle_seconds = 0.0
+    while True:
+        task = await asyncio.to_thread(task_store.get_task, task_id)
+        if task is None:
+            yield "data: %s\n\n" % json.dumps(
+                {"status": "failed", "error_message": "任务不存在"},
+                ensure_ascii=False,
+            )
+            return
+        if task.created_by != owner_user_id:
+            # 与既有session归属校验同口径：只能看自己的任务
+            yield "data: %s\n\n" % json.dumps(
+                {"status": "failed", "error_message": "无权查看该任务"},
+                ensure_ascii=False,
+            )
+            return
+
+        signature = (task.status, task.progress, task.processed_chunks)
+        if signature != last_signature:
+            payload = {
+                "status": task.status,
+                "progress": task.progress,
+                "processed_chunks": task.processed_chunks,
+                "total_chunks": task.total_chunks,
+            }
+            if task.error_message:
+                payload["error_message"] = task.error_message
+            if task.status == "done" and task.result_doc_id:
+                payload["doc_id"] = task.result_doc_id
+            yield "data: %s\n\n" % json.dumps(payload, ensure_ascii=False)
+            last_signature = signature
+            idle_seconds = 0.0
+
+        if task.status in ("done", "failed", "interrupted"):
+            return
+
+        await asyncio.sleep(config.TASK_PROGRESS_POLL_SECONDS)
+        idle_seconds += config.TASK_PROGRESS_POLL_SECONDS
+        if idle_seconds >= config.SSE_HEARTBEAT_INTERVAL_SECONDS:
+            yield ": heartbeat\n\n"
+            idle_seconds = 0.0
+
+
+@app.get("/tasks/{task_id}/stream")
+async def stream_task_progress(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """以SSE推送入库任务进度，done/failed/interrupted时结束流。"""
+    return StreamingResponse(
+        _task_progress_events(task_id, current_user["user_id"]),
+        media_type="text/event-stream",
+    )
+
+
+@app.get("/tasks/{task_id}")
+async def get_task_status(
+    task_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """一次性查询任务状态，供不便用SSE的场景兜底。"""
+    task = await asyncio.to_thread(task_store.get_task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.created_by != current_user["user_id"]:
+        raise HTTPException(status_code=403, detail="无权查看该任务")
+    return task.model_dump()
 
 
 @app.get("/documents")

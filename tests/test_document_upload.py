@@ -188,7 +188,12 @@ def test_supported_upload_formats_reach_parser(client, auth_headers, monkeypatch
             data={"organization_id": upload_org},
         )
         assert response.status_code == 200, response.text
-        assert response.json()["status"] == "success"
+        # F36异步化：上传改为立即返回task_id，status由success变为accepted，
+        # 向量化在后台进行。这里同时断言task_id存在，否则"接受了但没派任务"
+        # 会被这条断言放过。
+        payload = response.json()
+        assert payload["status"] == "accepted", payload
+        assert payload["task_id"]
 
 
 @pytest.mark.parametrize(

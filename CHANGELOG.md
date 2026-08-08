@@ -1103,3 +1103,15 @@
 - **全新空卷引导复验**：按`deployment_guide.md`执行`docker compose run --rm zhitian-api python scripts/seed_prod_admin.py`创建0号账号并打印一次性密码，随后0号登录返回**HTTP 200**——确认新镜像在全新空卷下能完整初始化并正常认证，本次改造未引入回归。
 - **F37中文检索容器内实测**（走真实`memory.save_document`/`search_documents`，写入具名卷）：向量维度**512**；"公民有哪些基本权利"→宪法要义0.7277、"民事活动应当遵循什么原则"→民法典要点0.7239、"多久要换一次密码"→信息安全守则0.6528，**三问全部命中正确文档**；"今天北京的天气怎么样"0.4102、"推荐一部好看的科幻电影"0.3983，**均正确拒答**。
 - 镜像体积、断网嵌入等此前已充分验证过的项本次未重复执行，验证重点是容器化部署这一层是否正确接入新代码。
+
+## 2026-08-08 F36根治：文档入库异步任务化 + SSE进度反馈 + 内容哈希去重
+- **范围界定**：调研确认四条长耗时路径里**只有向量化是真瓶颈**（21.2切片/秒，2000切片上限约94秒），转换/解析/切分全在秒级且有30秒硬超时。因此只异步化`/documents/upload`与`/knowledge/input`，`/tools/convert`与`/chat/attachments`保持同步——异步化秒级操作只会徒增复杂度。
+- **任务表**：新增`layers/task_store.py`，`upload_tasks`表建在users.db内（与documents/organizations同库，因去重范围`(file_hash, organization_id)`与文档归属强相关）。用Pydantic的`UploadTask`模型传递，不传裸dict。状态机`pending/processing/done/failed/interrupted`。**去重索引是部分唯一索引**——只对`status='done'`生效，失败与中断的任务不挡用户重试。
+- **去重范围限定在组织内**：不同组织的知识库本就隔离，跨组织去重没有意义。实测同组织重复上传返回**409且耗时0.0151秒**（哈希比对即返回，不做任何解析）；同一文件传到两个不同组织**均返回200**，确认范围正确。
+- **SSE复用既有形状**：新增`GET /tasks/{task_id}/stream`，沿用`/chat/stream`的心跳思路（静默期下发`": heartbeat"`注释帧保活，不污染数据）。另加`GET /tasks/{task_id}`供不便用SSE的场景兜底。两个端点都校验`created_by`归属，只能看自己的任务。
+- **重启恢复与半成品清理**：lifespan启动时把所有`pending/processing`任务判为`interrupted`，并清掉其`result_doc_id`对应的Chroma切片与documents登记。**这是针对F41审计发现的孤儿向量`5d9f8e7b`那类问题**——两侧都清，不再制造同类残留。interrupted不是done，因此不会触发去重拦截，用户可直接重传。
+- **错误分级**：向量化失败按Level1重试1次，重试前先清掉可能写了一半的切片以免重复；仍失败则标记`failed`并记录`error_type`（不记原文）。任务表只存内容哈希与长度，符合日志脱敏规范。
+- **真实验证**：上传立即返回`status=accepted`+task_id，**耗时0.350秒**（此前需等待完整向量化）；**SSE多帧推送实测5帧**（0%→25%→50%→75%→done，2.6秒内逐帧到达，用独立事件循环验证——TestClient下后台任务在响应返回时即执行完毕，只能看到终态帧）；中断恢复实测——手工造processing任务+2条切片的半成品，调恢复逻辑后**任务转interrupted、残留切片0条、documents登记已删**。
+- **过程中修正两处自身缺陷**：①`task_store._database_path()`原从`config.BASE_DIR`现算路径，而auth用的是模块级常量`USERS_DB_PATH`，遇到用例二次monkeypatch `BASE_DIR`时两者分叉导致"表消失"，实测5个用例因此失败，改为复用`auth.USERS_DB_PATH`；②管理后台`inputKnowledge`里误用了不存在的变量名`knowledgeMessage`/`knowledgeResult`，`node --check`只查语法抓不到，改为函数内实际的`message`/`resultBox`。
+- **管理后台改造**：`api.js`新增`streamTaskProgress`（EventSource不支持自定义请求头拿不到Bearer token，与web_client的chatStream一样用fetch流式读取）；`employee.js`抽出`trackIngestProgress`供上传与录入共用，展示百分比与片段进度，done/failed分别给终态提示。**Flutter与web_client未改动**——调研已确认二者不调用这两个端点。
+- **本次不放开2000切片上限**（属独立的产品决策）。回归`381 passed, 5 deselected`（376加新增5项），新增`tests/test_f36_async_tasks.py`固化行为。`test_document_upload.py`一处断言由`status=="success"`更新为`"accepted"`并补断言`task_id`存在——这是契约变更的合法同步，仍是精确断言。

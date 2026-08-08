@@ -44,7 +44,7 @@ config.HISTORY_DB_PATH = str(_TEST_SESSION_ROOT / "data" / "history.db")
 config.VECTORDB_PATH = str(_TEST_SESSION_ROOT / "data" / "vectordb")
 
 import main
-from layers import auth, embedding, graph_store, memory, system_modules
+from layers import auth, embedding, graph_store, memory, system_modules, task_store
 
 
 # F37：测试统一使用确定性嵌入桩，不加载真实ONNX模型。
@@ -143,6 +143,8 @@ def isolated_persistent_storage(tmp_path, monkeypatch):
     memory.init_db()
     system_modules.init_db()
     graph_store.init_db()
+    # F36：任务表与users.db同库，隔离目录切换后同样需要重建
+    task_store.init_db()
 
     yield {
         "root": str(runtime_root),

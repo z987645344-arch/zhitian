@@ -24,6 +24,9 @@ OUTPUT_ANOMALY_CHECK_TIMEOUT = float(
 )
 SHUTDOWN_GRACE_PERIOD_SECONDS = float(os.getenv("SHUTDOWN_GRACE_PERIOD_SECONDS", "30.0"))
 SSE_HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("SSE_HEARTBEAT_INTERVAL_SECONDS", "15.0"))
+# F36异步化：任务进度SSE的轮询间隔。取0.5秒是因为向量化本身按批推进，
+# 更密的轮询只会空转查库；比心跳间隔小得多，因此心跳仍由上面那个值控制。
+TASK_PROGRESS_POLL_SECONDS = float(os.getenv("TASK_PROGRESS_POLL_SECONDS", "0.5"))
 
 # 服务
 PORT = int(os.getenv("PORT", 8000))
