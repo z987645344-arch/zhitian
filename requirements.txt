@@ -32,7 +32,10 @@ starlette==1.4.1
 sse-starlette==3.0.3
 PyJWT==2.13.0
 pdfplumber==0.11.10
-pypdf==6.14.2
+# F43：CVE-2026-71852/71870（文本提取时字体/CMap解析的资源耗尽DoS）修复版。
+# 项目当前代码路径不可达（只用PdfReader/PdfWriter做合并拆分，文本提取走
+# pdfplumber→pdfminer.six），升级是为防止将来给pdf_tools加文本提取时该保护悄然失效。
+pypdf==6.15.0
 python-docx==1.2.0
 openpyxl==3.1.5
 python-pptx==1.0.2
