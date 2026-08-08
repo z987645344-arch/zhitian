@@ -306,6 +306,7 @@
 - [ ] 真实验证文档上传/审核/组织隔离/RAG引用、DirectMail、LibreOffice中文转换、fast/expert、文件库和账号禁用。
 - [ ] 验证容器重建和服务器重启不丢数据；执行一次真实备份→破坏测试数据→恢复→重新检索演练并设置定时异地备份。
 - [ ] 固化本次自用云端部署的最终配置、镜像版本、迁移与恢复记录，为Phase C未来提炼标准包提供真实依据，但本阶段不启动白标产品化。
+- [ ] 把"禁止整目录拷贝部署"由文字约定升级为技术强制：服务器端启动前检查`.git`存在且为clone产物、`data/`首次启动为空、`.env`为现场创建，任一不满足则拒绝启动（依据见「已知技术约束」中同名条目）。
 
 ### Phase C：白标外售与二创整合包（仅归类留档，暂不执行）
 
@@ -456,6 +457,7 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 自用运维文档 | `docs/deployment_guide.md`为总入口，另有`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`。四份文档只覆盖自用单实例MVP，真实域名/HTTPS/定时异地备份明确留给Phase B；任何交接都必须连同两个应用仓库和共享根目录`docker-compose.yml`一起提供，单独clone后端仓库不是完整部署包 |
 | 完整回归口径 | 本地和CI一律以根目录`run_tests.bat`为唯一权威入口，默认执行非integration完整回归；不要直接调用`python -m pytest`或使用“系统Python + .venv site-packages”替代。`tests/conftest.py`在收集阶段强制项目`.venv` Python 3.10，避免MCP子进程隔离`PYTHONPATH`后产生伪失败 |
 | 日志轮转 | 已使用SafeTimedRotatingFileHandler容错Windows文件占用；重复初始化不会重复挂同一路径FileHandler |
+| **生产部署必须走git clone，禁止整目录拷贝** | 2026-08-08泄漏核查得出。git与docker两条链路对本机`data/`（109条测试文档、4个测试账号）与`.env`（真实DeepSeek/Tavily密钥）都有完整防护，**但两者都只在各自链路上生效**：`.gitignore`挡的是`git add`，`.dockerignore`挡的是构建上下文。compose的`env_file: ./zhitian/.env`与`context: ./zhitian`都指向本机相对路径，**若把`D:\zhiliao\zhitian\`整个目录拷到服务器（scp/rsync/U盘/云盘同步），`data/`与`.env`会绕过全部防护直接落地**。因此：①部署只能用`git clone`；②`.env`必须在服务器上现场创建，不随任何形式的文件同步过去。**这目前只是文字约定、不是技术强制**——没有任何机制能阻止一次`rsync -a`，已作为待加固项登记在Phase B（例如加一道服务器端启动检查：确认`.git`存在且`git status`可用、`data/`在首次启动前为空，否则拒绝启动）。 |
 
 ---
 
