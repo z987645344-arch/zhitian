@@ -1188,3 +1188,9 @@
 - **Compose具名卷清理重建**：清理前`docker volume ls`确认Docker全局只有`zhitian-mvp-data`一只具名卷，唯一挂载者是已停止的API容器，没有运行中的容器依赖。用户再次明确确认后执行`docker compose down -v`，并以`docker volume inspect`返回“no such volume”确认旧卷已删除；随后`docker compose up -d`自动创建全新同名空卷并重建四个容器。
 - **空白状态与健康验证**：新卷中`users/documents/user_organizations/registration_requests/org_membership_requests/conversations/sessions/user_files`均为0，仅有应用启动自动创建的“默认、法律”两个种子组织；Chroma现有集合计数为0。`zhitian-api`、`zhitian-admin`、`zhitian-web`、`reverse-proxy`四服务全部healthy，容器内`GET /ready`与反向代理`GET /api/ready`均返回HTTP 200，`sqlite/chroma/libreoffice`三依赖全部为true。
 - **0号引导边界**：本次没有执行`scripts/seed_prod_admin.py`、没有生成或读取一次性密码、没有登录。0号账号生成及后续首个真实developer接管由用户本人在终端和界面中手动完成，作为本次完整MVP测试的一部分。
+
+## 2026-08-09 修正Compose复用旧镜像与本机启动脚本误用风险
+- **真实流程缺陷**：数据清理批次执行的`docker compose up -d`只重建了容器与空卷，没有重新构建镜像；实际运行的`zhitian-api:dev-production`仍含旧源码及FastAPI `0.120.1`、Starlette `0.49.1`，而宿主机已锁定FastAPI `0.141.1`、Starlette `1.4.1`、pypdf `6.15.0`。这说明“容器已重新创建”不能作为“当前代码已进入镜像”的证据。
+- **全量无缓存重建**：执行`docker compose build --no-cache`重新构建全部服务。客户端命令在20分钟工具上限处超时，但Docker守护进程已完成三类镜像并更新标签；随后直接核验新API镜像，`main.py`与`requirements.txt`的SHA-256均和宿主机当前文件逐字一致，三项关键依赖版本正确，`torch`/`transformers`均为`ModuleNotFoundError`，确认运行镜像沿用`model-fetch`导出资产而未误装训练期依赖。
+- **空卷重建与运行验证**：按用户明确要求再次执行`docker compose down -v`，确认旧`zhitian-mvp-data`不存在后以新镜像`docker compose up -d`创建全新空卷。四服务全部healthy，`GET /api/ready`返回200且sqlite/chroma/libreoffice全true；运行容器内再次核对三项依赖、源码哈希与`torch`/`transformers`缺失状态均通过，`users=0`、`documents=0`，仍未执行0号初始化。
+- **启动脚本边界**：后端`启动后端.bat`重命名为`本机后端调试（非Compose、勿用于MVP验收）.bat`，新增中文警告说明其使用旧本机`.venv`、直接读写宿主机`data/`并可能被Flutter默认8000端口静默命中；Flutter脚本重命名为`启动Flutter Windows调试客户端.bat`，明确Compose地址为`http://localhost`、`:8000`只属于非容器后端调试。两份脚本的实际启动命令保持不变。

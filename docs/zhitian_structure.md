@@ -1,6 +1,6 @@
 # 知天（zhitian）项目总框架
 > 技术设计文档。Codex 每次开发前阅读相关章节，指挥师审阅架构时阅读全文。
-> **最后更新：2026-07-19**
+> **最后更新：2026-08-09**（同步本机后端调试脚本的非Compose边界与新文件名）
 
 ---
 
@@ -15,7 +15,7 @@ D:\zhiliao\zhitian\zhitian\
 ├── .env                        ← 敏感信息（DeepSeek/Tavily/JWT Key，禁止上传 git）
 ├── .gitignore
 ├── README.md                   ← 项目说明与启动指南
-├── 启动后端.bat                ← 一键启动后端
+├── 本机后端调试（非Compose、勿用于MVP验收）.bat ← 仅供宿主机后端调试，完整MVP使用Compose
 ├── run_tests.bat               ← 唯一权威测试入口（项目.venv Python 3.10）
 │
 ├── layers/                     ← 五层 Agent 架构 + 认证 + MCP

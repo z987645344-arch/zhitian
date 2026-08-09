@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-09**（用户为亲自测试完整MVP流程而明确发起本机与Compose测试数据清理：本机`data/`已通过`full_reset.py --confirm`不可逆清空，Compose旧具名卷已用`docker compose down -v`删除并重建为空白卷；四服务全部healthy、`/ready`三依赖全true。本次不是此前搁置的“⑥测试数据清理”自动触发；0号初始化、密码获取与首个真实developer接管明确留给用户本人手动执行）
+> **最后更新：2026-08-09**（修正数据清理批次暴露的Compose旧镜像复用缺陷：已用`docker compose build --no-cache`重建最新源码与锁定依赖，再次`down -v`/`up -d`得到全新空卷；四服务healthy、`/ready`三依赖全true，运行镜像哈希与宿主机一致且不含torch/transformers。两个本机快捷脚本已重命名并标明Compose边界，0号引导仍留给用户本人）
 
 ---
 
@@ -55,7 +55,7 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，核心业务无P0/P1功能故障。F31–F37与F40–F43均已解决：F36已完成文档入库异步任务化、SSE进度反馈、中断清理与组织内内容哈希去重；F37已合并master、完成109条存量向量的512维迁移、重建Compose运行镜像并在确认独立备份可恢复后删除旧384维回滚库；Starlette已联动升级至`1.4.1`、FastAPI至`0.141.1`，相关5条CVE清零，urlencoded上传中间件现仅作为常规输入校验。当前F编号开放项仅F38（P2，已决定维持`cryptography==48.0.1`，现有AES-GCM调用面不可触达相关CVE，等待上游放宽约束）与F39（P3，Chroma单例关闭函数未真正释放底层句柄，当前无生产影响）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-09按用户独立请求完成完整MVP实测前清理：本机`data/`由5账号/2文档/18对话/3会话/109文档向量清为0，非种子组织“财务”删除，F37备份哈希保持不变；Compose唯一具名卷`zhitian-mvp-data`经用户再次确认后以`docker compose down -v`删除并重新创建为空白卷，四服务全部healthy，`/ready`返回200且sqlite/chroma/libreoffice全true。该操作不是此前搁置的“⑥测试数据清理”自动执行 |
+| 上一轮完成 | 2026-08-09发现此前清理后仅执行`docker compose up -d`导致容器复用旧镜像：运行时仍是FastAPI 0.120.1/Starlette 0.49.1且源码哈希落后。现已全量`build --no-cache`，新镜像为FastAPI 0.141.1/Starlette 1.4.1/pypdf 6.15.0，源码与依赖文件哈希同宿主机一致，torch/transformers均未安装；再次`down -v`/`up -d`后四服务healthy、空卷`users=0`/`documents=0`。后端与Flutter快捷脚本已重命名并增加环境边界警告 |
 | 当前等待 | 云服务器正在办理；本机空白Compose环境等待用户本人执行0号初始化、保存一次性密码并完成首个真实developer接管测试，AI本轮未代为执行 |
 | 真实账号现状 | 2026-08-09本轮真实复核：本机`data/`与新建Compose卷的`users/documents/user_organizations/registration_requests/org_membership_requests/conversations/sessions/user_files`均为0，仅保留应用启动自动创建的“默认、法律”两个种子组织；Chroma现有集合计数为0，无`5d9f8e7b`孤儿残留。0号账号尚未生成、一次性密码尚不存在；用户将亲自执行`scripts/seed_prod_admin.py`。F37备份包仍在且清理前后SHA-256一致 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
@@ -269,6 +269,7 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 
 | 约束 | 说明 |
 |------|------|
+| Compose镜像更新纪律 | **`docker compose up -d`不会自动重建已有标签的镜像**，即使容器和具名卷都是新创建的，也可能继续运行旧源码和旧依赖。凡代码、`requirements.txt`、Dockerfile、模型资产或前端静态文件发生变化，进入验收前必须显式执行`docker compose build`；依赖/模型升级或需要排除缓存污染时使用`docker compose build --no-cache`。构建后必须核对镜像内关键依赖版本及源码哈希，再执行`up -d`。2026-08-09真实发生过清理后复用旧`zhitian-api:dev-production`的情况，不能再把“容器healthy”单独当作版本正确证据 |
 | DeepSeek双档mode | `/chat`与`/chat/stream`缺省`mode=fast`使用deepseek-v4-flash本地简化路径；`mode=expert`使用deepseek-v4-pro完整Agent路径，不跨档位fallback。DeepSeek Key只配置在`.env`，不得写入源码、日志或文档 |
 | DeepSeek prompt caching | expert新增调用点必须按“固定角色/规则/工具说明 → 当日日期（仅原prompt需要时）→ 用户问题/上下文/检索结果”组织；固定前缀不得混入trace_id、精确时间戳等逐请求动态值。缓存由服务端自动尽力匹配；本轮重复长前缀实测命中2304 tokens、未命中92 tokens（约96.2%） |
 | 系统提示词模块 | `system_modules`表只保留tone/forbidden两类可编辑当前值；接口已迁移至`GET/PUT /developer/system-modules`并仅允许启用中的developer访问，不再需要二级密码。模型固定前缀按“规范→语气风格→禁用→原有规则→日期→逐请求动态内容”拼接，保存后缓存失效并从下一次请求生效；fast同样应用禁用模块 |
