@@ -1162,3 +1162,15 @@
   - **③`docker-compose.yml`不在任何Git仓库版本控制下**。它位于三仓库的上级目录`D:\zhiliao\zhitian\`，该目录虽有一个`.git`但**是空目录残留**（`git rev-parse`报not a git repository），实测确认该compose文件不被任一仓库跟踪。新环境部署需人工额外携带，与「部署必须走git clone」的规范存在直接冲突——**这是该规范目前最现实的执行障碍**。
   - **④三端VERSION字段与git tag脱节**。`zhitian/VERSION`=2.6.0、`zhitian_admin/VERSION`=2.6.0、`zhitian_app/pubspec.yaml`=2.6.0+260，而三仓库的最新标签分别为v2.9、v2.8、v2.7。VERSION自2026-07-31起未随任何一次发布更新，容器CI用它生成镜像标签，因此镜像标签也一并停留在2.6.0。
 - **为什么仍然打标签**：上述四项全部属于「记录与交付的一致性」范畴，没有一项构成运行时功能缺陷——回归、CI与容器验收都是在真实代码上跑出来的，结论不依赖这些文档或版本号。把它们如实写下并单独排期，比为了标签好看而先修一遍更符合项目的记录原则。
+
+## 2026-08-09 修正v3.0遗留的claude_memory状态矛盾
+- **不是只替换审计点名的7处文字**：完整通读`docs/claude_memory.md`并逐项对照F31–F43的最新CHANGELOG记录，把顶部状态、上一轮完成、下一步、遗留问题表、F31影响评估、Phase A验收、依赖锁定和项目完成度统一收敛到同一个当前口径。
+- **核心状态已纠正**：F36改为“异步任务化+SSE进度反馈已完成”；F37改为“代码合并、109条存量向量迁移、Compose重建和旧384维回滚库清理均完成”；Starlette改为`1.4.1`已根治5条CVE，原urlencoded中间件重新定性为常规输入校验。F31–F37、F40–F43均标为已解决，F38保持已接受风险、F39保持P3开放。
+- **额外发现并同步的过时项**：本地干净环境验收由“仍有P0、不能通过”改为Phase A已验收；CI/pip-audit、FastAPI/Starlette与pypdf锁定、BGE 512维检索、按角色限流、Flutter 42项测试、管理后台10个JavaScript文件及Flutter F36/F37分支归位状态均更新为最新事实；空的“待排期功能”小节不再写“等待用户决定”。
+- 本批仅修订`docs/claude_memory.md`与本CHANGELOG，未改任何业务代码；历史过程仍保留在既有CHANGELOG条目中，交接文档只保留当前结论。
+
+## 2026-08-09 v3.0交付缺口③：Compose迁入独立私有部署仓库
+- **现状核对**：迁移前`docker-compose.yml`真实位于`D:\zhiliao\zhitian\`，不受三个应用仓库中的任何一个跟踪；反向代理配置单独位于后端仓库`deploy/compose-nginx.conf`。上级目录的`.git`递归枚举为0项，`git rev-parse`返回`not a git repository`，确认只是空目录残留；同级`deploy/`同样为空，没有第三份部署配置被遗漏。
+- **独立仓库落地**：通过本机Git Credential Manager核验GitHub账号`z987645344-arch`后，按保守默认创建私有仓库`https://github.com/z987645344-arch/zhitian-deploy`。首个提交`08d8b48`已推送到`main`，跟踪`docker-compose.yml`、`nginx/compose-nginx.conf`、README和`.gitignore`；`.gitignore`预先排除`.env*`、数据目录、离线备份和`*.ztbackup`，仓库中未写入任何真实密钥。
+- **迁移而非复制补丁**：Compose的应用构建上下文改为同级`../zhitian`与`../zhitian_admin`，后端配置改从`../zhitian/.env`运行时注入，Nginx挂载改为部署仓库内`./nginx/compose-nginx.conf`。反向代理配置迁移前后SHA-256完全一致；Compose全文差异只有上述四处路径归属变化。旧上级`docker-compose.yml`、后端`deploy/compose-nginx.conf`及两处空`deploy/`目录已移除，空的无效上级`.git`也已删除；随后复核`zhitian`、`zhitian_admin`、`zhitian_app`和`zhitian-deploy`四个真实仓库仍全部有效。
+- **真实远程验证**：从私有GitHub仓库重新clone到临时目录，得到commit`08d8b48112d7649723221eb5ffdce358b38c09bc`；`docker compose config --quiet`退出码0，实际解析出`zhitian-api`、`zhitian-admin`、`zhitian-web`、`reverse-proxy`四个服务。项目安装、备份恢复、升级回滚、故障排查、生产配置与`claude_memory`中的路径和“四服务”口径已同步；v3.0记录的缺口③至此解决，生产部署“必须git clone”不再与“Compose只能人工额外携带”自相矛盾。

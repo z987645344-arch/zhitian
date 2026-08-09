@@ -13,14 +13,14 @@
 
 | 范围 | 当前状态 |
 |---|---|
-| Docker 安全基线、后端生产镜像、管理后台镜像、三服务 Compose、健康检查 | Phase A 已在 Docker Desktop 29.6.2、Docker Compose 5.3.1、WSL2 环境真实验证 |
+| Docker 安全基线、后端生产镜像、管理后台镜像、四服务 Compose、健康检查 | Phase A 已在 Docker Desktop 29.6.2、Docker Compose 5.3.1、WSL2 环境真实验证 |
 | 本地 80 端口访问、同源 `/api` 反向代理、具名卷持久化、非 root 运行 | Phase A 已验证 |
 | 真实域名、HTTPS 证书、云防火墙、仅内网/VPN的首个管理员接管 | Phase B，服务器到位后执行 |
 | 定时和异地备份、真实服务器破坏恢复演练 | Phase B |
-| F31 剩余 LangGraph 依赖组和 Debian/LibreOffice 系统层漏洞 | 仍为 P1 发布阻断项；当前后端安全扫描门禁是红灯，不能把 Phase A 自用验证描述成公网发布绿色 |
+| F38 `cryptography`上游约束和 Debian/LibreOffice 系统层无修复版本项 | F31已闭环；F38为用户已接受风险，但容器漏洞策略仍会红灯，Phase B公网部署前需要按最新扫描重新复核 |
 | F32 干净镜像启动、F33 空白实例首次备份、F34 具名卷就地恢复、F35 首次上传阻塞 | 均已于 2026-08-01 修复并实测通过，不再是部署阻断 |
 
-> **当前状态（2026-08-02）**：目录契约、Compose、健康检查和运维命令均已核验；曾阻断从零部署的 F32（干净镜像 NumPy 与 Chroma 不兼容）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）已全部修复并在真实容器复验通过，本文所述流程可按顺序执行。**剩余发布阻断只有 F31**：`langgraph/langchain-core/langsmith` 整组迁移未完成，后端容器 CI 的安全扫描门禁仍是红灯，因此不能把 Phase A 自用验证描述成公网发布绿色。
+> **当前状态（2026-08-09）**：三个仓库目录契约、Compose、健康检查和运维命令均已核验；曾阻断从零部署的 F32（干净镜像 NumPy 与 Chroma 不兼容）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）已全部修复并在真实容器复验通过，本文所述流程可按顺序执行。F31依赖迁移已闭环；当前扫描未全绿来自F38已接受风险与Debian系统层无修复版本项，Phase B公网部署前仍需按届时的真实扫描重新确认。
 
 ## 2. 前置要求
 
@@ -28,7 +28,7 @@
 
 - 64 位 Linux 服务器，或用于 Phase A 验证的 Windows 11 + WSL2。
 - Docker Engine/Client 与 Docker Compose 插件。当前真实验证版本为 Docker 29.6.2、Compose 5.3.1；生产安装优先使用同版本或更新的稳定版。较旧版本未进入本项目兼容矩阵。
-- Git，用于取得后端和管理后台两个仓库。
+- Git，用于取得后端、管理后台和独立部署配置三个仓库。
 - 宿主机 80 端口未被其他服务占用。Phase B 接入 TLS 后再增加 443；本轮不配置证书。
 
 版本核对：
@@ -45,7 +45,7 @@ git --version
 
 - API 容器已限制为 2 GiB、2 CPU，另有 512 MiB reservation；
 - LibreOffice headless 转换会产生短时内存尖峰，256 MiB 转换 tmpfs 也计入内存；
-- 管理后台和反向代理各限制 128 MiB；宿主系统、Docker、镜像构建缓存、数据卷和备份仍需余量；
+- 管理后台、customer 网页端和反向代理各限制 128 MiB；宿主系统、Docker、镜像构建缓存、数据卷和备份仍需余量；
 - 当前后端镜像 **522.1 MB**（2026-08-01 F35 起在构建期预置约 79.3 MB 的 Chroma 嵌入模型，此前为 442.9 MB），管理后台镜像约 26.1 MB，磁盘还需容纳构建缓存、SQLite、Chroma、用户文件和离线备份。
 
 > **镜像体积的两种口径，不要混用**：上面的数字来自 `docker image inspect <image> --format '{{.Size}}'`，同一口径下 F35 前为 464,370,869 字节（442.9 MB）、F35 后为 547,487,931 字节（522.1 MB）。而 `docker images` 的 SIZE 列对同一个镜像显示约 1.78 GB，那是未压缩层的统计方式。两者相差数倍属于正常，不是数据矛盾；对比体积时必须先确认用的是同一条命令。本文及本项目历史记录一律采用 `docker image inspect .Size`。
@@ -54,41 +54,44 @@ git --version
 
 ## 3. 目录契约
 
-当前部署由两个独立 Git 仓库和一个共享编排文件组成：
+当前部署由三个独立 Git 仓库组成，三者必须放在同一个父目录下：
 
 ```text
-zhitian-deploy/
-├── docker-compose.yml
+workspace/
 ├── zhitian/
 │   ├── Dockerfile
-│   ├── .env.example
-│   └── deploy/compose-nginx.conf
-└── zhitian_admin/
-    └── Dockerfile
+│   └── .env.example
+├── zhitian_admin/
+│   └── Dockerfile
+└── zhitian-deploy/
+    ├── docker-compose.yml
+    └── nginx/compose-nginx.conf
 ```
 
-`docker-compose.yml`当前位于两个仓库的共同上级目录，不属于任一应用仓库；因此“只克隆后端仓库”不能得到完整部署包。交接时必须同时提供该共享文件，且目录名保持为`zhitian`和`zhitian_admin`，否则 Compose 的相对构建路径会失效。
+`docker-compose.yml`和反向代理配置由私有仓库`https://github.com/z987645344-arch/zhitian-deploy`跟踪，不再依赖Git之外的共享文件。`zhitian-deploy`与两个应用仓库必须为同级目录，名称保持为`zhitian`、`zhitian_admin`和`zhitian-deploy`，否则 Compose 的相对构建路径会失效。
 
-从零取得两个仓库：
+从零取得三个仓库：
 
 ```bash
-mkdir zhitian-deploy
+mkdir zhitian-workspace
+cd zhitian-workspace
+git clone https://github.com/z987645344-arch/zhitian.git
+git clone https://github.com/z987645344-arch/zhitian_admin.git
+git clone https://github.com/z987645344-arch/zhitian-deploy.git
 cd zhitian-deploy
-git clone https://github.com/z987645344-arch/zhitian.git zhitian
-git clone https://github.com/z987645344-arch/zhitian_admin.git zhitian_admin
 ```
 
-随后把交接包中的共享`docker-compose.yml`放到`zhitian-deploy`根目录，再执行后续命令。Phase C如要形成单仓库白标部署包，应另行调整这一交付结构；本轮不提前实施。
+`zhitian-deploy`为私有仓库，clone前需要配置有权访问该仓库的GitHub凭据。Phase C如要形成单仓库白标部署包，应另行调整这一交付结构；本轮不提前实施。
 
 ## 4. 准备生产配置
 
-在共享根目录执行：
+在`zhitian-deploy`仓库根目录执行：
 
 ```bash
-cp zhitian/.env.example zhitian/.env
+cp ../zhitian/.env.example ../zhitian/.env
 ```
 
-用 UTF-8 无 BOM 编辑`zhitian/.env`，替换所有`CHANGE_ME_*`。不得把开发机真实`.env`复制到服务器，也不得把密钥写进 Compose、Dockerfile、Git 或命令历史。各变量格式和生成方式见`docs/production_configuration.md`及`.env.example`。
+用 UTF-8 无 BOM 编辑`../zhitian/.env`，替换所有`CHANGE_ME_*`。不得把开发机真实`.env`复制到服务器，也不得把密钥写进 Compose、Dockerfile、Git 或命令历史。各变量格式和生成方式见`../zhitian/docs/production_configuration.md`及`../zhitian/.env.example`。
 
 Phase A本地验证可以使用本地 Origin；Phase B必须把`CORS_ORIGINS`收紧为实际 HTTPS 管理后台 Origin并移除`null`。Compose会在运行时把`.env`注入 API，镜像构建上下文不会包含它。
 
@@ -100,7 +103,7 @@ docker compose config --quiet
 
 ## 5. 构建、首次管理员初始化与启动
 
-先构建两套应用镜像：
+先构建三套应用镜像（API、管理后台和customer网页端）：
 
 ```powershell
 docker compose build
@@ -128,7 +131,7 @@ docker compose run --rm zhitian-api python scripts/seed_prod_admin.py
 >
 > **同一邮箱注册多个角色时密码会被同步**：若该邮箱已有账号，再申请第二个及以后的角色，审批通过时新账号密码会被强制同步为该邮箱既有密码，申请表单里填的密码失效（响应带`password_sync`提示）。customer 自助注册不受影响。详见`docs/troubleshooting.md`第3.5节。Phase B应在公网入口尚未开放、仅运维内网/VPN可访问时完成首次接管，并创建真实 developer；默认账号的后续退出遵循既有账号治理逻辑。
 
-启动三项服务：
+启动四项服务：
 
 ```powershell
 docker compose up -d
@@ -141,29 +144,31 @@ docker compose ps
 docker compose up -d --build
 ```
 
-预期服务为`zhitian-api`、`zhitian-admin`和`reverse-proxy`，最终均显示`healthy`。只有反向代理映射宿主机80；8000和8080只在Docker网络内使用。
+预期服务为`zhitian-api`、`zhitian-admin`、`zhitian-web`和`reverse-proxy`，最终均显示`healthy`。只有反向代理映射宿主机80；8000和8080只在Docker网络内使用。
 
 ## 6. 健康验收
 
 ```powershell
 curl.exe --fail --silent --show-error http://127.0.0.1/
 curl.exe --fail --silent --show-error http://127.0.0.1/login.html
+curl.exe --fail --silent --show-error http://127.0.0.1/customer/login.html
 curl.exe --fail --silent --show-error http://127.0.0.1/api/health
 curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
 ```
 
 Linux服务器把`curl.exe`替换为`curl`。验收含义：
 
-- `/`和`/login.html`返回200，证明反向代理与管理后台可用；
+- `/`和`/login.html`返回200，证明反向代理与管理后台可用；`/customer/login.html`返回200，证明customer网页端可用；
 - `/api/health`返回进程和五层诊断信息；它对DeepSeek/Tavily只检查密钥是否存在，不代表外部服务真实连通；
 - `/api/ready`返回200、`status=ready`，且`sqlite`、`chroma`、`libreoffice`均为`true`；任一依赖失败应返回503；
-- `docker compose ps`三项均为`healthy`。
+- `docker compose ps`四项均为`healthy`。
 
 查看末尾日志时不得把整份`.env`或请求凭据打印出来：
 
 ```powershell
 docker compose logs --tail 100 zhitian-api
 docker compose logs --tail 100 zhitian-admin
+docker compose logs --tail 100 zhitian-web
 docker compose logs --tail 100 reverse-proxy
 ```
 
@@ -190,4 +195,4 @@ docker compose down
 - 云防火墙、SSH和首个管理员初始化期间的内网/VPN访问范围；
 - 服务器私有Secret注入、正式CORS白名单和Windows客户端真实HTTPS地址；
 - 定时备份、异地副本、保留周期和真实服务器恢复演练；
-- F31剩余发布阻断项处理后的安全扫描绿色基线（F32/F33/F34/F35已于2026-08-01全部修复，不再属于Phase B待补范围）。
+- 按届时依赖和Debian源重新扫描F38与系统层风险，形成服务器上线时的接受/修复记录（F31–F35均已闭环，不再属于Phase B待补范围）。

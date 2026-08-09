@@ -4,10 +4,10 @@
 
 ## 1. 发布前门槛
 
-- 明确后端和管理后台各自要部署的commit，记录当前`git rev-parse --short HEAD`。
+- 明确后端、管理后台和部署配置三个仓库各自要部署的commit，记录当前`git rev-parse --short HEAD`。
 - 查看对应GitHub Actions。现有容器CI为镜像打`VERSION`和`sha-<7位commit>`双标签并记录digest，但不推送registry。
-- 后端F31仍有P1开放项，安全门禁当前按设计红灯。未形成用户接受的风险处置结论前，不得把升级描述成公网生产发布。
-- F32（干净镜像解析到`numpy==2.2.6`后无法导入`chromadb==0.5.0`）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）均已于2026-08-01修复并实测通过，不再阻断升级；本指南可用于实际执行。剩余阻断只有上一条的F31。
+- F31依赖迁移已闭环；当前安全策略门禁仍会因F38已接受风险及Debian系统层无修复版本项红灯。每次服务器升级都要保存最新扫描结果，不能把旧的接受结论自动沿用到新版本。
+- F32（干净镜像解析到`numpy==2.2.6`后无法导入`chromadb==0.5.0`）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）均已于2026-08-01修复并实测通过，不再阻断升级；本指南可用于实际执行。
 - 在停止服务后生成并导出一份加密备份；包内校验和卷外SHA-256都要通过。
 - 阅读CHANGELOG，确认API契约、数据库schema和环境变量是否变化。
 
@@ -15,30 +15,34 @@
 
 ### 2.1 记录旧版本
 
-在共享根目录执行：
+在`zhitian-deploy`仓库根目录执行：
 
 ```powershell
-git -C zhitian rev-parse --short HEAD
-git -C zhitian_admin rev-parse --short HEAD
+git -C ..\zhitian rev-parse --short HEAD
+git -C ..\zhitian_admin rev-parse --short HEAD
+git rev-parse --short HEAD
 docker image inspect zhitian-api:dev-production --format "{{.Id}} {{.RepoTags}}"
 docker image inspect zhitian-admin:dev-production --format "{{.Id}} {{.RepoTags}}"
+docker image inspect zhitian-web:dev-production --format "{{.Id}} {{.RepoTags}}"
 ```
 
-把两仓库commit、镜像ID、CI中的版本标签/sha标签/digest记录进本次运维单。CI没有上传镜像本体，因此digest是追踪证据，不是可直接从registry拉取的回滚包。
+把三个仓库commit、镜像ID、CI中的版本标签/sha标签/digest记录进本次运维单。CI没有上传镜像本体，因此digest是追踪证据，不是可直接从registry拉取的回滚包。
 
 ### 2.2 备份并停止入口
 
-按备份指南完成卷外备份后保持`reverse-proxy`和`zhitian-api`停止。静态管理后台没有独立写入，但升级时三服务统一重建更容易审计。
+按备份指南完成卷外备份后保持`reverse-proxy`和`zhitian-api`停止。两个静态站点没有独立写入，但升级时四服务统一重建更容易审计。
 
 ### 2.3 更新代码
 
 先确认部署工作区没有未提交的人工修改，再取得指定commit或版本标签。不要在脏工作树上直接覆盖文件。
 
 ```powershell
-git -C zhitian status --short
-git -C zhitian_admin status --short
-git -C zhitian fetch --tags origin
-git -C zhitian_admin fetch --tags origin
+git -C ..\zhitian status --short
+git -C ..\zhitian_admin status --short
+git status --short
+git -C ..\zhitian fetch --tags origin
+git -C ..\zhitian_admin fetch --tags origin
+git fetch --tags origin
 ```
 
 具体`checkout`目标必须来自已审核的发布记录，本指南不虚构尚不存在的发布标签。
@@ -52,7 +56,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Compose会从两个子仓库Dockerfile重建`zhitian-api:dev-production`和`zhitian-admin:dev-production`，再等待API、管理后台健康后启动反向代理。
+Compose会从两个应用仓库的Dockerfile重建`zhitian-api:dev-production`、`zhitian-admin:dev-production`和`zhitian-web:dev-production`，再等待API与两个静态站点健康后启动反向代理。
 
 ### 2.5 验收
 
@@ -91,8 +95,8 @@ docker compose logs --tail 100 reverse-proxy
 如果数据库schema未变且新版本没有写入不兼容数据：
 
 1. 停止入口和API；
-2. 根据CI记录的`sha-<7位commit>`找到两仓库最后已知正常commit；
-3. 将两个工作树切回精确commit；
+2. 根据CI记录的`sha-<7位commit>`和运维单找到三个仓库最后已知正常commit；
+3. 将三个工作树切回精确commit；
 4. 重新构建并启动：
 
 ```powershell
@@ -117,10 +121,10 @@ curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
 
 ## 5. 升级失败时保留的证据
 
-- 两仓库旧/新commit、VERSION和CI运行链接；
+- 三个仓库旧/新commit、VERSION（如该仓库存在）和CI运行链接；
 - 旧/新镜像ID与CI digest；
 - 备份包名及卷外SHA-256；
-- `docker compose ps`和三服务末尾日志；
+- `docker compose ps`和四服务末尾日志；
 - `/api/health`、`/api/ready`响应及失败时间；
 - 恢复脚本输出的安全备份和回退目录位置。
 

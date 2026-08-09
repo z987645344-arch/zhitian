@@ -4,13 +4,14 @@
 
 ## 1. 通用检查顺序
 
-在共享`docker-compose.yml`目录执行：
+在独立`zhitian-deploy`仓库根目录执行：
 
 ```powershell
 docker compose config --quiet
 docker compose ps -a
 docker compose logs --tail 200 zhitian-api
 docker compose logs --tail 200 zhitian-admin
+docker compose logs --tail 200 zhitian-web
 docker compose logs --tail 200 reverse-proxy
 ```
 
@@ -32,7 +33,7 @@ Linux服务器把`curl.exe`替换为`curl`。
 - users/history的`schema_version`表损坏、版本不受支持，或`foreign_key_check`发现违反；
 - 80端口已占用；
 - Docker资源不足，LibreOffice/Chroma初始化时触发OOM；
-- 镜像未构建成功，或Compose目录结构不符合“双仓库 + 共享文件”契约。
+- 镜像未构建成功，或目录结构不符合“两个应用仓库 + 独立部署仓库三者同级”的契约。
 
 定位：
 
@@ -54,7 +55,7 @@ docker compose up -d
 docker compose ps
 ```
 
-已解决标准：三服务均`healthy`，`/api/ready`为200且三项依赖均为`true`，日志不再出现同类启动错误。
+已解决标准：四服务均`healthy`，`/api/ready`为200且三项依赖均为`true`，日志不再出现同类启动错误。
 
 ### 干净镜像出现`np.float_`错误（F32，已修复）
 
@@ -70,7 +71,7 @@ docker run --rm zhitian-api:dev-production python -c "import numpy; print(numpy.
 docker run --rm zhitian-api:dev-production python -c "import chromadb; print(chromadb.__version__)"
 ```
 
-当时的失败组合为`numpy==2.2.6`和`chromadb==0.5.0`，可运行组合为`numpy==1.26.4`和`chromadb==0.5.0`（现已写入`requirements.txt`）。不要只在运行容器里临时`pip install`后宣称修复；应单独评估并精确锁定兼容版本，重建镜像，再执行完整权威回归、Chroma读写、三服务健康和容器CI扫描。
+当时的失败组合为`numpy==2.2.6`和`chromadb==0.5.0`，可运行组合为`numpy==1.26.4`和`chromadb==0.5.0`（现已写入`requirements.txt`）。不要只在运行容器里临时`pip install`后宣称修复；应单独评估并精确锁定兼容版本，重建镜像，再执行完整权威回归、Chroma读写、四服务健康和容器CI扫描。
 
 已解决标准：全新无缓存/无旧容器依赖的镜像可导入NumPy和Chroma，API新容器为`healthy`，备份脚本`--help`可执行，完整回归与安全扫描结果已记录。
 
@@ -179,7 +180,7 @@ Compose应覆盖`LIBREOFFICE_PATH=/usr/bin/soffice`，容器用户应为`appuser
 
 ## 7. 反向代理转发异常
 
-可能原因：`reverse-proxy`未加入frontend/backend网络、上游服务不健康、`compose-nginx.conf`未挂载、路径重写错误或80端口冲突。
+可能原因：`reverse-proxy`未加入frontend/backend网络、上游服务不健康、`zhitian-deploy/nginx/compose-nginx.conf`未挂载、路径重写错误或80端口冲突。
 
 定位：
 

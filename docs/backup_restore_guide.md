@@ -24,7 +24,7 @@
 
 ## 3. Compose部署的日常人工备份
 
-在共享`docker-compose.yml`所在目录操作。先确认当前镜像确实包含脚本且Chroma可以导入——F32那类"构建成功但导入即失败"的问题已于2026-08-01修复，保留这组预检是为了防止复用同名旧镜像或引入新的依赖不兼容：
+在独立`zhitian-deploy`仓库根目录操作。先确认当前镜像确实包含脚本且Chroma可以导入——F32那类"构建成功但导入即失败"的问题已于2026-08-01修复，保留这组预检是为了防止复用同名旧镜像或引入新的依赖不兼容：
 
 ```powershell
 docker compose run --rm zhitian-api python -c "import numpy, chromadb; print(numpy.__version__); print(chromadb.__version__)"
@@ -113,7 +113,7 @@ Chroma当前可能额外输出`Failed to send telemetry event ...`警告；如�
 
 ### 5.1 操作步骤
 
-1. 把待恢复包放到共享根目录下的`offline-backups/`，先核对运输时记录的SHA-256。
+1. 把待恢复包放到`zhitian-deploy/offline-backups/`，先核对运输时记录的SHA-256；该目录已由部署仓库`.gitignore`排除。
 2. 阻断入口并停止API：
 
 ```powershell
@@ -155,7 +155,7 @@ docker compose exec zhitian-api python scripts/check_orphan_data.py
 只有非Compose、本地`zhitian/data`运行方式才使用默认路径：
 
 ```powershell
-Set-Location .\zhitian
+Set-Location ..\zhitian
 python scripts/backup_data.py --confirm-service-stopped
 python scripts/restore_data.py ".\backups\zhitian-backup-<UTC时间戳>.ztbackup" --confirm-service-stopped
 ```

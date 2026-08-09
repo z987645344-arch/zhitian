@@ -22,7 +22,7 @@
 
 ## Docker Compose本地验证
 
-共享层`D:\zhiliao\zhitian\docker-compose.yml`当前通过`env_file: ./zhitian/.env`把后端仓库中的本地`.env`注入API容器。Compose的`environment`字段只覆盖容器运行时必须固定的非秘密路径，例如Linux版soffice路径和临时转换目录；真实密钥不得直接写进Compose YAML。
+独立部署仓库`zhitian-deploy/docker-compose.yml`通过`env_file: ../zhitian/.env`把同级后端仓库中的本地`.env`注入API容器。Compose的`environment`字段只覆盖容器运行时必须固定的非秘密路径，例如Linux版soffice路径和临时转换目录；真实密钥不得直接写进Compose YAML。部署仓库自身的`.gitignore`也排除`.env`、备份包和运行数据，但真实密钥仍只能在目标机器现场创建。
 
 该方式只用于开发机Compose验证。构建镜像时`.dockerignore`会排除`.env*`，因此运行时注入的变量不会进入镜像层。
 
