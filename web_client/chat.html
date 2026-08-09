@@ -4,41 +4,93 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>提问 · 知天</title>
-    <link rel="stylesheet" href="./css/style.css" />
+    <link rel="stylesheet" href="./css/style.css?v=workspace-b1-2" />
   </head>
   <body class="chat-page">
-    <header class="chat-header">
-      <div class="chat-header-id">
-        <div class="brand-mark" aria-hidden="true">知</div>
-        <div>
-          <strong>知天企业知识助手</strong>
-          <small id="currentUser">-</small>
+    <div class="workspace-shell">
+      <aside id="chatSidebar" class="chat-sidebar" aria-label="对话导航">
+        <div class="sidebar-brand">
+          <div class="brand-mark" aria-hidden="true">知</div>
+          <div>
+            <strong>知天</strong>
+            <small>企业知识工作台</small>
+          </div>
         </div>
-      </div>
-      <button id="logoutButton" class="secondary" type="button">退出登录</button>
-    </header>
 
-    <div id="chatLog" class="chat-log" aria-live="polite">
-      <div class="chat-log-inner" id="chatLogInner">
-        <p class="chat-empty">向知识库提问，回答会标注所依据的文档来源。<br />若没有可靠依据，助手会如实说明而不是猜测。</p>
-      </div>
-    </div>
+        <button id="newChatButton" class="new-chat-button" type="button">
+          <span aria-hidden="true">＋</span>
+          新建对话
+        </button>
 
-    <div class="chat-composer">
-      <form id="composer" class="composer-inner">
-        <div id="attachmentChips" class="attachment-chips"></div>
-        <div class="composer-row">
-          <textarea id="messageInput" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行" required></textarea>
-          <button id="attachButton" type="button" class="secondary">附加文件</button>
-          <button id="sendButton" type="submit">发送</button>
+        <section class="history-panel" aria-labelledby="historyHeading">
+          <div class="history-heading">
+            <h2 id="historyHeading">历史会话</h2>
+            <button id="refreshSessionsButton" class="text-button" type="button">刷新</button>
+          </div>
+          <p id="sessionStatus" class="session-status" aria-live="polite">正在加载会话…</p>
+          <div id="sessionList" class="session-list"></div>
+        </section>
+
+        <div class="sidebar-account">
+          <div class="account-copy">
+            <span>当前账号</span>
+            <strong id="currentUser">-</strong>
+          </div>
+          <button id="logoutButton" class="secondary" type="button">退出</button>
         </div>
-        <input id="attachmentInput" type="file" accept=".txt,.md,.pdf,.docx,.doc,.xls,.xlsx,.ppt,.pptx" hidden />
-        <p id="composerHint" class="composer-hint">支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 1MB。</p>
-      </form>
+      </aside>
+
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="关闭会话导航"></button>
+
+      <main class="chat-main">
+        <header class="chat-header">
+          <div class="chat-title-area">
+            <button id="sidebarToggle" class="secondary sidebar-toggle" type="button" aria-controls="chatSidebar" aria-expanded="false">会话</button>
+            <div>
+              <p class="eyebrow">当前对话</p>
+              <h1 id="conversationTitle">新对话</h1>
+            </div>
+          </div>
+
+          <div class="mode-area">
+            <div class="mode-switch" role="group" aria-label="回答模式">
+              <button class="mode-option" data-mode="fast" type="button" aria-pressed="true">
+                <span>快速</span>
+                <small>日常问答</small>
+              </button>
+              <button class="mode-option" data-mode="expert" type="button" aria-pressed="false">
+                <span>专家</span>
+                <small>深度分析</small>
+              </button>
+            </div>
+            <p id="modeDescription" class="mode-description">快速模式：优先简洁作答，需要时检索企业知识库。</p>
+          </div>
+        </header>
+
+        <div id="chatLog" class="chat-log" aria-live="polite">
+          <div class="chat-log-inner" id="chatLogInner"></div>
+        </div>
+
+        <div class="chat-composer">
+          <form id="composer" class="composer-inner">
+            <div id="attachmentChips" class="attachment-chips"></div>
+            <div class="composer-row">
+              <textarea id="messageInput" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行" required></textarea>
+              <button id="attachButton" type="button" class="secondary">附加文件</button>
+              <button id="sendButton" type="submit">发送</button>
+            </div>
+            <div class="composer-meta">
+              <p id="composerHint" class="composer-hint">支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 1MB。</p>
+              <span id="activeModeLabel" class="active-mode-label">快速模式</span>
+            </div>
+            <input id="attachmentInput" type="file" accept=".txt,.md,.pdf,.docx,.doc,.xls,.xlsx,.ppt,.pptx" hidden />
+          </form>
+        </div>
+      </main>
     </div>
 
     <script src="./config.js"></script>
-    <script src="./js/api.js"></script>
-    <script src="./js/chat.js"></script>
+    <script src="./js/api.js?v=workspace-b1-2"></script>
+    <script src="./js/chat.js?v=workspace-b1-2"></script>
   </body>
 </html>

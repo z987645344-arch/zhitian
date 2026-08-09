@@ -16,6 +16,7 @@ const API = (() => {
   const TOKEN_KEY = 'zt_web_token';
   const ROLE_KEY = 'zt_web_role';
   const NAME_KEY = 'zt_web_username';
+  const CHAT_SESSION_KEY = 'zt_web_session_id';
 
   function token() {
     return localStorage.getItem(TOKEN_KEY) || '';
@@ -35,6 +36,7 @@ const API = (() => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(ROLE_KEY);
     localStorage.removeItem(NAME_KEY);
+    localStorage.removeItem(CHAT_SESSION_KEY);
   }
 
   function headers(json = true) {
@@ -60,7 +62,9 @@ const API = (() => {
     const text = await response.text();
     const data = text ? JSON.parse(text) : {};
     if (!response.ok) {
-      throw new Error(data.detail || `请求失败：HTTP ${response.status}`);
+      const error = new Error(data.detail || `请求失败：HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
     }
     return data;
   }
@@ -97,16 +101,34 @@ const API = (() => {
       }),
     }),
 
-    // 仅fast模式：customer侧不提供expert切换
-    chat: (sessionId, message, attachmentIds) => request('/chat', {
+    // 与Flutter端一致显式传入fast/expert；后端仍负责校验合法模式。
+    chat: (sessionId, message, mode, attachmentIds) => request('/chat', {
       method: 'POST',
       body: JSON.stringify({
         session_id: sessionId,
         message,
-        mode: 'fast',
+        mode,
         attachment_ids: attachmentIds || [],
       }),
     }),
+
+    getSessions: async () => {
+      const data = await request('/memory/sessions');
+      return Array.isArray(data.sessions) ? data.sessions : [];
+    },
+
+    getHistory: async (sessionId) => {
+      const data = await request(`/memory/${encodeURIComponent(sessionId)}`);
+      return Array.isArray(data.history) ? data.history : [];
+    },
+
+    deleteSession: async (sessionId) => {
+      const data = await request(`/memory/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+        json: false,
+      });
+      return data.deleted === true;
+    },
 
     async uploadAttachment(sessionId, file) {
       const form = new FormData();
@@ -129,14 +151,14 @@ const API = (() => {
     //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
     //   {"type": "citations", "citations": [...]} 引用来源
     //   {"error": "..."} 服务端异常
-    async chatStream(sessionId, message, attachmentIds, handlers) {
+    async chatStream(sessionId, message, mode, attachmentIds, handlers) {
       const response = await fetch(`${backendUrl}/chat/stream`, {
         method: 'POST',
         headers: headers(true),
         body: JSON.stringify({
           session_id: sessionId,
           message,
-          mode: 'fast',
+          mode,
           attachment_ids: attachmentIds || [],
         }),
       });

@@ -102,6 +102,15 @@ def test_modules_precede_rules_date_and_dynamic_content(monkeypatch):
     assert messages[-1]["content"] == "FAST_DYNAMIC"
 
 
+def test_fast_prompt_inherits_retrieval_rule_from_generated_guidance():
+    state = planning._new_agent_state("module-fast-guidance", "测试问题", "fast")
+    system_prompt = planning._build_fast_messages(state)[0]["content"]
+    rule = system_modules.organizations.GUIDANCE_RETRIEVAL_RULE
+
+    assert rule in system_prompt
+    assert system_prompt.index(rule) < system_prompt.index("你处于快速模式")
+
+
 def test_fast_three_calls_share_module_order_and_keep_dynamic_content_outside_prefix(
     monkeypatch,
 ):

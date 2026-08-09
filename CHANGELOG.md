@@ -1230,3 +1230,17 @@
 - **自动化回归**：Python 3.10 `py_compile`通过，`tests/test_planning.py`为`35 passed`；新增测试固化“专业知识优先检索、闲聊不滥用检索”的双向提示约束。完整权威回归为`383 passed, 5 deselected in 230.23s`，相较382基线仅增加本轮1项测试，无新增失败。重建后的Compose API容器健康，`GET /api/ready`返回200。
 - **F44待办（P3）**：expert在本地已有0.57高分命中时，仍经历重排序超时降级并追加联网搜索，本次真实耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志仅有一次重排序尝试，无卡死或异常重试，答案与引用正确，故定性为路径不够经济的性能体验问题；本轮不修改expert，后续再讨论是否在本地证据充分时跳过联网搜索。
 - **安装包清理核对**：`zhitian_app/dist/`当前只存在一份`zhitian-windows-setup-3.0.0.exe`，大小11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`；不存在标题乱码修复前的同名旧文件。本轮仅改后端fast提示，不改Flutter代码，因此未重新构建安装包，现行文档哈希仍与唯一交付物一致。
+
+## 2026-08-09 调整知识库检索规则归属：由fast专用提示迁入动态规范模块
+- **设计调整**：撤回上一条记录中对`FAST_TOOLS.search_documents`描述和fast固定路由提示的专项增强，恢复为原有通用文本；不再让fast单独解释“模型自身知识不能替代企业资料核验”。新规则改由`organizations.generate_guidance_content()`随非默认组织领域动态生成：`若用户问题可能涉及该领域的内容，应优先调用search_documents核验后回答，而非仅依赖自身知识。`这样管理后台只读展示的“规范模块”就是规则唯一归属，并通过`system_modules.prompt_prefix()`统一注入所有相关模型调用。组织领域为空时仍只显示“尚未配置知识领域”，不生成没有指代对象的规则。
+- **测试迁移**：移除只检查fast专用提示措辞的测试，新增“动态规范模块规则位于fast内置提示之前”的注入断言；组织零个、一个、多个领域及`GET /developer/system-modules`的精确文案断言同步更新。Python 3.10 `py_compile`通过，planning/system_modules/organizations针对性回归`52 passed`，完整权威回归`383 passed, 5 deselected in 228.27s`。
+- **Compose真实加载验证**：重建并仅替换`zhitian-api`服务，未删除或重建数据卷。最终镜像manifest list为`sha256:872528a2acbc7734223bc9663dba2be2727000a83bad83cb0ee4c1a5bc696709`；API容器healthy，容器内动态规范模块真实输出新增检索规则，`GET /api/ready`返回HTTP 200且sqlite/chroma/libreoffice均为true。
+- **外部模型验证边界**：本次尝试以真实DeepSeek重新核验迁移后的工具选择时，被执行环境安全审查阻止，因为动态企业规范内容会发送至外部模型且缺少针对此次诊断用途的明确授权；未绕过限制。上一批“什么是宪法”真实DeepSeek/SSE命中`宪法要义.md`的结果仍作为功能基线，本轮确认的是规则位置、注入顺序、自动化行为与运行镜像加载结果。
+
+## 2026-08-09 网页版工作台正式重建（批次一：会话骨架）
+- **建设背景与边界**：用户实测确认原`web_client/chat.html`只是单会话、仅fast的接口验证壳。本批参照Flutter `ChatProvider`与既有后端契约，完成正式工作台三批建设中的第一批；继续保持纯HTML/CSS/JavaScript、零构建、零运行时依赖，不新增后端接口，也不在本批引入文件库管理、工具箱或设置页。
+- **会话工作台**：新增左侧“新建对话”与历史会话导航，复用`GET /memory/sessions`按最后活动时间倒序展示首条用户消息摘要、时间与消息数；点击后用`GET /memory/{session_id}`恢复完整消息，删除前使用二次确认并调用`DELETE /memory/sessions/{session_id}`。当前`session_id`由`sessionStorage`迁移为`localStorage`持久化，刷新可自动恢复；显式退出或401自动登出均统一清除当前会话指针，历史恢复404也会放弃失效指针，避免账号切换后误复用旧标识。后端既有owner校验继续保证customer只能查看和删除自己的会话。
+- **双模式与等待反馈**：移除`api.js`中的fast硬编码，`/chat`和既有`/chat/stream`均显式接收当前`fast|expert`；界面顶部及输入区清楚标识当前模式，发送期间禁止切换。expert使用“正在规划、检索并组织答案”的长等待提示，继续复用原SSE `chunk/citations/reasoning/error/[DONE]`解析，没有重写流式协议。
+- **真实点击发现并修复两处前端边界**：①HTML已更新而浏览器命中1小时缓存的旧`api.js`，真实报`API.getSessions is not a function`；工作台CSS/JS现使用`?v=workspace-b1-2`版本查询串，保证无构建部署更新后同批资源一致。②fast SSE先发`[DONE]`再保存/绑定会话，首次即时刷新偶发早于落库；前端仅在发送结束后做`0/160/520ms`三次有限确认，不改变后端事件顺序、不引入常驻轮询，复测发送完成后左栏自动出现会话。
+- **真实Compose与浏览器验证**：四服务均healthy，`GET /api/ready`为200且sqlite/chroma/libreoffice全true；最终`zhitian-web:dev-production`镜像manifest list为`sha256:4aa2345187a03ee2fdaa1cdc6c844438a6fddfb7b4856decfc3fd029cf444f01`。使用唯一临时customer账号真实完成登录→新建fast对话→刷新恢复→新建expert对话→历史切换→二次确认删除→附件上传→退出；后端日志分别记录测试请求`mode=fast`与`mode=expert`，`requirements.txt`附件解析为1456字，浏览器控制台无warning/error，注册页核心表单仍可见。测试结束精确清理3个剩余会话、1个附件和1个临时账号，未操作现有账号、组织或文档。
+- **自动化验证**：`api.js`、`chat.js`、`login.js`、`register.js`全部通过`node --check`，`git diff --check`通过；完整权威回归`383 passed, 5 deselected in 219.07s`，无新增失败。

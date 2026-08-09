@@ -193,12 +193,14 @@ def test_generate_guidance_content_with_zero_one_and_multiple_organizations():
     organizations.create_organization("法律", "具体法条、司法解释、案例适用")
     assert organizations.generate_guidance_content() == (
         "当前企业知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
+        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
 
     organizations.create_organization("财务", "发票报销")
     assert organizations.generate_guidance_content() == (
         "当前企业知识库已收录法律（具体法条、司法解释、案例适用）、"
         "财务（发票报销）领域相关参考资料。"
+        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
 
     organizations.create_organization("空白组织", None)
@@ -206,6 +208,7 @@ def test_generate_guidance_content_with_zero_one_and_multiple_organizations():
     assert organizations.generate_guidance_content() == (
         "当前企业知识库已收录法律（具体法条、司法解释、案例适用）、"
         "空白组织、财务（发票报销）领域相关参考资料。"
+        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
 
 
@@ -215,6 +218,7 @@ def test_get_system_modules_returns_dynamic_guidance(client, auth_headers):
     assert response.status_code == 200
     assert response.json()["guidance"]["content"] == (
         "当前企业知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
+        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
 
     organizations.create_organization("财务", "发票报销")
@@ -305,4 +309,5 @@ def test_put_system_modules_rejects_manual_guidance(client, auth_headers):
     assert response.json()["tone"]["content"] == "专业"
     assert response.json()["guidance"]["content"] == (
         "当前企业知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
+        + organizations.GUIDANCE_RETRIEVAL_RULE
     )

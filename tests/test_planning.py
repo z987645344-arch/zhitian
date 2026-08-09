@@ -568,29 +568,6 @@ def test_fast_chat_uses_one_model_call_without_tools(monkeypatch):
     }
 
 
-def test_fast_routing_instructions_balance_knowledge_lookup_and_smalltalk(monkeypatch):
-    """Fast should prefer semantic knowledge verification without forcing every chat into RAG."""
-    _prepare_fast_mocks(monkeypatch)
-    document_tool = next(
-        item for item in planning.FAST_TOOLS
-        if item["function"]["name"] == "search_documents"
-    )
-    description = document_tool["function"]["description"]
-
-    assert "不是你是否凭通用知识已经会回答" in description
-    assert "术语定义、概念解释" in description
-    assert "事实性、规范性、依据性内容" in description
-    assert "用户不必显式提到" in description
-    assert "问候、寒暄、开放闲聊、个人偏好" in description
-    assert "不能对所有问题一律检索" in description
-
-    state = planning._new_agent_state("fast-routing-prompt", "测试问题", "fast")
-    system_prompt = planning._build_fast_messages(state)[0]["content"]
-    assert "问题是否可能需要企业知识库核验" in system_prompt
-    assert "术语定义、概念解释、事实性、规范性或依据性问题" in system_prompt
-    assert "不要为了使用工具而过度检索" in system_prompt
-
-
 def test_fast_document_uses_three_model_calls_and_local_retrieval(monkeypatch):
     _prepare_fast_mocks(monkeypatch)
     responses = iter([

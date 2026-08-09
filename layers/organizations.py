@@ -13,6 +13,10 @@ from layers import auth
 from layers.db_transaction import transaction
 
 DEFAULT_ORGANIZATION_NAME = auth.DEFAULT_ORGANIZATION_NAME
+GUIDANCE_RETRIEVAL_RULE = (
+    "若用户问题可能涉及该领域的内容，应优先调用search_documents核验后回答，"
+    "而非仅依赖自身知识。"
+)
 
 MEMBERSHIP_ACTIONS = {"join", "leave"}
 
@@ -510,4 +514,7 @@ def generate_guidance_content() -> str:
         content = (row["content"] or "").strip()
         name = str(row["name"])
         parts.append("%s（%s）" % (name, content) if content else name)
-    return "当前企业知识库已收录%s领域相关参考资料。" % "、".join(parts)
+    return (
+        "当前企业知识库已收录%s领域相关参考资料。%s"
+        % ("、".join(parts), GUIDANCE_RETRIEVAL_RULE)
+    )
