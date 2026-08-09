@@ -1194,3 +1194,20 @@
 - **全量无缓存重建**：执行`docker compose build --no-cache`重新构建全部服务。客户端命令在20分钟工具上限处超时，但Docker守护进程已完成三类镜像并更新标签；随后直接核验新API镜像，`main.py`与`requirements.txt`的SHA-256均和宿主机当前文件逐字一致，三项关键依赖版本正确，`torch`/`transformers`均为`ModuleNotFoundError`，确认运行镜像沿用`model-fetch`导出资产而未误装训练期依赖。
 - **空卷重建与运行验证**：按用户明确要求再次执行`docker compose down -v`，确认旧`zhitian-mvp-data`不存在后以新镜像`docker compose up -d`创建全新空卷。四服务全部healthy，`GET /api/ready`返回200且sqlite/chroma/libreoffice全true；运行容器内再次核对三项依赖、源码哈希与`torch`/`transformers`缺失状态均通过，`users=0`、`documents=0`，仍未执行0号初始化。
 - **启动脚本边界**：后端`启动后端.bat`重命名为`本机后端调试（非Compose、勿用于MVP验收）.bat`，新增中文警告说明其使用旧本机`.venv`、直接读写宿主机`data/`并可能被Flutter默认8000端口静默命中；Flutter脚本重命名为`启动Flutter Windows调试客户端.bat`，明确Compose地址为`http://localhost`、`:8000`只属于非容器后端调试。两份脚本的实际启动命令保持不变。
+
+## 2026-08-09 独立部署仓库新增四个Windows一键操作脚本
+- **日常启停**：`zhitian-deploy`根目录新增`一键启动MVP.bat`与`一键停止MVP.bat`。停止脚本只执行不带`-v`的`docker compose down`；真实停止后四个容器均移除，`zhitian-mvp-data`的名称、创建时间和挂载点指纹保持不变。启动脚本执行`up -d`后轮询Compose状态，真实恢复并逐项打印`zhitian-api`、`zhitian-admin`、`zhitian-web`、`reverse-proxy`均为健康，最终四项均为`running|healthy`；同时明确管理后台和Flutter均使用`http://localhost`，Flutter不得添加`:8000`。
+- **危险重建确认门**：新增`重新构建并启动MVP.bat`，只有输入完整`yes`才会执行`docker compose build --no-cache`和`docker compose down -v && docker compose up -d`。真实输入`no`后退出0，执行前后四个容器ID与具名卷指纹完全一致，确认没有误触发构建、停机或删卷；本轮没有为了测试确认门而执行危险的`yes`分支。
+- **0号初始化封装**：新增`获取0号密码.bat`，封装`docker compose run --rm zhitian-api python scripts/seed_prod_admin.py`，执行前后均提示密码只显示一次。使用独立临时Compose项目和`zhitian-seed-script-test-data`测试卷真实运行：首次创建`users=1/default0=1`并显示一次密码，第二次返回退出码1且清楚打印“生产默认账号0已存在，拒绝重复初始化”；测试卷随后删除，主`zhitian-mvp-data`指纹不变，真实环境仍未创建0号。
+- **CMD中文编码修复**：真实运行发现UTF-8无BOM/BOM都会让`cmd.exe`把部分中文拆成错误命令，最终四个脚本统一为CP936（GBK）+CRLF；seed命令运行期间临时切到UTF-8、结束前恢复CP936，复测批处理提示、容器错误原因和一次性密码前缀均无乱码。部署仓库README同步记录四个脚本用途、危险边界和编码约束。
+
+## 2026-08-09 0号密码遗失应急恢复脚本与安全边界
+- **事件与现状**：生产seed创建0号后一次性密码未保存且从未登录；只读核验主`zhitian-mvp-data`只有1条用户名0记录（developer、启用、默认账号、`last_login_at`为空），跨users/history/files库未发现其业务引用。重复运行seed会因既有0号而拒绝，正式developer API又禁止当前账号自重置，因此不删除账号、不清空卷，改为部署侧受限应急恢复；本轮未修改主卷密码哈希。
+- **调用面审计**：`layers.auth.reset_user_password(user_id)`是内部Python函数，每次以`secrets`生成新的12位密码和bcrypt哈希，覆盖后旧密码立即失效；网络侧仅`POST /developer/users/{user_id}/reset_password`调用，端点受`require_developer`保护并禁止自重置。函数最后会同步更新同username账号，故新脚本先强制用户名0全库恰好一条，再把该行精确`user_id`传入，不能接受任意账号参数。
+- **部署脚本**：`zhitian-deploy`新增CP936+CRLF的`重置0号密码.bat`，先展示“旧密码立即失效/仅限未完成接管”的警告并要求输入完整`yes`；随后在同一容器进程中校验唯一用户名0、`is_default_account=1`、developer角色、启用状态及不存在其他启用中真实developer，任一异常只报告并退出。README明确：0号批准首个真实developer并自动失活后不得再使用此脚本。
+- **隔离真实验证**：使用独立Compose项目与`zhitian-zero-reset-test-data`卷；输入`no`退出0且哈希不变；连续两次输入`yes`均成功生成不同的12位密码，每次均实测前一密码`bcrypt.checkpw=False`、新密码为True；人为加入第二条用户名0后脚本退出1、打印重复账号错误且原目标哈希不变。测试项目/卷已清理，主卷创建时间、0号账号指纹与密码哈希前后完全一致，四个主服务仍为`running/healthy`。
+
+## 2026-08-09 补齐0号应急重置工具的Phase C商业化边界
+- **遗漏核查**：此前批处理、部署README与`claude_memory`长期约束只覆盖“0号接管后不得再用”等运行边界，没有完整记录该脚本以单人自用为前提、绕开正常认证直接改密码哈希、缺少企业级审计/权限分级且终端显示明文密码的产品化风险。
+- **三处同步补齐**：`重置0号密码.bat`顶部维护注释、`zhitian-deploy/README.md`独立商业化边界小节及`docs/claude_memory.md`「已知技术约束」长期规则均明确：Phase C前禁止原样向企业客户分发；商业版必须改为受权限保护的管理端点或工单，记录操作者/时间/来源/理由，明确客户IT与服务商的重置权归属，并通过企业密钥管理或受控Secret通道分发凭据。
+- 本轮只补注释和文档，没有修改批处理命令、账号校验、密码生成或数据库行为，按要求未重新执行隔离验证，也未操作主MVP卷。
