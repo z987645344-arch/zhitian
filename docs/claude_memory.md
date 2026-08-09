@@ -355,4 +355,4 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master并重建安装包，`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`42 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；统一参考图视觉已随`v2.6`提交，当前`js/`目录10个JavaScript文件，桌面及768px验证无页面级横向溢出 |
-| Git 存档 | ✅ 后端`zhitian`与管理后台`zhitian_admin`当前均在`master`，最新标签均为`v3.0`，两仓库`VERSION`已同步为`3.0.0`；客户端`zhitian_app`当前master基线为`b5e2b71`，源码版本已更新为`3.0.0+300`并通过analyze/test/Release构建，但最新标签仍为`v2.7`且3.0.0安装包尚未生成，本轮未擅自创建标签。私有部署仓库`z987645344-arch/zhitian-deploy`默认分支`main`、首个提交`08d8b48`已推送，Compose与反向代理配置均受Git跟踪。v3.0交付缺口①–④的源文件与文档修订已完成；后端容器漏洞策略仍因F38及系统层无修复版本项红灯，管理后台流水线为绿 |
+| Git 存档 | ✅ 后端`zhitian`与管理后台`zhitian_admin`最新标签均为`v3.0`，版本统一提交分别为`e289646`与`b48d748`，两仓库`VERSION`均为`3.0.0`；客户端版本提交为`2fea214`，源码版本已更新为`3.0.0+300`并通过analyze/test/Release构建，但最新标签仍为`v2.7`且3.0.0安装包尚未生成，本轮未擅自创建标签。私有部署仓库`z987645344-arch/zhitian-deploy`默认分支`main`、首个提交`08d8b48`已推送，Compose与反向代理配置均受Git跟踪。v3.0交付缺口①–④的源文件与文档修订已完成；后端容器漏洞策略仍因F38及系统层无修复版本项红灯，管理后台流水线为绿 |
