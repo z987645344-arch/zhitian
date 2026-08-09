@@ -42,6 +42,7 @@
 ## 二、工作流程
 
 ```
+0. 对 zhitian、zhitian_admin、zhitian_app 三个仓库逐一执行 git status 与 git log origin/<branch>..<branch>，确认没有未推送的本地提交残留；如发现，先处理（推送或说明原因）再继续后续步骤
 1. 读取 claude_memory.md → 了解当前状态、遗留问题、下一步规划
 2. 读取 CHANGELOG.md 最近 5-10 条 → 了解最近改了什么
 3. 读取 zhitian_structure.md 相关章节 → 了解技术设计（按需）
@@ -52,6 +53,8 @@
 8. 根据反馈决定：继续 / 调整 / 完成
 9. 更新 claude_memory.md → 确保下一个接手的指挥师读到最新状态
 ```
+
+第 0 步是强制前置检查：v3.0 收尾期间已连续三次发现仓库 master 分支存在未推送的本地提交，曾导致状态记录与实际代码不一致。后续任务不得再依赖偶然发现此类偏差。
 
 ---
 
