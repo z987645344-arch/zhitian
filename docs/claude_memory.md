@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-09**（补齐`重置0号密码.bat`此前遗漏的Phase C商业化边界：该工具仅限单人自用MVP，直改密码哈希且无企业级权限治理、操作审计和安全凭据分发能力；白标/商业化前禁止原样交付，必须重构为受保护管理端点或工单、完整审计及企业密钥管理分发）
+> **最后更新：2026-08-09**（修复fast对术语/概念问题漏检索：加强LLM语义工具描述且保留闲聊不检索边界；真实“什么是宪法”已命中并引用`宪法要义.md`。新增F44记录expert在本地证据充分时仍追加联网搜索的P3性能体验问题）
 
 ---
 
@@ -54,13 +54,13 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，核心业务无P0/P1功能故障。F31–F37与F40–F43均已解决：F36已完成文档入库异步任务化、SSE进度反馈、中断清理与组织内内容哈希去重；F37已合并master、完成109条存量向量的512维迁移、重建Compose运行镜像并在确认独立备份可恢复后删除旧384维回滚库；Starlette已联动升级至`1.4.1`、FastAPI至`0.141.1`，相关5条CVE清零，urlencoded上传中间件现仅作为常规输入校验。当前F编号开放项仅F38（P2，已决定维持`cryptography==48.0.1`，现有AES-GCM调用面不可触达相关CVE，等待上游放宽约束）与F39（P3，Chroma单例关闭函数未真正释放底层句柄，当前无生产影响）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-09补齐0号应急重置工具的Phase C商业化边界记录：批处理顶部注释、部署README及本表下方长期技术约束均明确该工具只适用于单人自用MVP，不能原样向企业交付；商业版需要受保护端点/工单、完整操作审计、重置权限归属决策和企业密钥管理分发。本轮仅修改注释与文档，未改变脚本执行行为，未操作任何数据卷 |
-| 当前等待 | 云服务器正在办理；本机Compose卷已有一个启用中的默认0号，但一次性密码已遗失且`last_login_at`为空。等待用户本人运行`zhitian-deploy\重置0号密码.bat`、立即保存新密码，再完成首个真实developer接管；本轮隔离验证没有代替用户修改主卷密码 |
+| 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，核心业务无P0/P1功能故障。F31–F37与F40–F43均已解决：F36已完成文档入库异步任务化、SSE进度反馈、中断清理与组织内内容哈希去重；F37已合并master、完成109条存量向量的512维迁移、重建Compose运行镜像并在确认独立备份可恢复后删除旧384维回滚库；Starlette已联动升级至`1.4.1`、FastAPI至`0.141.1`，相关5条CVE清零，urlencoded上传中间件现仅作为常规输入校验。当前F编号开放项为F38（P2，已决定维持`cryptography==48.0.1`，现有AES-GCM调用面不可触达相关CVE，等待上游放宽约束）、F39（P3，Chroma单例关闭函数未真正释放底层句柄，当前无生产影响）与F44（P3，expert在本地证据充分时仍可能追加联网搜索，结果正确但路径不够经济）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
+| 上一轮完成 | 2026-08-09修复fast术语/概念问题漏检索：加强`search_documents`工具描述和fast路由系统提示，明确是否需要企业资料核验不能以模型“自己知道答案”为判断标准，同时保留问候、寒暄与开放闲聊直接回答边界；未新增关键词或语义`if/else`。真实DeepSeek路由与Compose SSE验证中，“什么是宪法”已命中并引用`宪法要义.md`（0.57），另一民法术语命中`法律基础与民法典.txt`（0.785941），问候与闲聊均未触发检索。`py_compile`通过、planning局部回归35项通过、完整权威回归`383 passed, 5 deselected`。验证专用会话及统计增量已精确清理 |
+| 当前等待 | 云服务器正在办理；本机Flutter客户端继续按`http://localhost/api`走Compose环境人工验收。fast引用漏路由已修复，可继续用知识库术语问题核验引用展示；F44仅记录为P3性能体验待办，等待后续决定是否优化“本地证据充分时跳过联网搜索”。0号接管仍按既定部署脚本和安全边界处理 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
-| 下一步 | 当前实施主线转入Phase B服务器落地：系统加固、DNS/HTTPS、生产密钥与CORS收紧、反向代理下SSE/限流、真实业务链路和服务器备份恢复演练。代码侧继续观察F38上游约束并按触发条件重启升级，F39保持P3待修；5项integration已在F40/F42修复后全部通过。v3.0交付缺口①–④均已处理，Flutter仓库`v3.0`标签和3.0.0安装包也已补齐。白标外售/二创仍只归档在Phase C，不占用当前资源 |
+| 下一步 | 当前实施主线转入Phase B服务器落地：系统加固、DNS/HTTPS、生产密钥与CORS收紧、反向代理下SSE/限流、真实业务链路和服务器备份恢复演练。代码侧继续观察F38上游约束并按触发条件重启升级，F39保持P3待修；F44等待后续讨论是否值得优化“本地证据充分时跳过联网搜索”。5项integration已在F40/F42修复后全部通过。v3.0交付缺口①–④均已处理，Flutter仓库`v3.0`标签和3.0.0安装包也已补齐。白标外售/二创仍只归档在Phase C，不占用当前资源 |
 
 > 补充跨仓库完成记录（2026-07-23，Batch 5）：`zhitian_admin`已完成独立`developer.html`控制台重设计（角色人数统计、developer/reviewer详情、特别关注、备注、最近密码重置、系统模块与可观测性视图），`reviewer.html`已调整员工审批导航顺序并增加最近密码重置展示，公开`forgot-password.html`已接入自助重置流程。本记录此前只写入管理后台仓库CHANGELOG，现已同步至项目级状态文档。
 
@@ -141,6 +141,7 @@
 | F41 | 已完成提交`053fa67`破坏性契约的全调用方审计：真正变更只有`/documents/upload`与`/knowledge/input`的组织参数，静态搜索发现的两处遗漏均集中在同一integration测试，并分别由F40/F42修复；其余客户端、脚本和测试调用均已核对 | 组织归属端点及全部调用方 | ✅ 已解决（审计完成） |
 | F42 | 超限转换用例已补`organization_id`并保留正确的422；新增`detail="文件超过转换大小限制"`精确断言，能区分“转换大小限制”与“缺参数”这两种同码响应，测试不再假通过 | tests/test_converter_integration.py / layers/converter.py | ✅ 已解决 |
 | F43 | `pypdf`已由6.14.2升至6.15.0，`CVE-2026-71852`与`CVE-2026-71870`归零。静态调用图、运行时插桩和正对照确认当前项目的合并/拆分及pdfplumber文本提取路径不触达漏洞；仍升级是因为依赖图零扰动且可防未来代码演进使攻击面成立 | requirements.txt / layers/pdf_tools.py | ✅ 已解决 |
+| F44 | expert在本地文档已有高分命中时仍可能走不经济的后续路径：本次“什么是宪法”本地命中0.57（超过0.55阈值），但重排序一次超时降级后仍追加联网搜索，总耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志确认无卡死、无异常重试，回答与引用正确，属于性能体验问题而非功能缺陷；暂不排期，后续讨论是否在本地证据充分时跳过联网搜索 | layers/planning.py / layers/execution.py | P3（待讨论） |
 
 ### F31/F38安全扫描当前状态（2026-08-09）
 
@@ -173,7 +174,7 @@
   - 2026-07-31已用只读`scripts/check_orphan_data.py`扫描真实数据：组织成员、文档组织、组织申请的组织/用户、个人文件owner、会话用户及GraphRAG chunk→doc_id八类关系孤儿数均为0；`users.db`、`history.db`、`files.db`扫描前后SHA-256一致，作为启用既有外键检查和后续备份恢复验证的干净基线。
   - 2026-07-31已完成schema版本与既有外键约束基线：users.db/history.db各自维护单行`schema_version=1`，首次接入自动写入，表结构损坏或未知版本拒绝启动；认证、历史与显式事务连接均启用`foreign_keys=ON`，FastAPI lifespan对两库执行`foreign_key_check`，发现违反时只记录表名/数量并拒绝启动。当前未实现多版本迁移链，也未为原本只有逻辑关联的表重建外键；首次出现版本2时再设计正式升级/降级迁移。
   - 2026-07-31已完成`scripts/backup_data.py`与`restore_data.py`：三库使用`Connection.backup()`，Chroma目录快照复用业务共享RLock，ZIP后以独立`BACKUP_ENCRYPTION_KEY`流式AES-256-GCM加密；manifest包含schema、全表行数、collection数量、文件大小与SHA-256。恢复前自动用同一密钥备份当前数据，认证/哈希失败不切换，恢复后执行三库`integrity_check`/`foreign_key_check`和Chroma数量比对。两个命令都强制显式确认后端已停止；默认保留7份且任何配置至少留1份。隔离完整往返、篡改和保留策略均通过，真实data仅执行过只读源备份。
-- [x] **自用Windows客户端**：Flutter Windows源码发布版本已于2026-08-09统一为`3.0.0+300`，Release重建成功且EXE的FileVersion/ProductVersion均真实为`3.0.0+300`；首次启动服务地址引导、设置页修改、SharedPreferences持久化、远程HTTPS强制和网络/证书友好提示均保持不变。Inno Setup已生成`zhitian-windows-setup-3.0.0.exe`（11,506,567字节，SHA-256=`539D49812A9CF97B954C33D11654DFB855C5027F427AFC70DA53373C438F5481`），旧2.6.0产物已删除；客户端注释标签`v3.0`精确落在`2fea214`。Phase B仍需填入真实自有HTTPS域名并做正式证书/业务验收；当前不签名，公开/商业分发所需Authenticode证书、白标品牌及Inno Setup商业许可或替代打包器继续留在Phase C。
+- [x] **自用Windows客户端**：Flutter Windows源码发布版本为`3.0.0+300`，Release EXE的FileVersion/ProductVersion均真实一致；首次启动引导、登录/注册页认证前“服务器设置”、登录后的设置页修改、SharedPreferences持久化、远程HTTPS强制和网络/证书友好提示均已具备。Compose基址必须填写`http://localhost/api`，`http://localhost:8000`只适用于宿主机直接启动后端的调试场景。MSVC已显式使用`/utf-8`，Debug/Release及真实运行窗口标题均验证为“知天”。Inno Setup 6.7.3已重新生成`zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`），项目内固定携带匹配版本的简体中文翻译文件，避免依赖安装器本机缺失语言包；客户端注释标签`v3.0`精确落在`2fea214`。Phase B仍需填入真实自有HTTPS域名并做正式证书/业务验收；当前不签名，公开/商业分发所需Authenticode证书、白标品牌及Inno Setup商业许可或替代打包器继续留在Phase C。
 - [x] **自用部署CI/CD（基础设施与应用启动门禁已完成，漏洞策略门禁仍未全绿）**：后端/管理后台分别有push/PR容器工作流，VERSION+7位commit双标签、digest/14天artifact、安全基线和Trivy，后端另有pip-audit；应用导入、容器启动和`/ready`检查为硬门禁。F31依赖组、Starlette与pypdf问题均已闭环，当前pip-audit只剩F38的cryptography 3条/1包；容器策略仍会因F38及Debian系统层无修复版本项失败。5项integration只允许`workflow_dispatch`，普通push不触发，F40/F42修复后已实跑5/5通过；本阶段不推送registry
 - [x] **自用运维文档（文档交付已完成，部署仓库路径已同步）**：`docs/deployment_guide.md`、`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`覆盖三个仓库同级目录契约、配置/初始化/健康检查、备份恢复、schema v1升级预期、CI双标签回滚边界和容器故障。2026-08-09已把原“双仓库+共享文件”说明改为独立`zhitian-deploy`仓库，并同步四服务、相对路径和clone步骤；F32/F33历史预检说明继续保留作为同类问题排查依据。
 - [x] **本地干净环境验收**：2026-08-01首次全链路走查暴露的F34–F37已逐项修复；具名卷恢复已完成真实备份→破坏→恢复零差异复跑，阻塞事件循环与首次模型下载问题已解除，F36异步任务/SSE/去重已落地，F37中文模型与存量向量迁移已闭环。2026-08-08 Compose重建后又完成空卷0号引导、`/ready`、中文检索和无关问题拒答；F40/F42修复后5项integration全部通过。`v3.0`据此标记Phase A功能验证完成，隔离环境未绑定宿主机真实`data/`
@@ -295,10 +296,11 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | expert复杂任务 | 仅expert支持DeepSeek语义分类和线性任务链；最多累计创建10项，整体重规划最多1次、每位置局部调整最多1次，不支持DAG/并行；全链路默认120秒全局预算，各模型/搜索节点使用剩余预算，超时返回已完成步骤摘要。真实10项任务在121.85秒终止并保留4项结果 |
 | Flutter模式UI | 聊天页已提供“快速/专家”切换，首次使用默认fast；选择写入SharedPreferences的`chat_mode`，新建会话、应用重启和安装器覆盖升级均不重置。无值或历史非法值仍安全回退fast |
 | 跨端视觉系统 | 2026-07-29起管理后台与Flutter客户端共用同一视觉语义：暖灰白背景、`#64839A`蓝灰主操作、`#6F9284`成功、`#C69045`待处理、`#B76158`危险；状态必须继续同时提供中文文字/图标或边框，不能只靠颜色。管理后台1000px以下将双列表单收为单列、820px以下切换顶部导航，新增组件不得重新引入页面级横向溢出；Flutter新增页面应复用`AppColors`与`AppTheme`，不要在页面内另建品牌色 |
-| Flutter认证页外壳 | 登录与注册页共用`lib/widgets/auth_shell.dart`（2026-07-26起），改动任一页的版式规范都应改外壳而非单页，否则两页会重新分头漂移。宽窗口>=960px为左品牌栏+右表单卡片，窄窗口退化为居中单卡片。注意两个坑：①外壳卡片Column为`CrossAxisAlignment.stretch`，放固定尺寸块必须用`Align`包住，否则被拉成整行宽；②认证表单在默认800x600测试窗口装不下，涉及点击提交按钮的widget测试必须先设桌面视口（见`test/auth_layout_test.dart`与`widget_test.dart`的`useDesktopViewport`） |
-| Flutter Windows发布 | `pubspec.yaml`当前发布版本为`3.0.0+300`，Windows Release EXE版本资源已真实验证一致；`packaging/windows_installer.iss`的AppVersion与输出名也已同步3.0.0，但本机当前没有ISCC，故尚未生成3.0.0安装包。窗口/文件说明和安装器显示名为“知天”，可执行文件为`zhitian.exe`。**不得随意改Runner.rc中的内部`CompanyName=com.zhitian`和`ProductName=zhitian_app`**：`path_provider_windows`用二者确定SharedPreferences目录，改动会让旧用户的后端地址、登录态、会话和模式看似丢失。最终安装包输出在被Git忽略的`dist/`；当前包未签名且Inno Setup 7编译器仅限非商业使用，公开/商业分发前必须处理Authenticode签名及安装器商业许可或迁移 |
+| Flutter认证页外壳 | 登录与注册页共用`lib/widgets/auth_shell.dart`（2026-07-26起），改动任一页的版式规范都应改外壳而非单页，否则两页会重新分头漂移。2026-08-09起两页还必须保留认证前“服务器设置”入口、当前地址展示和旧`:8000`直连地址警告，用户即使尚未登录也能修正错误服务器配置。宽窗口>=960px为左品牌栏+右表单卡片，窄窗口退化为居中单卡片。注意两个坑：①外壳卡片Column为`CrossAxisAlignment.stretch`，放固定尺寸块必须用`Align`包住，否则被拉成整行宽；②认证表单在默认800x600测试窗口装不下，涉及点击提交按钮的widget测试必须先设桌面视口（见`test/auth_layout_test.dart`与`widget_test.dart`的`useDesktopViewport`） |
+| Flutter Compose API基址 | Compose反向代理只把`/api/`转发到后端，Flutter保存的是API基址而不是网站根地址，因此本地MVP必须使用`http://localhost/api`；`http://localhost`会请求到管理后台且`/health`为404，`http://localhost:8000`则因后端不映射宿主机端口而拒绝连接。`:8000`仅限运行`本机后端调试（非Compose、勿用于MVP验收）.bat`等宿主机直启后端场景。部署脚本、README、首次引导和认证前设置入口必须保持这一口径；本轮不会静默覆盖用户已有SharedPreferences，发现旧值时由界面警告并让用户确认修改 |
+| Flutter Windows发布 | `pubspec.yaml`当前发布版本为`3.0.0+300`，Windows Debug/Release EXE版本资源均已真实验证一致；MSVC runner必须保留`/utf-8`编译选项，否则UTF-8源码中的宽字符串标题`L"知天"`会在中文Windows上按CP936解释为“鐭ゅぉ”。本机Inno Setup 6.7.3可用，项目在`packaging/ChineseSimplified.isl`固定携带该版本对应的简体中文语言文件，`packaging/windows_installer.iss`不再依赖编译器安装目录可选语言包。当前安装包为`dist/zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`）。窗口/文件说明和安装器显示名为“知天”，可执行文件为`zhitian.exe`。**不得随意改Runner.rc中的内部`CompanyName=com.zhitian`和`ProductName=zhitian_app`**：`path_provider_windows`用二者确定SharedPreferences目录，改动会让旧用户的后端地址、登录态、会话和模式看似丢失。最终安装包输出在被Git忽略的`dist/`；当前包未签名，公开/商业分发前必须处理Authenticode签名及安装器商业许可或迁移 |
 | 依赖版本锁定 | `requirements.txt`当前有**32项**直接依赖精确锁定。当前关键版本：`FastAPI==0.141.1`、`Starlette==1.4.1`、`python-dotenv==1.2.2`、`pypdf==6.15.0`；未使用的`langchain`顶层依赖已移除且`langchain-text-splitters`不再安装。LangGraph依赖组为`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`、`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`，真实安装还会带入`langchain-protocol`、`uuid-utils`等传递依赖。`numpy==1.26.4`用于避免Chroma 0.5.0与NumPy 2.x运行时不兼容。`cryptography==48.0.1`的3条记录按F38接受风险。直接依赖精确锁定不等于传递闭包完整锁定，今后依赖验收必须包含全新环境应用导入、`/ready`与真实读写，不能只看`pip check` |
-| mcp 版本 | `mcp==1.28.1`、`uvicorn==0.51.0`、`PyJWT==2.13.0`和`sse-starlette==3.0.3`继续保持既有锁定。FastAPI/Starlette已联动升级到`0.141.1/1.4.1`且没有牵动这四项；真实uvicorn下`/chat/stream`与F36任务SSE心跳、认证、上传、下载及容器`/ready`均通过，完整权威回归基线为`381 passed, 5 deselected` |
+| mcp 版本 | `mcp==1.28.1`、`uvicorn==0.51.0`、`PyJWT==2.13.0`和`sse-starlette==3.0.3`继续保持既有锁定。FastAPI/Starlette已联动升级到`0.141.1/1.4.1`且没有牵动这四项；真实uvicorn下`/chat/stream`与F36任务SSE心跳、认证、上传、下载及容器`/ready`均通过，完整权威回归基线为`383 passed, 5 deselected` |
 | MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
@@ -355,6 +357,6 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 流式输出 | ✅ SSE 真流式（clarify 逐字 / search DeepSeek流式整理 / chat 流式） |
 | 日志脱敏 | ✅ 用户消息/文档内容/搜索结果不进日志 |
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
-| Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master并重建安装包，`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`42 tests passed` |
+| Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master，Compose地址契约与Windows标题乱码已修复并重建3.0.0安装包；`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`44 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；统一参考图视觉已随`v2.6`提交，当前`js/`目录10个JavaScript文件，桌面及768px验证无页面级横向溢出 |
 | Git 存档 | ✅ 后端`zhitian`、管理后台`zhitian_admin`、客户端`zhitian_app`最新标签现均为`v3.0`；两端`VERSION`为`3.0.0`，Flutter为`3.0.0+300`，客户端标签落点`2fea214`且3.0.0安装包已生成。私有部署仓库`z987645344-arch/zhitian-deploy`默认分支`main`，Compose、反向代理配置和五个一键操作脚本共同构成当前本地部署入口。v3.0交付缺口①–④均已解决；后端容器漏洞策略仍因F38及系统层无修复版本项红灯，管理后台流水线为绿 |
