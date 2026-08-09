@@ -1180,3 +1180,11 @@
 - **后端同步**：`VERSION`由`2.6.0`改为`3.0.0`，FastAPI `app.version`及`GET /`的`version`由历史`0.1.0`同步为`3.0.0`。新增回归断言同时读取根路径和`/openapi.json`，避免两个展示点以后再次分叉。
 - **跨端边界**：管理后台`VERSION`同步为`3.0.0`；Flutter `pubspec.yaml`同步为`3.0.0+300`，Inno Setup脚本的`AppVersion`和输出文件名同步为`3.0.0`。本轮不创建或移动Git标签；真实核对时后端、管理后台最新标签为`v3.0`，客户端仓库最新标签仍为`v2.7`，该事实不伪装为已经存在客户端`v3.0`标签。
 - **验证**：Python 3.10 `py_compile`通过；版本/健康相关针对性测试`13 passed`；后端权威回归`382 passed, 5 deselected in 210.19s`（原381加1项版本展示测试，零新增失败）。管理后台`VERSION`格式校验通过，10个JavaScript文件全部通过`node --check`。Flutter 3.41.6下`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`42 tests passed`、Windows Release构建成功；生成的`zhitian.exe`真实`FileVersion`与`ProductVersion`均为`3.0.0+300`。本机当前未找到`ISCC.exe`，因此安装器脚本已同步但未重新生成3.0.0安装包，最后一个已构建安装包仍是历史2.6.0产物。
+
+## 2026-08-09 用户主动发起完整MVP实测前数据清理
+- **触发原因**：本次清理是用户为了亲自从0号引导开始走完整MVP流程而单独、明确发起的操作，不是此前搁置的“⑥测试数据清理”决定被自动执行。
+- **本机`data/`清理**：完整核实`scripts/full_reset.py`后人工显式传入`--confirm`执行。清理前为5个账号（含已失活的默认0号及developer/reviewer/employee/customer四个测试角色账号）、2份文档、3个组织、18段对话、3个会话、109条文档向量；清理后账号、文档、审批/验证码、组织关联、对话、会话、用户文件与两套Chroma集合均为0，非种子组织“财务”已删除，仅保留应用必需的“默认、法律”两个种子组织。`full_reset.py`没有撤销机制，本次清理不可逆。
+- **备份边界**：`backups/zhitian-backup-20260806T144754323443Z.ztbackup`不在脚本清理范围内，清理前后SHA-256同为`BFFD7A0AABF73030B0BC25496445B6C2A5D5B343771C46960D5E2F27DEAC31FB`，确认F37旧库快照未受影响。
+- **Compose具名卷清理重建**：清理前`docker volume ls`确认Docker全局只有`zhitian-mvp-data`一只具名卷，唯一挂载者是已停止的API容器，没有运行中的容器依赖。用户再次明确确认后执行`docker compose down -v`，并以`docker volume inspect`返回“no such volume”确认旧卷已删除；随后`docker compose up -d`自动创建全新同名空卷并重建四个容器。
+- **空白状态与健康验证**：新卷中`users/documents/user_organizations/registration_requests/org_membership_requests/conversations/sessions/user_files`均为0，仅有应用启动自动创建的“默认、法律”两个种子组织；Chroma现有集合计数为0。`zhitian-api`、`zhitian-admin`、`zhitian-web`、`reverse-proxy`四服务全部healthy，容器内`GET /ready`与反向代理`GET /api/ready`均返回HTTP 200，`sqlite/chroma/libreoffice`三依赖全部为true。
+- **0号引导边界**：本次没有执行`scripts/seed_prod_admin.py`、没有生成或读取一次性密码、没有登录。0号账号生成及后续首个真实developer接管由用户本人在终端和界面中手动完成，作为本次完整MVP测试的一部分。

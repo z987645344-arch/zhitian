@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-09**（完成v3.0交付缺口④的源代码版本字段统一：后端/管理后台`VERSION=3.0.0`，后端OpenAPI与根路径展示3.0.0，Flutter为`3.0.0+300`且Release EXE元数据已验证；客户端仓库仍只有`v2.7`标签、本机无ISCC故3.0.0安装包未重建，均已明确留痕）
+> **最后更新：2026-08-09**（用户为亲自测试完整MVP流程而明确发起本机与Compose测试数据清理：本机`data/`已通过`full_reset.py --confirm`不可逆清空，Compose旧具名卷已用`docker compose down -v`删除并重建为空白卷；四服务全部healthy、`/ready`三依赖全true。本次不是此前搁置的“⑥测试数据清理”自动触发；0号初始化、密码获取与首个真实developer接管明确留给用户本人手动执行）
 
 ---
 
@@ -55,9 +55,9 @@
 | 项 | 说明 |
 |------|------|
 | 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，核心业务无P0/P1功能故障。F31–F37与F40–F43均已解决：F36已完成文档入库异步任务化、SSE进度反馈、中断清理与组织内内容哈希去重；F37已合并master、完成109条存量向量的512维迁移、重建Compose运行镜像并在确认独立备份可恢复后删除旧384维回滚库；Starlette已联动升级至`1.4.1`、FastAPI至`0.141.1`，相关5条CVE清零，urlencoded上传中间件现仅作为常规输入校验。当前F编号开放项仅F38（P2，已决定维持`cryptography==48.0.1`，现有AES-GCM调用面不可触达相关CVE，等待上游放宽约束）与F39（P3，Chroma单例关闭函数未真正释放底层句柄，当前无生产影响）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-09完成v3.0交付缺口④：确认发布版本没有API/数据兼容判断依赖后，后端和管理后台`VERSION`统一为`3.0.0`，后端OpenAPI与根路径展示同步为3.0.0，Flutter更新为`3.0.0+300`并重建Release；后端权威回归`382 passed, 5 deselected`、管理后台10个JS语法通过、Flutter analyze无问题且42项测试通过，EXE版本资源真实为`3.0.0+300` |
-| 当前等待 | 云服务器正在办理 |
-| 真实账号现状 | 2026-07-31最新已知只读快照：users库`users=5`、`documents=2`、`organizations=3`、`user_organizations=8`；history库`conversations=18`、`sessions=3`；Chroma `zhitian_documents=109`、`zhitian_memory=0`。数据来源是上一批备份验证读取真实data后生成的manifest，不是本轮新增查询；当时源范围25个文件备份前后指纹不变。真实账号密码由用户掌握，AI侧不可知 |
+| 上一轮完成 | 2026-08-09按用户独立请求完成完整MVP实测前清理：本机`data/`由5账号/2文档/18对话/3会话/109文档向量清为0，非种子组织“财务”删除，F37备份哈希保持不变；Compose唯一具名卷`zhitian-mvp-data`经用户再次确认后以`docker compose down -v`删除并重新创建为空白卷，四服务全部healthy，`/ready`返回200且sqlite/chroma/libreoffice全true。该操作不是此前搁置的“⑥测试数据清理”自动执行 |
+| 当前等待 | 云服务器正在办理；本机空白Compose环境等待用户本人执行0号初始化、保存一次性密码并完成首个真实developer接管测试，AI本轮未代为执行 |
+| 真实账号现状 | 2026-08-09本轮真实复核：本机`data/`与新建Compose卷的`users/documents/user_organizations/registration_requests/org_membership_requests/conversations/sessions/user_files`均为0，仅保留应用启动自动创建的“默认、法律”两个种子组织；Chroma现有集合计数为0，无`5d9f8e7b`孤儿残留。0号账号尚未生成、一次性密码尚不存在；用户将亲自执行`scripts/seed_prod_admin.py`。F37备份包仍在且清理前后SHA-256一致 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
 | 下一步 | 当前实施主线转入Phase B服务器落地：系统加固、DNS/HTTPS、生产密钥与CORS收紧、反向代理下SSE/限流、真实业务链路和服务器备份恢复演练。代码侧继续观察F38上游约束并按触发条件重启升级，F39保持P3待修；5项integration已在F40/F42修复后全部通过。v3.0交付缺口①–④的代码与文档修订均已处理；客户端仓库是否补打`v3.0`标签、以及在具备ISCC的环境重建3.0.0安装包，属于后续发布动作而非版本字段遗漏。白标外售/二创仍只归档在Phase C，不占用当前资源 |
