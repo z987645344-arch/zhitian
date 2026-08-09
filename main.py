@@ -175,7 +175,7 @@ async def lifespan(app: FastAPI):
             logger.warning("关闭Chroma资源失败：error_type=%s", type(e).__name__)
 
 
-app = FastAPI(title="知天 Agent API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="知天 Agent API", version="3.0.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -716,7 +716,7 @@ def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List
 
 @app.get("/")
 async def root():
-    return {"message": "知天 Agent 运行中", "version": "0.1.0"}
+    return {"message": "知天 Agent 运行中", "version": "3.0.0"}
 
 
 @app.get("/health")

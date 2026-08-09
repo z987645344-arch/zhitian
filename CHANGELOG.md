@@ -1174,3 +1174,9 @@
 - **独立仓库落地**：通过本机Git Credential Manager核验GitHub账号`z987645344-arch`后，按保守默认创建私有仓库`https://github.com/z987645344-arch/zhitian-deploy`。首个提交`08d8b48`已推送到`main`，跟踪`docker-compose.yml`、`nginx/compose-nginx.conf`、README和`.gitignore`；`.gitignore`预先排除`.env*`、数据目录、离线备份和`*.ztbackup`，仓库中未写入任何真实密钥。
 - **迁移而非复制补丁**：Compose的应用构建上下文改为同级`../zhitian`与`../zhitian_admin`，后端配置改从`../zhitian/.env`运行时注入，Nginx挂载改为部署仓库内`./nginx/compose-nginx.conf`。反向代理配置迁移前后SHA-256完全一致；Compose全文差异只有上述四处路径归属变化。旧上级`docker-compose.yml`、后端`deploy/compose-nginx.conf`及两处空`deploy/`目录已移除，空的无效上级`.git`也已删除；随后复核`zhitian`、`zhitian_admin`、`zhitian_app`和`zhitian-deploy`四个真实仓库仍全部有效。
 - **真实远程验证**：从私有GitHub仓库重新clone到临时目录，得到commit`08d8b48112d7649723221eb5ffdce358b38c09bc`；`docker compose config --quiet`退出码0，实际解析出`zhitian-api`、`zhitian-admin`、`zhitian-web`、`reverse-proxy`四个服务。项目安装、备份恢复、升级回滚、故障排查、生产配置与`claude_memory`中的路径和“四服务”口径已同步；v3.0记录的缺口③至此解决，生产部署“必须git clone”不再与“Compose只能人工额外携带”自相矛盾。
+
+## 2026-08-09 v3.0交付缺口④：三端发布版本字段统一
+- **读取点审计**：后端根`VERSION`只被`container-ci.yml`读取，用于生成`zhitian-api:<version>`镜像标签；管理后台同理。发布版本没有参与API契约协商、请求拒绝、数据库升级或备份恢复判断。`schema_version=1`与备份`FORMAT_VERSION=1`是独立数据格式契约，本轮保持不变。后端另有FastAPI/OpenAPI和根路径`/`的展示值；`/health`与`/ready`不返回版本字段。
+- **后端同步**：`VERSION`由`2.6.0`改为`3.0.0`，FastAPI `app.version`及`GET /`的`version`由历史`0.1.0`同步为`3.0.0`。新增回归断言同时读取根路径和`/openapi.json`，避免两个展示点以后再次分叉。
+- **跨端边界**：管理后台`VERSION`同步为`3.0.0`；Flutter `pubspec.yaml`同步为`3.0.0+300`，Inno Setup脚本的`AppVersion`和输出文件名同步为`3.0.0`。本轮不创建或移动Git标签；真实核对时后端、管理后台最新标签为`v3.0`，客户端仓库最新标签仍为`v2.7`，该事实不伪装为已经存在客户端`v3.0`标签。
+- **验证**：Python 3.10 `py_compile`通过；版本/健康相关针对性测试`13 passed`；后端权威回归`382 passed, 5 deselected in 210.19s`（原381加1项版本展示测试，零新增失败）。管理后台`VERSION`格式校验通过，10个JavaScript文件全部通过`node --check`。Flutter 3.41.6下`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`42 tests passed`、Windows Release构建成功；生成的`zhitian.exe`真实`FileVersion`与`ProductVersion`均为`3.0.0+300`。本机当前未找到`ISCC.exe`，因此安装器脚本已同步但未重新生成3.0.0安装包，最后一个已构建安装包仍是历史2.6.0产物。

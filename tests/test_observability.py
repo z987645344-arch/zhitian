@@ -181,6 +181,16 @@ def test_reviewer_metrics_rejects_non_reviewer(client, auth_headers):
     assert response.status_code == 403
 
 
+def test_root_and_openapi_report_release_version(client):
+    root_response = client.get("/")
+    openapi_response = client.get("/openapi.json")
+
+    assert root_response.status_code == 200
+    assert root_response.json()["version"] == "3.0.0"
+    assert openapi_response.status_code == 200
+    assert openapi_response.json()["info"]["version"] == "3.0.0"
+
+
 def test_chat_requests_are_recorded_in_recent_requests(
     client,
     auth_headers,
