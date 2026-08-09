@@ -270,6 +270,60 @@ def test_chat_stream_sends_reasoning_before_body_and_preserves_done(
     assert events[-1] == {"chunk": "[DONE]"}
 
 
+def test_chat_stream_emits_structured_file_event_after_generated_text(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    prepared_state = _state("generate_file")
+    prepared_state["decision_reasoning"] = "用户明确要求生成可下载文件"
+    final_state = _state("generate_file")
+    final_state["response"] = (
+        "文件已生成：项目周报.pdf\n"
+        "下载地址：/files/11111111-1111-1111-1111-111111111111"
+    )
+    final_state["results"] = [
+        ToolResult(tool="llm_chat", status="success", data="# 项目周报"),
+        ToolResult(
+            tool="generate_file",
+            status="success",
+            data="{}",
+            metadata={
+                "file_id": "11111111-1111-1111-1111-111111111111",
+                "download_filename": "项目周报.pdf",
+                "requested_format": "pdf",
+                "delivered_format": "pdf",
+            },
+        ),
+    ]
+    monkeypatch.setattr(main, "_prepare_stream_state", lambda *args, **kwargs: prepared_state)
+    monkeypatch.setattr(main.planning, "run_graph_state", lambda *args, **kwargs: final_state)
+    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
+    monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
+
+    response = client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"session_id": "file-stream", "message": "生成项目周报", "mode": "expert"},
+    )
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert events[1]["chunk"].startswith("文件已生成：项目周报.pdf")
+    assert events[2] == {
+        "type": "file",
+        "file_id": "11111111-1111-1111-1111-111111111111",
+        "download_filename": "项目周报.pdf",
+        "file_type": "pdf",
+    }
+    assert events[3] == {"type": "citations", "citations": []}
+    assert events[4] == {"chunk": "[DONE]"}
+
+
 def test_task_params_keep_request_mode():
     state = _state("search")
     state["mode"] = "expert"

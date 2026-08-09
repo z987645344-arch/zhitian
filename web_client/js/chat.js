@@ -197,6 +197,76 @@
     return { bubble, body };
   }
 
+  function fileTypeLabel(fileType, filename) {
+    const normalized = String(fileType || '').trim().toUpperCase();
+    if (normalized) return normalized;
+    const extension = String(filename || '').split('.').pop();
+    return extension && extension !== filename ? extension.toUpperCase() : '文件';
+  }
+
+  function saveDownloadedBlob(blob, filename) {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename || '知天生成文件';
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+
+  function renderFileCard(bubble, file) {
+    if (!file?.file_id || !file?.download_filename) return;
+    const existing = bubble.querySelector(`[data-file-id="${CSS.escape(file.file_id)}"]`);
+    if (existing) return;
+
+    const card = document.createElement('section');
+    card.className = 'generated-file-card';
+    card.dataset.fileId = file.file_id;
+
+    const icon = document.createElement('span');
+    icon.className = 'generated-file-icon';
+    icon.textContent = fileTypeLabel(file.file_type, file.download_filename);
+    icon.setAttribute('aria-hidden', 'true');
+
+    const copy = document.createElement('div');
+    copy.className = 'generated-file-copy';
+    const title = document.createElement('strong');
+    title.textContent = file.download_filename;
+    const status = document.createElement('span');
+    status.className = 'generated-file-status';
+    status.textContent = '文件已生成，可安全下载';
+    status.setAttribute('aria-live', 'polite');
+    copy.append(title, status);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary generated-file-download';
+    button.textContent = '下载';
+    button.setAttribute('aria-label', `下载 ${file.download_filename}`);
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      button.textContent = '下载中…';
+      status.textContent = '正在验证身份并准备文件…';
+      try {
+        const download = await API.downloadFile(file.file_id, file.download_filename);
+        saveDownloadedBlob(download.blob, download.filename);
+        status.textContent = '下载已开始';
+      } catch (error) {
+        status.textContent = `下载失败：${briefError(error)}`;
+        card.classList.add('failed');
+      } finally {
+        button.disabled = false;
+        button.textContent = '下载';
+      }
+    });
+
+    card.append(icon, copy, button);
+    bubble.appendChild(card);
+    scrollToBottom();
+  }
+
   function renderHistory(history) {
     logInner.replaceChildren();
     if (!history.length) {
@@ -486,6 +556,9 @@
         },
         onCitations(citations) {
           renderCitations(bubble, citations);
+        },
+        onFile(file) {
+          renderFileCard(bubble, file);
         },
         onReasoning() {
           if (!answer && requestMode === 'expert') {

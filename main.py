@@ -340,6 +340,15 @@ class ChatResponse(BaseModel):
     reasoning: Optional[str] = None
 
 
+class ChatFileEvent(BaseModel):
+    """SSE文件交付事件；下载仍由认证接口按owner校验。"""
+
+    type: str = "file"
+    file_id: str
+    download_filename: str
+    file_type: str
+
+
 class SessionRenameRequest(BaseModel):
     display_name: Optional[str] = None
 
@@ -3048,6 +3057,8 @@ def _chat_stream_events(
                 yield _sse_data({"type": "citations", "citations": citations})
                 yield _sse_data({"chunk": "[DONE]"})
                 return
+            for file_event in _serialize_generated_file_events(final_state):
+                yield _sse_data(file_event.model_dump())
 
         final_data = "".join(chunks)
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
@@ -3200,6 +3211,36 @@ def _serialize_citations(citations: list) -> list[dict]:
                 "score": float(citation.get("score", 0.0))
             })
     return serialized
+
+
+def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
+    """从执行结果提取成功的generate_file产物，不解析回复正文。"""
+    events = []
+    seen_file_ids = set()
+    for result in state.get("results", []) or []:
+        if not isinstance(result, execution.ToolResult):
+            continue
+        if result.tool != "generate_file" or result.status != "success":
+            continue
+        metadata = result.metadata or {}
+        file_id = str(metadata.get("file_id", "")).strip()
+        download_filename = str(metadata.get("download_filename", "")).strip()
+        file_type = str(
+            metadata.get("delivered_format")
+            or metadata.get("requested_format")
+            or os.path.splitext(download_filename)[1].lstrip(".")
+        ).strip().lower()
+        if not file_id or not download_filename or file_id in seen_file_ids:
+            continue
+        seen_file_ids.add(file_id)
+        events.append(
+            ChatFileEvent(
+                file_id=file_id,
+                download_filename=download_filename,
+                file_type=file_type or "file",
+            )
+        )
+    return events
 
 
 def _build_stream_system_prompt(context: list[str]) -> str:

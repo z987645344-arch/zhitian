@@ -1,5 +1,5 @@
 // customer网页客户端的后端调用封装。
-// 仅覆盖customer角色能力范围：自助注册、登录、对话、聊天附件。
+// 仅覆盖customer角色能力范围：自助注册、登录、对话、聊天附件与个人文件下载。
 // 不包含文档上传、知识库录入、审批等企业角色接口。
 const API = (() => {
   const configuredUrl = window.ZHITIAN_CONFIG?.apiBaseUrl;
@@ -45,6 +45,20 @@ const API = (() => {
     const authToken = token();
     if (authToken) result.Authorization = `Bearer ${authToken}`;
     return result;
+  }
+
+  function responseFilename(contentDisposition, fallbackFilename) {
+    const value = String(contentDisposition || '');
+    const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) {
+      try {
+        return decodeURIComponent(utf8Match[1]);
+      } catch (error) {
+        // 编码异常时继续尝试普通filename，避免让下载本身失败。
+      }
+    }
+    const plainMatch = value.match(/filename="?([^";]+)"?/i);
+    return plainMatch?.[1] || fallbackFilename || '知天生成文件';
   }
 
   async function request(path, options = {}) {
@@ -147,9 +161,41 @@ const API = (() => {
       return data;
     },
 
-    // 流式对话：后端SSE载荷有三种形状——
+    async downloadFile(fileId, fallbackFilename) {
+      const response = await fetch(`${backendUrl}/files/${encodeURIComponent(fileId)}`, {
+        method: 'GET',
+        headers: headers(false),
+      });
+      if (response.status === 401) {
+        logout();
+        sessionStorage.setItem('zt_web_notice', '登录已过期，请重新登录');
+        location.replace('./login.html');
+        throw new Error('登录已过期，请重新登录');
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        let detail = `下载失败：HTTP ${response.status}`;
+        try {
+          const parsed = text ? JSON.parse(text) : {};
+          detail = parsed.detail || detail;
+        } catch (error) {
+          // 非JSON错误体只显示脱敏后的状态码，不回显服务端原文。
+        }
+        throw new Error(detail);
+      }
+      return {
+        blob: await response.blob(),
+        filename: responseFilename(
+          response.headers.get('Content-Disposition'),
+          fallbackFilename,
+        ),
+      };
+    },
+
+    // 流式对话：后端SSE载荷有四类业务形状——
     //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
     //   {"type": "citations", "citations": [...]} 引用来源
+    //   {"type": "file", "file_id": "...", ...} 生成文件交付信息
     //   {"error": "..."} 服务端异常
     async chatStream(sessionId, message, mode, attachmentIds, handlers) {
       const response = await fetch(`${backendUrl}/chat/stream`, {
@@ -199,6 +245,20 @@ const API = (() => {
           if (payload.error) {
             handlers.onError?.(payload.error);
             return;
+          }
+          if (payload.type === 'file') {
+            const fileId = typeof payload.file_id === 'string' ? payload.file_id.trim() : '';
+            const downloadFilename = typeof payload.download_filename === 'string'
+              ? payload.download_filename.trim()
+              : '';
+            if (fileId && downloadFilename) {
+              handlers.onFile?.({
+                file_id: fileId,
+                download_filename: downloadFilename,
+                file_type: typeof payload.file_type === 'string' ? payload.file_type.trim() : '',
+              });
+            }
+            continue;
           }
           if (payload.type === 'citations') {
             handlers.onCitations?.(payload.citations || []);

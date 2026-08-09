@@ -1244,3 +1244,9 @@
 - **真实点击发现并修复两处前端边界**：①HTML已更新而浏览器命中1小时缓存的旧`api.js`，真实报`API.getSessions is not a function`；工作台CSS/JS现使用`?v=workspace-b1-2`版本查询串，保证无构建部署更新后同批资源一致。②fast SSE先发`[DONE]`再保存/绑定会话，首次即时刷新偶发早于落库；前端仅在发送结束后做`0/160/520ms`三次有限确认，不改变后端事件顺序、不引入常驻轮询，复测发送完成后左栏自动出现会话。
 - **真实Compose与浏览器验证**：四服务均healthy，`GET /api/ready`为200且sqlite/chroma/libreoffice全true；最终`zhitian-web:dev-production`镜像manifest list为`sha256:4aa2345187a03ee2fdaa1cdc6c844438a6fddfb7b4856decfc3fd029cf444f01`。使用唯一临时customer账号真实完成登录→新建fast对话→刷新恢复→新建expert对话→历史切换→二次确认删除→附件上传→退出；后端日志分别记录测试请求`mode=fast`与`mode=expert`，`requirements.txt`附件解析为1456字，浏览器控制台无warning/error，注册页核心表单仍可见。测试结束精确清理3个剩余会话、1个附件和1个临时账号，未操作现有账号、组织或文档。
 - **自动化验证**：`api.js`、`chat.js`、`login.js`、`register.js`全部通过`node --check`，`git diff --check`通过；完整权威回归`383 passed, 5 deselected in 219.07s`，无新增失败。
+
+## 2026-08-09 网页版工作台批次二：闭合expert生成文件交付链路
+- **后端结构化事件**：`/chat/stream`在generate_file成功时保留既有“文件已生成/下载地址”纯文本chunk，并在其后、citations与`[DONE]`之前新增`type=file`事件，包含`file_id`、`download_filename`和实际交付格式`file_type`；事件从`ToolResult.metadata`生成，不解析回复正文。Flutter当前会安全忽略未知事件，原chunk不变且“我的文件”页仍可下载，因此本轮无需修改客户端。
+- **网页安全下载**：`api.js`解析file事件并使用现有`backendUrl`请求`/files/{file_id}`，Compose默认实际落到`/api/files/{file_id}`；请求携带Bearer Token、响应按Blob处理并从Content-Disposition解析文件名，不使用裸链接且不记录token。`chat.js`新增文件类型/名称/状态/下载按钮卡片，移动端按钮占满一行，静态资源版本更新为`workspace-b2-file-1`。
+- **真实Compose浏览器验证**：重建API与web镜像后四服务均healthy；临时customer在expert模式约50秒生成`网页文件交付验证.pdf`，页面真实出现PDF卡片并点击下载，下载目录产物为81,945字节、SHA-256=`9B7277377FAAD5DBE0E85BFA39A5D0ECCBFD1032D2A3CF1907839A7117744B34`，认证接口返回200且PDF中文“验证目的/步骤/结论”均核验存在。临时账号、会话、服务端文件、接口核验副本和浏览器下载产物均已精确清理。
+- **回归与后续边界**：Python编译、两份JS `node --check`通过，文件生成/SSE针对性回归`16 passed, 1 deselected`，完整权威回归`384 passed, 5 deselected in 214.60s`；Flutter analyze无问题、`44 tests passed`。历史消息仍只持久化正文，刷新后不会重建结构化文件卡片；该项可与网页版文件库/工具箱、欢迎页和附件展示完善一并进入批次二剩余部分，设置页及可延后体验可归批次三。

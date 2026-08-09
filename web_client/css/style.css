@@ -383,6 +383,39 @@ button.mode-option.active { background: var(--primary); color: #fff; box-shadow:
 .message-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .message-attachments span { padding: 3px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 10px; }
 
+.generated-file-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid #cbd9df;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  white-space: normal;
+}
+
+.generated-file-card.failed { border-color: var(--danger); background: var(--danger-bg); }
+.generated-file-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  place-items: center;
+}
+
+.generated-file-copy { min-width: 0; }
+.generated-file-copy strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.generated-file-status { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.generated-file-card.failed .generated-file-status { color: var(--danger); }
+button.generated-file-download { padding: 7px 11px; font-size: 11px; }
+
 /* 引用来源：如实展示后端返回的doc_id/来源/分数，不做任何美化性补全 */
 .citations { margin-top: 11px; padding-top: 10px; border-top: 1px dashed var(--line-strong); }
 .citations-title { margin-bottom: 6px; color: var(--subtle); font-size: 11px; font-weight: 700; }
@@ -427,6 +460,8 @@ button.mode-option.active { background: var(--primary); color: #fff; box-shadow:
   .chat-log { padding: 18px 12px 24px; }
   .chat-composer { padding: 10px 12px 13px; }
   .bubble { max-width: 100%; }
+  .generated-file-card { grid-template-columns: auto minmax(0, 1fr); }
+  button.generated-file-download { grid-column: 1 / -1; width: 100%; }
   .chat-welcome { padding: 28px 18px; }
   .composer-row { grid-template-columns: 1fr auto; }
   .composer-row textarea { grid-column: 1 / -1; }
