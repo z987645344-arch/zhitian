@@ -671,8 +671,7 @@ def generate_file(
             error_type="invalid_output_format",
             requested_format=requested_format,
         )
-    if requested_format == "md":
-        text = _strip_complete_outer_markdown_fence(text)
+    text = _strip_complete_outer_markdown_fence(text)
     if not _is_safe_generated_session_id(session_id):
         return GenerateFileResult(
             success=False,

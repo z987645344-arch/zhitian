@@ -1250,3 +1250,24 @@
 - **网页安全下载**：`api.js`解析file事件并使用现有`backendUrl`请求`/files/{file_id}`，Compose默认实际落到`/api/files/{file_id}`；请求携带Bearer Token、响应按Blob处理并从Content-Disposition解析文件名，不使用裸链接且不记录token。`chat.js`新增文件类型/名称/状态/下载按钮卡片，移动端按钮占满一行，静态资源版本更新为`workspace-b2-file-1`。
 - **真实Compose浏览器验证**：重建API与web镜像后四服务均healthy；临时customer在expert模式约50秒生成`网页文件交付验证.pdf`，页面真实出现PDF卡片并点击下载，下载目录产物为81,945字节、SHA-256=`9B7277377FAAD5DBE0E85BFA39A5D0ECCBFD1032D2A3CF1907839A7117744B34`，认证接口返回200且PDF中文“验证目的/步骤/结论”均核验存在。临时账号、会话、服务端文件、接口核验副本和浏览器下载产物均已精确清理。
 - **回归与后续边界**：Python编译、两份JS `node --check`通过，文件生成/SSE针对性回归`16 passed, 1 deselected`，完整权威回归`384 passed, 5 deselected in 214.60s`；Flutter analyze无问题、`44 tests passed`。历史消息仍只持久化正文，刷新后不会重建结构化文件卡片；该项可与网页版文件库/工具箱、欢迎页和附件展示完善一并进入批次二剩余部分，设置页及可延后体验可归批次三。
+
+## 2026-08-10 F46：用结构化交付标记隔离generate_file历史污染
+- **修复前**：同一会话先生成MD、再生成TXT时，第二份正式文件可能把上一轮助手的“文件已生成/下载地址”交付文案当作正文模板，并写入与真实交付结果不同的虚构文件ID；既有诊断中Flutter正文虚构`b40f6cc2-…`，真实ID为`70fae59e-…`，网页版同样可复现。
+- **结构化修复**：`conversations`向后兼容新增`message_type`字段（旧行默认`chat`）；generate_file成功后，`main.py`根据结构化`ToolResult`/file事件把助手落库消息标为`file_delivery`，不解析回复文本。`execution._build_model_messages()`新增可选类型排除参数，且只有generate_file正文生成任务传入`file_delivery`；普通聊天历史保持原行为。没有使用“文件已生成”等关键词、正则或内容合规硬编码。
+- **上下文与长期记忆边界**：过滤只作用于助手交付结果，用户上一轮确实提出过文件生成要求的原始消息继续可见，确保同会话需求上下文不被误伤；`file_delivery`助手消息不再进入长期向量记忆，避免其以后从另一条记忆路径重新成为可模仿素材。普通聊天中即使文字包含“文件已生成”，只要结构化类型仍为`chat`就不会被过滤。
+- **真实before/after复测**：Compose重建API后`GET /api/ready`为200。网页版同一会话生成`web-f46-md-20260810.md`（真实ID`d2b7f8c2-3401-4982-8813-c3cdc0fa9061`）后再生成`web-f46-txt-after-md-20260810.txt`（真实ID`ef04c60b-86b7-4801-bec1-eccd92b1c03d`），TXT不再含“文件已生成/下载地址”、`/files/`或虚构ID；SQLite两条助手记录均为`file_delivery`，Chroma只保留两条用户请求。Flutter使用原`ApiService`和“我的文件”下载路径同会话复测，第二份TXT同样不含交付文案、下载路径或虚构ID，并包含本轮要求的唯一标识句。由于按要求保留上一轮用户原始请求，模型仍可能引用其内容；这不是F46的交付结果污染，若未来要求“每份文件只依据当前轮”，需另行设计上下文策略。
+- **自动化验证**：Python 3.10 `py_compile`通过；新增旧库字段迁移、结构化过滤、类型权限、SSE落库标记及长期记忆排除断言，针对性回归`60 passed, 1 warning`。权威`run_tests.bat -q`为`386 passed, 5 deselected in 227.90s`，较上一基线新增2项测试且无新增失败。F45（MD完整外层代码围栏尚未剥离）仍是独立P2问题，本轮未修改。
+
+## 2026-08-11 F45：Markdown完整外层围栏安全归一化
+- **PDF/DOCX先行诊断**：generate_file对PDF/DOCX的实际路径是“模型Markdown正文→原样写入临时`.md`→`converter.convert_file()`调用headless LibreOffice”，并没有用Markdown解析器排版PDF，也没有用`python-docx`构建Word段落。容器内把完整```markdown围栏样本分别转换后，pdfplumber与python-docx抽取结果均逐字包含首尾反引号，确认两种格式没有天然规避该风险；新增F47独立跟踪，本批不扩大修复范围。
+- **MD归一化实现**：仅当目标格式为MD、首行恰为```markdown或```、末行恰为```，且候选外层之内的三反引号代码块成对平衡时，才删除首尾包装行。没有按业务关键词猜测内容，也不对文档中间片段做字符串裁剪；不完整围栏、```python等非Markdown整篇包装以及内部围栏不平衡均原样保留。生成正文提示同时明确“整篇不要套外层围栏，内部代码示例可以保留”，用于降低歧义输出概率。
+- **边界缺陷现场修正**：首次Flutter真实复测中，模型返回“外层```markdown+内部```python+单个末尾```”的三围栏歧义结构；仅看首尾会把属于内部代码块的结束符误删。修复后增加内部围栏平衡检查，歧义时宁可不剥离；另用完整四围栏样本确认真正平衡的外层仍会被剥离且内部一对代码围栏完整保留。该现场问题已转为自动化回归。
+- **真实两端验证**：Compose API镜像重建后，网页版expert生成`web-f45-md-20260811.md`（file_id=`1a6bcb23-74a2-4ec3-8045-e16caef6d311`），页面出现MD卡片并显示“下载已开始”；成品46字节、UTF-8无BOM，直接从`# 网页版F45验证`开始且无外层围栏，浏览器控制台无warning/error。Flutter使用原`ApiService`与“我的文件”下载路径生成`flutter-f45-md-20260811.md`（file_id=`11191106-9c90-4b20-a911-ea25ae27f1e8`），成品无外层包装，且` ```python `、`print('hello from F45')`与内部结束围栏全部保留。
+- **自动化与清理**：Python 3.10 `py_compile`通过；generate_file/planning针对性回归`56 passed, 1 warning`。权威`run_tests.bat -q`为`392 passed, 5 deselected in 229.74s`，较F46后的386基线新增6项边界用例且无新增失败。唯一隔离customer账号、2个会话、2个生成文件及关联SQLite/Chroma记录已精确清理；Flutter临时测试文件已删除。本批未提交，等待用户确认。
+
+## 2026-08-11 F47：四种生成格式统一复用F45围栏归一化
+- **现状复核与TXT补漏**：PDF/DOCX仍是“模型Markdown正文→原样写临时`.md`→LibreOffice转换”，且F45后处理此前只在`requested_format == "md"`时执行；进一步核对发现TXT也直接保存原始模型文本。因此若只给PDF/DOCX叠加处理，无法满足MD/TXT/PDF/DOCX四格式闭环。本轮将同一个`_strip_complete_outer_markdown_fence()`移动到格式白名单校验后的共同入口，四种格式共用一套逻辑，没有复制新的检测函数。
+- **安全边界保持不变**：仍只剥离首行恰为```markdown或```、末行恰为```且内部三反引号代码块成对闭合的完整外层包装；F45现场出现的三围栏歧义结构继续原样保留。TXT在直接写文件前归一化，PDF/DOCX在写入LibreOffice临时Markdown前归一化，内部合法代码块不被剥离。
+- **真实LibreOffice验证**：容器内通过`execution.generate_file()`为PDF和DOCX各生成两组真实成品。纯外层围栏样本经pdfplumber/python-docx抽取后均只剩标题与正文、无反引号；“外层+内部Python代码块”样本中，外层```markdown消失，内部` ```python `、`print('hello from F47')`、结束围栏及后续结论在PDF/DOCX中均完整保留。4个验证文件随后精确删除。
+- **真实两端验证**：网页版expert生成并下载`web-f47-pdf-20260811.pdf`（file_id=`5374337a-39ed-4998-8534-8cb02c3b1919`，22,523字节），页面显示“下载已开始”，抽取文本无外层围栏且内部`print('web F47')`完整，控制台无warning/error。Flutter原`ApiService`生成并下载`flutter-f47-docx-20260811.docx`（file_id=`2a313352-5e1b-4ddb-a2d4-adfd5483e155`，5,134字节），DOCX ZIP签名正确，python-docx抽取文本无外层围栏且内部`print('flutter F47')`完整。
+- **测试与清理**：Python 3.10 `py_compile`通过，generate_file/planning针对性回归`60 passed, 1 warning`；权威`run_tests.bat -q`为`396 passed, 5 deselected in 220.71s`，较F45后的392基线新增4项覆盖且无新增失败。隔离customer账号、2个文件、2个会话及关联SQLite/Chroma数据已精确清理，Flutter临时测试文件已删除。至此generate_file的MD/TXT/PDF/DOCX四种格式外层围栏问题全部闭环。本批未提交，等待用户确认。

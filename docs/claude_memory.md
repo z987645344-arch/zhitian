@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-10**（generate_file内容正确性诊断已登记为两个独立遗留项：F45为MD外层围栏归一化缺失，F46为生成正文继承交付历史后产生格式模仿与虚构内容；本轮仅登记、不修复）
+> **最后更新：2026-08-11**（F47已复用F45同一套安全围栏归一化并覆盖TXT/PDF/DOCX；generate_file的MD/TXT/PDF/DOCX四种格式现已全部闭环）
 
 ---
 
@@ -54,8 +54,8 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，当前无P0故障；2026-08-10新增登记F46这一P1内容正确性风险，尚未修复。F31–F37与F40–F43均已解决：F36已完成文档入库异步任务化、SSE进度反馈、中断清理与组织内内容哈希去重；F37已合并master、完成109条存量向量的512维迁移、重建Compose运行镜像并在确认独立备份可恢复后删除旧384维回滚库；Starlette已联动升级至`1.4.1`、FastAPI至`0.141.1`，相关5条CVE清零，urlencoded上传中间件现仅作为常规输入校验。当前F编号开放项为F38（P2，已决定维持`cryptography==48.0.1`，现有AES-GCM调用面不可触达相关CVE，等待上游放宽约束）、F39（P3，Chroma单例关闭函数未真正释放底层句柄，当前无生产影响）、F44（P3，expert在本地证据充分时仍可能追加联网搜索，结果正确但路径不够经济）、F45（P2，MD外层围栏归一化缺失）与F46（P1，生成文件正文可能继承交付历史并产生虚构内容）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-09完成网页版工作台批次二的首个交付闭环：expert成功生成文件后，`/chat/stream`在保留原纯文本chunk的同时新增`type=file`结构化事件；网页按事件展示类型、文件名和下载按钮，通过默认`/api/files/{file_id}`携带JWT获取Blob并触发浏览器保存。真实Compose浏览器生成PDF约50秒，下载200、81,945字节、中文内容与SHA-256均核对一致；测试账号、会话、文件和下载产物已清理。后端权威回归`384 passed, 5 deselected`，Flutter analyze无问题且`44 tests passed` |
+| 状态 | 🟢 自用云端MVP Phase A的功能验证已于`v3.0`节点闭合，当前无P0/P1开放故障。F31–F37、F40–F43与F45–F47均已解决：generate_file的MD/TXT/PDF/DOCX四种格式现在统一经过F45的完整外层围栏识别与内部代码块平衡检查，PDF/DOCX在写入LibreOffice临时`.md`前即完成归一化；歧义结构仍保守不处理。当前F编号开放项为F38（P2，已接受风险并等待上游条件）、F39（P3，Chroma单例关闭句柄）与F44（P3，expert路径不够经济）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
+| 上一轮完成 | 2026-08-11完成F47修复：核对发现不仅PDF/DOCX未复用F45，TXT也仍原样保存；现将同一个`_strip_complete_outer_markdown_fence()`放到四种格式共同入口，不复制逻辑。真实LibreOffice对PDF/DOCX各完成“纯外层围栏”和“外层+内部Python代码块”两组验证，首尾包装均消失且内部块完整；网页版生成并下载22,523字节PDF、Flutter生成并下载5,134字节DOCX均通过。针对性回归`60 passed`，权威回归`396 passed, 5 deselected` |
 | 当前等待 | 云服务器正在办理；本机Flutter客户端继续按`http://localhost/api`走Compose环境人工验收。网页版批次一已完成，批次二已优先解决生成文件交付链路；文件库管理、工具箱、欢迎页/附件展示等剩余体验项根据后续指令归入批次二剩余部分或批次三，设置页仍留在后续批次。知识库核验规则现由动态规范模块统一承载；F44仍为P3性能体验待办。0号接管仍按既定部署脚本和安全边界处理 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
@@ -142,8 +142,9 @@
 | F42 | 超限转换用例已补`organization_id`并保留正确的422；新增`detail="文件超过转换大小限制"`精确断言，能区分“转换大小限制”与“缺参数”这两种同码响应，测试不再假通过 | tests/test_converter_integration.py / layers/converter.py | ✅ 已解决 |
 | F43 | `pypdf`已由6.14.2升至6.15.0，`CVE-2026-71852`与`CVE-2026-71870`归零。静态调用图、运行时插桩和正对照确认当前项目的合并/拆分及pdfplumber文本提取路径不触达漏洞；仍升级是因为依赖图零扰动且可防未来代码演进使攻击面成立 | requirements.txt / layers/pdf_tools.py | ✅ 已解决 |
 | F44 | expert在本地文档已有高分命中时仍可能走不经济的后续路径：本次“什么是宪法”本地命中0.57（超过0.55阈值），但重排序一次超时降级后仍追加联网搜索，总耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志确认无卡死、无异常重试，回答与引用正确，属于性能体验问题而非功能缺陷；暂不排期，后续讨论是否在本地证据充分时跳过联网搜索 | layers/planning.py / layers/execution.py | P3（待讨论） |
-| F45 | generate_file对MD输出缺少外层围栏归一化：全新会话下生成的MD正文仍被 ```` ```markdown … ``` ```` 代码围栏包裹，已跨网页版与Flutter真实复现。根因是`planning.py:1474`取得模型输出后，未做围栏检测与结构化剥离便交给`execution.py:837`原样写入文件；该现象与历史上下文无关，是独立结构性缺陷。修复方向是在generate_file处理Markdown输出时增加仅针对完整外层围栏的安全检测与剥离后处理 | layers/planning.py / layers/execution.py `generate_file` | P2（待修复；影响交付内容规范性，不影响文件可取得性） |
-| F46 | 生成文件正文错误继承会话交付历史：同一会话连续生成多个文件时，后续文件正文会模仿上一轮“文件已生成/下载地址”交付文案，并可能写入与真实文件ID不一致的虚构ID；本次Flutter路径实测正文虚构`b40f6cc2-…`，真实交付ID为`70fae59e-…`，网页版亦可复现。根因是`execution.py:1032`生成文件正文时无差别加载最近十轮会话历史，`main.py:3067`保存的交付文案因而被模型当作可模仿上下文；这是后端共享机制问题。修复方向是在生成文件正文的上下文组装阶段过滤或屏蔽“文件已生成/下载地址”等交付类历史，避免其成为正文模板。F45/F46同属generate_file内容正确性主题，但因触发条件、修复位置和回归用例不同而独立跟踪 | layers/execution.py `_build_model_messages` / main.py `/chat/stream`历史落库 | P1（待修复；虚构内容可能进入正式交付文件并误导用户） |
+| F45 | ✅ 已修复：generate_file的MD交付现在只在首行恰为```markdown或```、末行恰为```且候选外层内部的三反引号代码块全部成对闭合时剥离首尾；正文中间的合法代码块原样保留，内部围栏不平衡或类型为```python等非Markdown整篇包装时拒绝剥离。生成提示同步要求不要把整篇正文包在围栏中、允许内部代码块。网页版与Flutter真实生成均确认外层消失；Flutter成品的`python`代码块首尾完整 | layers/planning.py / layers/execution.py `generate_file` | ✅ 已解决（2026-08-11） |
+| F46 | ✅ 已修复：同一会话连续生成文件时，上一轮“文件已生成/下载地址”曾被下一轮正文模型模仿并产生虚构文件ID。现由`main.py`根据成功的结构化generate_file `ToolResult`把助手历史标为`file_delivery`，`execution.py`仅在generate_file正文组装时按该类型排除助手交付结果；没有关键词或正则判断，普通聊天中即使出现同样文字也不会被误删。用户此前确实要求生成文件的原始请求仍保留，助手交付文案也不再进入长期向量记忆。网页版与Flutter同会话MD→TXT真实复测均未再出现交付文案或虚构ID；F45已于2026-08-11独立解决 | layers/memory.py / layers/execution.py `_build_model_messages` / main.py聊天历史落库 | ✅ 已解决（2026-08-10） |
+| F47 | ✅ 已修复：PDF/DOCX仍沿用“模型Markdown→临时`.md`→LibreOffice”转换架构，但generate_file现在在四种支持格式的共同入口统一调用F45的`_strip_complete_outer_markdown_fence()`；因此PDF/DOCX写临时文件前已经归一化，TXT的同类遗漏也同步闭环。首末完整围栏、内部代码块平衡和歧义保守不处理三项安全边界完全复用，没有第二套实现。真实PDF/DOCX抽取、网页版PDF下载与Flutter DOCX下载均确认外层反引号消失、内部Python代码块完整 | layers/execution.py `generate_file` / layers/converter.py `convert_file` | ✅ 已解决（2026-08-11） |
 
 ### F31/F38安全扫描当前状态（2026-08-09）
 

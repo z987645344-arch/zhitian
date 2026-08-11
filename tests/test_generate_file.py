@@ -42,7 +42,7 @@ def test_generate_file_sanitizes_name_and_writes_utf8_without_bom(tmp_path, monk
     assert content.decode("utf-8") == "标题\n正文"
 
 
-@pytest.mark.parametrize("output_format", ["md"])
+@pytest.mark.parametrize("output_format", ["md", "txt"])
 @pytest.mark.parametrize("opening", ["```markdown", "```"])
 def test_generate_file_strips_complete_outer_markdown_fence(
     tmp_path,
@@ -66,6 +66,50 @@ def test_generate_file_strips_complete_outer_markdown_fence(
     assert result.success is True
     assert result.char_count == len(expected)
     assert open(file_path, encoding="utf-8").read() == expected
+
+
+@pytest.mark.parametrize("output_format", ["pdf", "docx"])
+def test_generate_file_normalizes_markdown_before_conversion(
+    tmp_path,
+    monkeypatch,
+    output_format,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    expected = (
+        "# 转换文档\n\n"
+        "```python\n"
+        "print('inner block survives')\n"
+        "```\n\n"
+        "结论"
+    )
+    observed = {}
+
+    def fake_convert(source_path, target_format):
+        observed["source_content"] = open(source_path, encoding="utf-8").read()
+        output_dir = os.path.join(os.path.dirname(source_path), "normalized_conversion")
+        os.makedirs(output_dir)
+        output_path = os.path.join(output_dir, "converted.%s" % target_format)
+        with open(output_path, "wb") as output:
+            output.write(b"converted")
+        return ConversionResult(
+            success=True,
+            status=ConversionStatus.SUCCESS,
+            output_path=output_path,
+            converted_from_format="md",
+            converted_to_format=target_format,
+        )
+
+    monkeypatch.setattr(converter, "convert_file", fake_convert)
+    result = execution.generate_file(
+        content="```markdown\n%s\n```" % expected,
+        session_id="normalized-conversion-session",
+        filename_hint="转换文档",
+        output_format=output_format,
+        owner_user_id=OWNER_ID,
+    )
+
+    assert result.success is True
+    assert observed["source_content"] == expected
 
 
 def test_generate_file_keeps_internal_markdown_code_block(tmp_path, monkeypatch):
