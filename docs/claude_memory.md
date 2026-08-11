@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-11**（安全核实发现并修复F49：审核员`GET /documents`现按所属组织收窄，且不再回退展示无法授权的Chroma孤儿记录；审计日志能力同步改为真实口径）
+> **最后更新：2026-08-11**（明确Phase B个人共用反向代理不得污染`zhitian-deploy`自包含边界，保证Phase C企业交付仍可独立部署）
 
 ---
 
@@ -343,6 +343,7 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | Docker安全基线 | 2026-07-30起后端构建上下文由根目录`.dockerignore`排除`.env*`、`data/`、`.venv/`、Git/缓存/日志/测试等非运行时内容；Dockerfile先复制`requirements.txt`安装锁定依赖，再复制业务代码，以非root `appuser`运行并预建可写`/app/data`，CMD为显式Uvicorn 8000。Docker Desktop 29.6.2+WSL2真实构建成功（基线构建上下文961.30kB）；镜像内无`.env`、`/app/data`为空、运行用户为`appuser`。当前生产镜像另含LibreOffice、中文字体、`/ready`、优雅退出及固定SHA-256校验的BGE ONNX资产；安全扫描仍有F38与系统层风险，见“F31/F38安全扫描当前状态”，不再把它们归为F31未解决 |
 | 管理后台容器 | `zhitian-admin:dev-production`基于`nginx:stable-alpine`，以非root `nginx`监听8080；HTML和`config.js`为`no-cache`，JS/CSS等静态资源缓存1小时，`autoindex off`并设置严格同源CSP、nosniff、DENY frame及Referrer-Policy。`js/api.js`按`window.ZHITIAN_CONFIG.apiBaseUrl`→`/api`顺序取值，生产`config.js`默认同源`/api`；本地联调可显式设为`http://localhost:8000`。生产环境同源`/api`现已由Compose反向代理实现 |
 | 自用Compose编排 | 独立私有仓库`https://github.com/z987645344-arch/zhitian-deploy`跟踪`docker-compose.yml`与`nginx/compose-nginx.conf`，默认分支`main`；它必须与`zhitian`、`zhitian_admin`两个应用仓库同级，Compose分别用`../zhitian`、`../zhitian_admin`作为构建上下文，并从`../zhitian/.env`运行时注入配置。API只接backend网络，两个静态站点只接internal frontend网络，代理同时接入两网且仅映射宿主机80；backend不设`internal: true`，因为DeepSeek/Tavily/DirectMail需要出站网络，但API没有宿主机端口。`zhitian-mvp-data`统一挂载`/app/data`以同时覆盖三类SQLite、Chroma和`user_files`并避免嵌套卷归属冲突；`/app/data/tmp_uploads`另以256MiB tmpfs覆盖，API总内存限制2GiB。部署仓库提供五个CP936+CRLF中文批处理：日常`up -d`健康检查、保卷`down`、输入`yes`才允许的`build --no-cache`+`down -v`重建、一次性0号初始化，以及只允许尚未完成真实developer接管的唯一默认0号使用的应急密码重置；`.gitignore`继续排除`.env*`、数据与备份产物，真实密钥不得写入Compose |
+| 部署仓库自包含边界 | **`zhitian-deploy`必须保持自包含，不依赖任何外部项目，包括个人计划共用服务器的知了hub。**即使Phase B个人部署时让知天与知了hub共用同一台服务器的反向代理，`zhitian-deploy`自身的`docker-compose.yml`与Nginx配置也不得硬编码任何知了hub域名、路径、容器或网络引用。该边界保证Phase C企业售卖时可把`zhitian-deploy`完整、独立地交付到客户自己的服务器，不要求知了hub存在。个人服务器的“共用反代”必须在`zhitian-deploy`之外新增独立顶层Nginx配置做域名/路径分流，由顶层代理分别转发到两个自包含部署栈，不得把个人环境耦合写回知天部署仓库 |
 | 生产配置与密钥注入 | `.env.example`只允许变量名、格式说明和`CHANGE_ME_*`占位符；当前模板覆盖真实`.env`的17个既有键，并额外声明尚未写入本机真实`.env`的`BACKUP_ENCRYPTION_KEY`。开发机Compose通过`env_file`注入；Phase B必须重新生成实例独立的JWT密钥、企业密码种子和备份AES密钥，并从Git工作树/构建上下文外的服务器私有配置或Secret注入，不得复制开发机`.env`。备份密钥不得与其他密钥复用、不得与备份包存放在同一失效域，遗失后旧包不可恢复。数据库路径统一由`data/`/`/app/data`承载；生产CORS不得包含`null` |
 | 加密备份与恢复 | `scripts/backup_data.py`与`restore_data.py`只能人工显式执行，不接入启动或调度；两者均要求`--confirm-service-stopped`，因为共享Chroma锁不能跨进程暂停API。包为ZIP-deflate后流式AES-256-GCM `.ztbackup`；恢复先安全备份，再校验GCM、manifest文件集合/大小/SHA-256、三库完整性/外键和Chroma数量。默认保留7份、最低1份。Compose操作指南把包写到`/app/data/backups`后立即`docker compose cp`导出卷外；只留同卷不算灾备。此前F33曾导致全新空卷files.db尚未懒创建时备份被拒，已于2026-08-01修复（见F33条目），现全新实例零文件操作即可备份；恢复的激活方式已按F34改为"只rename `/app/data`内部条目"，不对挂载点自身改名。Phase B仍需定时异地备份及服务器破坏恢复演练 |
 | 自用运维文档 | `docs/deployment_guide.md`为总入口，另有`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`。四份文档只覆盖自用单实例MVP，真实域名/HTTPS/定时异地备份明确留给Phase B；任何交接都必须clone`zhitian`、`zhitian_admin`和私有`zhitian-deploy`三个仓库并保持同级目录，单独clone任一仓库都不是完整部署包 |
