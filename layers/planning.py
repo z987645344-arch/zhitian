@@ -1484,6 +1484,9 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
                 "session_id": state["session_id"],
                 "tier": "expert",
                 "system_prompt": system_prompt,
+                "excluded_history_message_types": [
+                    memory.MESSAGE_TYPE_FILE_DELIVERY
+                ],
             },
             order=order,
         )

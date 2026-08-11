@@ -28,6 +28,9 @@ logger = get_logger("memory")
 COLLECTION_NAME = "zhitian_memory"
 DOCUMENT_COLLECTION_NAME = "zhitian_documents"
 DEFAULT_VECTOR_ROLE = "assistant"
+MESSAGE_TYPE_CHAT = "chat"
+MESSAGE_TYPE_FILE_DELIVERY = "file_delivery"
+VALID_MESSAGE_TYPES = {MESSAGE_TYPE_CHAT, MESSAGE_TYPE_FILE_DELIVERY}
 IMPORTANCE_LEVEL_HIGH = "high"
 IMPORTANCE_LEVEL_NORMAL = "normal"
 LOW_INFORMATION_PHRASES = {
@@ -119,6 +122,11 @@ def init_db() -> None:
                     "ALTER TABLE conversations "
                     "ADD COLUMN attachment_ids TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "message_type" not in columns:
+                conn.execute(
+                    "ALTER TABLE conversations "
+                    "ADD COLUMN message_type TEXT NOT NULL DEFAULT 'chat'"
+                )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -157,9 +165,11 @@ def save_message(
     role: str,
     content: str,
     attachment_ids: Optional[List[str]] = None,
+    message_type: str = MESSAGE_TYPE_CHAT,
 ) -> None:
     """保存一条对话记录到SQLite"""
     _validate_message(session_id, role, content)
+    normalized_message_type = _validate_message_type(message_type, role)
     timestamp = datetime.now().isoformat()
     try:
         with _connect() as conn:
@@ -174,8 +184,9 @@ def save_message(
             conn.execute(
                 """
                 INSERT INTO conversations (
-                    session_id, role, content, timestamp, attachment_ids
-                ) VALUES (?, ?, ?, ?, ?)
+                    session_id, role, content, timestamp, attachment_ids,
+                    message_type
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -183,6 +194,7 @@ def save_message(
                     content,
                     timestamp,
                     json.dumps(_normalize_attachment_ids(attachment_ids)),
+                    normalized_message_type,
                 )
             )
     except Exception as e:
@@ -200,7 +212,8 @@ def get_history(session_id: str, limit: int = 10) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, session_id, role, content, timestamp, attachment_ids
+                SELECT id, session_id, role, content, timestamp, attachment_ids,
+                       message_type
                 FROM conversations
                 WHERE session_id = ?
                 ORDER BY id DESC
@@ -1508,6 +1521,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "content": row["content"],
         "timestamp": row["timestamp"],
         "attachment_ids": _parse_attachment_ids(row["attachment_ids"]),
+        "message_type": row["message_type"],
     }
 
 
@@ -1535,6 +1549,16 @@ def _validate_message(session_id: str, role: str, content: str) -> None:
         raise ValueError("role必须是user或assistant")
     if content is None:
         raise ValueError("content不能为空")
+
+
+def _validate_message_type(message_type: str, role: str) -> str:
+    """校验结构化历史消息类型，不根据正文内容猜测消息语义。"""
+    normalized = str(message_type or MESSAGE_TYPE_CHAT).strip().lower()
+    if normalized not in VALID_MESSAGE_TYPES:
+        raise ValueError("message_type不受支持")
+    if normalized == MESSAGE_TYPE_FILE_DELIVERY and role != "assistant":
+        raise ValueError("file_delivery只允许用于assistant消息")
+    return normalized
 
 
 def _get_chroma_collection():

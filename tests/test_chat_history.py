@@ -4,9 +4,11 @@
 import sqlite3
 import uuid
 
+import pytest
+
 import config
 import main
-from layers import attachments, auth, memory
+from layers import attachments, auth, execution, memory
 
 
 def _success_state(mode):
@@ -45,6 +47,7 @@ def test_old_history_rows_default_to_empty_attachment_ids(tmp_path, monkeypatch)
 
     history = memory.get_session_history("legacy-session")
     assert history[0]["attachment_ids"] == []
+    assert memory.get_history("legacy-session")[0]["message_type"] == "chat"
 
 
 def test_sessions_display_name_migrates_and_can_be_reset(tmp_path, monkeypatch):
@@ -85,6 +88,55 @@ def test_message_attachment_ids_round_trip(tmp_path, monkeypatch):
 
     history = memory.get_session_history("attachment-history")
     assert history[0]["attachment_ids"] == ["file-a", "file-b"]
+
+
+def test_file_delivery_history_filter_uses_structured_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "HISTORY_DB_PATH", str(tmp_path / "history.db"))
+    memory.init_db()
+    session_id = "file-delivery-history"
+    user_request = "请生成第一份Markdown文件"
+    delivery_message = "文件已生成：first.md\n下载地址：/files/real-id"
+    ordinary_assistant_message = "普通讨论里提到文件已生成这几个字"
+
+    memory.save_message(session_id, "user", user_request)
+    memory.save_message(
+        session_id,
+        "assistant",
+        delivery_message,
+        message_type=memory.MESSAGE_TYPE_FILE_DELIVERY,
+    )
+    memory.save_message(
+        session_id,
+        "assistant",
+        ordinary_assistant_message,
+    )
+
+    messages = execution._build_model_messages(
+        session_id,
+        "请继续生成一份TXT总结",
+        excluded_history_message_types=[memory.MESSAGE_TYPE_FILE_DELIVERY],
+    )
+    contents = [item["content"] for item in messages]
+
+    assert user_request in contents
+    assert delivery_message not in contents
+    assert ordinary_assistant_message in contents
+    assert contents[-1] == "请继续生成一份TXT总结"
+    history = memory.get_history(session_id)
+    assert history[1]["message_type"] == memory.MESSAGE_TYPE_FILE_DELIVERY
+
+
+def test_file_delivery_message_type_only_allows_assistant(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "HISTORY_DB_PATH", str(tmp_path / "history.db"))
+    memory.init_db()
+
+    with pytest.raises(ValueError, match="file_delivery只允许用于assistant消息"):
+        memory.save_message(
+            "invalid-file-delivery",
+            "user",
+            "用户原始请求不能被标成交付文案",
+            message_type=memory.MESSAGE_TYPE_FILE_DELIVERY,
+        )
 
 
 def test_clear_session_keeps_session_metadata(tmp_path, monkeypatch):

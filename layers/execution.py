@@ -1003,7 +1003,8 @@ def _llm_chat(
     original_question: str = "",
     system_prompt: str = "",
     tier: str = "fast",
-    timeout: Optional[float] = None
+    timeout: Optional[float] = None,
+    excluded_history_message_types: Optional[list[str]] = None,
 ) -> Union[str, Iterator[str]]:
     """通过统一适配层调用指定tier，每次只发送一次模型请求。"""
 
@@ -1014,7 +1015,12 @@ def _llm_chat(
             tier=tier,
         )
     else:
-        messages = _build_model_messages(session_id, message, system_prompt)
+        messages = _build_model_messages(
+            session_id,
+            message,
+            system_prompt,
+            excluded_history_message_types=excluded_history_message_types,
+        )
 
     if stream:
         response = llm_provider.chat_completion(
@@ -1029,9 +1035,19 @@ def _llm_chat(
     return llm_provider.extract_text(response)
 
 
-def _build_model_messages(session_id: str, message: str, system_prompt: str = "") -> list[dict]:
+def _build_model_messages(
+    session_id: str,
+    message: str,
+    system_prompt: str = "",
+    excluded_history_message_types: Optional[list[str]] = None,
+) -> list[dict]:
     """读取会话历史并追加本轮用户消息"""
     history = memory.get_history(session_id, limit=10) if session_id else []
+    excluded_types = {
+        str(item).strip()
+        for item in (excluded_history_message_types or [])
+        if str(item).strip()
+    }
     messages = cache_friendly_messages(
         system_modules.prompt_prefix("你是知天对话助手，请准确完成用户请求。"),
         ([{"role": "system", "content": system_prompt}] if system_prompt else []),
@@ -1040,7 +1056,9 @@ def _build_model_messages(session_id: str, message: str, system_prompt: str = ""
     messages.extend([
         {"role": item["role"], "content": item["content"]}
         for item in history
-        if item.get("role") in {"user", "assistant"} and item.get("content")
+        if item.get("role") in {"user", "assistant"}
+        and item.get("content")
+        and item.get("message_type", memory.MESSAGE_TYPE_CHAT) not in excluded_types
     ])
     messages.append({"role": "user", "content": message})
     return messages

@@ -295,10 +295,20 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
             },
         ),
     ]
+    saved_messages = []
+    vector_messages = []
     monkeypatch.setattr(main, "_prepare_stream_state", lambda *args, **kwargs: prepared_state)
     monkeypatch.setattr(main.planning, "run_graph_state", lambda *args, **kwargs: final_state)
-    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
-    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(
+        main.memory,
+        "save_message",
+        lambda *args, **kwargs: saved_messages.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        main.memory,
+        "maybe_save_to_vector",
+        lambda *args: vector_messages.append(args),
+    )
     monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
     monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
 
@@ -322,6 +332,11 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
     }
     assert events[3] == {"type": "citations", "citations": []}
     assert events[4] == {"chunk": "[DONE]"}
+    assistant_save = next(
+        item for item in saved_messages if item[0][1] == "assistant"
+    )
+    assert assistant_save[1]["message_type"] == main.memory.MESSAGE_TYPE_FILE_DELIVERY
+    assert [item[1] for item in vector_messages] == ["user"]
 
 
 def test_task_params_keep_request_mode():

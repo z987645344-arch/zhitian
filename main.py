@@ -1190,6 +1190,7 @@ async def chat(
         layer_trace = list(dict.fromkeys(layer_trace))
         final_data = final_state["response"]
         citations = _serialize_citations(final_state.get("citations", []))
+        assistant_message_type = _assistant_history_message_type(final_state)
         # 以最终返回给用户的citations为准：planning在证据过滤与降级路径上会清空
         # state["citations"]，若在execution层计数，会把证据不足、根本没展示给
         # 用户的文档也算成"实际引用"。
@@ -1204,7 +1205,11 @@ async def chat(
                 perception_output.message,
                 chat_request.attachment_ids,
             )
-            memory.save_message(perception_output.session_id, "assistant", final_data)
+            _save_assistant_history_message(
+                perception_output.session_id,
+                final_data,
+                assistant_message_type,
+            )
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
                 memory.maybe_save_to_vector,
@@ -1213,13 +1218,14 @@ async def chat(
                 perception_output.message,
                 mode
             )
-            background_tasks.add_task(
-                memory.maybe_save_to_vector,
-                perception_output.session_id,
-                "assistant",
-                final_data,
-                mode
-            )
+            if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
+                background_tasks.add_task(
+                    memory.maybe_save_to_vector,
+                    perception_output.session_id,
+                    "assistant",
+                    final_data,
+                    mode
+                )
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
 
@@ -2922,6 +2928,7 @@ def _chat_stream_events(
     has_error = False
     request_status = "error"
     request_error_type = ""
+    assistant_message_type = memory.MESSAGE_TYPE_CHAT
     try:
         perception_input = perception.PerceptionInput(
             session_id=request.session_id,
@@ -2940,6 +2947,7 @@ def _chat_stream_events(
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
+            assistant_message_type = _assistant_history_message_type(final_state)
             has_error = bool(final_state.get("error"))
             yield _sse_data({"chunk": final_data})
             yield _sse_data({"type": "citations", "citations": citations})
@@ -2951,7 +2959,11 @@ def _chat_stream_events(
                     perception_output.message,
                     attachment_ids,
                 )
-                memory.save_message(perception_output.session_id, "assistant", final_data)
+                _save_assistant_history_message(
+                    perception_output.session_id,
+                    final_data,
+                    assistant_message_type,
+                )
                 auth.bind_session(perception_output.session_id, current_user["user_id"])
                 if final_data:
                     background_tasks.add_task(
@@ -3048,6 +3060,8 @@ def _chat_stream_events(
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
+            generated_file_events = _serialize_generated_file_events(final_state)
+            assistant_message_type = _assistant_history_message_type(final_state)
             chunks.append(final_data)
             yield _sse_data({"chunk": final_data})
             if final_state.get("error"):
@@ -3057,7 +3071,7 @@ def _chat_stream_events(
                 yield _sse_data({"type": "citations", "citations": citations})
                 yield _sse_data({"chunk": "[DONE]"})
                 return
-            for file_event in _serialize_generated_file_events(final_state):
+            for file_event in generated_file_events:
                 yield _sse_data(file_event.model_dump())
 
         final_data = "".join(chunks)
@@ -3070,7 +3084,11 @@ def _chat_stream_events(
                 perception_output.message,
                 attachment_ids,
             )
-            memory.save_message(perception_output.session_id, "assistant", final_data)
+            _save_assistant_history_message(
+                perception_output.session_id,
+                final_data,
+                assistant_message_type,
+            )
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
         yield _sse_data({"type": "citations", "citations": citations})
@@ -3083,13 +3101,14 @@ def _chat_stream_events(
                 perception_output.message,
                 perception_output.mode
             )
-            background_tasks.add_task(
-                memory.maybe_save_to_vector,
-                perception_output.session_id,
-                "assistant",
-                final_data,
-                perception_output.mode
-            )
+            if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
+                background_tasks.add_task(
+                    memory.maybe_save_to_vector,
+                    perception_output.session_id,
+                    "assistant",
+                    final_data,
+                    perception_output.mode
+                )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), request.session_id, type(e).__name__)
         yield _sse_data({"error": "服务暂时异常，请重试"})
@@ -3241,6 +3260,30 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
             )
         )
     return events
+
+
+def _assistant_history_message_type(state: dict) -> str:
+    """按结构化工具结果标记assistant历史，不解析交付文案正文。"""
+    if _serialize_generated_file_events(state):
+        return memory.MESSAGE_TYPE_FILE_DELIVERY
+    return memory.MESSAGE_TYPE_CHAT
+
+
+def _save_assistant_history_message(
+    session_id: str,
+    content: str,
+    message_type: str,
+) -> None:
+    """保存assistant历史；普通消息保持原调用形状兼容既有测试桩。"""
+    if message_type == memory.MESSAGE_TYPE_FILE_DELIVERY:
+        memory.save_message(
+            session_id,
+            "assistant",
+            content,
+            message_type=message_type,
+        )
+        return
+    memory.save_message(session_id, "assistant", content)
 
 
 def _build_stream_system_prompt(context: list[str]) -> str:
