@@ -1217,12 +1217,17 @@ def list_pending_documents(
         raise
 
 
-def list_documents() -> list[dict]:
-    """返回所有登记过的文档审核记录（含组织归属，供管理端展示）。
+def list_documents(
+    organization_ids: Optional[List[int]] = None,
+) -> list[dict]:
+    """返回登记过的文档审核记录，并可按组织范围收窄。
 
-    与list_pending_documents/list_verified_documents采用同样的LEFT JOIN方式，
-    仅补充展示字段，不引入任何组织过滤条件。
+    organization_ids为None时保留全量查询语义；传入空列表时范围为空。
+    审核员入口必须显式传入其所属组织范围。
     """
+    if organization_ids is not None and not organization_ids:
+        return []
+    scope_sql, scope_params = _organization_scope_clause(organization_ids)
     try:
         with _connect() as conn:
             rows = conn.execute(
@@ -1232,8 +1237,11 @@ def list_documents() -> list[dict]:
                        d.organization_id, o.name AS organization_name
                 FROM documents d
                 LEFT JOIN organizations o ON o.id = d.organization_id
-                ORDER BY d.uploaded_at DESC
+                WHERE 1 = 1
                 """
+                + scope_sql
+                + " ORDER BY d.uploaded_at DESC",
+                scope_params,
             ).fetchall()
         return [_document_row_to_dict(row) for row in rows]
     except Exception as e:

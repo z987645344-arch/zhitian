@@ -1277,3 +1277,9 @@
 - **真实上传与边界验证**：隔离FastAPI/SQLite/Chroma链路上传合法4,231,039字节（4.035MiB）DOCX，实际解析17字符/1切片并完成任务；5MB+1字节返回HTTP 413“文件大小不能超过5MB”；模拟2,001片返回HTTP 413并明确说明文件未超5MB、片段上限2,000及需拆分。上传/F36针对性`20 passed`，最终权威回归`399 passed, 5 deselected in 222.51s`。
 - **进度条诊断**：管理后台上传确实接入F36的`/tasks/{id}/stream`真实任务状态，不存在另一条旧上传路径；但`_run_ingest_task()`只在开始写`progress=0`，`memory.save_document()`一次性把整批切片交给Chroma，结束才写`progress=100/processed_chunks=N`。因此用户看到0/79直接到79/79不是处理过快或假进度条，而是当前SSE只有起止两级状态，缺少批次级回调；登记F48为P3体验问题，本轮不贸然拆分Chroma原子写入路径。
 - **退出组织二次确认**：员工与审核员共用的`org-lobby.js`在申请退出前显示组织名、说明批准后的访问影响；取消时不禁用按钮且不发请求，确认后才调用原接口。隔离浏览器真实验证`confirm`出现、取消后请求标记为空、确认后请求标记为yes并显示成功提示；管理后台JavaScript检查、Flutter analyze及`45 tests passed`均通过。
+
+## 2026-08-11 F49：修复审核员文档总表跨组织元数据泄露
+- **发现与根因**：本次数据安全核实发现P1漏洞：`GET /documents`的reviewer分支直接调用无范围参数的`auth.list_documents()`，与已正确隔离的`/pending`、`/documents/verified`不一致，可读取其他组织文档的`doc_id/source/status/organization`等元数据；进一步检查还发现，当范围内没有SQLite登记记录时，旧的Chroma孤儿兜底会返回无法按权威归属授权的全量向量文档。
+- **修复方式**：`auth.list_documents()`新增与pending/verified一致的可选`organization_ids` SQL范围参数；reviewer入口复用`_reviewer_organization_scope()`下推过滤，空范围直接为空，同时禁止审核员展示缺少SQLite组织归属的Chroma孤儿记录。employee仍只看到本人上传记录；`GET /documents`原本由`require_employee`限定employee/reviewer，developer仍返回403，本轮不借安全修复扩大RBAC契约。
+- **精确安全回归**：双组织用例同时构造法律/财务的pending与verified文档，法律reviewer得到的`doc_id`集合、`total`、`organization_id/name`精确等于法律组织两份记录；另以“所属组织无文档、外组织只有Chroma记录”验证返回空列表。既有跨组织预览/删除/审批拒绝、本组织正常操作及employee本人文档行为继续通过，组织权限文件共`21 passed`。
+- **权威回归**：Python 3.10编译通过；`run_tests.bat -q`为`401 passed, 5 deselected in 226.44s`，较399基线新增2项安全边界测试，无新增失败。

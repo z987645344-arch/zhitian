@@ -151,6 +151,55 @@ def test_reviewer_lists_only_own_organization_documents(client, auth_headers):
     assert [item["doc_id"] for item in verified] == ["legal-verified"]
 
 
+def test_reviewer_documents_endpoint_only_returns_own_organization(
+    client, auth_headers, isolated_chroma
+):
+    """GET /documents必须精确限制为审核员所属组织，不泄露其他组织元数据。"""
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(reviewer["user_id"], legal_id)
+
+    _register("legal-all-pending", legal_id)
+    _register("legal-all-verified", legal_id, verified=True)
+    _register("finance-all-pending", finance["id"])
+    _register("finance-all-verified", finance["id"], verified=True)
+
+    response = client.get("/documents", headers=reviewer_headers)
+
+    assert response.status_code == 200
+    documents = response.json()["documents"]
+    assert {item["doc_id"] for item in documents} == {
+        "legal-all-pending",
+        "legal-all-verified",
+    }
+    assert response.json()["total"] == 2
+    assert {item["organization_id"] for item in documents} == {legal_id}
+    assert {item["organization_name"] for item in documents} == {"法律"}
+
+
+def test_reviewer_documents_endpoint_does_not_fallback_to_outside_chroma_records(
+    client, auth_headers, isolated_chroma
+):
+    """范围内无登记记录时，也不能用全量Chroma孤儿记录作为兜底。"""
+    reviewer_headers, reviewer = auth_headers("reviewer")
+    legal_id = _org_id("法律")
+    finance = organizations.create_organization("财务", None)
+    _join(reviewer["user_id"], legal_id)
+
+    memory.save_document(
+        "财务孤儿.txt",
+        ["不得向法律审核员暴露的财务组织内容"],
+        doc_id="finance-chroma-only",
+        organization_id=finance["id"],
+    )
+
+    response = client.get("/documents", headers=reviewer_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"documents": [], "total": 0}
+
+
 def test_reviewer_document_lists_can_narrow_to_joined_organization(
     client, auth_headers
 ):

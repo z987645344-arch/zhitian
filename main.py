@@ -2727,8 +2727,10 @@ async def reject_document(doc_id: str, current_user: dict = Depends(require_revi
 
 
 def _list_documents_for_user(current_user: dict) -> list[dict]:
-    records = auth.list_documents()
-    if current_user["role"] != "reviewer":
+    if current_user["role"] == "reviewer":
+        records = auth.list_documents(_reviewer_organization_scope(current_user))
+    else:
+        records = auth.list_documents()
         records = [
             record for record in records
             if record["uploaded_by"] == current_user["user_id"]
@@ -2737,7 +2739,8 @@ def _list_documents_for_user(current_user: dict) -> list[dict]:
         records,
         reviewer_mode=current_user["role"] == "reviewer",
         current_user=current_user,
-        include_orphan_chunks=current_user["role"] == "reviewer"
+        # Chroma孤儿记录没有可供授权的SQLite组织归属，不能作为审核员兜底展示。
+        include_orphan_chunks=False,
     )
 
 

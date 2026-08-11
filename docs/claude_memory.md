@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-11**（上传体积预筛三端统一放宽到5MB，2,000切片成本护栏保留；退出组织新增二次确认，并登记F48任务进度仅有起止两级的P3体验问题）
+> **最后更新：2026-08-11**（安全核实发现并修复F49：审核员`GET /documents`现按所属组织收窄，且不再回退展示无法授权的Chroma孤儿记录；审计日志能力同步改为真实口径）
 
 ---
 
@@ -54,8 +54,8 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A的功能验证已闭合，当前无P0/P1开放故障。上传体积预筛现为5MB，真实处理成本仍由2,000切片上限约束；退出组织已有二次确认。当前F编号开放项为F38（P2，已接受风险并等待上游条件）、F39（P3，Chroma单例关闭句柄）、F44（P3，expert路径不够经济）与F48（P3，入库SSE只有起止两级进度）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-11完成三项体验处理：后端、网页版、管理后台与Flutter的文件体积预筛统一由1MB放宽到5MB，同时保留2,000切片成本护栏并补充双重限制说明；隔离真实HTTP上传4.035MiB合法DOCX并完成1片入库，5MB+1字节与2,001片均得到明确413提示；员工/审核员退出组织新增带组织名的二次确认并完成取消/确认两条浏览器实测。权威回归`399 passed, 5 deselected`，Flutter `45 tests passed` |
+| 状态 | 🟢 自用云端MVP Phase A的功能验证已闭合。本轮安全核实曾发现P1级F49（审核员`GET /documents`跨组织元数据泄露），现已修复并完成双组织回归；当前再次没有已知开放P0/P1，但不能把这一结论理解为已有不可篡改审计或所有接口均完成形式化安全证明。上传体积预筛现为5MB，真实处理成本仍由2,000切片上限约束。当前F编号开放项为F38（P2，已接受风险并等待上游条件）、F39（P3，Chroma单例关闭句柄）、F44（P3，expert路径不够经济）与F48（P3，入库SSE只有起止两级进度）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
+| 上一轮完成 | 2026-08-11修复安全核实发现的F49：`GET /documents`的reviewer分支复用`_reviewer_organization_scope()`，把组织范围下推到`auth.list_documents()`的SQL查询；同时取消审核员对无权威SQLite归属的Chroma孤儿记录全量兜底。双组织测试精确断言只返回所属组织的pending/verified文档，范围内无记录时也不泄露外组织Chroma元数据；employee仍只看本人上传，developer仍按既有`require_employee`契约无权调用该端点。组织隔离针对性`21 passed`，权威回归`401 passed, 5 deselected` |
 | 当前等待 | 云服务器正在办理；本机Flutter客户端继续按`http://localhost/api`走Compose环境人工验收。网页版批次二剩余文件库、工具箱、欢迎页/附件展示等体验项根据后续指令安排，设置页仍留在后续批次。F44与F48均为P3体验问题：前者等待讨论本地证据充分时是否跳过联网搜索，后者等待决定是否值得把Chroma整批写入重构为可安全汇报批次进度；0号接管继续按既定部署脚本和安全边界处理 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
@@ -100,7 +100,7 @@
 | API 限流 | 已接入 slowapi，仅作用于`/chat`和`/chat/stream`；按customer/employee/reviewer/developer四角色从`rate_limit_config`动态读取每分钟上限，developer可在线修改，分桶身份仍是JWT用户 |
 | CORS | 已从 `allow_origins=["*"]` 收窄为读取 `CORS_ORIGINS` 白名单 |
 | 输入安全 | 文档上传已有大小上限、扩展名白名单和基础文件特征校验；prompt injection防护已完整覆盖执行权限隔离（污染标记+写工具硬拦截）、prompt边界隔离标记、来源可信度分级和输出侧观察性校验。来源分级与观察结果当前均不硬过滤、不拦截回复 |
-| 审计日志 | ✅ 基础 trace_id 阶段日志，按请求串联耗时且遵守消息脱敏 |
+| 审计日志 | ⚠️ 仅有聊天链路的基础trace_id阶段日志与消息脱敏；并非覆盖全部用户数据接口，也不是不可篡改、独立留存的安全审计日志。审批表保留部分业务状态/时间，但不能替代专用审计能力，Phase B仍需补齐 |
 | 监控 | ✅ 基础进程内 metrics/tracing，支持fast/expert独立P50/P95/P99；reviewer可手动查看，重启清零且不跨实例聚合 |
 | 生产部署 | 后端和管理后台历史生产镜像已在Docker Desktop 29.6.2+WSL2真实构建；独立私有仓库`z987645344-arch/zhitian-deploy`中的Compose已真实验证仅暴露80、同源`/api`转发、具名卷、tmpfs、日志轮转、重启与资源限制。2026-07-31曾发现干净镜像解析`numpy==2.2.6`导致`chromadb==0.5.0`导入失败（F32）；**2026-08-01锁定`numpy==1.26.4`后已用`--no-cache`干净重建验证：容器启动、`/ready`=200且chroma=true、Chroma读写往返正常，当前源码已可从零构建部署**；服务器侧域名/HTTPS、私有配置、异地备份与加固仍待Phase B |
 | 测试 | ✅ 认证、规划/ReAct/复杂任务、记忆、execution搜索、可观测性、生命周期、上传安全和聊天附件测试已覆盖 |
@@ -146,6 +146,7 @@
 | F46 | ✅ 已修复：同一会话连续生成文件时，上一轮“文件已生成/下载地址”曾被下一轮正文模型模仿并产生虚构文件ID。现由`main.py`根据成功的结构化generate_file `ToolResult`把助手历史标为`file_delivery`，`execution.py`仅在generate_file正文组装时按该类型排除助手交付结果；没有关键词或正则判断，普通聊天中即使出现同样文字也不会被误删。用户此前确实要求生成文件的原始请求仍保留，助手交付文案也不再进入长期向量记忆。网页版与Flutter同会话MD→TXT真实复测均未再出现交付文案或虚构ID；F45已于2026-08-11独立解决 | layers/memory.py / layers/execution.py `_build_model_messages` / main.py聊天历史落库 | ✅ 已解决（2026-08-10） |
 | F47 | ✅ 已修复：PDF/DOCX仍沿用“模型Markdown→临时`.md`→LibreOffice”转换架构，但generate_file现在在四种支持格式的共同入口统一调用F45的`_strip_complete_outer_markdown_fence()`；因此PDF/DOCX写临时文件前已经归一化，TXT的同类遗漏也同步闭环。首末完整围栏、内部代码块平衡和歧义保守不处理三项安全边界完全复用，没有第二套实现。真实PDF/DOCX抽取、网页版PDF下载与Flutter DOCX下载均确认外层反引号消失、内部Python代码块完整 | layers/execution.py `generate_file` / layers/converter.py `convert_file` | ✅ 已解决（2026-08-11） |
 | F48 | 入库任务SSE字段是真实数据库状态，不是前端伪造，但当前`_run_ingest_task()`只在开始写`progress=0/processed_chunks=0`，`memory.save_document()`一次性调用Chroma `collection.add()`，完成后才写`progress=100/processed_chunks=N`；因此用户看到0/79直接跳79/79是现有实现的必然表现，不是小文档处理过快，也不存在绕开F36的第二条旧上传路径。若要连续进度，需把向量写入改为可回滚/可清理的分批提交并增加回调，不能只在前端造假百分比 | main.py `_run_ingest_task` / layers/memory.py `save_document` / zhitian_admin `trackIngestProgress` | P3（体验问题，待决定是否重构） |
+| F49 | ✅ 已修复：安全核实时发现`GET /documents`的reviewer分支直接调用全量`auth.list_documents()`，可跨组织读取文档元数据；且范围内无SQLite记录时，旧Chroma孤儿兜底仍可能返回无法授权的全量向量文档。现由reviewer复用`_reviewer_organization_scope()`并把范围下推到SQL，空范围直接返回空列表，同时禁止审核员展示缺少权威SQLite组织归属的Chroma孤儿记录。双组织用例精确验证只返回所属组织的pending/verified文档，外组织文档与孤儿向量均不可见；employee和developer既有契约不变 | main.py `_list_documents_for_user` / layers/auth.py `list_documents` / tests/test_document_organization.py | ✅ P1已修复（2026-08-11安全核实发现） |
 
 ### F31/F38安全扫描当前状态（2026-08-09）
 
@@ -283,9 +284,9 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | GraphRAG | **默认关闭**：`config.GRAPH_RAG_ENABLED`读`.env`同名变量，非`true`即全程不执行建图与图扩展，检索行为与接入前完全一致、无额外查询开销。启用方式：`.env`加`GRAPH_RAG_ENABLED=true`并重启。图谱数据存在**users.db**的`graph_entities`/`graph_relationships`/`chunk_entities`三张表（`layers/graph_store.py`惰性`init_db()`创建），不使用图数据库、不引入图计算库。chunk关联键是**`doc_id:chunk_index`组合键**，不是Chroma的随机uuid（后者未落库、也不出现在检索结果里，无法关联）。失败降级：建图抽取失败重试1次后跳过，只记日志不抛异常，文档保存与BM25/向量检索不受影响；图扩展查询异常时保留原候选。扩展候选**必须受verified白名单约束**，新增扩展路径时不要漏掉这一条 |
 | GraphRAG赋分与收益边界 | 扩展候选没有向量/BM25分数，按`GRAPH_PROPAGATION_DECAY`（默认0.85）以"最强种子分×衰减"赋传播分。原因：重排序只重排不改写`score`，而`execution.py`按`RAG_SCORE_THRESHOLD`过滤`score`，赋0分则扩展候选必被滤掉、特性空转。**副作用：传播分恒低于最强种子分，扩展候选永远排在最强种子之后**。**收益边界（2026-07-27实测）**：只有当语料chunk数显著超过`top_k×BM25_CANDIDATE_MULTIPLIER`（当前为4）、召回是语料真子集时，图扩展才有空间；8个chunk的真实语料下开关A/B**最终候选完全相同、adoption_rate=0.0**。评估该特性效果前先确认语料规模，否则测不出差异属预期而非故障 |
 | 按组织统计口径 | `GET /employee/my-documents-by-organization`按`uploaded_by`统计"我上传的"（含全部审核状态）；`GET /reviewer/documents-by-organization`按审核员所属组织范围统计各组织的**verified总数**。**审核员端口径是组织范围，不是"我个人批准过"的数量**——项目不记录哪个审核员批准了哪份文档，也不为统计新增此类字段或表，有专门测试锁定。两者共用`auth.count_documents_by_organization()`，`organization_id IS NULL`的历史记录不计入。审核员组织范围复用`_reviewer_organization_scope()`，与`/pending`、`/documents/verified`保持同一判断方式，改动其中任一处需同步考虑三者一致性 |
-| 文档组织展示 | 三处文档列表（员工"我的文档"、审核员"待审核"与"文档管理"）均展示组织列，数据来自后端`organization_name`。三个列表函数`list_documents`/`list_pending_documents`/`list_verified_documents`**都已LEFT JOIN organizations**，新增列表函数时注意保持一致，否则前端组织列无数据。`_document_row_to_dict()`按`row.keys()`条件附加组织字段，未JOIN的查询不受影响。前端`organizationLabel()`对缺字段渲染"—"（孤儿chunk兜底行确实不含组织字段）。**注意`list_documents()`不含组织过滤**，可见性由main.py的`_list_documents_for_user`按角色/上传者控制，改动时不要误加过滤 |
+| 文档组织展示 | 三处文档列表（员工"我的文档"、审核员"待审核"与"文档管理"）均展示组织列，数据来自后端`organization_name`。三个列表函数`list_documents`/`list_pending_documents`/`list_verified_documents`都已`LEFT JOIN organizations`；其中`list_documents(organization_ids=None)`保留全量底层查询语义，但reviewer入口必须显式传入`_reviewer_organization_scope()`，employee入口继续按`uploaded_by`收窄。F49后审核员不再看到缺少权威SQLite组织归属的Chroma孤儿兜底行。新增列表函数必须同时保持组织字段和服务端范围约束，不能只依赖前端隐藏 |
 | 组织=工作资格门槛 | **2026-07-26起组织不再只是guidance标签，而是真实的工作资格门槛**。"默认"组织＝大厅：全员自动在内、不可申请也不可退出、不出现在组织目录里，承载`lobby_content`单例表的三段公司级静态信息（工具规则/公告/行业准则，developer可编辑）。自定义组织＝功能群：加入/退出都要审批。**员工/审核员必须已加入至少一个非默认组织**才能调用`/documents/upload`、`/knowledge/input`、`/approve/{doc_id}`、`/reject/{doc_id}`，否则403。**账号注册审批（`/reviewer/registration-requests/*`）刻意不受此门槛限制**——账号是否存在与加入哪个工作组织是两条独立链路，已有测试锁定该行为，后续不要"顺手统一"加上门槛 |
-| 文档组织归属 | **2026-07-26起文档归属具体组织**（`documents.organization_id`，可空仅为兼容历史行，新上传必须显式传值）。上传时校验目标组织必须是上传者已加入的非默认组织，否则400；**服务端不做"只加入一个组织就自动推断"的默认**，前端预填、后端强制显式传值，缺字段422。管理端组织隔离现在覆盖四类入口：列表（`GET /pending`、`GET /documents/verified`）、预览、删除、检索调试，审批`POST /approve\|reject`也继续受同一范围保护；跨组织预览/删除/审批返回403，调试检索只把所属组织doc_id交给检索层。删除端点先按唯一`doc_id`取得单一文档，再复用`_require_document_in_scope()`校验组织范围；F27时期按source匹配整批文档的临时防线已随F28根治而移除。**新增文档管理/调试接口时必须同样考虑组织隔离并复用`_reviewer_organization_scope()`/`_require_document_in_scope()`，不得只依赖列表页过滤。**<br>**客户端正式检索完全不受影响**：聊天使用的`search_documents`不按`organization_id`过滤，仍只按全局verified doc_id筛选；`save_document`写入的organization_id仅是metadata备用字段。已有专门测试锁定多组织verified文档可被客户端同时检索 |
+| 文档组织归属 | **2026-07-26起文档归属具体组织**（`documents.organization_id`，可空仅为兼容历史行，新上传必须显式传值）。上传时校验目标组织必须是上传者已加入的非默认组织，否则400；**服务端不做"只加入一个组织就自动推断"的默认**，前端预填、后端强制显式传值，缺字段422。管理端组织隔离目前覆盖列表（`GET /documents`、`GET /pending`、`GET /documents/verified`）、预览、删除、检索调试及审批`POST /approve\|reject`；F49修复后`GET /documents`同样复用`_reviewer_organization_scope()`，且不会用无权威组织归属的Chroma孤儿记录兜底。跨组织预览/删除/审批返回403，调试检索只把所属组织doc_id交给检索层。删除端点先按唯一`doc_id`取得单一文档，再复用`_require_document_in_scope()`校验组织范围；F27时期按source匹配整批文档的临时防线已随F28根治而移除。**新增文档管理/调试接口时必须同样考虑组织隔离并复用`_reviewer_organization_scope()`/`_require_document_in_scope()`，不得只依赖列表页过滤。**<br>**客户端正式检索完全不受影响**：聊天使用的`search_documents`不按`organization_id`过滤，仍只按全局verified doc_id筛选；`save_document`写入的organization_id仅是metadata备用字段。已有专门测试锁定多组织verified文档可被客户端同时检索 |
 | 文档唯一标识 | **删除、员工撤销、Chroma chunk查询/删除及文档chunk数量聚合一律以`doc_id`为准**。`DELETE /documents/{doc_id}`只作用于单一SQLite记录及metadata中同一`doc_id`的chunks；`memory.list_documents()`也按`doc_id`分组，不能把同名文件的chunk数量合并。`source`仅是展示用文件名文本，不得再用于删除匹配、权限定位或聚合分组；新增调用方必须传列表接口返回的`doc_id` |
 | 文档历史数据 | 2026-07-26引入`organization_id`前，用户已手动清空全部历史文档：改动前`documents`表0行、Chroma `zhitian_documents` 0个chunk，**本次改动不涉及任何旧数据迁移或向量库回填**。因此库中不应存在`organization_id`为NULL的文档记录；若日后出现NULL记录，说明有绕过端点直接写库的路径，需要排查而不是补默认值 |
 | 测试持久化隔离 | `tests/conftest.py`在导入`main`前先把`config`切到会话级临时根目录，阻止模块级`init_db()`在收集阶段触碰真实data；随后`isolated_persistent_storage`以`autouse=True`为每个测试建立独立runtime，统一覆盖`auth.USERS_DB_PATH`、`config.HISTORY_DB_PATH`、`config.VECTORDB_PATH`与`config.BASE_DIR`，因此users.db、history.db、Chroma、files.db及`user_files`物理文件全部默认隔离。旧`isolated_chroma`保留为兼容别名，新增测试不需要显式声明；当前40个测试文件没有任何真实data排除项，integration标记也不豁免存储隔离。若未来确需验证真实环境，必须另开显式脚本/流程，不能在pytest中绕过默认夹具 |
