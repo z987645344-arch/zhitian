@@ -11,7 +11,7 @@ import pytest
 
 import config
 import main
-from layers import converter
+from layers import converter, task_store
 from tests.conftest import grant_work_organization
 
 
@@ -31,6 +31,14 @@ def _docx_bytes() -> bytes:
     document = Document()
     document.add_paragraph("DOCX test content")
     document.save(buffer)
+    return buffer.getvalue()
+
+
+def _padded_docx_bytes(padding_bytes: int = 4 * 1024 * 1024) -> bytes:
+    """构造体积约4MB但正文很少的合法DOCX，用于区分体积与切片限制。"""
+    buffer = BytesIO(_docx_bytes())
+    with zipfile.ZipFile(buffer, "a", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("customXml/upload-limit-padding.bin", b"x" * padding_bytes)
     return buffer.getvalue()
 
 
@@ -148,6 +156,90 @@ def test_upload_rejects_oversized_file_and_removes_partial_copy(
     assert response.status_code == 413
     upload_dir = tmp_path / "data" / "tmp_uploads"
     assert not list(upload_dir.glob("*"))
+
+
+def test_five_mb_upload_limit_allows_four_mb_docx_and_completes_task(
+    client,
+    auth_headers,
+    tmp_path,
+    monkeypatch,
+):
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_MB", 5)
+    content = _padded_docx_bytes()
+
+    assert 4 * 1024 * 1024 < len(content) < 5 * 1024 * 1024
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={
+            "file": (
+                "four-megabytes.docx",
+                content,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={"organization_id": upload_org},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "accepted"
+    task = task_store.get_task(payload["task_id"])
+    assert task is not None
+    assert task.status == "done"
+    assert task.processed_chunks == payload["chunks"]
+
+
+def test_five_mb_upload_limit_rejects_larger_file(
+    client,
+    auth_headers,
+    monkeypatch,
+):
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
+    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_MB", 5)
+    content = b"a" * (5 * 1024 * 1024 + 1)
+
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("over-five.txt", content, "text/plain")},
+        data={"organization_id": upload_org},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "文件大小不能超过5MB"
+
+
+def test_chunk_limit_explains_file_size_can_pass_while_content_is_too_large(
+    client,
+    auth_headers,
+    monkeypatch,
+):
+    headers, uploader = auth_headers("employee")
+    upload_org = grant_work_organization(uploader["user_id"])
+    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_MB", 5)
+    monkeypatch.setattr("main.document_loader.load_document", lambda _path: "正文")
+    monkeypatch.setattr(
+        "main.document_loader.chunk_text",
+        lambda _text: ["片段"] * (config.MAX_DOCUMENT_CHUNKS + 1),
+    )
+
+    response = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("dense.txt", b"dense content", "text/plain")},
+        data={"organization_id": upload_org},
+    )
+
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert "文件大小未超过5MB，但文档内容过多" in detail
+    assert "2001个片段，上限2000个" in detail
+    assert "请拆分后再上传" in detail
 
 
 def test_streaming_size_guard_handles_missing_upload_size(tmp_path, monkeypatch):

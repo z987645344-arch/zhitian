@@ -9,7 +9,7 @@
   const SESSION_KEY = 'zt_web_session_id';
   const MODE_KEY = 'zt_web_chat_mode';
   const LEGACY_SESSION_KEY = 'zt_web_session_id';
-  const MAX_ATTACHMENT_MB = 1;
+  const MAX_ATTACHMENT_MB = 5;
   const MODE_COPY = {
     fast: {
       label: '快速模式',
@@ -417,7 +417,7 @@
     showWelcome();
     renderSessions();
     closeSidebar();
-    hint.textContent = '支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 1MB。';
+    hint.textContent = '支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 5MB。';
     input.focus();
   }
 

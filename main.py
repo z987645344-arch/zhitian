@@ -2074,8 +2074,9 @@ async def upload_document(
             raise HTTPException(
                 status_code=413,
                 detail=(
-                    f"文档内容过多（{len(chunks)}个片段，上限"
-                    f"{config.MAX_DOCUMENT_CHUNKS}个），请拆分后再上传"
+                    f"文件大小未超过{config.MAX_UPLOAD_SIZE_MB}MB，但文档内容过多"
+                    f"（{len(chunks)}个片段，上限{config.MAX_DOCUMENT_CHUNKS}个）。"
+                    "为控制处理时间，请拆分后再上传"
                 ),
             )
 

@@ -1271,3 +1271,9 @@
 - **真实LibreOffice验证**：容器内通过`execution.generate_file()`为PDF和DOCX各生成两组真实成品。纯外层围栏样本经pdfplumber/python-docx抽取后均只剩标题与正文、无反引号；“外层+内部Python代码块”样本中，外层```markdown消失，内部` ```python `、`print('hello from F47')`、结束围栏及后续结论在PDF/DOCX中均完整保留。4个验证文件随后精确删除。
 - **真实两端验证**：网页版expert生成并下载`web-f47-pdf-20260811.pdf`（file_id=`5374337a-39ed-4998-8534-8cb02c3b1919`，22,523字节），页面显示“下载已开始”，抽取文本无外层围栏且内部`print('web F47')`完整，控制台无warning/error。Flutter原`ApiService`生成并下载`flutter-f47-docx-20260811.docx`（file_id=`2a313352-5e1b-4ddb-a2d4-adfd5483e155`，5,134字节），DOCX ZIP签名正确，python-docx抽取文本无外层围栏且内部`print('flutter F47')`完整。
 - **测试与清理**：Python 3.10 `py_compile`通过，generate_file/planning针对性回归`60 passed, 1 warning`；权威`run_tests.bat -q`为`396 passed, 5 deselected in 220.71s`，较F45后的392基线新增4项覆盖且无新增失败。隔离customer账号、2个文件、2个会话及关联SQLite/Chroma数据已精确清理，Flutter临时测试文件已删除。至此generate_file的MD/TXT/PDF/DOCX四种格式外层围栏问题全部闭环。本批未提交，等待用户确认。
+
+## 2026-08-11 上传上限放宽、进度粒度诊断与退出组织防误触
+- **三端统一放宽到5MB**：`config.MAX_UPLOAD_SIZE_MB`默认值由1改为5，网页版附件、管理后台文档上传及Flutter聊天附件/工具箱共享常量和提示同批同步，HTML脚本版本串同步刷新以绕开1小时静态缓存。异步化消除了HTTP同步等待，但5MB纯文字按历史0.69–1.87切片/KB仍约为3,533–9,574片；若联动放宽到典型5MB所需约9,574片，按21.2片/秒需约7.5分钟，极端密度约24.5分钟，因此继续保留`MAX_DOCUMENT_CHUNKS=2000`（约94秒）作为真实成本护栏。管理后台提前说明双重限制，后端对“体积合格但内容过多”返回明确拆分提示。
+- **真实上传与边界验证**：隔离FastAPI/SQLite/Chroma链路上传合法4,231,039字节（4.035MiB）DOCX，实际解析17字符/1切片并完成任务；5MB+1字节返回HTTP 413“文件大小不能超过5MB”；模拟2,001片返回HTTP 413并明确说明文件未超5MB、片段上限2,000及需拆分。上传/F36针对性`20 passed`，最终权威回归`399 passed, 5 deselected in 222.51s`。
+- **进度条诊断**：管理后台上传确实接入F36的`/tasks/{id}/stream`真实任务状态，不存在另一条旧上传路径；但`_run_ingest_task()`只在开始写`progress=0`，`memory.save_document()`一次性把整批切片交给Chroma，结束才写`progress=100/processed_chunks=N`。因此用户看到0/79直接到79/79不是处理过快或假进度条，而是当前SSE只有起止两级状态，缺少批次级回调；登记F48为P3体验问题，本轮不贸然拆分Chroma原子写入路径。
+- **退出组织二次确认**：员工与审核员共用的`org-lobby.js`在申请退出前显示组织名、说明批准后的访问影响；取消时不禁用按钮且不发请求，确认后才调用原接口。隔离浏览器真实验证`confirm`出现、取消后请求标记为空、确认后请求标记为yes并显示成功提示；管理后台JavaScript检查、Flutter analyze及`45 tests passed`均通过。
