@@ -1473,7 +1473,9 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
         system_prompt = (
             "你负责生成可直接保存为文件的完整Markdown正文。只输出正文，不要解释生成过程，"
             "不要添加下载链接或本地路径。根据用户要求组织清晰结构；如果提供了历史或检索上下文，"
-            "只使用相关内容，不得编造。可使用Markdown标题、加粗和列表组织内容，即使目标格式是PDF或DOCX也先输出Markdown。"
+            "只使用相关内容，不得编造。不要把整篇正文包在```markdown或```围栏中；"
+            "正文内部需要展示代码时可以保留对应代码块。可使用Markdown标题、加粗和列表组织内容，"
+            "即使目标格式是PDF或DOCX也先输出Markdown。"
         )
         if context_text:
             system_prompt += "\n\n可用上下文：\n" + context_text

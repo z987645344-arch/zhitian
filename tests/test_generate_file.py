@@ -11,7 +11,7 @@ import pytest
 import pdfplumber
 
 import config
-from layers import converter, execution, files_store, planning
+from layers import converter, execution, files_store, memory, planning
 from layers.converter import ConversionResult, ConversionStatus
 from layers.execution import ToolResult
 
@@ -40,6 +40,136 @@ def test_generate_file_sanitizes_name_and_writes_utf8_without_bom(tmp_path, monk
     content = open(file_path, "rb").read()
     assert not content.startswith(b"\xef\xbb\xbf")
     assert content.decode("utf-8") == "标题\n正文"
+
+
+@pytest.mark.parametrize("output_format", ["md"])
+@pytest.mark.parametrize("opening", ["```markdown", "```"])
+def test_generate_file_strips_complete_outer_markdown_fence(
+    tmp_path,
+    monkeypatch,
+    output_format,
+    opening,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    expected = "# 围栏归一化\n\n正文"
+
+    result = execution.generate_file(
+        content="%s\n%s\n```" % (opening, expected),
+        session_id="outer-fence-session",
+        filename_hint="围栏归一化",
+        output_format=output_format,
+        owner_user_id=OWNER_ID,
+    )
+
+    record = files_store.get_file(result.file_id)
+    file_path = files_store.get_file_path(record)
+    assert result.success is True
+    assert result.char_count == len(expected)
+    assert open(file_path, encoding="utf-8").read() == expected
+
+
+def test_generate_file_keeps_internal_markdown_code_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    content = (
+        "# Python示例\n\n"
+        "下面的代码块属于文档正文：\n\n"
+        "```python\n"
+        "print('hello')\n"
+        "```\n\n"
+        "代码块后的结论仍需保留。"
+    )
+
+    result = execution.generate_file(
+        content=content,
+        session_id="internal-fence-session",
+        filename_hint="Python示例",
+        output_format="md",
+        owner_user_id=OWNER_ID,
+    )
+
+    record = files_store.get_file(result.file_id)
+    file_path = files_store.get_file_path(record)
+    assert result.success is True
+    assert result.char_count == len(content)
+    assert open(file_path, encoding="utf-8").read() == content
+
+
+def test_generate_file_keeps_ambiguous_unbalanced_inner_fence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    content = (
+        "```markdown\n"
+        "# 技术文档\n\n"
+        "```python\n"
+        "print('closing fence belongs to the code block')\n"
+        "```"
+    )
+
+    result = execution.generate_file(
+        content=content,
+        session_id="ambiguous-fence-session",
+        filename_hint="歧义围栏",
+        output_format="md",
+        owner_user_id=OWNER_ID,
+    )
+
+    record = files_store.get_file(result.file_id)
+    file_path = files_store.get_file_path(record)
+    assert result.success is True
+    assert open(file_path, encoding="utf-8").read() == content
+
+
+def test_generate_file_strips_outer_fence_and_keeps_balanced_inner_block(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    expected = (
+        "# 技术文档\n\n"
+        "```python\n"
+        "print('inner block')\n"
+        "```\n\n"
+        "结论"
+    )
+    content = "```markdown\n%s\n```" % expected
+
+    result = execution.generate_file(
+        content=content,
+        session_id="balanced-inner-fence-session",
+        filename_hint="平衡围栏",
+        output_format="md",
+        owner_user_id=OWNER_ID,
+    )
+
+    record = files_store.get_file(result.file_id)
+    file_path = files_store.get_file_path(record)
+    assert result.success is True
+    assert open(file_path, encoding="utf-8").read() == expected
+
+
+def test_generate_file_keeps_incomplete_or_non_markdown_outer_fence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    samples = [
+        "```markdown\n# 缺少结束围栏",
+        "```python\nprint('whole document is code')\n```",
+    ]
+
+    for index, content in enumerate(samples):
+        result = execution.generate_file(
+            content=content,
+            session_id="non-outer-fence-%s" % index,
+            filename_hint="保留围栏%s" % index,
+            output_format="md",
+            owner_user_id=OWNER_ID,
+        )
+        record = files_store.get_file(result.file_id)
+        file_path = files_store.get_file_path(record)
+        assert open(file_path, encoding="utf-8").read() == content
 
 
 @pytest.mark.parametrize(
@@ -182,6 +312,11 @@ def test_generate_file_intent_executes_content_then_file(monkeypatch):
     state["output_format"] = "md"
     state["context"] = ["已有上下文"]
     task = planning._task_from_intent(state, order=1)
+    assert task.params["excluded_history_message_types"] == [
+        memory.MESSAGE_TYPE_FILE_DELIVERY
+    ]
+    assert "不要把整篇正文包在```markdown或```围栏中" in task.params["system_prompt"]
+    assert "正文内部需要展示代码时可以保留对应代码块" in task.params["system_prompt"]
     state["tasks"] = [task]
     calls = []
 

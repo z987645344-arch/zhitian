@@ -671,6 +671,8 @@ def generate_file(
             error_type="invalid_output_format",
             requested_format=requested_format,
         )
+    if requested_format == "md":
+        text = _strip_complete_outer_markdown_fence(text)
     if not _is_safe_generated_session_id(session_id):
         return GenerateFileResult(
             success=False,
@@ -821,6 +823,38 @@ def generate_file(
         delivered_format="md",
         conversion_error_type=conversion_error or "conversion_failed",
     )
+
+
+def _strip_complete_outer_markdown_fence(text: str) -> str:
+    """仅剥离完整包裹整篇Markdown的外层围栏，保留正文内部代码块。"""
+    stripped = text.strip()
+    lines = stripped.splitlines()
+    if len(lines) < 2:
+        return text
+
+    opening = lines[0].strip().lower()
+    closing = lines[-1].strip()
+    if opening not in {"```", "```markdown"} or closing != "```":
+        return text
+    if not _inner_markdown_fences_are_balanced(lines[1:-1]):
+        return text
+    return "\n".join(lines[1:-1])
+
+
+def _inner_markdown_fences_are_balanced(lines: list[str]) -> bool:
+    """确认外层候选内的三反引号代码块成对闭合，歧义时拒绝剥离。"""
+    inside_fence = False
+    for line in lines:
+        marker = line.strip()
+        if not marker.startswith("```"):
+            continue
+        if not inside_fence:
+            inside_fence = True
+            continue
+        if marker != "```":
+            return False
+        inside_fence = False
+    return not inside_fence
 
 
 def _write_generated_text(
