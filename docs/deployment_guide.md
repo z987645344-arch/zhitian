@@ -29,7 +29,7 @@
 - 64 位 Linux 服务器，或用于 Phase A 验证的 Windows 11 + WSL2。
 - Docker Engine/Client 与 Docker Compose 插件。当前真实验证版本为 Docker 29.6.2、Compose 5.3.1；生产安装优先使用同版本或更新的稳定版。较旧版本未进入本项目兼容矩阵。
 - Git，用于取得后端、管理后台和独立部署配置三个仓库。
-- 宿主机 80 端口未被其他服务占用。Phase B 接入 TLS 后再增加 443；本轮不配置证书。
+- 当前Phase B实例需在`zhitian-deploy/.env`填写`SERVER_PUBLIC_IP`；宿主机网卡必须真实拥有该地址，且该地址的TCP 80未被其他服务占用。其他网卡地址上的80可供同机其他独立项目使用。Phase B接入TLS后再为知天专属IP增加443；本轮不配置证书。
 
 版本核对：
 
@@ -144,16 +144,19 @@ docker compose ps
 docker compose up -d --build
 ```
 
-预期服务为`zhitian-api`、`zhitian-admin`、`zhitian-web`和`reverse-proxy`，最终均显示`healthy`。只有反向代理映射宿主机80；8000和8080只在Docker网络内使用。
+预期服务为`zhitian-api`、`zhitian-admin`、`zhitian-web`和`reverse-proxy`，最终均显示`healthy`。只有反向代理映射宿主机`${SERVER_PUBLIC_IP}:80`；8000和8080只在Docker网络内使用。真实IP只保存在部署仓库未跟踪的`.env`中，Phase C由客户填写其服务器地址。
 
 ## 6. 健康验收
 
-```powershell
-curl.exe --fail --silent --show-error http://127.0.0.1/
-curl.exe --fail --silent --show-error http://127.0.0.1/login.html
-curl.exe --fail --silent --show-error http://127.0.0.1/customer/login.html
-curl.exe --fail --silent --show-error http://127.0.0.1/api/health
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+```bash
+set -a
+. ./.env
+set +a
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/login.html"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/customer/login.html"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/health"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 ```
 
 Linux服务器把`curl.exe`替换为`curl`。验收含义：
@@ -172,7 +175,7 @@ docker compose logs --tail 100 zhitian-web
 docker compose logs --tail 100 reverse-proxy
 ```
 
-最后在浏览器打开`http://127.0.0.1/login.html`，用一次性管理员登录并完成真实 developer 接管。Phase B改用正式 HTTPS 地址，此处不预填域名。
+最后在浏览器打开`http://<SERVER_PUBLIC_IP>/login.html`，用一次性管理员登录并完成真实developer接管。正式DNS/HTTPS完成后改用域名，此处仍不预填真实IP或尚未确定的域名。
 
 全新实例无需再为备份做任何额外准备。F33曾使`files.db`只在第一次个人文件操作时懒创建，而备份脚本要求三库同时存在，导致完全未使用个人文件功能的空白实例首次备份报“缺少必须备份的SQLite文件”；该问题已于2026-08-01修复——`layers/files_store.py`补了模块级`init_db()`，与auth/memory两库时机一致，应用一启动三库即齐备。实测全新空卷零文件操作即可直接完成首次备份。
 

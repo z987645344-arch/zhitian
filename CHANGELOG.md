@@ -1,6 +1,6 @@
 # 知天（zhitian）改动记录
 > Codex每次完成改动后必须追加到此文件
-> **最后追加：2026-08-09**
+> **最后追加：2026-08-13**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -1283,3 +1283,10 @@
 - **修复方式**：`auth.list_documents()`新增与pending/verified一致的可选`organization_ids` SQL范围参数；reviewer入口复用`_reviewer_organization_scope()`下推过滤，空范围直接为空，同时禁止审核员展示缺少SQLite组织归属的Chroma孤儿记录。employee仍只看到本人上传记录；`GET /documents`原本由`require_employee`限定employee/reviewer，developer仍返回403，本轮不借安全修复扩大RBAC契约。
 - **精确安全回归**：双组织用例同时构造法律/财务的pending与verified文档，法律reviewer得到的`doc_id`集合、`total`、`organization_id/name`精确等于法律组织两份记录；另以“所属组织无文档、外组织只有Chroma记录”验证返回空列表。既有跨组织预览/删除/审批拒绝、本组织正常操作及employee本人文档行为继续通过，组织权限文件共`21 passed`。
 - **权威回归**：Python 3.10编译通过；`run_tests.bat -q`为`401 passed, 5 deselected in 226.44s`，较399基线新增2项安全边界测试，无新增失败。
+
+## 2026-08-13 同机多IP部署的反向代理专属地址绑定
+- **跨项目协调来源**：知了Hub侧排查确认，知天原`80:8080`会让Docker发布端口通配监听`0.0.0.0:80`，按Linux通配符绑定规则必然阻止同机知了Hub再绑定其专属公网IP的80端口。外部只读核验进一步确认两块公网地址的`/api/ready`当时都返回知天相同结构的ready响应，说明知天入口确实覆盖了两块公网地址；真实IP不写入本记录。
+- **配置调整**：独立`zhitian-deploy`仓库的`reverse-proxy.ports`由`80:8080`改为`${SERVER_PUBLIC_IP}:80:8080`，实例真实IP只放在同目录且被Git忽略的`.env`；跟踪的`.env.example`只保留`CHANGE_ME_SERVER_IP`。当前没有443发布配置，因此本轮没有虚构或提前加入HTTPS映射。Phase C客户使用同一变量填写自己的入口地址，不继承个人服务器IP。
+- **不受影响的调用链**：反代健康检查仍在容器内请求`127.0.0.1:8080/api/ready`；API、管理后台与customer网页端分别通过Docker网络和服务名`zhitian-api:8000`、`zhitian-admin:8080`、`zhitian-web:8080`通信。后端CI的`.env`缺失、`/app/data`空目录和非root门禁只针对Dockerfile构建出的镜像，不读取Compose宿主机端口映射，因此本次调整不改变两道安全门禁。
+- **验证状态**：使用临时非真实IP写入部署仓库同目录`.env`后，`docker compose config --quiet`退出码0，确认Compose会按标准机制自动读取同目录`.env`并代入ports占位符；临时文件随即删除。当前Codex任务没有附加SSH终端，本机现有凭据对服务器的`ubuntu`/`root`均要求密码，因此尚未在生产机执行保卷`down/up`、`ss`监听核验和浏览器回归；这些结果不得伪写为已完成，待取得SSH会话后补齐。
+- **配置输出安全教训**：本轮曾误用会展开`env_file`的`docker compose config --format json`，使本机开发`.env`值进入任务工具输出；没有写入Git或镜像，但仍应把仍有效的相关凭据视为需要轮换。以后含真实`env_file`的Compose只允许用`docker compose config --quiet`做语法验证，或使用不会展开敏感值的专门检查方式，禁止把完整解析结果输出到日志/任务记录。
