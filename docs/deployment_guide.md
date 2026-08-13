@@ -27,7 +27,7 @@
 ### 2.1 软件
 
 - 64 位 Linux 服务器，或用于 Phase A 验证的 Windows 11 + WSL2。
-- Docker Engine/Client 与 Docker Compose 插件。当前真实验证版本为 Docker 29.6.2、Compose 5.3.1；生产安装优先使用同版本或更新的稳定版。较旧版本未进入本项目兼容矩阵。
+- Docker Engine/Client 与Docker Compose插件。**Compose最低版本为2.30.0**，因为API服务使用`env_file.format: raw`原样注入后端密钥配置；当前真实验证版本为Docker 29.6.2、Compose 5.3.1。生产安装优先使用当前稳定版，低于2.30.0不受支持。
 - Git，用于取得后端、管理后台和独立部署配置三个仓库。
 - 当前Phase B实例需在`zhitian-deploy/.env`填写`SERVER_PUBLIC_IP`；宿主机网卡必须真实拥有该地址，且该地址的TCP 80未被其他服务占用。其他网卡地址上的80可供同机其他独立项目使用。Phase B接入TLS后再为知天专属IP增加443；本轮不配置证书。
 
@@ -79,11 +79,11 @@ git clone https://github.com/z987645344-arch/zhitian.git
 git clone https://github.com/z987645344-arch/zhitian_admin.git
 git clone https://github.com/z987645344-arch/zhitian-deploy.git
 git -C zhitian fetch --tags origin
-git -C zhitian checkout --detach deploy-shared-server-v1
+git -C zhitian checkout --detach v3.3
 git -C zhitian_admin fetch --tags origin
 git -C zhitian_admin checkout --detach v3.2
 git -C zhitian-deploy fetch --tags origin
-git -C zhitian-deploy checkout --detach deploy-shared-server-v1
+git -C zhitian-deploy checkout --detach v3.3
 cd zhitian-deploy
 ```
 
@@ -91,13 +91,13 @@ cd zhitian-deploy
 
 生产服务器必须执行`git fetch --tags`后checkout到运维单指定的**精确标签**，不得用`git pull`直接跟随`master`或`main`。分支顶端可能包含尚在开发、尚未完整验收的提交；标签让运行源码可复现，并能和备份、镜像及验收记录建立确定对应。生产工作树处于detached HEAD是这里的预期状态，不应在服务器上直接开发或提交。
 
-当前共享服务器里程碑的仓库对应关系是：
+当前共享服务器生产组合是：
 
-- 后端`zhitian`使用`deploy-shared-server-v1`。它的落点在后端`v3.2`之后，**累计包含**`v3.2`功能以及其后的F49安全修复和共享服务器部署边界；同一仓库不能也不需要再叠加checkout `v3.2`。
-- 部署配置`zhitian-deploy`使用`deploy-shared-server-v1`，取得`${SERVER_PUBLIC_IP}:80:8080`变量绑定和对应`.env.example`。
+- 后端`zhitian`使用`v3.3`。它累计包含`v3.2`功能、其后的F49安全修复、共享服务器部署边界以及Compose `env_file`原样注入规范；同一仓库不能也不需要再叠加checkout `v3.2`。
+- 部署配置`zhitian-deploy`使用`v3.3`，取得`${SERVER_PUBLIC_IP}:80:8080`变量绑定、对应`.env.example`及`env_file.format: raw`加固。
 - 管理后台`zhitian_admin`本轮没有共享服务器专属改动，继续使用其精确落在当前稳定HEAD的`v3.2`。
 
-因此“功能版本`v3.2`”与“部署里程碑`deploy-shared-server-v1`”描述的是不同维度，不是全局只能二选一的单一版本号；应按仓库使用上面的组合。Flutter客户端不在服务器Compose构建目录内，其桌面发布版本继续单独管理。
+`v3.3`已把原先分散记录的共享服务器部署能力收进正常3.x发布序列；生产环境按仓库使用上面的精确组合，不应把三个仓库误认为必须拥有相同标签。Flutter客户端不在服务器Compose构建目录内，其桌面发布版本继续单独管理。
 
 ## 4. 准备生产配置
 
@@ -108,7 +108,7 @@ cp ../zhitian/.env.example ../zhitian/.env
 cp .env.example .env
 ```
 
-用UTF-8无BOM分别编辑`../zhitian/.env`和部署仓库同目录`.env`，替换所有`CHANGE_ME_*`；后者只填写本机`SERVER_PUBLIC_IP`供Compose变量插值。两份真实`.env`均被各自仓库忽略。不得把开发机真实`.env`复制到服务器，也不得把密钥或真实IP写进Compose、Dockerfile、Git或命令历史。后端变量格式和生成方式见`../zhitian/docs/production_configuration.md`及`../zhitian/.env.example`。
+用UTF-8无BOM分别编辑`../zhitian/.env`和部署仓库同目录`.env`，替换所有`CHANGE_ME_*`。后端文件必须逐行使用不带引号的`KEY=value`格式；Compose通过`env_file.format: raw`原样注入，防止值中的`$`被插值，同时也意味着`KEY="value"`的引号会被当成真实值。部署仓库的`.env`只填写本机`SERVER_PUBLIC_IP`，继续用于Compose YAML变量插值，不属于`raw`注入范围。两份真实`.env`均被各自仓库忽略。不得把开发机真实`.env`复制到服务器，也不得把密钥或真实IP写进Compose、Dockerfile、Git或命令历史。后端变量格式和生成方式见`../zhitian/docs/production_configuration.md`及`../zhitian/.env.example`。
 
 Phase A本地验证可以使用本地 Origin；Phase B必须把`CORS_ORIGINS`收紧为实际 HTTPS 管理后台 Origin并移除`null`。Compose会在运行时把`.env`注入 API，镜像构建上下文不会包含它。
 

@@ -172,6 +172,7 @@
 | mcp 1.28.1 联动版本 | 已于 2026-07-15 升级，并联动精确锁定 `uvicorn==0.51.0`、`PyJWT==2.13.0` | 不要单独漂移其中一个版本；升级前需复核 FastAPI 启动、JWT 和 SSE 事件顺序 |
 | Chroma 0.5.0 全局变量 | 非线程安全 | 多请求并发可能竞态，如果要改需要加锁 |
 | .env BOM 污染 | python-dotenv 无法识别首行变量名 | .env 改动后确认无 BOM |
+| Docker Compose `env_file`插值 | 默认解析会把值中的`$...`当作变量引用，bcrypt哈希或未来外部凭据可能被误解析/截断；`format: raw`从Compose 2.30.0起可用 | 生产API的`env_file`必须使用`path + format: raw`长语法；部署前确认`docker compose version --short >= 2.30.0`，后端`.env`逐行采用不带引号的`KEY=value`。不得输出完整`docker compose config`，只用`--quiet`验证语法 |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |
 | Codex 沙盒 PATH | 与本机不一致 | 运行时验证需用提权方式调 .venv\Scripts\python.exe |
 | Python 3.10 | 不支持 `X \| Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
