@@ -34,18 +34,21 @@ docker image inspect zhitian-web:dev-production --format "{{.Id}} {{.RepoTags}}"
 
 ### 2.3 更新代码
 
-先确认部署工作区没有未提交的人工修改，再取得指定commit或版本标签。不要在脏工作树上直接覆盖文件。
+先确认部署工作区没有未提交的人工修改，再取得运维单指定的版本标签。不要在脏工作树上直接覆盖文件，也不要在生产服务器执行`git pull`跟随`master`/`main`；分支顶端可能包含尚未完成发布验收的改动。
 
-```powershell
-git -C ..\zhitian status --short
-git -C ..\zhitian_admin status --short
+```bash
+git -C ../zhitian status --short
+git -C ../zhitian_admin status --short
 git status --short
-git -C ..\zhitian fetch --tags origin
-git -C ..\zhitian_admin fetch --tags origin
+git -C ../zhitian fetch --tags origin
+git -C ../zhitian_admin fetch --tags origin
 git fetch --tags origin
+git -C ../zhitian checkout --detach deploy-shared-server-v1
+git -C ../zhitian_admin checkout --detach v3.2
+git checkout --detach deploy-shared-server-v1
 ```
 
-具体`checkout`目标必须来自已审核的发布记录，本指南不虚构尚不存在的发布标签。
+以上是当前共享服务器里程碑的已审核组合。后端`deploy-shared-server-v1`是`v3.2`的后代，已累计包含`v3.2`功能、其后的F49安全修复及共享服务器部署边界；不是在同一工作树中先checkout `v3.2`再叠加另一个标签。部署仓库使用同名部署标签，管理后台继续使用`v3.2`。以后升级时必须把三个目标替换为新运维单明确列出的精确标签，并记录`git rev-parse HEAD`；不得擅自把示例理解为永久最新版本。
 
 ### 2.4 重建并启动
 

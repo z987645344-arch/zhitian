@@ -1290,3 +1290,8 @@
 - **不受影响的调用链**：反代健康检查仍在容器内请求`127.0.0.1:8080/api/ready`；API、管理后台与customer网页端分别通过Docker网络和服务名`zhitian-api:8000`、`zhitian-admin:8080`、`zhitian-web:8080`通信。后端CI的`.env`缺失、`/app/data`空目录和非root门禁只针对Dockerfile构建出的镜像，不读取Compose宿主机端口映射，因此本次调整不改变两道安全门禁。
 - **验证状态**：使用临时非真实IP写入部署仓库同目录`.env`后，`docker compose config --quiet`退出码0，确认Compose会按标准机制自动读取同目录`.env`并代入ports占位符；临时文件随即删除。当前Codex任务没有附加SSH终端，本机现有凭据对服务器的`ubuntu`/`root`均要求密码，因此尚未在生产机执行保卷`down/up`、`ss`监听核验和浏览器回归；这些结果不得伪写为已完成，待取得SSH会话后补齐。
 - **配置输出安全教训**：本轮曾误用会展开`env_file`的`docker compose config --format json`，使本机开发`.env`值进入任务工具输出；没有写入Git或镜像，但仍应把仍有效的相关凭据视为需要轮换。以后含真实`env_file`的Compose只允许用`docker compose config --quiet`做语法验证，或使用不会展开敏感值的专门检查方式，禁止把完整解析结果输出到日志/任务记录。
+
+## 2026-08-13 `deploy-shared-server-v1`部署拓扑里程碑与生产标签纪律
+- **独立于3.x功能版本**：后端`zhitian`和独立部署仓库`zhitian-deploy`均新增注释标签`deploy-shared-server-v1`，表示知天首次通过`SERVER_PUBLIC_IP`专属地址绑定支撑同机多项目共享基础设施，不把这类部署拓扑变化伪装成新的产品功能版本。
+- **精确落点**：后端标签解引用到`0754fdd6785dfe4a124da7fd35a4024a10b613a1`，部署仓库标签解引用到`b46dfb3d13b3f7ef89741364dbb2f392f7120d9a`；两者均在打标前确认工作区干净、本地HEAD与远程分支一致。后端`v3.2`落点`f0aa2ab7349a481fb1e8957e82030804bffbc59b`且是新部署标签祖先，因此部署标签累计包含`v3.2`和其后的F49安全修复，不是二选一或叠加checkout。
+- **生产更新纪律**：安装和升级文档改为`git fetch --tags`后按仓库`git checkout --detach <目标标签>`，明确禁止生产服务器用`git pull`盲跟`master/main`。当前组合为后端与部署仓库使用`deploy-shared-server-v1`、管理后台使用`v3.2`；未来必须由新运维单显式替换各仓库目标，避免把进行中代码意外带入生产。
