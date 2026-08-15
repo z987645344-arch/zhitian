@@ -32,6 +32,22 @@ from utils import observability
 
 logger = get_logger("main")
 
+
+def _read_application_version() -> str:
+    """从仓库唯一版本文件读取应用版本；缺失或格式损坏时拒绝启动。"""
+    version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+    try:
+        with open(version_path, "r", encoding="utf-8") as version_file:
+            version = version_file.read().strip()
+    except OSError as exc:
+        raise RuntimeError("无法读取应用版本文件：%s" % version_path) from exc
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?", version):
+        raise RuntimeError("VERSION文件内容无效，必须是语义化版本号")
+    return version
+
+
+APP_VERSION = _read_application_version()
+
 # DirectMail 当前免费额度，仅用于展示对照，不做动态配置。
 EMAIL_DAILY_LIMIT = 200
 
@@ -175,7 +191,7 @@ async def lifespan(app: FastAPI):
             logger.warning("关闭Chroma资源失败：error_type=%s", type(e).__name__)
 
 
-app = FastAPI(title="知天 Agent API", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="知天 Agent API", version=APP_VERSION, lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -725,7 +741,7 @@ def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List
 
 @app.get("/")
 async def root():
-    return {"message": "知天 Agent 运行中", "version": "3.0.0"}
+    return {"message": "知天 Agent 运行中", "version": APP_VERSION}
 
 
 @app.get("/health")

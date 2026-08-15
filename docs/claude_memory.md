@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-13**（共享服务器专属IP绑定与Compose `env_file.format: raw`统一纳入v3.3；服务器版本、无引号格式与重启回归等待SSH会话实测）
+> **最后更新：2026-08-15**（完成文档审计整理，并校准配置模板、生产注入口径与三端版本源；已解决问题回归CHANGELOG，历史架构决策移入`docs/history/`）
 
 ---
 
@@ -17,9 +17,8 @@
 | 开发者 | Zheng，大三 |
 | 技术设计 | 见 docs/zhitian_structure.md |
 | 工作手册 | 见 docs/claude_skill.md |
-| 仓库状态 | zhitian / zhitian_admin / zhitian_app 三个仓库均已在 GitHub 公开。常规代码/测试流水线已建立；后端容器工作流的应用导入与`/ready`门禁通过，但漏洞策略门禁仍因F38及系统层无修复版本项保持红灯，不能再笼统表述为“CI均通过” |
-
-> 2026-07-22 已完成三仓库归拢迁移：Codex/WorkBuddy工作区根目录仍为`D:\zhiliao\zhitian\`，三个实际仓库内容下沉一层，`.git`历史完整，历史对话上下文继续有效。
+| 部署仓库 | D:\zhiliao\zhitian\zhitian-deploy\（私有仓库，与三个应用仓库同级） |
+| 仓库状态 | zhitian / zhitian_admin / zhitian_app 三个应用仓库已公开，zhitian-deploy保持私有。常规代码/测试流水线已建立；后端容器工作流的应用导入与`/ready`门禁通过，但漏洞策略门禁仍因F38及Debian系统层无修复版本项保持红灯，不能笼统表述为“CI均通过” |
 
 > 补充定位（2026-07-16 对话中澄清）：开发者本人计划长期自用此项目，核心诉求是“方便持续接入新工具/小能力”，类似 Codex 那种可扩展体验，不只是学习/作品集用途。这是 MCP 相关工作（版本升级、`mcp_connector.py`）优先级被提前、且放弃采用 `langchain-mcp-adapters` 改为自建通用连接层的核心原因：自建是为了不受 LangGraph 版本绑定，同时保留协议实现的可控性。
 
@@ -54,15 +53,13 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A的功能验证已闭合。本轮安全核实曾发现P1级F49（审核员`GET /documents`跨组织元数据泄露），现已修复并完成双组织回归；当前再次没有已知开放P0/P1，但不能把这一结论理解为已有不可篡改审计或所有接口均完成形式化安全证明。上传体积预筛现为5MB，真实处理成本仍由2,000切片上限约束。当前F编号开放项为F38（P2，已接受风险并等待上游条件）、F39（P3，Chroma单例关闭句柄）、F44（P3，expert路径不够经济）与F48（P3，入库SSE只有起止两级进度）。后端容器漏洞策略门禁仍红，原因是F38与Debian系统层无修复版本项，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-11修复安全核实发现的F49：`GET /documents`的reviewer分支复用`_reviewer_organization_scope()`，把组织范围下推到`auth.list_documents()`的SQL查询；同时取消审核员对无权威SQLite归属的Chroma孤儿记录全量兜底。双组织测试精确断言只返回所属组织的pending/verified文档，范围内无记录时也不泄露外组织Chroma元数据；employee仍只看本人上传，developer仍按既有`require_employee`契约无权调用该端点。组织隔离针对性`21 passed`，权威回归`401 passed, 5 deselected` |
+| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题为L9、F14、F21、F22、F24、F38、F39、F44、F48；后端容器漏洞策略门禁因F38及Debian系统层无修复版本项保持红灯，不代表应用功能回归 |
+| 上一轮完成 | 2026-08-15完成Phase B前配置源高优先级校准：后端`.env.example`由18项补至58项（完整覆盖57项应用配置+1项备份密钥），生产配置文档按当前Compose真实注入方式更正；后端/管理后台/Flutter源码版本统一为`3.4.0/3.2.0/3.2.0+320`，后端运行版本严格读取VERSION。权威回归403 passed、Flutter analyze无问题；CI继续从VERSION生成3.4.0镜像标签 |
 | 当前等待 | 腾讯云Phase B实例已运行四服务；同机多IP入口与Compose `env_file.format: raw`加固统一归入后端/部署仓库`v3.3`。当前任务未附加SSH终端，尚待在服务器核对Compose真实版本、后端`.env`是否全部为无引号`KEY=value`，随后才能执行保卷`down/up`及ready/管理后台/customer浏览器回归；不得把本机验证冒充生产结果。网页版批次二剩余文件库、工具箱、欢迎页/附件展示等体验项根据后续指令安排；F44与F48继续保持P3待讨论 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
-| 文档优化 | 2026-07-16 完成：CHANGELOG历史精简，claude_skill.md第五、六章按当前状态校准并保留日期备份 |
-| 下一步 | 当前实施主线转入Phase B服务器落地：系统加固、DNS/HTTPS、生产密钥与CORS收紧、反向代理下SSE/限流、真实业务链路和服务器备份恢复演练。网页版按用户后续指令继续批次二剩余文件库、工具箱及欢迎页/附件展示完善。代码侧继续观察F38，F39保持P3；F44与F48均等待用户决定是否投入性能/进度体验优化。白标外售/二创仍只归档在Phase C，不占用当前资源 |
-
-> 补充跨仓库完成记录（2026-07-23，Batch 5）：`zhitian_admin`已完成独立`developer.html`控制台重设计（角色人数统计、developer/reviewer详情、特别关注、备注、最近密码重置、系统模块与可观测性视图），`reviewer.html`已调整员工审批导航顺序并增加最近密码重置展示，公开`forgot-password.html`已接入自助重置流程。本记录此前只写入管理后台仓库CHANGELOG，现已同步至项目级状态文档。
+| 文档状态 | 2026-08-15按审计结果校准运维入口、状态文档、工作手册与架构说明；历史架构决策和事故记录统一归入`docs/history/` |
+| 下一步 | 当前实施主线继续Phase B服务器落地：系统加固、DNS/HTTPS、生产密钥与CORS收紧、反向代理下SSE/限流、真实业务链路和服务器备份恢复演练。配置一致性审计只剩低优先级的F编号历史注释清理与统一只读配置快照评估；`PORT`/`RATE_LIMIT_PER_MINUTE`按产品决定只保留兼容声明，不投入使其在Compose/限流表之外生效的改造。网页版按后续指令继续批次二剩余功能；F38/F39/F44/F48维持当前状态，Phase C仍只归档不占用当前资源 |
 
 > 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单；无工具时1次模型调用，文档证据不足时2次，文档证据充分时最多3次，文件清单仍为2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
@@ -121,44 +118,15 @@
 
 | 编号 | 问题 | 位置 | 严重度 |
 |------|------|------|--------|
-| L1 | ✅ 已解决：保留MCP 1.28.1本地工具服务；未接入且不稳定的MinerU实验客户端已清理，不再作为待交付能力 | mcp_server.py / mcp_client.py | - |
 | L9 | 感知层/输出层是空壳 | perception.py(31行) / output.py(31行) | P2 |
-| L14 | ✅ 已解决：改为用户手动管理的持久化文件库，由owner通过“我的文件”主动下载和删除，而非自动清理策略 | layers/files_store.py / data/user_files | - |
 | F14 | DeepSeek客户端调用封装无连接池复用，每次请求新建连接 | layers/llm_provider.py | P3 |
 | F21 | convert_document 工具调用无显式Agent层预算/超时，依赖上游整体请求超时兜底 | execution.py convert_document | P3 |
 | F22 | 2026-07-19 Flutter真实使用中短时间内观察到多次DeepSeek `APITimeoutError`（重排序、长期记忆重要性判断、一次trace_id=none的调用），均`attempts=1`未见重试；即使重排序超时降级为hybrid原始顺序，回答仍正确，暂未构成功能故障，但值得作为F16可观测性告警评估的真实触发案例持续观察 | llm_provider.py / memory.py | P3（观察中） |
 | F24 | Windows MCP进程树测试曾报告`UnicodeDecodeError`，但指定用例连续5次及`PYTHONUTF8=1`附加复测均通过；两个相关文件自2026-07-17创建后未修改。风险点是测试辅助函数`_pid_exists()`以`text=True`读取`tasklist`本地化输出，原失败堆栈未留存，当前按历史环境敏感波动观察而非近期回归 | tests/test_mcp_connector.py `_pid_exists` | P3（低优先观察） |
-| F31 | ✅ 依赖安全主线已闭环：未使用的`langchain`顶层依赖与`langchain-text-splitters`已移除，`python-dotenv==1.2.2`；LangGraph依赖组已整体升级到`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`及三个拆分子包，目标漏洞归零；2026-08-08又联动升级`FastAPI==0.141.1`与`Starlette==1.4.1`，Starlette 5条CVE清零。当前仍可见的`cryptography`风险独立归F38，Debian系统包风险不再混写成F31未完成 | requirements.txt / `.github/workflows/container-ci.yml` | ✅ 已解决 |
-| F32 | ✅ 干净镜像曾把未锁定的NumPy解析到2.x，触发Chroma 0.5.0访问已移除`np.float_`而启动失败；现已显式锁定`numpy==1.26.4`，并以容器应用导入、`/ready`和Chroma读写硬门禁防止只看`pip check`漏检运行时不兼容 | requirements.txt / container CI | ✅ 已解决 |
-| F33 | ✅ `files.db`由懒创建改为应用启动初始化；全新空卷在零文件操作时即可备份，manifest会如实包含files库且该库schema version为null | layers/files_store.py / scripts/backup_data.py | ✅ 已解决 |
-| F34 | ✅ 恢复激活不再rename具名卷挂载点`/app/data`，改为在挂载点内部逐条原子替换三库及WAL/SHM、Chroma与user_files，并保留中断日志、整批撤销和完整性检查；真实具名卷备份→破坏→恢复往返差异为0 | scripts/restore_data.py / docs/backup_restore_guide.md | ✅ 已解决 |
-| F35 | ✅ 阻塞事件循环的解析/切分/向量化已下放线程池。嵌入模型现随镜像提供：F37之后改为下载自建、固定版本且强SHA-256校验的`bge-small-zh-v1.5` ONNX资产，不再依赖Chroma英文模型地址，也不在常规构建中下载torch/transformers；断网嵌入与Compose重建均已验证 | main.py / Dockerfile / layers/embedding.py | ✅ 已解决 |
-| F36 | ✅ 文档上传与知识录入已异步任务化：立即返回task_id，`GET /tasks/{id}/stream`提供真实任务状态与心跳、查询端点兜底；任务仅允许owner读取，启动时中断旧任务并清理SQLite/Chroma半成品，失败按Level1重试，组织内按内容哈希去重。当前上传体积预筛为5MB，处理成本仍由2,000切片上限控制。注意现有Chroma写入是整批调用，SSE只在开始显示0、完成显示100，批次级增量属于F48 | main.py / layers/task_store.py / zhitian_admin | 已完成（异步任务化，进度粒度另见F48） |
-| F37 | ✅ 已切换到MIT许可的`BAAI/bge-small-zh-v1.5`自研ONNX实现，512维、max length 512、阈值0.55；109条存量向量已完成迁移，Compose中文检索与无关拒答均通过。F37当时曾因向量速度下调体积上限，2026-08-11在异步化已稳定的前提下按体验反馈重新放宽至5MB，但2,000切片护栏未变，模型迁移和成本边界均未回退 | layers/embedding.py / scripts/migrate_embeddings.py / Dockerfile | ✅ 已解决 |
 | F38 | `cryptography==48.0.1`仍报告3条CVE，但项目只使用AES-GCM，未调用漏洞所在的X.509链验证或PKCS7解密；升级到彻底修复版50.0.0会违反最新版`alibabacloud-tea-openapi`声明的`cryptography<49.0.0`。用户已明确选择维持现状；待上游放宽上界、替换邮件SDK或项目开始使用受影响API时重新评估 | requirements.txt / scripts/backup_data.py / DirectMail传递依赖 | P2（已接受风险，等待触发条件） |
 | F39 | `close_resources()`对Chroma 0.5.0客户端调用不存在的`close`方法，底层句柄实际未主动释放。客户端是模块级单例，生产关闭后进程随即退出且Linux不受Windows目录rename限制，当前无可观测生产影响；若改为每请求建客户端或要求进程内替换vectordb，需提高优先级 | layers/memory.py `close_resources` | P3（待修复，当前无生产影响） |
-| F40 | 转换integration测试已补齐工作组织关联与必填`organization_id`，真实走到LibreOffice并完成DOC/XLS/XLSX/PPT/PPTX五次转换；`converted_from`、上传者、Chroma元数据与doc_id数量断言全部保留 | tests/test_converter_integration.py | ✅ 已解决 |
-| F41 | 已完成提交`053fa67`破坏性契约的全调用方审计：真正变更只有`/documents/upload`与`/knowledge/input`的组织参数，静态搜索发现的两处遗漏均集中在同一integration测试，并分别由F40/F42修复；其余客户端、脚本和测试调用均已核对 | 组织归属端点及全部调用方 | ✅ 已解决（审计完成） |
-| F42 | 超限转换用例已补`organization_id`并保留正确的422；新增`detail="文件超过转换大小限制"`精确断言，能区分“转换大小限制”与“缺参数”这两种同码响应，测试不再假通过 | tests/test_converter_integration.py / layers/converter.py | ✅ 已解决 |
-| F43 | `pypdf`已由6.14.2升至6.15.0，`CVE-2026-71852`与`CVE-2026-71870`归零。静态调用图、运行时插桩和正对照确认当前项目的合并/拆分及pdfplumber文本提取路径不触达漏洞；仍升级是因为依赖图零扰动且可防未来代码演进使攻击面成立 | requirements.txt / layers/pdf_tools.py | ✅ 已解决 |
 | F44 | expert在本地文档已有高分命中时仍可能走不经济的后续路径：本次“什么是宪法”本地命中0.57（超过0.55阈值），但重排序一次超时降级后仍追加联网搜索，总耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志确认无卡死、无异常重试，回答与引用正确，属于性能体验问题而非功能缺陷；暂不排期，后续讨论是否在本地证据充分时跳过联网搜索 | layers/planning.py / layers/execution.py | P3（待讨论） |
-| F45 | ✅ 已修复：generate_file的MD交付现在只在首行恰为```markdown或```、末行恰为```且候选外层内部的三反引号代码块全部成对闭合时剥离首尾；正文中间的合法代码块原样保留，内部围栏不平衡或类型为```python等非Markdown整篇包装时拒绝剥离。生成提示同步要求不要把整篇正文包在围栏中、允许内部代码块。网页版与Flutter真实生成均确认外层消失；Flutter成品的`python`代码块首尾完整 | layers/planning.py / layers/execution.py `generate_file` | ✅ 已解决（2026-08-11） |
-| F46 | ✅ 已修复：同一会话连续生成文件时，上一轮“文件已生成/下载地址”曾被下一轮正文模型模仿并产生虚构文件ID。现由`main.py`根据成功的结构化generate_file `ToolResult`把助手历史标为`file_delivery`，`execution.py`仅在generate_file正文组装时按该类型排除助手交付结果；没有关键词或正则判断，普通聊天中即使出现同样文字也不会被误删。用户此前确实要求生成文件的原始请求仍保留，助手交付文案也不再进入长期向量记忆。网页版与Flutter同会话MD→TXT真实复测均未再出现交付文案或虚构ID；F45已于2026-08-11独立解决 | layers/memory.py / layers/execution.py `_build_model_messages` / main.py聊天历史落库 | ✅ 已解决（2026-08-10） |
-| F47 | ✅ 已修复：PDF/DOCX仍沿用“模型Markdown→临时`.md`→LibreOffice”转换架构，但generate_file现在在四种支持格式的共同入口统一调用F45的`_strip_complete_outer_markdown_fence()`；因此PDF/DOCX写临时文件前已经归一化，TXT的同类遗漏也同步闭环。首末完整围栏、内部代码块平衡和歧义保守不处理三项安全边界完全复用，没有第二套实现。真实PDF/DOCX抽取、网页版PDF下载与Flutter DOCX下载均确认外层反引号消失、内部Python代码块完整 | layers/execution.py `generate_file` / layers/converter.py `convert_file` | ✅ 已解决（2026-08-11） |
 | F48 | 入库任务SSE字段是真实数据库状态，不是前端伪造，但当前`_run_ingest_task()`只在开始写`progress=0/processed_chunks=0`，`memory.save_document()`一次性调用Chroma `collection.add()`，完成后才写`progress=100/processed_chunks=N`；因此用户看到0/79直接跳79/79是现有实现的必然表现，不是小文档处理过快，也不存在绕开F36的第二条旧上传路径。若要连续进度，需把向量写入改为可回滚/可清理的分批提交并增加回调，不能只在前端造假百分比 | main.py `_run_ingest_task` / layers/memory.py `save_document` / zhitian_admin `trackIngestProgress` | P3（体验问题，待决定是否重构） |
-| F49 | ✅ 已修复：安全核实时发现`GET /documents`的reviewer分支直接调用全量`auth.list_documents()`，可跨组织读取文档元数据；且范围内无SQLite记录时，旧Chroma孤儿兜底仍可能返回无法授权的全量向量文档。现由reviewer复用`_reviewer_organization_scope()`并把范围下推到SQL，空范围直接返回空列表，同时禁止审核员展示缺少权威SQLite组织归属的Chroma孤儿记录。双组织用例精确验证只返回所属组织的pending/verified文档，外组织文档与孤儿向量均不可见；employee和developer既有契约不变 | main.py `_list_documents_for_user` / layers/auth.py `list_documents` / tests/test_document_organization.py | ✅ P1已修复（2026-08-11安全核实发现） |
-
-### F31/F38安全扫描当前状态（2026-08-09）
-
-- **F31已关闭**：`langchain`/`langchain-text-splitters`移除，`python-dotenv`修复；LangGraph、langchain-core、LangSmith依赖组整体迁移完成；FastAPI/Starlette又于2026-08-08升级到`0.141.1/1.4.1`。F31涉及的Python依赖漏洞已按当前扫描口径清零。
-- **Starlette已根治**：`CVE-2026-54283`及另外4条记录均由版本升级消除，不再是“中间件缓解”。`reject_urlencoded_on_upload_endpoints`继续保留，只因这5个文件上传端点合法请求体必须是multipart，解析前返回415是更准确的常规输入校验。
-- **F43已关闭**：`pypdf==6.15.0`使两条资源耗尽型CVE归零。最新已记录的pip-audit结果为**3条/1包**，全部属于F38的`cryptography==48.0.1`。
-- **F38为已接受风险，不属于F31未完成**：相关3条CVE均位于项目未使用的X.509链验证或PKCS7解密面；最新版DirectMail传递依赖仍声明`cryptography<49.0.0`，用户已选择等待上游放宽，触发条件见遗留表F38。
-- **容器漏洞策略仍可能红灯**：除F38外，Debian基础层/LibreOffice间接依赖中的`perl-base`、`libglib2.0-0t64`、`libxml2`曾报告无可用修复版本项。应用导入、`/ready`与功能回归通过，不应把扫描门禁红灯误写成F31功能仍未解决。
-
-> 2026-07-31至2026-08-08的原始artifact哈希、逐CVE可达性、候选版本、隔离分支试验与扫描数字演进均保留在`CHANGELOG.md`；本交接文档只保留当前结论。
-
-> 2026-07-28：F26-F30均已修复，历史证据保留在CHANGELOG。
 
 ---
 
@@ -168,24 +136,13 @@
 
 ### Phase A：自用云端MVP，不依赖真实服务器
 
-- [x] **Docker安全基线代码**：后端新增`.dockerignore`，排除`.env*`、`data/`、`.venv/`等敏感/运行内容；Dockerfile保持Python 3.10、依赖层先行、非root `appuser`和显式Uvicorn启动。
-- [x] **Docker运行验证**：Docker Desktop 29.6.2+WSL2下以`zhitian-api:dev-security-baseline`构建成功，构建上下文961.30kB；容器内无`.env`、`/app/data`为空目录、`whoami=appuser`且`import fastapi`无报错。
-- [x] **完整后端生产镜像（含当前源码干净重建验收）**：历史`zhitian-api:dev-production`已验证LibreOffice Writer/Calc/Impress nogui、Noto CJK、非root目录、`/ready`、中文DOCX→PDF、异常503和SIGTERM优雅退出，镜像约471.6MB。2026-07-31从当前依赖重建时曾出现NumPy/Chroma运行时不兼容（F32）；2026-08-01锁定`numpy==1.26.4`后已用`--no-cache`完成干净重建并通过启动、`/ready`与Chroma读写验证，**当前源码镜像发布验收已闭合**，详见F32条目。
-- [x] **管理后台容器**：`zhitian-admin:dev-production`以非root `nginx`在8080托管静态资源；API地址优先读取`config.js`、缺省同源`/api`，HTML/config不长期缓存、静态资源缓存1小时，严格CSP等安全头和目录浏览关闭均经真实HTTP/浏览器验证。镜像26,096,171字节（约24.9MiB）。
-- [x] **自用Compose部署（四服务编排、独立部署仓库与当前源码镜像均已验证）**：私有仓库`https://github.com/z987645344-arch/zhitian-deploy`跟踪`docker-compose.yml`和`nginx/compose-nginx.conf`，部署时与`zhitian`、`zhitian_admin`两个应用仓库同级clone；`/api/`、`/`和`/customer/`分别转发对应内部服务，8000/8080不可直连。`zhitian-mvp-data`持久化`/app/data`，转换目录为256MiB tmpfs，API限制2GiB/2 CPU，服务使用`unless-stopped`与日志轮转。2026-08-13源码把反代宿主机发布地址由通配80收窄为`${SERVER_PUBLIC_IP}:80`，避免占用同机其他项目的专属公网入口；真实IP只进入未跟踪`.env`，静态Compose插值已通过，生产保卷重启/监听与页面回归等待SSH会话后补齐
-- [x] **一次性管理员引导（脚本侧已完成）**：新增生产/云端专用`scripts/seed_prod_admin.py`，人工显式执行时生成20位、含大小写字母/数字/符号的随机一次性密码，仅输出到stdout；检测到启用中的真实developer、文档/非种子组织/会话业务数据或既有0号账号时拒绝初始化，不接入应用或容器启动流程。继续保留“0号占位developer只批准首个真实developer、随后同事务失活”的信任链；Phase B首次引导期间“仅允许内网/VPN访问”仍待服务器阶段落实。
-- [x] **自用生产配置（模板与注入规范已完成）**：根目录`.env.example`覆盖当前真实`.env`的17个既有变量，并新增生产备份所需的`BACKUP_ENCRYPTION_KEY`占位项，共18项且全部为`CHANGE_ME_*`；真实开发`.env`按任务边界保持原样，不会被模板自动修改。`docs/production_configuration.md`明确区分本地`.env`、开发机Compose `env_file`和Phase B服务器私有配置注入，真实值不进入镜像或Git。当前数据库路径不是环境变量，仍统一位于`data/`并由Compose挂载`/app/data`；`CORS_ORIGINS`中的`null`暂为`file://`/桌面壳调试保留，Phase B正式域名确定后必须移除。
-- [x] **数据生命周期（自用MVP脚本基线已完成，空白实例前置已解除）**：users/history/files SQLite、Chroma和`user_files`已具备加密一致性备份、恢复前安全备份、manifest校验、恢复后完整性检查、schema版本1、现有外键启动检查及人工回滚路径；开发清空脚本不再被当作生产恢复方案。已初始化三库的环境真实验证通过；全新空卷此前因files.db懒创建而无法备份（F33），2026-08-01改为应用启动即初始化files库后，空白实例首次备份已实测成功，**任意空白实例现在均可直接备份**。当前尚无版本2；Phase B仍需定时调度、异地副本和服务器实地恢复演练。
-  - 2026-07-31已用只读`scripts/check_orphan_data.py`扫描真实数据：组织成员、文档组织、组织申请的组织/用户、个人文件owner、会话用户及GraphRAG chunk→doc_id八类关系孤儿数均为0；`users.db`、`history.db`、`files.db`扫描前后SHA-256一致，作为启用既有外键检查和后续备份恢复验证的干净基线。
-  - 2026-07-31已完成schema版本与既有外键约束基线：users.db/history.db各自维护单行`schema_version=1`，首次接入自动写入，表结构损坏或未知版本拒绝启动；认证、历史与显式事务连接均启用`foreign_keys=ON`，FastAPI lifespan对两库执行`foreign_key_check`，发现违反时只记录表名/数量并拒绝启动。当前未实现多版本迁移链，也未为原本只有逻辑关联的表重建外键；首次出现版本2时再设计正式升级/降级迁移。
-  - 2026-07-31已完成`scripts/backup_data.py`与`restore_data.py`：三库使用`Connection.backup()`，Chroma目录快照复用业务共享RLock，ZIP后以独立`BACKUP_ENCRYPTION_KEY`流式AES-256-GCM加密；manifest包含schema、全表行数、collection数量、文件大小与SHA-256。恢复前自动用同一密钥备份当前数据，认证/哈希失败不切换，恢复后执行三库`integrity_check`/`foreign_key_check`和Chroma数量比对。两个命令都强制显式确认后端已停止；默认保留7份且任何配置至少留1份。隔离完整往返、篡改和保留策略均通过，真实data仅执行过只读源备份。
-- [x] **自用Windows客户端**：Flutter Windows源码发布版本为`3.0.0+300`，Release EXE的FileVersion/ProductVersion均真实一致；首次启动引导、登录/注册页认证前“服务器设置”、登录后的设置页修改、SharedPreferences持久化、远程HTTPS强制和网络/证书友好提示均已具备。Compose基址必须填写`http://localhost/api`，`http://localhost:8000`只适用于宿主机直接启动后端的调试场景。MSVC已显式使用`/utf-8`，Debug/Release及真实运行窗口标题均验证为“知天”。Inno Setup 6.7.3已重新生成`zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`），项目内固定携带匹配版本的简体中文翻译文件，避免依赖安装器本机缺失语言包；客户端注释标签`v3.0`精确落在`2fea214`。Phase B仍需填入真实自有HTTPS域名并做正式证书/业务验收；当前不签名，公开/商业分发所需Authenticode证书、白标品牌及Inno Setup商业许可或替代打包器继续留在Phase C。
-- [x] **自用部署CI/CD（基础设施与应用启动门禁已完成，漏洞策略门禁仍未全绿）**：后端/管理后台分别有push/PR容器工作流，VERSION+7位commit双标签、digest/14天artifact、安全基线和Trivy，后端另有pip-audit；应用导入、容器启动和`/ready`检查为硬门禁。F31依赖组、Starlette与pypdf问题均已闭环，当前pip-audit只剩F38的cryptography 3条/1包；容器策略仍会因F38及Debian系统层无修复版本项失败。5项integration只允许`workflow_dispatch`，普通push不触发，F40/F42修复后已实跑5/5通过；本阶段不推送registry
-- [x] **自用运维文档（文档交付已完成，部署仓库路径已同步）**：`docs/deployment_guide.md`、`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`覆盖三个仓库同级目录契约、配置/初始化/健康检查、备份恢复、schema v1升级预期、CI双标签回滚边界和容器故障。2026-08-09已把原“双仓库+共享文件”说明改为独立`zhitian-deploy`仓库，并同步四服务、相对路径和clone步骤；F32/F33历史预检说明继续保留作为同类问题排查依据。
-- [x] **本地干净环境验收**：2026-08-01首次全链路走查暴露的F34–F37已逐项修复；具名卷恢复已完成真实备份→破坏→恢复零差异复跑，阻塞事件循环与首次模型下载问题已解除，F36异步任务/SSE/去重已落地，F37中文模型与存量向量迁移已闭环。2026-08-08 Compose重建后又完成空卷0号引导、`/ready`、中文检索和无关问题拒答；F40/F42修复后5项integration全部通过。`v3.0`据此标记Phase A功能验证完成，隔离环境未绑定宿主机真实`data/`
+- [x] 已完成Docker安全基线、生产镜像、管理后台与customer静态站点容器、四服务Compose、一次性管理员引导、生产配置模板、schema/外键基线、加密备份恢复、Windows客户端、CI/CD基础门禁、运维文档和干净环境验收。当前运行约束保留在「已知技术约束」，完整实施与验证历史见`CHANGELOG.md`。
+- [x] 当前最新标签组合：后端`v3.4`、部署仓库`v3.3`、管理后台与Flutter客户端`v3.2`。生产服务器目前仍检出已使用的后端/部署`v3.3`，升级必须显式切换标签，不跟随`master/main`。
 
 ### Phase B：自用云端MVP，需要服务器后处理
 
+- [x] Phase B前配置一致性审计的三项高优先级偏差已处理：模板完整覆盖、生产Compose注入口径更正、三端版本源与当前标签语义对齐。`PORT`与`RATE_LIMIT_PER_MINUTE`均明确标注当前生效边界，按产品决定不投入功能改造；DirectMail代码默认发件地址已去项目域名。
+- [ ] 配置一致性审计剩余低优先级项：清理源码中已经失去当前价值的F编号历史依据注释；评估是否新增developer专用、同一事务读取并带时间戳/指纹的统一配置快照端点。当前三个独立只读接口已可人工审计，本项不阻塞Phase B。
 - [ ] 服务器系统加固、防火墙、最小开放端口、Docker与备份目标初始化。
 - [ ] 配置正式DNS、HTTPS证书和80→443跳转；仅反向代理暴露公网，后端8000不直接开放。
 - [ ] 注入自用实例独立的JWT密钥、企业密码种子、DeepSeek/Tavily和开发者自有DirectMail凭据；生产环境CORS只允许正式管理后台域名。
@@ -218,57 +175,9 @@
 
 ---
 
-## README 现状（2026-07-26 刷新）
+## 历史架构决策
 
-后端`README.md`已按实际代码校准，下次改动涉及以下任一项时需同步更新：
-
-- 质量证据数字改为实测`317 passed, 5 deselected`（原为过时的`186 passed`）；里程碑标签范围改为`v1.1 至 v2.3`（原写`v1.0 至 v1.9`，且后端首个标签实际是v1.1而非v1.0）
-- `.env`示例补齐`ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET/ALIYUN_MAIL_REGION_ID/ALIYUN_MAIL_ACCOUNT_NAME`与`CORS_ORIGINS`，并说明DirectMail三项缺失时只让验证码功能明确报错、不影响系统其余部分；`ALIYUN_MAIL_ACCOUNT_NAME`在README中一律用占位符，**不要写入config.py里的真实默认发件域名**
-- 权限表新增`developer`行；新增「组织体系」小节（加入/退出审批、工作资格门槛、文档按组织隔离管理端可见性、客户端检索不受限）
-- 顺带修正的过时描述：release徽章`v1.9`→`v2.3`、架构图后台角色补developer、fast模式调用次数由"最多两次"改为"无工具1次/证据不足2次/证据充分最多3次"、核心模块表补`layers/organizations.py`、评审路径第1步补审批与加入组织前提、关联仓库中`zhitian_admin`改为三角色后台
-- README列出的12个环境变量已逐项核对确认在`config.py`有真实`os.getenv`引用；`SECONDARY_DEV_PASSWORD`虽仍存在于config.py与`main.py::require_system_modules_access`，但该依赖已不被任何端点使用，属死配置，故未写入README
-
----
-
-## 架构方向讨论记录
-
-> 本节记录已讨论但**决定暂不实施**的架构方向，只作为未来重新评估时的参考依据，
-> 不代表任何近期开发计划。与「接下来规划」的区别：那里是准备做的，这里是明确暂缓的。
-
-### 2026-07-26 GraphRAG / PixelRAG 方向评估（暂缓，作为产品成熟后期的能力分支）
-
-**当前定位**：项目仍处于基础功能打磨阶段（账号治理、组织权限、检索质量），
-GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段的优先级。
-
-#### GraphRAG（知识图谱检索）
-
-- **定位**：从"平面检索"（NaiveRAG，chunk 独立打分）升级为"立体检索"（chunk 之间建立实体关系网络），解决"需要跨文档关联才能回答"的问题。现有 BM25+向量+DeepSeek 重排序架构属于**加强版 NaiveRAG**，符合行业 2026 年"先用最简单能 work 的方案：混合检索+重排序"的推荐路径。
-- **成本结构**：
-  - 建图阶段（文档入库时）需新增一次 DeepSeek 调用做实体关系抽取。这是"从 0 到 1"的新增开销，且属于**语义判断类工作，不能用代码规则写死**，无法省略——遵循既有编码原则第 7 条"不硬编码语义"。
-  - 查询阶段图遍历是**本地免费算力**，DeepSeek 调用次数与现状相同（只有最终统一重排序这一次），**查询延迟和成本不受影响**。
-  - 结论：成本只跟**文档上传频率**挂钩，与**查询次数**无关。
-- **若未来实施的推荐形态**：采用"向量召回 + 图关系扩展，最后统一交给 DeepSeek 分拣"的**串联融合模式**，优于"简单/复杂问题二选一分流"模式——因为串联不依赖一个可能判断错误的复杂度分类器。
-- **难度评估**：判断逻辑接入**难度中等**（可复用现有 `declare_complex_task` 式的语义判断模式，让 Agent 自主决定是否需要图检索）；图谱构建与维护**难度高**（实体关系抽取准确率无保障、增量更新工程复杂）。
-
-**明确的启动信号**（满足其一再评估，当前均未出现）：
-
-| 编号 | 信号 |
-|------|------|
-| ① | 真实使用中反复遇到需跨文档关联才能回答、现有检索答不出或答不全的问题 |
-| ② | 文档规模显著增长，远超当前几百 chunk 量级 |
-| ③ | 使用者主动反馈检索结果零散、缺乏逻辑关联 |
-
-#### 实施记录（2026-07-27）：GraphRAG 已实现并默认关闭
-
-**决策背景**：上述三条启动信号**当时一条都未出现**，用户基于个人技术探索意愿主动选择实施，非痛点驱动。已按本节讨论的串联融合模式落地（向量+BM25 召回种子 → 图关系扩展 → 合并候选池 → 复用同一次重排序），不新增模型调用，图数据存 SQLite。
-
-**真实验证结论**：8 份文档的语料上，开关 A/B 的最终候选**完全相同**，`adoption_rate=0.0`。原因是语料规模远小于召回宽度（向量召回请求 `top_k×4` 条，全库仅 8 个 chunk，全部成为种子，可扩展空间为 0）。这从反面印证了本节"文档规模显著增长"这条启动信号的必要性——**规模不够时该能力结构上无法产生收益**。详细数据见 CHANGELOG 2026-07-27 条目。
-
-#### PixelRAG（截图 + 视觉模型检索）
-
-- **定位**：把网页/PDF 渲染成截图 tile，用视觉模型理解内容，避免传统文字提取丢失表格、图表这类视觉排版信息。解决的是**"信息完整度"**问题，而非 GraphRAG 那种**"关联深度"**问题。
-- **判定为不做**：当前技术栈完全没有可用的视觉理解能力（2026-07-14 迁移 DeepSeek 时已移除 `GLM_VISION_MODEL` 配置）。若要接入需重新引入未经验证的新模型能力，**风险类比 MinerU 教训**——曾接入但因真实解析持续超时、从未产出可用结果而判定为不可交付并清理。
-- **例外条件**：除非未来文档中图表/表格内容显著增加、现有纯文字提取经常漏失关键数据，否则不建议投入。
+GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/history/architecture_decisions.md`。本文件只保留当前开关和运行约束。
 
 ---
 
@@ -304,9 +213,9 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 跨端视觉系统 | 2026-07-29起管理后台与Flutter客户端共用同一视觉语义：暖灰白背景、`#64839A`蓝灰主操作、`#6F9284`成功、`#C69045`待处理、`#B76158`危险；状态必须继续同时提供中文文字/图标或边框，不能只靠颜色。管理后台1000px以下将双列表单收为单列、820px以下切换顶部导航，新增组件不得重新引入页面级横向溢出；Flutter新增页面应复用`AppColors`与`AppTheme`，不要在页面内另建品牌色 |
 | Flutter认证页外壳 | 登录与注册页共用`lib/widgets/auth_shell.dart`（2026-07-26起），改动任一页的版式规范都应改外壳而非单页，否则两页会重新分头漂移。2026-08-09起两页还必须保留认证前“服务器设置”入口、当前地址展示和旧`:8000`直连地址警告，用户即使尚未登录也能修正错误服务器配置。宽窗口>=960px为左品牌栏+右表单卡片，窄窗口退化为居中单卡片。注意两个坑：①外壳卡片Column为`CrossAxisAlignment.stretch`，放固定尺寸块必须用`Align`包住，否则被拉成整行宽；②认证表单在默认800x600测试窗口装不下，涉及点击提交按钮的widget测试必须先设桌面视口（见`test/auth_layout_test.dart`与`widget_test.dart`的`useDesktopViewport`） |
 | Flutter Compose API基址 | Compose反向代理只把`/api/`转发到后端，Flutter保存的是API基址而不是网站根地址，因此本地MVP必须使用`http://localhost/api`；`http://localhost`会请求到管理后台且`/health`为404，`http://localhost:8000`则因后端不映射宿主机端口而拒绝连接。`:8000`仅限运行`本机后端调试（非Compose、勿用于MVP验收）.bat`等宿主机直启后端场景。部署脚本、README、首次引导和认证前设置入口必须保持这一口径；本轮不会静默覆盖用户已有SharedPreferences，发现旧值时由界面警告并让用户确认修改 |
-| Flutter Windows发布 | `pubspec.yaml`当前发布版本为`3.0.0+300`，Windows Debug/Release EXE版本资源均已真实验证一致；MSVC runner必须保留`/utf-8`编译选项，否则UTF-8源码中的宽字符串标题`L"知天"`会在中文Windows上按CP936解释为“鐭ゅぉ”。本机Inno Setup 6.7.3可用，项目在`packaging/ChineseSimplified.isl`固定携带该版本对应的简体中文语言文件，`packaging/windows_installer.iss`不再依赖编译器安装目录可选语言包。当前安装包为`dist/zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`）。窗口/文件说明和安装器显示名为“知天”，可执行文件为`zhitian.exe`。**不得随意改Runner.rc中的内部`CompanyName=com.zhitian`和`ProductName=zhitian_app`**：`path_provider_windows`用二者确定SharedPreferences目录，改动会让旧用户的后端地址、登录态、会话和模式看似丢失。最终安装包输出在被Git忽略的`dist/`；当前包未签名，公开/商业分发前必须处理Authenticode签名及安装器商业许可或迁移 |
+| Flutter Windows发布 | `pubspec.yaml`当前源码版本为`3.2.0+320`，Inno Setup默认版本同步为`3.2.0+320`、下一产物基名为`zhitian-windows-setup-3.2.0`；安装器仍独立维护常量并留有自动读取pubspec的后续注释。本轮未重建安装包，最后一份已真实验证的现有产物仍是`dist/zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`），不得误称为3.2.0。MSVC runner必须保留`/utf-8`；窗口/文件说明和安装器显示名为“知天”，可执行文件为`zhitian.exe`。**不得随意改Runner.rc中的内部`CompanyName=com.zhitian`和`ProductName=zhitian_app`**，否则SharedPreferences目录变化会让旧用户配置看似丢失。最终安装包输出在被Git忽略的`dist/`；当前包未签名，公开/商业分发前必须处理Authenticode签名及安装器商业许可或迁移 |
 | 依赖版本锁定 | `requirements.txt`当前有**32项**直接依赖精确锁定。当前关键版本：`FastAPI==0.141.1`、`Starlette==1.4.1`、`python-dotenv==1.2.2`、`pypdf==6.15.0`；未使用的`langchain`顶层依赖已移除且`langchain-text-splitters`不再安装。LangGraph依赖组为`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`、`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`，真实安装还会带入`langchain-protocol`、`uuid-utils`等传递依赖。`numpy==1.26.4`用于避免Chroma 0.5.0与NumPy 2.x运行时不兼容。`cryptography==48.0.1`的3条记录按F38接受风险。直接依赖精确锁定不等于传递闭包完整锁定，今后依赖验收必须包含全新环境应用导入、`/ready`与真实读写，不能只看`pip check` |
-| mcp 版本 | `mcp==1.28.1`、`uvicorn==0.51.0`、`PyJWT==2.13.0`和`sse-starlette==3.0.3`继续保持既有锁定。FastAPI/Starlette已联动升级到`0.141.1/1.4.1`且没有牵动这四项；真实uvicorn下`/chat/stream`与F36任务SSE心跳、认证、上传、下载及容器`/ready`均通过，完整权威回归基线为`383 passed, 5 deselected` |
+| mcp 版本 | `mcp==1.28.1`、`uvicorn==0.51.0`、`PyJWT==2.13.0`和`sse-starlette==3.0.3`继续保持既有锁定。FastAPI/Starlette已联动升级到`0.141.1/1.4.1`且没有牵动这四项；真实uvicorn下`/chat/stream`与F36任务SSE心跳、认证、上传、下载及容器`/ready`均通过。联动升级当批回归为`383 passed, 5 deselected`，F49后当前完整权威基线为`401 passed, 5 deselected` |
 | MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
 | CORS null | `CORS_ORIGINS` 暂保留 `null`，用于兼容 file:// 协议或桌面壳本地调试来源；生产环境按实际前端域名收窄 |
@@ -335,18 +244,18 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 认证账号有效性 | `get_current_user()`会在`verify_token()`完成JWT校验并按`user_id`读取当前账号后统一检查`is_active`；禁用账号即使持有禁用前签发的旧Token也返回401“账号已被禁用或不再有效，请重新登录”。所有新增的认证依赖点只要依赖`get_current_user`就自动获得这层保护，不需要在各`require_*`函数重复实现；`require_developer`仍保留原有纵深检查 |
 | 文档调用量统计 | **2026-08-02起按(doc_id, 年月)分桶记录命中与实际引用**。`document_usage_stats`表在users.db，字段`doc_id`/`year_month`(YYYY-MM)/`hit_count`/`cited_count`，复合主键`(doc_id, year_month)`，带`FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE`——放users.db正是为了能建这个真外键（SQLite不支持跨库外键），删文档时统计行随之清除，不会给`check_orphan_data.py`和启动外键检查留孤儿。**两个埋点不在同一层，改动时勿合并**：命中在`layers/execution.py`的`_search_documents()`里紧跟`memory.search_documents()`的`results`之后（召回候选，早于阈值筛选）；引用在`main.py`取**最终返回给用户**的citations，`/chat`与`/chat/stream`各自在`finally`落库。**引用绝不能在execution层计数**——`planning.py`在证据过滤与降级路径会清空`state["citations"]`，那里计数会把证据不足、未展示给用户的文档也算成已引用（真实观测过`result_count=3`但`evidence_sufficient=false`的请求）。命中按**文档级去重**，一次请求同一文档最多1次，否则数字会变成chunk切片粒度的函数、长短文档失去可比性。命中期间只写`ContextVar`集合不做IO，与引用在请求出口一次性`INSERT ... ON CONFLICT DO UPDATE`，检索路径不写库、同请求多次检索也不重复计数。查询走`GET /documents/{doc_id}/usage`（`require_reviewer`+组织范围校验），列表页由`list_usage()`批量合并进`GET /documents/verified`避免逐行请求。**未升schema_version**，理由同限流表。实现分布在`layers/document_usage.py`、`layers/auth.py`与`main.py` |
 | customer网页客户端 | **`web_client/`是后端仓库内的纯静态customer前台，无框架、零构建、零运行时依赖**：`login.html`/`register.html`/`chat.html` + `config.js` + `css/style.css` + `js/{api,login,register,chat}.js`。2026-08-09批次一已把原“单会话、仅fast接口验证壳”升级为会话侧栏、倒序历史、刷新恢复/切换/二次确认删除、localStorage会话与fast/expert模式持久化；显式退出/401清会话指针，恢复404放弃失效指针。批次二已优先闭合expert生成文件交付：后端在保留原纯文本chunk的同时，于其后、citations与`[DONE]`之前新增`type=file`事件（file_id/download_filename/file_type）；网页显示文件类型、名称、状态与下载按钮，用`API.backendUrl`构造认证请求——生产默认即`/api/files/{file_id}`，携带Bearer Token获取Blob再触发浏览器保存，不使用无法带认证头的裸链接，也不记录token。Flutter不解析file事件但会安全忽略，原chunk完全保留且独立“我的文件”页仍可下载，因此无需同步改客户端。**权限范围仍严格限customer**：不调用管理接口、不含知识库录入；附件是customer既有权限，文件下载继续由后端owner校验。历史接口目前只持久化正文和附件名称，citations/reasoning及结构化file事件不会在刷新后重现；生成回复中的纯文本文件地址仍保留，文件卡片历史恢复可与文件库批次一并完善。HTML不缓存、JS/CSS缓存1小时，当前聊天脚本资源版本为`?v=workspace-upload-5mb-1`；fast `[DONE]`落库竞态继续用`0/160/520ms`三次有限确认，不做常驻轮询。地址仍由`config.js`默认同源`/api`，token沿用`zt_web_*` localStorage；**已知XSS取舍**仍是HttpOnly Cookie需后端Cookie签发与CSRF配套。容器继续使用非root `nginx:stable-alpine`、严格CSP与仅内部frontend网络；本地Compose经`/customer/`前缀转发。批次二剩余文件库、工具箱和欢迎页/附件展示完善，设置页及可延后体验可归批次三。涉及目录`web_client/` |
-| 按角色请求限流 | **2026-08-02起限流值按角色可配置**，取代此前固定的`config.RATE_LIMIT_PER_MINUTE`。`rate_limit_config`表在users.db，四行种子：customer/employee各20（与旧全局默认一致，升级后体验不变）、reviewer/developer各60，取值范围1–6000。作用范围仍只有`/chat`与`/chat/stream`。`_rate_limit_key()`返回`角色:身份`两段，`_chat_rate_limit(key)`作为slowapi可调用limit_value按角色查表——slowapi对含`key`参数的可调用值**逐请求求值**（`wrappers.py`的`LimitGroup.__iter__`+`with_request`），所以developer改完配置立即生效，不需重启。刻意不加进程内缓存：四行小表单行查询成本可忽略，换来天然实时生效且不引入缓存一致性与测试隔离问题。`GET/PUT /developer/rate-limits`均`require_developer`，PUT要求四角色整体提交、越界整批拒绝。**新增表未升schema_version**：`initialize_schema_version()`无迁移路径，版本不符即拒绝启动，升版会让所有既有实例起不来；沿用本库既有惯例幂等建表。429处理器只记`role`与`throttled=true`。涉及`layers/auth.py`、`main.py`与管理后台`developer.html` |
+| 按角色请求限流 | **2026-08-02起限流值按角色可配置**，取代此前固定的`config.RATE_LIMIT_PER_MINUTE`；该环境变量当前不决定任何角色限流值，只为历史兼容保留，调整必须走管理后台或developer接口。`rate_limit_config`表在users.db，四行种子：customer/employee各20、reviewer/developer各60，取值范围1–6000。作用范围仍只有`/chat`与`/chat/stream`。`_rate_limit_key()`返回`角色:身份`两段，`_chat_rate_limit(key)`作为slowapi可调用limit_value按角色逐请求查表，developer改完立即生效。刻意不加进程内缓存；`GET/PUT /developer/rate-limits`均`require_developer`，PUT要求四角色整体提交、越界整批拒绝。新增表未升schema_version，沿用本库既有幂等建表惯例 |
 | 多角色账号与密码同步 | `users`唯一约束是`(username, role)`，同一邮箱可同时持有developer/reviewer/employee/customer多个账号。**该邮箱已有账号时，再申请第二个及以后的角色，审批通过瞬间服务端会把新账号密码强制同步为该邮箱既有密码**，申请表单里填的密码直接失效，审批响应带`password_sync: "密码已与该邮箱现有账号同步"`。现象是注册200、审批200、但用申请密码登录401。**只有审批路径触发**（`/developer/registration-requests/{id}/approve`与`/reviewer/...`）；**customer自助注册`POST /auth/register`不同步**，用的就是注册时提交的密码。`/auth/forgot-password`重置同样会同步到该邮箱名下全部角色账号。另注意默认账号`0`只能审批developer申请，批准其他角色返回403"默认开发者账号仅可审批开发者加入申请"，接管顺序固定为0号→首个developer→reviewer→employee。2026-08-01验收与后续多次真实容器复跑均实测到该行为；详细排查见`docs/troubleshooting.md`第3.5节 |
 | Codex沙盒与本机用户身份 | **2026-07-28实测确认根因是身份/ACL隔离，不是解释器不存在，也不是间歇性损坏。**未提权命令身份为`zheng\CodexSandboxOnline`，不是路径中的`z9876`，且`GroupsMatchAdminSid=False`、`IsInRoleAdministrator=False`；该身份对`C:\Users\z9876\AppData\Local\Programs\Python\Python310\python.exe`执行`Test-Path`返回`True`，但直接运行报“程序python.exe无法运行: 拒绝访问”，`Get-Acl`也报`UnauthorizedAccessException`，项目`.venv\Scripts\python.exe --version`随之报`Unable to create process using '"...\Python310\python.exe" --version'`。沙盒外（工具参数中的“提权”）身份变为`zheng\z9876`，仍然**不是管理员**（两个管理员检测均False）；此时读到文件Owner/Group均为`ZHENG\z9876`，ACL只给`SYSTEM`、`Administrators`、`zheng\z9876` FullControl，基础解释器与`.venv`均正常输出`Python 3.10.11`。因此这里“提权”实际指**退出Codex文件执行沙盒、切换到真实文件所有者上下文**，不是UAC管理员提权。以后遇到同样报错应先记录`whoami`、`Test-Path`和直接执行结果，再用沙盒外方式重试项目`.venv`；**不要据此判断文件已删除，不要下载替代解释器，也不要临时改`pyvenv.cfg`** |
 | Codex沙盒PATH与Python解析 | 2026-07-28未提权会话的完整PATH包含`Python310\Scripts`、`Python310`（各重复两次，一组带尾反斜杠、一组不带）、`Python\Launcher`、`WindowsApps`及Codex override/fallback目录；`PYTHONHOME`、`PYTHONPATH`、`VIRTUAL_ENV`均未设置，Codex override/fallback中也没有`python*`文件。沙盒身份下`where python`、`where py`和`Get-Command python`均无结果；同一机器切到真实用户身份后，`where python`依次解析到真实`Python310\python.exe`与`WindowsApps\python.exe`，`where py`解析到Launcher，裸`python --version`为3.10.11。PATH中确有重复项和WindowsApps占位项，但真实Python310排在WindowsApps之前，**没有发现多个真实Python版本互相抢占；本次失败由ACL/身份造成，不是PATH冲突** |
 | .venv | `pyvenv.cfg`固定记录`home = C:\Users\z9876\AppData\Local\Programs\Python\Python310`、`version = 3.10.11`；该基础解释器真实存在且在`zheng\z9876`上下文可正常运行。Codex未提权沙盒不能执行它，因此验证项目运行时必须直接以沙盒外方式调用`.venv\Scripts\python.exe`，不要先在沙盒内失败后误判环境损坏 |
-| Docker安全基线 | 2026-07-30起后端构建上下文由根目录`.dockerignore`排除`.env*`、`data/`、`.venv/`、Git/缓存/日志/测试等非运行时内容；Dockerfile先复制`requirements.txt`安装锁定依赖，再复制业务代码，以非root `appuser`运行并预建可写`/app/data`，CMD为显式Uvicorn 8000。Docker Desktop 29.6.2+WSL2真实构建成功（基线构建上下文961.30kB）；镜像内无`.env`、`/app/data`为空、运行用户为`appuser`。当前生产镜像另含LibreOffice、中文字体、`/ready`、优雅退出及固定SHA-256校验的BGE ONNX资产；安全扫描仍有F38与系统层风险，见“F31/F38安全扫描当前状态”，不再把它们归为F31未解决 |
+| Docker安全基线 | 2026-07-30起后端构建上下文由根目录`.dockerignore`排除`.env*`、`data/`、`.venv/`、Git/缓存/日志/测试等非运行时内容；Dockerfile先复制`requirements.txt`安装锁定依赖，再复制业务代码，以非root `appuser`运行并预建可写`/app/data`，CMD显式固定Uvicorn 8000。`config.PORT`只对`python main.py`宿主机直启有效，Compose修改该变量不会改变容器监听端口，当前仅为历史兼容保留。Docker Desktop 29.6.2+WSL2真实构建成功；镜像内无`.env`、`/app/data`为空、运行用户为`appuser`。当前生产镜像另含LibreOffice、中文字体、`/ready`、优雅退出及固定SHA-256校验的BGE ONNX资产；安全扫描仍有F38与系统层风险 |
 | 管理后台容器 | `zhitian-admin:dev-production`基于`nginx:stable-alpine`，以非root `nginx`监听8080；HTML和`config.js`为`no-cache`，JS/CSS等静态资源缓存1小时，`autoindex off`并设置严格同源CSP、nosniff、DENY frame及Referrer-Policy。`js/api.js`按`window.ZHITIAN_CONFIG.apiBaseUrl`→`/api`顺序取值，生产`config.js`默认同源`/api`；本地联调可显式设为`http://localhost:8000`。生产环境同源`/api`现已由Compose反向代理实现 |
 | 自用Compose编排 | 独立私有仓库`https://github.com/z987645344-arch/zhitian-deploy`跟踪`docker-compose.yml`与`nginx/compose-nginx.conf`，默认分支`main`；它必须与`zhitian`、`zhitian_admin`两个应用仓库同级，Compose分别用`../zhitian`、`../zhitian_admin`作为构建上下文，并从`../zhitian/.env`运行时注入后端配置。API的注入已使用Compose 2.30.0+长语法`env_file.path + format: raw`，后端`.env`必须为不带引号的`KEY=value`；部署仓库同目录`.env`仍只负责`${SERVER_PUBLIC_IP}`的YAML插值，二者边界不同。API只接backend网络，两个静态站点只接internal frontend网络，代理同时接入两网；当前发布`${SERVER_PUBLIC_IP}:80→8080`，不再通配占用所有网卡，API仍没有宿主机端口。backend不设`internal: true`，因为DeepSeek/Tavily/DirectMail需要出站网络。`zhitian-mvp-data`统一挂载`/app/data`，`/app/data/tmp_uploads`以256MiB tmpfs覆盖，API总内存限制2GiB。容器健康检查访问各自loopback端口、反代上游使用Docker服务名，均不依赖宿主机绑定IP；当前未配置443 |
 | 部署仓库自包含边界 | **`zhitian-deploy`必须保持自包含，不依赖任何外部项目，包括个人计划共用服务器的知了Hub。**2026-08-13为解决同机双公网IP的Linux通配符80绑定冲突，知天入口改由`SERVER_PUBLIC_IP`实例变量限定，没有在Compose/Nginx中加入知了Hub域名、IP、路径、容器或网络引用；另一项目使用另一专属IP只属于跨项目协调背景，不构成运行依赖。真实值只保存在未跟踪`.env`，Phase C客户填写自己的地址。若未来两项目共用顶层域名反代，仍必须在`zhitian-deploy`之外实现，不得污染本仓库内部拓扑 |
 | Compose配置输出保密 | 含真实`env_file`时，`docker compose config`的完整文本/JSON会展开所有环境变量，禁止输出到CI日志、任务记录或交接文档；语法验证只用`docker compose config --quiet`，需要检查端口/网络时优先直接读取受版本控制的YAML或使用不展开敏感值的方式。2026-08-13曾误把本机开发配置展开到任务工具输出，未进入Git/镜像，但仍要求轮换其中仍有效的外部API和应用密钥 |
 | Compose `env_file`原样注入 | 知了Hub在生产部署中真实遇到bcrypt等含`$`值被Compose当成变量引用、导致容器启动崩溃的坑；知天当前自动生成的token_urlsafe/base64url密钥字符集不含`$`且用户确认现有外部凭据也不含`$`，虽未实际触发，仍预防性采用`format: raw`消除未来轮换隐患。该能力要求Compose 2.30.0+；服务器切换前必须只核对变量名是否存在引号（不显示值），发现`KEY="value"`先停止并等待用户确认，因为raw会保留引号本身；不得擅改真实`.env` |
-| 生产配置与密钥注入 | `.env.example`只允许变量名、格式说明和`CHANGE_ME_*`占位符；当前模板覆盖真实`.env`的17个既有键，并额外声明尚未写入本机真实`.env`的`BACKUP_ENCRYPTION_KEY`。开发机Compose通过`env_file`注入；Phase B必须重新生成实例独立的JWT密钥、企业密码种子和备份AES密钥，并从Git工作树/构建上下文外的服务器私有配置或Secret注入，不得复制开发机`.env`。备份密钥不得与其他密钥复用、不得与备份包存放在同一失效域，遗失后旧包不可恢复。数据库路径统一由`data/`/`/app/data`承载；生产CORS不得包含`null` |
+| 生产配置与密钥注入 | 后端`.env.example`现有58项：完整覆盖`config.py`读取的57项运行配置，并额外声明备份脚本使用的`BACKUP_ENCRYPTION_KEY`；只允许真实默认参数、格式说明和`CHANGE_ME_*`占位符。当前本地与服务器Compose都从后端工作树内、被`.gitignore`排除的`.env`通过`env_file.path + format: raw`注入，`.dockerignore`再保证它不进入镜像；这是逻辑隔离，不是物理目录隔离。Phase B必须在服务器现场创建实例独立配置，不得复制开发机`.env`。备份密钥不得复用或与备份包同失效域；生产CORS不得包含`null`。部署仓库自己的`.env`只保存`SERVER_PUBLIC_IP`，多IP机器填写知天专属地址且不带端口 |
 | 加密备份与恢复 | `scripts/backup_data.py`与`restore_data.py`只能人工显式执行，不接入启动或调度；两者均要求`--confirm-service-stopped`，因为共享Chroma锁不能跨进程暂停API。包为ZIP-deflate后流式AES-256-GCM `.ztbackup`；恢复先安全备份，再校验GCM、manifest文件集合/大小/SHA-256、三库完整性/外键和Chroma数量。默认保留7份、最低1份。Compose操作指南把包写到`/app/data/backups`后立即`docker compose cp`导出卷外；只留同卷不算灾备。此前F33曾导致全新空卷files.db尚未懒创建时备份被拒，已于2026-08-01修复（见F33条目），现全新实例零文件操作即可备份；恢复的激活方式已按F34改为"只rename `/app/data`内部条目"，不对挂载点自身改名。Phase B仍需定时异地备份及服务器破坏恢复演练 |
 | 自用运维文档 | `docs/deployment_guide.md`为总入口，另有`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`。四份文档只覆盖自用单实例MVP，真实域名/HTTPS/定时异地备份明确留给Phase B；任何交接都必须clone`zhitian`、`zhitian_admin`和私有`zhitian-deploy`三个仓库并保持同级目录，单独clone任一仓库都不是完整部署包 |
 | 完整回归口径 | 本地和CI一律以根目录`run_tests.bat`为唯一权威入口，默认执行非integration完整回归；不要直接调用`python -m pytest`或使用“系统Python + .venv site-packages”替代。`tests/conftest.py`在收集阶段强制项目`.venv` Python 3.10，避免MCP子进程隔离`PYTHONPATH`后产生伪失败 |
@@ -367,6 +276,6 @@ GraphRAG/PixelRAG 属于产品成熟后期的能力分支，不是当前阶段�
 | 流式输出 | ✅ SSE 真流式（clarify 逐字 / search DeepSeek流式整理 / chat 流式） |
 | 日志脱敏 | ✅ 用户消息/文档内容/搜索结果不进日志 |
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
-| Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master，Compose地址契约与Windows标题乱码已修复并重建3.0.0安装包；`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`44 tests passed` |
+| Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master，Compose地址契约与Windows标题乱码已修复并重建3.0.0安装包；5MB同步批次新增共享常量断言后，`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`45 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；统一参考图视觉已随`v2.6`提交，当前`js/`目录10个JavaScript文件，桌面及768px验证无页面级横向溢出 |
-| Git 存档 | ✅ 后端`zhitian`、管理后台`zhitian_admin`、客户端`zhitian_app`最新标签现均为`v3.0`；两端`VERSION`为`3.0.0`，Flutter为`3.0.0+300`，客户端标签落点`2fea214`且3.0.0安装包已生成。私有部署仓库`z987645344-arch/zhitian-deploy`默认分支`main`，Compose、反向代理配置和五个一键操作脚本共同构成当前本地部署入口。v3.0交付缺口①–④均已解决；后端容器漏洞策略仍因F38及系统层无修复版本项红灯，管理后台流水线为绿 |
+| Git 存档 | ✅ 最新标签组合为后端`zhitian v3.4`、部署仓库`zhitian-deploy v3.3`、管理后台`zhitian_admin v3.2`、客户端`zhitian_app v3.2`。源码版本分别为后端`3.4.0`、管理后台`3.2.0`、Flutter`3.2.0+320`；后端根路由和OpenAPI严格读取VERSION。既有`v3.3`已被生产服务器检出并被跨项目引用，禁止删除重打；服务器升级到v3.4必须显式检出新标签，不跟随默认分支。后端漏洞策略仍因F38及系统层无修复版本项红灯 |

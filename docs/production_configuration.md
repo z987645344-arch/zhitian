@@ -1,6 +1,6 @@
 # 生产配置与密钥注入
 
-本文只规定配置和密钥如何进入运行环境，不保存任何真实值。完整变量清单、格式要求和生成方式见仓库根目录`.env.example`。
+本文只规定配置和密钥如何进入运行环境，不保存任何真实值。后端变量清单、格式要求和生成方式详见仓库根目录`.env.example`，该模板涵盖`config.py`读取的全部57项配置变量，并额外包含备份脚本使用的`BACKUP_ENCRYPTION_KEY`；部署仓库自身的`SERVER_PUBLIC_IP`见`zhitian-deploy/.env.example`。
 
 ## 共同安全边界
 
@@ -20,18 +20,18 @@
 
 需要在开发机人工验证备份时，可临时向当前进程注入`BACKUP_ENCRYPTION_KEY`，或自行添加到被Git忽略的本地`.env`；仓库现有真实`.env`不会因模板新增该变量而自动修改。
 
-## Docker Compose本地验证
+## Docker Compose环境（本地验证与当前服务器生产部署）
 
 独立部署仓库`zhitian-deploy/docker-compose.yml`通过长语法`env_file.path: ../zhitian/.env`与`format: raw`把同级后端仓库中的本地`.env`原样注入API容器。该语法要求Docker Compose 2.30.0或更高版本，可防止bcrypt哈希或未来轮换后的密钥中出现`$`时被误作Compose变量引用。后端`.env`必须使用不带引号的`KEY=value`格式，因为`raw`会把引号也作为值的一部分保留。Compose的`environment`字段只覆盖容器运行时必须固定的非秘密路径，例如Linux版soffice路径和临时转换目录；真实密钥不得直接写进Compose YAML。部署仓库自身的`.gitignore`也排除`.env`、备份包和运行数据，但真实密钥仍只能在目标机器现场创建。
 
-该方式只用于开发机Compose验证。构建镜像时`.dockerignore`会排除`.env*`，因此运行时注入的变量不会进入镜像层。
+该方式同时用于开发机Compose验证和当前服务器生产部署。构建镜像时`.dockerignore`会排除`.env*`，因此运行时注入的变量不会进入镜像层；生产安全边界来自运行时注入、Git忽略和构建上下文排除，不代表`.env`在物理目录上位于Git工作树之外。
 
 ## 未来真实服务器（Phase B）
 
 - 为自用实例重新生成独立的JWT密钥和企业密码种子，并使用服务器自己的DeepSeek、Tavily与DirectMail凭据；不得复用开发机`.env`。
 - 为备份单独生成`BACKUP_ENCRYPTION_KEY`，保存到服务器私有Secret及独立加密的灾备密钥保管位置。备份包与密钥不得存放在同一失效域；轮换密钥前必须保留旧密钥，直到旧备份全部安全过期。
-- 真实值只存放在服务器私有环境文件、部署平台Secret或等效的受权限控制配置中，并由服务器专用Compose覆盖配置或部署平台在容器启动时注入。
-- 服务器私有配置必须位于Git工作树和Docker构建上下文之外，只允许部署账号读取；备份时也按密钥材料单独加密保护。
+- 当前Compose契约固定从`zhitian-deploy`同级的后端仓库读取`../zhitian/.env`，因此服务器真实配置实际位于后端Git工作树内，但由`.gitignore`排除、不进入Git历史，并由`.dockerignore`排除、不进入镜像构建上下文；这是逻辑隔离，不是物理目录隔离。
+- 服务器上的后端`.env`只允许部署账号读取，必须在目标机器现场创建，不得由开发机复制或提交。未来若迁移到部署平台Secret，可改由平台在容器启动时注入；备份密钥仍须按密钥材料单独加密保护。
 - 正式管理后台域名确定后，将`CORS_ORIGINS`设置为该HTTPS Origin白名单并移除`null`。本轮只准备模板与说明，不修改现有CORS代码或本机`.env`。
 - 部署前检查容器环境变量名是否齐全，但不得把变量值打印到终端日志或CI日志。
 

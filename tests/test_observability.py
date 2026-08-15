@@ -3,7 +3,11 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
+from pathlib import Path
 
+import pytest
+
+import main
 from utils import observability
 
 
@@ -182,13 +186,31 @@ def test_reviewer_metrics_rejects_non_reviewer(client, auth_headers):
 
 
 def test_root_and_openapi_report_release_version(client):
+    expected_version = (
+        Path(__file__).resolve().parents[1] / "VERSION"
+    ).read_text(encoding="utf-8").strip()
     root_response = client.get("/")
     openapi_response = client.get("/openapi.json")
 
     assert root_response.status_code == 200
-    assert root_response.json()["version"] == "3.0.0"
+    assert root_response.json()["version"] == expected_version
     assert openapi_response.status_code == 200
-    assert openapi_response.json()["info"]["version"] == "3.0.0"
+    assert openapi_response.json()["info"]["version"] == expected_version
+
+
+def test_version_reader_rejects_missing_version_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "__file__", str(tmp_path / "main.py"))
+
+    with pytest.raises(RuntimeError, match="无法读取应用版本文件"):
+        main._read_application_version()
+
+
+def test_version_reader_rejects_invalid_version_file(tmp_path, monkeypatch):
+    (tmp_path / "VERSION").write_text("not-a-version\n", encoding="utf-8")
+    monkeypatch.setattr(main, "__file__", str(tmp_path / "main.py"))
+
+    with pytest.raises(RuntimeError, match="VERSION文件内容无效"):
+        main._read_application_version()
 
 
 def test_chat_requests_are_recorded_in_recent_requests(

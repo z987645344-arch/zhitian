@@ -87,7 +87,7 @@ if not ENTERPRISE_PASSWORD_SEED:
 ALIYUN_ACCESS_KEY_ID = os.getenv("ALIYUN_ACCESS_KEY_ID", "")
 ALIYUN_ACCESS_KEY_SECRET = os.getenv("ALIYUN_ACCESS_KEY_SECRET", "")
 ALIYUN_MAIL_ACCOUNT_NAME = os.getenv(
-    "ALIYUN_MAIL_ACCOUNT_NAME", "noreply@mail.zhiliaohub.com"
+    "ALIYUN_MAIL_ACCOUNT_NAME", "noreply@example.com"
 )
 ALIYUN_MAIL_REGION_ID = os.getenv("ALIYUN_MAIL_REGION_ID", "")
 

@@ -657,7 +657,7 @@
 - 测试：后端新增7项（企业180秒/10次、customer180秒/5次、两类purpose计数互不干扰、customer发送不要求企业密码、验证码错误/过期返回400、成功后不可复用、创建失败不消费验证码），并同步更新`/auth/register`全部既有调用点（conftest新增`customer_register_payload()`辅助函数，并在`_cleanup_test_usernames()`补充清理验证码行，避免测试抬高真实邮件发送量统计）。Flutter新增4项（2项API序列化+2项注册页交互）。
 - `py_compile`通过；`flutter analyze`无问题、Flutter`35 tests passed`（原31项）；权威`run_tests.bat -q`结果为`297 passed, 5 deselected`，无failed/skipped，较改动前290项增加7项。
 - 真实HTTP+邮件验证（`.venv`无reload启动）：真实触发一次`customer_register`发送返回200，业务日发送量由6递增为7；邮件主题实际渲染为`知天客户注册验证码`，与企业场景`知天注册验证验证码`不同。端到端`/auth/register`：错误验证码400、正确验证码200并成功建号、同一验证码复用400、新账号可正常登录（role=customer）；验证用测试账号与其验证码已清理，真实库未残留。
-- 现场发现（非本轮改动）：真实库`users`表已由用户手动完成`987645344@qq.com`的developer注册审批，默认账号`0`已按既有事务逻辑自动失活（is_active=0），另有一条该邮箱的reviewer申请处于pending。因真实developer密码未知，本轮发送量核对改为直接调用`count_verification_codes_in_range()`（与`/developer/email-usage-stats`同一口径）而非登录调接口。
+- 现场发现（非本轮改动）：真实库`users`表已由用户手动完成测试邮箱的developer注册审批，默认账号`0`已按既有事务逻辑自动失活（is_active=0），另有一条同邮箱的reviewer申请处于pending。因真实developer密码未知，本轮发送量核对改为直接调用`count_verification_codes_in_range()`（与`/developer/email-usage-stats`同一口径）而非登录调接口。
 
 ## 2026-07-26 组织体系升级为真实工作资格门槛并接入加入/退出审批
 - 组织此前只影响guidance文本生成和developer后台的组织增删改，员工/审核员完全感知不到、实际工作也不受限。本批把闭环补完：**"默认"组织重新定位为大厅**（全员自动在内、不可申请也不可退出、承载公司级静态信息），自定义组织为**功能群**（加入/退出均需审批，加入后才具备实际工作资格）。文档本身仍不分类，组织只是人员归属与工作门槛，不是数据隔离机制。
@@ -686,7 +686,7 @@
 - 前置核对：改动前`documents`表0行、`organization_id`字段不存在，符合"用户已手动清空历史文档"的前提，**本轮不涉及任何历史数据迁移或Chroma回填**。
 
 ## 2026-07-26 讨论并记录GraphRAG/PixelRAG架构方向评估结论
-- 评估结论为**暂缓实施**，两项均作为产品成熟后期的能力分支，不进入近期开发计划；详见`docs/claude_memory.md`新增的「架构方向讨论记录」小节（含成本结构分析、推荐融合形态与三条明确启动信号）。
+- 评估结论为**暂缓实施**，两项均作为产品成熟后期的能力分支，不进入近期开发计划；该历史决策现归档于`docs/history/architecture_decisions.md`（含成本结构分析、推荐融合形态与三条明确启动信号）。
 - 本次无代码改动，不涉及测试与语法检查。
 
 ## 2026-07-27 诊断组织选择器与审核可见性反馈（后端无缺陷，确认前端展示缺失）
@@ -1300,3 +1300,15 @@
 - **来源与风险判定**：知了Hub部署时真实遇到`env_file`中的bcrypt哈希含`$`，被Compose变量插值误解析后容器启动崩溃。知天四类自动生成密钥使用`secrets.token_urlsafe`或base64url，算法字符集本身不含`$`；用户也确认当前服务器外部凭据不含`$`，因此知天尚未实际触发，但第三方凭据和未来轮换值的字符集不可长期假定。
 - **配置加固**：独立`zhitian-deploy/docker-compose.yml`把API服务的`env_file`从短语法改为`path: ../zhitian/.env`与`format: raw`长语法，使后端变量原样进入容器而不再参与Compose插值。部署README、生产配置与安装指南同步规定Compose最低版本为2.30.0、后端`.env`必须为不带引号的`KEY=value`；部署仓库自己的`.env`仍只承担`${SERVER_PUBLIC_IP}`替换，不混入raw边界。
 - **验证边界**：仓库内已用本机Compose 5.3.1执行`docker compose config --quiet --no-env-resolution`并得到退出码0，过程中未展开真实密钥。当前任务没有附加服务器SSH终端，故服务器Compose版本、真实`.env`无引号核对、保卷重启、公网ready及两套网页入口回归均不得写成已完成；生产应用v3.3前仍须补齐这些检查，发现任何带引号变量时先报告变量名并停止，不擅自修改真实配置。
+
+## 2026-08-15 响应文档审计的系统性整理
+- **运维入口校准**：`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`的宿主机验收命令不再使用`127.0.0.1`冒充指定地址绑定，统一从`zhitian-deploy/.env`读取`SERVER_PUBLIC_IP`；容器内部回环健康检查语义保持不变。
+- **状态文档精简**：`claude_memory.md`从实际26条遗留记录中移出17条已解决项，只保留9条开放问题；压缩Phase A历史清单，删除过时README测试数字和v3.0标签快照，更新当前生产标签组合与v3.3部署状态。
+- **工作流与架构文档校准**：`claude_skill.md`的仓库前置检查覆盖`zhitian-deploy`，新增任务类型到必读文档路由，限流旧范例替换为真实开放F48，Chroma约束更新为复用全局RLock；`zhitian_structure.md`按当前四角色、80个路由、工具集、组织隔离和`web_client/`结构全面重写，接口章节明确为核心概览。
+- **历史信息归档与验证**：GraphRAG/PixelRAG决策移入`docs/history/architecture_decisions.md`，F32/F33完整事件移入`docs/history/incidents.md`，原文均保留入口。所有修改通过`git diff --check`和Markdown表格列数校验；三份运维文档只剩解释容器内部回环场景的`127.0.0.1`文字，不再含错误的宿主机命令。
+
+## 2026-08-15 v3.4：配置模板补全与三端版本源统一
+- **环境变量模板闭环**：后端`.env.example`由18项扩充为58项，精确覆盖`config.py`读取的57项变量并额外保留备份脚本密钥；新增项按LLM/生命周期、文档工具、检索资产、长期记忆和GraphRAG分区。`PORT`与`RATE_LIMIT_PER_MINUTE`明确标为历史兼容边界，不再误导为Compose端口或实际限流来源；DirectMail发件地址代码默认值改为通用`noreply@example.com`。
+- **生产配置口径纠正**：`production_configuration.md`确认`env_file.path + format: raw`同时用于本地和当前服务器，服务器后端`.env`实际位于Git工作树内、靠`.gitignore`和`.dockerignore`逻辑隔离而非物理目录隔离；部署仓库模板补充`SERVER_PUBLIC_IP`的格式与多IP选择规则。
+- **版本单一来源**：后端`VERSION`升至`3.4.0`，FastAPI OpenAPI版本与根路由改为启动时严格读取该文件，文件缺失或格式无效时明确拒绝启动；管理后台`VERSION`升至`3.2.0`，Flutter升至`3.2.0+320`，安装器默认版本与输出名同步为3.2.0系列。后端采用新版本是因为既有`v3.3`已被生产服务器检出并被跨项目文档引用，禁止删除重打或改写其历史。
+- **真实验证**：版本针对性`15 passed`；更正最终版本为`3.4.0`后再次执行权威回归，结果为`403 passed, 5 deselected in 208.86s`；Flutter `analyze --no-pub`无问题。CI工作流继续直接读取`VERSION`生成镜像标签，最终将得到`zhitian-api:3.4.0`；中间校准阶段曾以`3.3.0`构建验证镜像并确认容器内动态读取有效，随后在提交前按既有标签不可变原则更正为`3.4.0`，没有改写任何已发布标签。
