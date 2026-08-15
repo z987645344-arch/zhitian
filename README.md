@@ -2,12 +2,15 @@
 
 [![CI](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml/badge.svg)](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
-![Release](https://img.shields.io/badge/release-v2.3-B87333)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
+![Release](https://img.shields.io/badge/release-v3.3-B87333)
 
 **知天**是一套面向个人与小型团队的本地优先 AI Agent 平台。它把对话、企业知识库、联网检索、文件处理、任务分解、权限审核和运行诊断放进同一条可追踪链路，而不是停留在单轮聊天 Demo。
 
-本仓库是系统后端；完整产品还包括 [Flutter Windows 客户端](https://github.com/z987645344-arch/zhitian_app) 和 [管理后台](https://github.com/z987645344-arch/zhitian_admin)。
+本仓库是系统后端，并包含customer静态网页端`web_client/`；完整产品还包括
+[Flutter Windows 客户端](https://github.com/z987645344-arch/zhitian_app)、
+[管理后台](https://github.com/z987645344-arch/zhitian_admin)和独立的
+[Docker Compose部署仓库](https://github.com/z987645344-arch/zhitian-deploy)。
 
 ## 为什么值得看
 
@@ -22,6 +25,7 @@
 ```mermaid
 flowchart LR
     A[Flutter Windows 客户端] -->|JWT + SSE| B[FastAPI API]
+    A2[Customer 网页端] -->|JWT + SSE| B
     C[员工 / 审核员 / 开发者后台] -->|JWT + REST| B
     B --> D[Planning / LangGraph]
     D --> E[Execution Tools]
@@ -61,8 +65,8 @@ flowchart LR
 |---|---|
 | `customer` | 对话、附件、个人文件与工具箱 |
 | `employee` | 上传企业文档、录入知识、查看本人提交 |
-| `reviewer` | 审核/拒绝文档、管理 verified 知识库、检索调试、运行指标、审批员工账号与员工组织申请 |
-| `developer` | 账号治理与人员概览、组织管理、审核员组织申请审批、企业密码查看与刷新、系统提示词模块编辑、大厅内容维护、邮件发送量监控 |
+| `reviewer` | 在所属组织内审核/拒绝文档、管理verified知识库、检索调试、查看文档调用量、审批员工账号与员工组织申请 |
+| `developer` | 账号治理与人员概览、组织管理、审核员组织申请审批、企业密码查看与刷新、系统提示词模块编辑、按角色限流、大厅内容维护、邮件发送量与运行指标监控 |
 
 ### 组织体系
 
@@ -71,7 +75,7 @@ flowchart LR
 - JWT 鉴权和角色校验覆盖受保护接口。
 - 非文件 owner 的下载、预览和删除统一按不存在处理，避免暴露资源存在性。
 - `.env`、`data/`、向量库和运行日志均被 Git 忽略；日志不记录 prompt、附件正文或 API Key。
-- 上传默认限制 `20MB`，并校验扩展名与文件特征。
+- 上传默认限制`5MB`，正文切分后最多`2,000`个片段，并校验扩展名与文件特征；内容密集的大文件可能先触发片段数护栏。
 
 ## 快速运行
 
@@ -94,26 +98,17 @@ py -3.10 -m venv .venv
 
 ### 3. 配置
 
-创建 UTF-8 无 BOM 的 `.env`：
+以仓库中的`.env.example`为唯一配置项清单，复制为UTF-8无BOM的`.env`后，
+按每项注释填写本机开发值：
 
-```env
-DEEPSEEK_API_KEY=replace-with-your-key
-DEEPSEEK_FAST_MODEL=deepseek-v4-flash
-DEEPSEEK_EXPERT_MODEL=deepseek-v4-pro
-TAVILY_API_KEY=replace-with-your-key
-JWT_SECRET_KEY=replace-with-at-least-32-random-bytes
-ENTERPRISE_PASSWORD_SEED=replace-with-a-random-private-seed
-LIBREOFFICE_PATH=C:\Program Files\LibreOffice\program\soffice.exe
-CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080,null
-
-# 阿里云 DirectMail：注册申请与密码重置的邮箱验证码依赖以下三项
-ALIYUN_ACCESS_KEY_ID=replace-with-your-key-id
-ALIYUN_ACCESS_KEY_SECRET=replace-with-your-key-secret
-ALIYUN_MAIL_REGION_ID=replace-with-your-region-id
-ALIYUN_MAIL_ACCOUNT_NAME=replace-with-your-verified-sender
+```powershell
+Copy-Item .env.example .env
 ```
 
-`ENTERPRISE_PASSWORD_SEED` 未配置时应用会直接拒绝启动；`JWT_SECRET_KEY` 未配置时登录与鉴权会返回明确的配置错误。
+不要在README中维护第二套配置变量列表；新增或删除环境变量时只更新`.env.example`
+及对应生产配置文档。`.env`不得进入Git或镜像。
+
+`ENTERPRISE_PASSWORD_SEED`未配置时应用会直接拒绝启动；`JWT_SECRET_KEY`未配置时登录与鉴权会返回明确的配置错误。
 
 DirectMail 三项凭据（`ALIYUN_ACCESS_KEY_ID`、`ALIYUN_ACCESS_KEY_SECRET`、`ALIYUN_MAIL_REGION_ID`）用于发送邮箱验证码。**任一项为空时，验证码发送接口会返回明确的「邮件发送服务暂不可用」错误，但不影响系统其他部分运行**——对话、知识库、文件工作流和已有账号登录均照常可用，只是无法完成需要验证码的注册申请与密码重置。`CORS_ORIGINS` 需要包含管理后台的实际来源，否则浏览器端调用会被拦截。
 
@@ -126,7 +121,7 @@ DirectMail 三项凭据（`ALIYUN_ACCESS_KEY_ID`、`ALIYUN_ACCESS_KEY_SECRET`、
 服务默认监听 `http://localhost:8000`：
 
 - `GET /health`：进程存活
-- `GET /ready`：SQLite 与 Chroma 依赖就绪
+- `GET /ready`：SQLite、Chroma与LibreOffice依赖就绪
 - `POST /auth/register`：注册测试账号
 - `POST /chat/stream`：SSE 对话主入口
 
@@ -149,17 +144,17 @@ Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口�
 2. 在 Flutter 客户端分别用 fast/expert 提问，观察引用来源和决策理由差异。
 3. 上传聊天附件并要求总结；再生成一份 PDF/DOCX 交付文件。
 4. 在工具箱完成 PDF 合并/拆分或 Office 转换。
-5. 打开审核员开发者视图，通过同一 `trace_id` 查看请求阶段耗时。
+5. 登录独立的开发者工作台，通过同一`trace_id`查看请求阶段耗时。
 
 ## 质量证据
 
-- 后端完整本地回归：**317 passed, 5 deselected**（`.\run_tests.bat -q`，默认排除 integration 标记）。
+- 后端最近完整权威回归：**401 passed, 5 deselected**（`.\run_tests.bat -q`，默认排除 integration 标记）。
 - GitHub Actions 在 Windows 目标环境执行依赖安装、敏感文件检查、全量语法检查和离线测试。
-- v1.1 至 v2.3 保留连续里程碑标签，详细演进见 [CHANGELOG.md](CHANGELOG.md)。
+- 当前稳定标签为`v3.3`；历史里程碑及完整演进见[CHANGELOG.md](CHANGELOG.md)。
 
 ## 已知边界
 
-- 当前是单实例本地部署：进程内指标与附件文本 TTL 不跨 worker 聚合。
+- 当前生产基线是Docker Compose单后端实例；进程内指标与附件文本TTL不跨worker或实例聚合。
 - PDF 转 Word/Excel/PPT 是尽力重建，不提供扫描件 OCR 或复杂版式无损保证。
 - 外部 MCP 通用连接层已验证，但尚未暴露给生产 Agent 工具路径。
 - 数据层仍以 SQLite + Chroma 为主，大规模多租户部署需迁移数据库和对象存储。
@@ -168,6 +163,7 @@ Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口�
 
 - [zhitian_app](https://github.com/z987645344-arch/zhitian_app)：Flutter Windows 客户端
 - [zhitian_admin](https://github.com/z987645344-arch/zhitian_admin)：员工 / 审核员 / 开发者三角色管理后台
+- [zhitian-deploy](https://github.com/z987645344-arch/zhitian-deploy)：Docker Compose、统一反向代理与运行时部署配置
 
 ## License
 

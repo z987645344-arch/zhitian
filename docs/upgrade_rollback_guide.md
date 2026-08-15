@@ -63,10 +63,14 @@ Compose会从两个应用仓库的Dockerfile重建`zhitian-api:dev-production`�
 
 ### 2.5 验收
 
-```powershell
-curl.exe --fail --silent --show-error http://127.0.0.1/
-curl.exe --fail --silent --show-error http://127.0.0.1/api/health
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+宿主机入口绑定由`zhitian-deploy/.env`中的`SERVER_PUBLIC_IP`决定。以下命令在`zhitian-deploy`仓库根目录执行；容器内部健康检查仍可使用容器自身的`127.0.0.1`，但宿主机验收不能用它替代专属绑定地址：
+
+```bash
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/health"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 docker compose logs --tail 100 zhitian-api
 docker compose logs --tail 100 reverse-proxy
 ```
@@ -102,11 +106,13 @@ docker compose logs --tail 100 reverse-proxy
 3. 将三个工作树切回精确commit；
 4. 重新构建并启动：
 
-```powershell
+```bash
 docker compose stop reverse-proxy zhitian-api
 docker compose up -d --build
 docker compose ps
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 ```
 
 由于Phase A CI不推送registry，不能假设服务器可`docker pull zhitian-api:sha-xxxx`。双标签和digest当前用于定位、审计和选择源码commit；Phase B若接入私有registry，再补充“按digest拉取并固定镜像”的快速回滚命令。

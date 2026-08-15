@@ -1,482 +1,246 @@
-# 知天（zhitian）项目总框架
-> 技术设计文档。Codex 每次开发前阅读相关章节，指挥师审阅架构时阅读全文。
-> **最后更新：2026-08-09**（同步本机后端调试脚本的非Compose边界与新文件名）
+# 知天后端架构说明
+
+> **最后更新：2026-08-15**
+>
+> 本文描述当前后端的结构、数据流、权限边界和核心接口。接口完整契约以运行中的FastAPI OpenAPI（`/docs`、`/openapi.json`）和源码为准；通用编码规范以`docs/claude_skill.md`第四章为唯一权威来源。
 
 ---
 
-## 一、项目结构
+## 一、系统边界
 
-```
-D:\zhiliao\zhitian\zhitian\
-├── main.py                     ← FastAPI 主入口（2084行）
-├── config.py                   ← 配置中心（83行）
-├── requirements.txt            ← 依赖列表（26项，全部锁定具体版本）
-├── Dockerfile                  ← Docker 打包配置
-├── .env                        ← 敏感信息（DeepSeek/Tavily/JWT Key，禁止上传 git）
-├── .gitignore
-├── README.md                   ← 项目说明与启动指南
-├── 本机后端调试（非Compose、勿用于MVP验收）.bat ← 仅供宿主机后端调试，完整MVP使用Compose
-├── run_tests.bat               ← 唯一权威测试入口（项目.venv Python 3.10）
-│
-├── layers/                     ← 五层 Agent 架构 + 认证 + MCP
-│   ├── __init__.py
-│   ├── perception.py           ← 感知层（30行）
-│   ├── memory.py               ← 记忆层（1437行）
-│   ├── planning.py             ← 规划层（2109行）
-│   ├── execution.py            ← 执行层（1157行）
-│   ├── output.py               ← 输出层（29行）
-│   ├── auth.py                 ← 用户认证与权限（536行）
-│   ├── document_loader.py      ← 文档解析器（154行）
-│   ├── mcp_server.py           ← MCP 工具服务端（87行）
-│   └── mcp_client.py           ← 规划层到本地执行工具的兼容适配器
-│
-├── utils/
-│   ├── __init__.py
-│   └── logger.py               ← 统一日志系统（120行）
-│
-├── scripts/
-│   └── clean_testdata.py       ← 测试数据清理脚本
-│
-├── data/
-│   ├── history.db              ← SQLite 对话历史（conversations + sessions 表）
-│   ├── users.db                ← SQLite 用户与文档审核（users + user_sessions + documents 表）
-│   ├── vectordb/               ← Chroma 向量数据库持久化
-│   ├── logs/                   ← 运行日志（按天轮转，保留7天）
-│   └── tmp_uploads/            ← 文件上传临时目录（解析后删除）
-│
-├── docs/                       ← 项目文档
-│   ├── claude_memory.md        ← 项目当前状态（大问题/遗留/规划）
-│   ├── zhitian_structure.md    ← 本文档
-│   └── claude_skill.md         ← 指挥师工作手册
-│
-├── CHANGELOG.md                ← 改动流水账（Codex 每次追加）
-│
-├── .venv/                      ← Python 3.10 虚拟环境
-│
-└── .workbuddy/                 ← WorkBuddy 工作区（测试/状态维护）
-    ├── workbuddy_snapshot.md   ← 项目状态快照
-    └── memory/                 ← WorkBuddy 记忆
-```
+知天当前是单实例企业知识工作台后端，包含四类调用方：
 
-**关联项目：**
-- `D:\zhiliao\zhitian\zhitian_app\` — Flutter Windows 桌面端（前端）
-- `D:\zhiliao\zhitian\zhitian_admin\` — 静态网页管理后台（员工/审核员/开发者）；`developer.html`为独立开发者控制台
+- `zhitian_app`：Flutter Windows客户端；
+- `zhitian_admin`：employee、reviewer、developer管理后台；
+- `web_client/`：customer静态网页版；
+- 运维脚本与`zhitian-deploy`：容器编排、初始化、备份恢复和升级回滚。
 
----
+后端在容器内监听8000。生产入口由独立`zhitian-deploy`仓库的反向代理统一发布，应用容器不直接映射公网端口。
 
-## 二、技术栈
+## 二、仓库结构
 
-| 层级 | 当前方案 |
-|------|---------|
-| 语言 | Python 3.10.11 / UTF-8 |
-| 后端框架 | FastAPI 0.115.0 + Uvicorn 0.51.0 |
-| LLM | DeepSeek OpenAI兼容API：fast使用deepseek-v4-flash，expert使用deepseek-v4-pro |
-| 记忆层 | SQLite（短期对话）+ Chroma 0.5.0（长期向量 + 文档向量） |
-| 规划层 | LangGraph 0.1.1（六节点 ReAct 状态机） |
-| 执行层 | MCP 1.28.1 本地工具服务 + Tavily 搜索 + DeepSeek 对话 + 文档检索 |
-| 认证 | bcrypt 密码哈希 + JWT（HS256，24小时过期） |
-| 前端 | Flutter Windows 桌面端（Provider 状态管理，SSE 流式） |
-| 管理后台 | 纯静态 HTML/CSS/JS |
-| 打包 | Dockerfile（python:3.10-slim + 清华镜像源） |
-
----
-
-## 三、数据流
-
-```
-用户输入
-   ↓
-[感知层] perception.py
-   strip() 清洗 + 封装 PerceptionOutput
-   ↓
-[规划层] planning.py — fast简化路径 + expert LangGraph ReAct状态机
-   fast       retrieve → DeepSeek Function Call（仅search_documents/list_documents）→ 可选本地工具 → 最终回答
-   expert     classify → 普通ReAct路径或complex_task线性任务链，保留完整工具集和联网能力
-      ├── clarify → 直接 respond
-      ├── complex_task → complex_plan → execute_complex ↔ checkpoint → complex_respond
-      └── 其他 → retrieve
-   retrieve   Chroma 长期记忆检索（strict_session=True，隔离用户）
-   plan       根据意图生成 Task
-   execute    通过 mcp_client 调用工具，返回 ToolResult + citations；chat意图执行后直接respond
-   reflect    document路径由当前mode模型判断是否需要追加工具调用（最多 MAX_REACT_ROUNDS=2 轮）；search执行一次后直接respond
-      ├── continue → 回到 plan
-      └── respond / 达到上限 → respond
-   respond    结合上下文生成最终回复
-   ↓
-[记忆层] memory.py（写入）
-   SQLite 写入 user + assistant 消息
-   Chroma 异步写入 assistant 回复（仅成功响应）
-   ↓
-[输出层] output.py
-   格式化 ChatResponse（含 citations）
+```text
+zhitian/
+├── main.py                     FastAPI入口、认证依赖、核心HTTP/SSE契约
+├── config.py                   环境变量与运行参数
+├── requirements.txt            Python 3.10精确依赖
+├── Dockerfile                  非root生产镜像、LibreOffice、中文字体、嵌入资产
+├── VERSION                     展示版本
+├── layers/
+│   ├── auth.py                 账号、JWT、RBAC、文档权威元数据
+│   ├── organizations.py        组织、成员关系、加入/退出审批、动态规范模块
+│   ├── memory.py               会话历史、长期记忆、文档向量与混合检索
+│   ├── planning.py             fast路径与expert LangGraph编排
+│   ├── execution.py            工具注册、执行、引用、文件生成
+│   ├── perception.py           输入标准化外壳
+│   ├── output.py               响应格式化外壳
+│   ├── document_loader.py      文档解析与切片
+│   ├── embedding.py            bge-small-zh-v1.5 ONNX嵌入
+│   ├── graph_store.py          可选GraphRAG关系存储
+│   ├── converter.py            LibreOffice格式转换
+│   ├── pdf_text.py/pdf_tools.py PDF文本、合并与拆分
+│   ├── attachments.py          聊天附件临时文本上下文
+│   ├── files_store.py          用户持久文件库
+│   ├── task_store.py           异步入库任务状态
+│   ├── document_usage.py       文档命中/引用统计
+│   ├── db_schema_version.py    SQLite schema版本基线
+│   ├── db_transaction.py       SQLite事务连接
+│   ├── chroma_sync.py          Chroma全局RLock
+│   ├── llm_provider.py         DeepSeek调用封装
+│   ├── web_search_provider.py  Tavily联网搜索
+│   ├── email_provider.py       DirectMail邮件发送
+│   ├── enterprise_password.py  企业密码
+│   ├── mcp_client.py           本地工具兼容适配
+│   ├── mcp_connector.py        外部stdio MCP连接基础设施
+│   └── system_modules.py       系统提示模块持久化
+├── web_client/                 customer零构建静态网页与独立Nginx镜像
+├── scripts/                    初始化、迁移、备份恢复和人工维护脚本
+├── tests/                      默认隔离的pytest回归与显式integration测试
+├── utils/                      日志、指标与时间上下文
+└── docs/                       当前文档与history历史归档
 ```
 
-**核心原则：每层只和相邻层通信，禁止跨层调用。**
+`main.py`和若干核心层文件规模较大且持续变化，本文不再维护精确行数。定位实现时使用函数名、路由或`rg`，不要依赖历史行号。
 
----
+## 三、当前技术栈
 
-## 四、层间数据格式
+| 类别 | 当前实现 |
+|------|----------|
+| 运行时 | Python 3.10、FastAPI 0.141.1、Starlette 1.4.1、Uvicorn 0.51.0 |
+| 模型编排 | DeepSeek兼容API、LangGraph 1.0.10、langchain-core 1.5.3 |
+| 结构化边界 | Pydantic 2.13.4 |
+| 权威关系数据 | SQLite：`users.db`、`history.db`、`files.db` |
+| 向量数据 | Chroma 0.5.0，memory/documents两个collection |
+| 文档检索 | BM25+向量召回、标题/来源补召回、模型重排序、可选GraphRAG扩展 |
+| 中文嵌入 | `BAAI/bge-small-zh-v1.5`自研ONNX运行路径，512维 |
+| 文档处理 | pdfplumber、pypdf、python-docx、openpyxl、python-pptx、PyMuPDF、LibreOffice headless |
+| 外部能力 | Tavily联网搜索、阿里云DirectMail、stdio MCP连接基础设施 |
+| 部署 | Python 3.10 slim非root镜像；独立部署仓库编排API、两套静态站点和反向代理 |
 
-所有层间数据统一用 Pydantic 模型，禁止裸 dict 传递。
+所有直接Python依赖以`requirements.txt`为准。嵌入资产的来源、许可、哈希和升级流程见`docs/embedding_model_asset.md`。
 
-### 感知层 → 规划层
+## 四、请求数据流
 
-```python
-class PerceptionInput(BaseModel):
-    session_id: str
-    raw_message: str
-    mode: str = "chat"
+### 4.1 认证与入口
 
-class PerceptionOutput(BaseModel):
-    session_id: str
-    message: str          # strip() 后的用户消息
-    input_type: str       # text | file | image
-    mode: str
-    timestamp: str        # ISO 格式
-```
+1. FastAPI接收请求并生成或传递`trace_id`。
+2. `get_current_user()`验证Bearer JWT，并从数据库读取账号当前`is_active`；禁用账号的旧Token立即返回401。
+3. `require_employee`、`require_reviewer`、`require_developer`等依赖执行角色检查。
+4. 组织相关端点进一步调用统一范围函数，不能用角色判断代替资源归属判断。
 
-### 规划层内部状态
+### 4.2 对话
 
-```python
-class Task(BaseModel):
-    tool: str             # search_web | search_documents | list_documents | llm_chat
-    params: dict
-    order: int
-    task_index: int = 0
-    status: str = "pending"        # pending | success | error
-    adjusted: bool = False
+1. `/chat`或`/chat/stream`绑定或校验`session_id`的owner。
+2. 临时聊天附件只为当前会话提供文本上下文；原始文件另存入owner文件库。
+3. `mode=fast`走轻量语义工具选择；`mode=expert`进入完整LangGraph。
+4. 执行层通过`TOOL_REGISTRY`调用工具并返回`ToolResult`。
+5. 非流式响应由输出层统一包装；流式响应发送reasoning、chunk、citations、file、error和完成标记等事件。
+6. 对话历史写入SQLite；符合重要性条件的普通消息可进入长期向量记忆。结构化`file_delivery`交付消息不进入生成文件正文上下文或长期记忆。
 
-class ComplexTaskResult(BaseModel):
-    task_index: int
-    tool: str
-    status: str
-    result_summary: str
-    citations: list[Citation]
+### 4.3 文档入库
 
-class AgentState(TypedDict):
-    session_id: str
-    message: str
-    mode: str                      # fast | expert，本次请求全链路统一tier
-    intent: str                    # chat | search | document | document_list | clarify | complex_task
-    context: list[str]             # Chroma 检索的历史上下文
-    tasks: list[Task]
-    results: list[ToolResult]
-    citations: list[Citation]
-    round_count: int               # 当前执行轮数
-    tool_call_history: list[dict]  # 已调用工具记录（防重复）
-    react_action: str             # continue | respond
-    react_limit_reached: bool      # 是否达到轮数上限
-    response: str
-    error: str
-    clarification: str
-    city: str                       # 用户城市
-    is_complex_task: bool
-    complex_task_list: list[Task]
-    complex_task_results: list[ComplexTaskResult]
-    full_replan_used: bool
-    current_task_pointer: int
-    complex_task_created_count: int # 历史累计生成/替换任务数，硬限制MAX_COMPLEX_TASKS
-```
+1. employee/reviewer显式选择自己已加入的非默认组织并提交文件或文本。
+2. 入口先执行5MB体积预筛；解析后仍受2,000切片成本护栏约束。
+3. API创建异步任务并立即返回`task_id`，解析、切分和向量化在线程池执行。
+4. SQLite `documents`保存权威`doc_id`、组织、上传者和审核状态；Chroma chunk元数据使用同一个`doc_id`。
+5. reviewer只可在自己所属组织内预览、审核、检索调试、统计和删除。
+6. customer正式检索只允许verified文档进入引用候选。
 
-### 执行层 → 规划层/输出层
+当前入库进度是真实任务状态，但Chroma仍整批写入，因此中间切片进度粒度不足，开放问题见F48。
 
-```python
-class Citation(BaseModel):
-    source: str            # 文档来源文件名
-    doc_id: str            # 审核表中的文档 ID
-    chunk_index: int       # 命中的 chunk 序号
-    score: float           # 相关性分数（1/(1+distance)），越高越可信
+## 五、层间模型与工具
 
-class ToolResult(BaseModel):
-    tool: str
-    status: str           # success | error
-    data: str
-    error_msg: str = ""
-    citations: list[Citation] = []
-```
+### 5.1 主要数据模型
 
-### 输出层 → 用户
-
-```python
-class ChatResponse(BaseModel):
-    status: str           # success | degraded | error
-    data: str
-    layer_trace: list[str]
-    session_id: str
-    citations: list[Citation] = []
-```
-
----
-
-## 五、接口规范
-
-### 用户认证
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /auth/register | 公开 | 注册用户（username/password/role） |
-| POST | /auth/login | 公开 | 登录返回 JWT token + role |
-
-### 对话
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /chat | 登录 | 主对话接口，返回 ChatResponse |
-| POST | /chat/stream | 登录 | SSE 流式对话，逐 chunk 返回，正文后发 citations 事件，最后 [DONE] |
-
-### 记忆管理
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /memory/{session_id} | 登录+归属 | 获取会话历史 |
-| DELETE | /memory/{session_id} | 登录+归属 | 清空两层记忆 |
-
-### 文档管理
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /documents/upload | employee+ | multipart 文件上传，解析后删除原始文件 |
-| POST | /knowledge/input | employee+ | 直接录入文字知识 |
-| GET | /documents | employee+ | 文档列表（employee 只看自己的） |
-| GET | /documents/verified | reviewer | 已审核通过文档列表 |
-| GET | /documents/{doc_id}/preview | reviewer | 预览文档 chunk 内容 |
-| DELETE | /documents/{doc_id} | employee+ | 按doc_id精确删除文档（employee 只能删自己 pending 的） |
-
-### 文档审核
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| GET | /pending | reviewer | 待审核文档列表 |
-| POST | /approve/{doc_id} | reviewer | 审核通过 |
-| POST | /reject/{doc_id} | reviewer | 审核拒绝 |
-
-### 检索调试
-
-| 方法 | 路径 | 权限 | 说明 |
-|------|------|------|------|
-| POST | /debug/retrieve | reviewer | 调试文档检索质量，只查 verified 企业文档，可选 include_pending |
-
-### 健康检查
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | / | 服务状态 |
-| GET | /health | 五层详细健康状态 + 统计 |
-| GET | /ready | SQLite、Chroma与LibreOffice生产依赖就绪检查；任一异常返回503 |
-
----
-
-## 六、记忆层设计
-
-### 双库架构
-
-```
-短期记忆（SQLite · data/history.db）
-  表：conversations（对话记录）+ sessions（会话元数据）
-  范围：当前会话内，最近 20 轮
-  写入：每轮对话结束后同步写入 user + assistant
-  并发：每次调用独立连接，启用 WAL + busy_timeout=5000
-
-长期记忆（Chroma · data/vectordb/）
-  Collection: zhitian_memory — 用户对话向量
-  Collection: zhitian_documents — 企业文档向量
-  写入：成功响应后按两段式重要性评估写入 user 消息和 assistant 回复；文档切片写入 zhitian_documents
-  文档切片：段落优先、句子兜底的语义切分，目标长度 500 字符；极端无边界长文本硬切兜底
-  文档检索：BM25字符bigram与Chroma向量各自召回`top_k×4`候选并取并集；BM25原始分按`1-exp(-score/BM25_SCORE_SCALE)`映射到0-1，同一chunk的最终分取`max(vector_score,bm25_relevance)`，保留两通道原始分供调试；短查询命中文档source/title时仅提升已召回chunk；候选阶段可用DeepSeek批量重排序精排；BM25索引审核/删除后标脏，下次检索懒重建
-  重要性：低信息/高信息规则速判，边界消息调用当前DeepSeek档位二分类；异常时保守不写入
-  遗忘：按 importance_level=high/normal 设置半衰期、淡出阈值和硬删除阈值
-  检索：L2 距离 < 0.8 才采纳，再按 age_days 做时间衰减重排；超过淡出天数的候选不返回
-  物理删除：scripts/forget_memory.py 仅清理 zhitian_memory 过期对话记忆，不删除 zhitian_documents
-  并发：所有 Chroma 初始化、读写和删除操作由全局 threading.RLock 串行化保护
-```
-
-### 记忆层接口
-
-```python
-# 短期记忆
-def save_message(session_id, role, content) -> None
-def get_history(session_id, limit=10) -> list[dict]
-def get_session_history(session_id) -> list[dict]
-def clear_session(session_id) -> bool  # 同时清空 SQLite + Chroma
-
-# 长期记忆（用户对话）
-def is_message_important(content) -> bool
-def maybe_save_to_vector(session_id, role, content) -> None
-def save_to_vector(session_id, content, role="assistant", importance_level="normal") -> None
-def search_memory(query, session_id=None, top_k=3, strict_session=False) -> list[str]
-def search_session_memory(query, session_id, top_k=3) -> list[str]
-
-# 文档向量
-def save_document(source, chunks, doc_id) -> int
-def search_documents(query, top_k=5, verified_doc_ids=None) -> list[dict]
-def list_documents() -> list[dict]
-def delete_document(doc_id) -> int
-def get_document_chunks(doc_id) -> list[str]
-```
-
-### 信任分级
-
-```
-文档上传 → pending（不参与检索）
-reviewer 审核通过 → verified（参与 RAG 检索）
-reviewer 审核拒绝 → rejected（永久排除）
-```
-
-RAG 检索时只查询 `verified_doc_ids` 白名单中的文档 chunk。`RAG_SCORE_THRESHOLD = 0.55`，低于阈值的候选不返回；若查询主体或编号命中文档 `source/title` 元数据，可将对应chunk分数提升到阈值上方的小幅保证分后继续参与排序，用于缓解极短查询向量分数结构性偏低的问题。
-
----
-
-## 七、认证与权限设计
-
-### 三档角色
-
-| 角色 | 权限 |
+| 模型 | 职责 |
 |------|------|
-| customer | 对话、查看/删除自己的会话历史 |
-| employee | customer + 上传文档、录入知识、撤销自己的 pending 文档、查看自己的文档列表 |
-| reviewer | employee + 审核文档、删除任意文档、预览文档 chunk、检索调试、查看 verified 文档列表 |
+| `PerceptionInput` / `PerceptionOutput` | 标准化session、消息、模式、输入类型和时间 |
+| `AgentState` | LangGraph状态：owner、上下文、任务、结果、引用、轮次、复杂任务和安全污染标记 |
+| `Task` / `ComplexTaskResult` | 单步任务与有序复杂任务结果 |
+| `ToolResult` | 工具名、状态、数据、错误、引用、元数据和内容污染边界 |
+| `Citation` | `source`、`doc_id`、`chunk_index`和分数 |
+| HTTP请求/响应模型 | 定义在`main.py`，由OpenAPI输出完整字段契约 |
 
-### 认证流程
+### 5.2 已注册执行工具
 
-```
-注册 → bcrypt 哈希密码存入 users.db
-登录 → bcrypt 校验 → 签发 JWT（HS256，24h 过期）
-请求 → Authorization: Bearer <token> → verify_token → 角色校验
-```
+`layers/execution.py::TOOL_REGISTRY`当前注册：
 
-### 数据库
+| 工具 | 能力 |
+|------|------|
+| `search_web` | Tavily联网搜索与结果整理 |
+| `llm_chat` | 不依赖其他工具的模型回答 |
+| `search_documents` | 本地verified知识库检索与引用 |
+| `list_documents` | 已审核知识库文件清单 |
+| `convert_document` | 本轮附件格式转换 |
+| `generate_file` | 生成MD、TXT、PDF、DOCX持久文件 |
 
-```
-data/users.db
-  users          (user_id, username, password_hash, role)
-  user_sessions  (session_id, user_id) — 会话归属绑定
-  documents      (doc_id, source, trust_level, uploaded_by, reviewed_by, ...)
-  并发：每次调用独立连接，启用 WAL + busy_timeout=5000
-```
+写文件工具在同一轮受到外部内容污染保护：一旦该轮包含联网搜索结果，不允许继续生成或转换可交付文件。
 
----
+### 5.3 fast与expert
 
-## 八、规划层状态机
+| 模式 | 当前能力与边界 |
+|------|----------------|
+| fast | 只在“直接回答、`search_documents`、`list_documents`”之间做轻量选择；不联网、不生成文件、不转换文件、不声明复杂任务。知识库证据经过相关性筛选，证据不足时明确拒绝把模型常识伪装成企业资料 |
+| expert | 使用完整意图工具集：直接回答、澄清、联网、本地文档、文件清单、生成文件、转换文件、城市记忆辅助和`declare_complex_task`。复杂任务当前是有序线性链，不是DAG并行执行 |
 
-### 两种模式
+## 六、存储设计
 
-```
-fast（DeepSeek v4 flash，独立简化路径，不进入LangGraph）
-  retrieve（Chroma长期记忆，不调用模型）
-     ↓
-  DeepSeek Function Call，只暴露search_documents和list_documents
-     ├── 无工具调用 → 直接回答（共1次模型调用）
-     ├── 文档检索 → 执行工具 → 证据筛选 → 证据充分时生成回答（最多3次模型调用）
-     │                                  └── 证据不足时固定拒答（共2次模型调用）
-     └── 文档清单 → 执行工具 → 结合清单生成回答（共2次模型调用）
+### 6.1 SQLite与Chroma
 
-expert（DeepSeek，完整LangGraph）
-  classify → retrieve → plan → execute → reflect/respond
-  保留search_web、search_documents、list_documents、llm_chat及多工具流转能力
-```
+| 存储 | 核心内容 |
+|------|----------|
+| `users.db` | users、sessions归属、documents、organizations、成员/申请、验证码/重置、限流、文档使用统计、GraphRAG关系等 |
+| `history.db` | conversations、会话摘要/标题与schema版本 |
+| `files.db` | owner持久文件元数据；物理文件在`data/user_files/` |
+| Chroma `memory` | 按session/owner约束的长期记忆向量 |
+| Chroma `documents` | 文档chunk向量与`doc_id`、source、chunk_index等元数据 |
 
-### Expert LangGraph节点
+`users.db`与`history.db`当前schema版本为1。连接启用`PRAGMA foreign_keys=ON`，应用启动执行版本和`foreign_key_check`；未知版本、版本表损坏或已声明外键违反会拒绝启动。并非所有历史逻辑关系都已经转换成SQLite物理外键，未来需要正式迁移链处理。
 
-```
-classify   DeepSeek Function Call，一次调用完成意图分类 + 城市提取 + 澄清判断
-retrieve   Chroma 长期记忆检索（strict_session=True）
-plan       根据 intent 生成 Task
-execute    mcp_client.call_tool 执行，返回 ToolResult + citations
-reflect    DeepSeek判断当前结果是否足够，决定continue或respond
-respond    结合上下文生成最终回复
-complex_plan      一次生成有序线性任务清单，默认最多10项
-execute_complex   顺序执行一个子任务并记录结构化摘要
-checkpoint        判断整体路线或下一个任务是否需调整
-complex_respond   汇总全部子任务结果和去重citations
-```
+Chroma初始化、读取、写入和删除必须复用`layers/chroma_sync.py`的全局`RLock`。不要为新路径创建另一把独立锁。
 
-### Expert流转逻辑
+### 6.2 会话与文件生命周期
 
-```
-classify
-  ├── clarify → respond（跳过 retrieve/plan/execute）
-  ├── complex_task → complex_plan → execute_complex → checkpoint
-  │                                      ↑               │
-  │                                      └──── execute ──┤
-  │                                                      └── complex_respond → END
-  └── 其他 → retrieve → plan → execute
-                                  ├── chat/document_list → respond
-                                  └── search/document → reflect
-                                                  │
-                                          continue │ respond / 达到上限
-                                                  ↓
-                                          plan ←───┘
-                                                  │
-                                          respond ←─┘
-                                                  ↓
-                                                END
-```
+- 会话历史按`session_id+owner_user_id`授权，跨owner查询按端点惯例返回403或隐藏为404。
+- 聊天附件提取文本保存在单进程内存并有TTL；持久原始文件归owner管理，二者不是同一生命周期。
+- 生成文件和转换文件统一写入用户文件库，下载必须携带JWT。
+- 备份恢复覆盖三库、Chroma、user_files和schema信息，操作说明见`docs/backup_restore_guide.md`。
 
-### ReAct 约束
+## 七、认证、角色与组织范围
 
-- `config.MAX_REACT_ROUNDS = 2`，初始 execute 后最多追加 2 轮，总执行轮数最多 3
-- chat 和 document_list 意图不进入 reflect，单轮工具执行后直接 respond，避免普通聊天或文档清单被误判追加搜索
-- document 意图默认进入 reflect；但 title/source 元数据命中且候选数较少的高置信短查询会直接 respond，跳过 rerank/reflect 叠加延迟
-- 只允许组合现有四个工具：`search_web`、`search_documents`、`list_documents`、`llm_chat`
-- `should_continue_react()` 通过DeepSeek语义判断是否继续
-- 代码层硬拦截：工具白名单、重复调用检测、轮数上限
-- 达到上限仍信息不足时，回复前追加"基于目前检索到的信息回答，可能不够全面。"
-- 多轮 citations 按 `doc_id + chunk_index` 去重
-- fast模式不进入classify、plan或reflect，不提供search_web，也不支持追加检索；search_documents在工具阶段关闭内部模型重排和回答生成，随后以独立证据筛选调用确定相关候选，再由生成调用回答。无工具1次、证据不足2次短路、有工具且证据充分最多3次模型调用
-- fast保留retrieve节点的Chroma长期记忆读取，为低成本上下文回答提供依据
-- complex_task仅expert可用，复杂度完全由DeepSeek Function Call语义判断，不使用关键词/正则兜底
-- 复杂任务是线性顺序链，不是DAG；不支持并行。整体重规划最多1次，每个任务位置的局部调整判断最多1次
-- `config.MAX_COMPLEX_TASKS=10`按历史累计创建数计数，初始规划、重规划新增和局部替换均消耗额度
-- 单任务失败继续进入checkpoint；连续2次失败提前汇总并标记degraded
+### 7.1 四角色模型
 
----
+| 角色 | 核心权限 |
+|------|----------|
+| customer | 自助注册；聊天、会话历史、附件、个人文件和customer工具能力 |
+| employee | 申请加入/退出组织；向已加入的非默认组织上传或录入文档；查看并撤销本人pending文档 |
+| reviewer | employee能力的超集；审批employee账号；只在自己所属组织内查看、预览、审核、删除、调试和统计文档，并处理职责范围内的组织申请 |
+| developer | 全局账号治理、reviewer/developer审批、组织与大厅内容、系统模块、按角色限流和全局管理数据；是否可调用某个业务端点仍由该端点依赖决定，不能把“全局治理”理解为自动绕过所有路由角色限制 |
 
-## 九、错误处理机制
+企业角色审批链为developer→reviewer→employee；customer走独立自助注册。账号可以同邮箱多角色，但密码保持同邮箱同步规则。
 
-```
-Level 1 · 工具错误（执行层 execution.py）
-  处理：重试 1 次（间隔 1s），仍失败则返回 error 状态
-  超时：10s（ThreadPoolExecutor）
+### 7.2 组织隔离原则
 
-Level 2 · 规划错误（规划层 planning.py）
-  处理：降级为普通 llm_chat 模式，使用当前DeepSeek档位回复
-  响应：status="degraded"，不写入记忆库
+- `默认`组织是受保护大厅，不构成工作资格；业务操作要求至少加入一个自定义组织。
+- 上传目标`organization_id`必须显式提交，且必须属于当前用户。
+- reviewer范围统一由`_reviewer_organization_scope()`计算；传入单个organization_id只能收窄，不能扩大范围。
+- 资源级端点先以`doc_id`取得SQLite权威归属，再执行`_require_document_in_scope()`。
+- 文档删除、撤销、chunk统计一律使用`doc_id`，`source`只用于展示。
+- `GET /documents`、pending、verified、预览、删除、审核、检索调试和调用量统计均应保持同一组织范围；新增文档端点必须补双组织安全测试。
 
-Level 3 · 服务错误（main.py）
-  处理：返回统一错误响应，记录日志
-  格式：status="error", data="服务暂时异常，请重试"
-```
+## 八、LangGraph编排
 
-### 搜索链路降级规则
+### 8.1 节点
 
-```
-Tavily 异常 → 降级为模型知识回答 + 前缀"搜索服务暂时不可用"
-Tavily 空结果 → 降级为模型知识回答 + 前缀"网络搜索无结果"
-Tavily 全部 score < 0.3 → 降级为模型知识回答 + 前缀"搜索结果相关性不足"
-DeepSeek 整理失败 → 返回原始搜索结果摘要 + 前缀"搜索结果整理失败"，避免伪装成正常整理结果
-```
+expert图当前包含：`classify`、`retrieve`、`plan`、`execute`、`reflect`、`respond`、`complex_plan`、`execute_complex`、`checkpoint`、`complex_respond`。
 
-### 双模型请求模式
+普通路径根据意图决定是否检索和执行；需要多步目标时转入复杂任务线性链。每步通过checkpoint决定继续、局部调整、整体重规划或结束。具体边和条件以`layers/planning.py`底部的`StateGraph`构建为准。
 
-```
-fast：缺省模式，使用deepseek-v4-flash独立简化路径；只支持知识库检索、文档清单和对话/长期记忆上下文回答，不支持联网搜索
-expert：使用deepseek-v4-pro完整LangGraph，保留classify、联网搜索、文档重排、reflect和上下文生成，不跨档位回退
-两种模式的单个模型环节都只调用一次，不做主备模型或跨tier重试
-非法mode由/chat和/chat/stream返回400
-搜索链路：query改写失败直接使用原query；整理失败返回原始Tavily摘要；总预算30s；search执行后跳过reflect
-```
+### 8.2 运行边界
 
----
+- 简单聊天不为了形式完整强制走reflect。
+- 联网结果属于不可信外部内容，不能驱动同轮写文件工具。
+- `search_documents`结果需经过阈值与证据筛选；引用来自真实候选元数据。
+- complex task有总时限、重规划和局部调整上限；当前没有并行DAG。
+- fast是独立轻量路径，不是从expert图中删几个节点后的别名。
 
-## 十、编码规范
+## 九、核心接口概览
 
-1. 每次开发前阅读此文档相关章节
-2. 层间数据必须用 Pydantic 模型，禁止裸 dict 传递
-3. 业务逻辑写在各层文件内部，不写进 LangGraph 节点
-4. API Key 只从 config.py 读取，禁止硬编码
-5. 新增工具在 execution.py 的 `TOOL_REGISTRY` 中统一注册
-6. 错误处理按第九章规则执行，不能静默吞掉异常
-7. 每次改动后追加 CHANGELOG.md
-8. 禁止用硬编码规则处理语义问题（能交给 LLM 的不写 if/else）
-9. 日志脱敏：用户消息只记长度，不记原文；异常只记 error_type
-10. .env 必须保持无 BOM UTF-8
+本章只列接口族和代表端点，不追求覆盖当前约80个路由。字段、状态码、请求体和完整列表以FastAPI OpenAPI及`main.py`为准。
+
+| 接口族 | 代表端点 | 说明 |
+|--------|----------|------|
+| 存活/就绪 | `GET /health`、`GET /ready` | health检查进程层；ready检查SQLite、Chroma和LibreOffice，失败返回503 |
+| 认证 | `POST /auth/register`、`/auth/login`、`/auth/send-verification-code` | customer自助注册与企业角色申请/登录 |
+| 审批与治理 | `/developer/registration-requests/*`、`/reviewer/registration-requests/*`、`/developer/users/*` | 账号审批、禁用、启用、角色与密码治理 |
+| 对话 | `POST /chat`、`POST /chat/stream` | fast/expert，SSE流式事件 |
+| 会话历史 | `GET /memory/sessions`、`GET /memory/{session_id}`、对应PATCH/DELETE | owner范围的列表、重命名、读取和删除 |
+| 用户文件 | `GET /files`、`GET /files/{file_id}`、preview、DELETE | owner持久文件库与JWT下载 |
+| 附件/工具 | `POST /chat/attachments`、`POST /tools/convert`、`/tools/pdf/*` | 临时附件、格式转换和PDF工具 |
+| 文档入库 | `POST /documents/upload`、`POST /knowledge/input` | 创建异步入库任务 |
+| 任务状态 | `GET /tasks/{task_id}`、`GET /tasks/{task_id}/stream` | owner范围查询与SSE进度 |
+| 文档管理 | `GET /documents`、`/pending`、`/documents/verified`、preview、DELETE、approve/reject | employee本人范围或reviewer组织范围 |
+| 检索调试/统计 | `POST /debug/retrieve`、`GET /documents/{doc_id}/usage`、`GET /reviewer/metrics` | 组织隔离的调试与统计 |
+| 组织 | `/organizations/directory`、join/leave request、reviewer/developer审批 | 组织大厅和成员关系审批 |
+| developer配置 | `/developer/system-modules`、`/developer/rate-limits`、`/developer/organizations` | 系统规范、角色限流与组织治理 |
+
+## 十、编码规范与架构特有规则
+
+通用编码规范只维护在`docs/claude_skill.md`第四章。本文仅补充架构特有要求：
+
+1. 新增工具必须同步更新`execution.py::TOOL_REGISTRY`、`planning.py`意图工具定义、状态流转和测试；不能只注册不规划。
+2. 新增文档资源端点必须复用现有owner/组织范围函数，并提供双组织或跨owner反向用例。
+3. 新增Chroma访问必须复用全局RLock；新增SQLite schema必须通过版本机制与迁移策略，不得启动时静默改坏旧库。
+4. 新增SSE事件应保持既有事件向后兼容；旧客户端必须能够安全忽略未知事件。
+5. `source`是展示文本，所有文档定位、删除、统计和关联使用唯一`doc_id`。
+6. 接口变更后同步核对Flutter、管理后台、customer网页、测试脚本和部署健康检查，不以单端通过代替契约闭环。
+
+### 10.1 错误、安全与可观测性边界
+
+- 工具执行采用“工具内有限重试→规划降级→统一用户错误”的分级策略；外部服务错误不泄露堆栈。
+- 日志记录`trace_id`和必要的长度、类型、角色等元数据，不记录完整Token、用户消息、文档正文或检索原文。
+- `/chat`与`/chat/stream`按角色读取`rate_limit_config`并实时限流；developer可在管理后台调整四角色每分钟上限。
+- 上传、转换、生成和下载均有owner/组织/文件类型/体积边界；写文件工具不会采用同轮联网内容。
+- 当前日志与业务审批记录不是不可篡改安全审计系统；生产审计能力边界见`claude_memory.md`。
+
+历史架构取舍见`docs/history/architecture_decisions.md`，事故与修复背景见`docs/history/incidents.md`，当前开放问题见`docs/claude_memory.md`。

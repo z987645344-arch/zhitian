@@ -69,9 +69,13 @@ sha256sum "./offline-backups/$BACKUP_NAME"
 
 外部SHA-256用于传输和存储介质核对；包内各文件仍由AES-GCM认证和manifest SHA-256共同校验。导出完成后恢复服务：
 
-```powershell
+以下宿主机入口验收命令必须在`zhitian-deploy`仓库根目录执行，并从该仓库的`.env`读取实际绑定地址；不要再用`127.0.0.1`代替绑定到指定公网IP的宿主机端口：
+
+```bash
 docker compose up -d
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 ```
 
 Phase B必须把卷外包复制到异地存储，并把加密密钥保存在不同失效域；当前未实现自动上传或调度。
@@ -141,10 +145,12 @@ docker compose run --rm -e BACKUP_ENCRYPTION_KEY=$env:BACKUP_ENCRYPTION_KEY zhit
 
 5. 只有命令明确输出“SQLite与Chroma完整性检查通过”后，才重新启动：
 
-```powershell
+```bash
 docker compose up -d
 docker compose ps
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 docker compose exec zhitian-api python scripts/check_orphan_data.py
 ```
 

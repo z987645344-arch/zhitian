@@ -1,7 +1,7 @@
 # 指挥师工作手册
 > 告诉指挥师如何工作：你的职责、工作流程、Codex 指令格式、编码规范。
 > 每次新对话开头阅读此文档 + claude_memory.md，即可接手。
-> **最后更新：2026-07-16**
+> **最后更新：2026-08-15**
 
 ---
 
@@ -18,6 +18,10 @@
 **你不改架构。** 架构决策由用户 + 指挥师讨论后，由指挥师写入指令。
 **你是可替换的。** 指挥师 1 和 2 职责完全相同，随时可切换。
 
+### 文档权威性原则
+
+`claude_memory.md`、`zhitian_structure.md`、README及运维文档用于帮助接手和操作，不能替代对当前实现的核实。若文档描述与代码实现、自动化测试、可执行配置或真实运行结果矛盾，必须以当前代码和真实验证证据为准，先记录矛盾并更正文档；不得因为文档写成某种状态，就反向假设代码已经实现，或为了迎合过时文档而擅自改变业务行为。测试本身也可能过时，代码与测试不一致时应继续核对接口契约和真实运行结果，而不是机械选择其中一方。`CHANGELOG.md`保存历史事实，不作为当前运行状态的唯一依据。
+
 ---
 
 ## 一.5、执行者说明
@@ -33,7 +37,7 @@
 
 指挥师发出的每条指令，开头需注明"执行者：Codex"或"执行者：Claude Code"。
 
-**并发安全**：两者都可能读写全部三个仓库。任一方开始任务前，应先用`git status`确认
+**并发安全**：两者都可能读写三个应用仓库和独立部署仓库。任一方开始任务前，应先用`git status`确认
 当前仓库无来自另一执行者的未提交改动堆积；提交仍需用户在UI中人工确认（不由AI自主commit），
 这天然形成了串行化，只要用户在切换执行者之间记得提交，就不会产生冲突。
 
@@ -42,7 +46,7 @@
 ## 二、工作流程
 
 ```
-0. 对 zhitian、zhitian_admin、zhitian_app 三个仓库逐一执行 git status 与 git log origin/<branch>..<branch>，确认没有未推送的本地提交残留；如发现，先处理（推送或说明原因）再继续后续步骤
+0. 对 zhitian、zhitian_admin、zhitian_app、zhitian-deploy 四个仓库逐一执行 git status 与 git log origin/<branch>..<branch>，确认没有未推送的本地提交残留；如发现，先处理（推送或说明原因）再继续后续步骤
 1. 读取 claude_memory.md → 了解当前状态、遗留问题、下一步规划
 2. 读取 CHANGELOG.md 最近 5-10 条 → 了解最近改了什么
 3. 读取 zhitian_structure.md 相关章节 → 了解技术设计（按需）
@@ -55,6 +59,20 @@
 ```
 
 第 0 步是强制前置检查：v3.0 收尾期间已连续三次发现仓库 master 分支存在未推送的本地提交，曾导致状态记录与实际代码不一致。后续任务不得再依赖偶然发现此类偏差。
+
+### 任务类型与必读文档
+
+`claude_memory.md`与`CHANGELOG.md`最近记录始终是基础上下文；再按任务类型读取下表，避免从历史记忆猜当前契约：
+
+| 任务类型 | 必读文档 |
+|----------|----------|
+| 部署、首次安装 | `docs/deployment_guide.md` |
+| 配置安全、密钥 | `docs/production_configuration.md` |
+| 备份、恢复 | `docs/backup_restore_guide.md` |
+| 版本升级、回滚 | `docs/upgrade_rollback_guide.md` |
+| 故障排查 | `docs/troubleshooting.md` |
+| 嵌入模型资产、供应链 | `docs/embedding_model_asset.md` |
+| 架构设计 | `docs/zhitian_structure.md` |
 
 ---
 
@@ -98,34 +116,30 @@
 
 ### 指令范例
 
-> 以下范例是**尚未实现**的真实待办任务（P1 优先级），可直接作为 Codex 指令使用。
+> 以下范例取自当前尚未实现的F48（P3体验问题），只示范指令结构，不表示已经排期。
 
 ```
-请阅读 docs/zhitian_structure.md 第十章编码规范和第八章接口规范，
-完成以下任务：
+请阅读 docs/claude_skill.md 第四章编码规范和 docs/claude_memory.md 中F48的当前记录，
+为解决文档入库进度只有0和100两个状态的问题，完成以下任务：
 0. 先检查目标是否已实现：
-   - 阅读 main.py，确认是否已有限流逻辑
+   - 阅读main.py的_run_ingest_task()、layers/memory.py的save_document()和task_store进度字段
+   - 确认Chroma是否仍整批写入、是否已有批次级进度回调
    - 如果已有，跳过并在回复中说明
-1. 新增 requirements.txt 依赖：
-   - 添加 slowapi，版本不锁死
-2. config.py 新增限流配置项：
-   - RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
-3. main.py 添加限流中间件：
-   - 导入 slowapi，创建 Limiter 实例
-   - 限流维度：按 JWT token 中的 user_id 限流
-   - /chat 和 /chat/stream 两个接口都要限流
-   - 超限时返回 429 状态码，detail="请求过于频繁，请稍后重试"
-   - 其他接口（/health、/auth/*）不限流
-4. 注意事项：
-   - slowapi 的 Limiter 需要和 FastAP 的 app 绑定
-   - 限流 key 从 JWT token 提取，需用依赖注入获取当前用户
+1. 设计并实现批次级进度：
+   - Chroma分批写入时向任务层回调已完成切片数，总数以真实切片数为准
+   - progress必须单调递增，只反映真实已提交工作，不在前端伪造百分比
+2. 保持失败原子性：
+   - 任一批失败时按doc_id清理本任务已写入的全部chunk和SQLite记录
+   - 保留现有重试、去重、owner权限和启动时中断清理语义
+3. 注意事项：
+   - 所有Chroma访问继续复用项目全局RLock，不另建锁
    - Python 3.10 不支持 X | Y 类型语法，用 Optional 或 Union
-   - .env 如果新增 RATE_LIMIT_PER_MINUTE，确认无 BOM
-5. 验证：
+4. 验证：
    - py_compile 检查语法
-   - 启动后端访问 /health 确认 ok
-   - 用同一 token 连续请求 /chat 超过 20 次，第 21 次返回 429
-6. 更新 CHANGELOG.md 和 docs/claude_memory.md（含"当前进行中"表格的上一轮完成/当前等待/下一步）
+   - 构造多批切片，确认SSE出现真实中间进度且最终数量准确
+   - 故意让中间批失败，确认SQLite和Chroma均无半成品
+   - 完整运行run_tests.bat -q
+5. 更新 CHANGELOG.md 和 docs/claude_memory.md（含"当前进行中"表格的上一轮完成/当前等待/下一步）
 ```
 
 ### 指令注意事项
@@ -133,7 +147,7 @@
 - **范围明确**：每个任务编号对应一个文件，末尾可不写"不要改动其他文件"——指令里没提的就是不动的
 - **不猜参数**：给出具体函数签名、配置项名称、默认值
 - **验证可执行**：验证方式必须是 Codex 能自己跑的（py_compile、启动后端、接口测试）
-- **编码规范**：如果涉及特殊规范，提醒 Codex 遵守 zhitian_structure.md 第十章
+- **编码规范**：如果涉及特殊规范，提醒 Codex 遵守本文档第四章；`zhitian_structure.md`只负责架构说明，不重复维护通用编码规范
 - **更新文档**：每条指令末尾固定要求更新 CHANGELOG.md 和 claude_memory.md
 
 ### CHANGELOG.md条目格式规范
@@ -148,7 +162,7 @@
 
 ## 四、编码规范
 
-> 详细设计见 zhitian_structure.md，这里是指挥师写指令时必须遵守的核心规则。
+> 本章是项目通用编码规范的唯一权威来源；`zhitian_structure.md`只保留架构特有约束并链接到这里。
 
 1. **Pydantic 模型**：层间数据必须用 Pydantic 模型，禁止裸 dict 传递
 2. **业务逻辑在层内**：不写进 LangGraph 节点函数
@@ -170,7 +184,7 @@
 | 约束 | 影响 | 注意事项 |
 |------|------|---------|
 | mcp 1.28.1 联动版本 | 已于 2026-07-15 升级，并联动精确锁定 `uvicorn==0.51.0`、`PyJWT==2.13.0` | 不要单独漂移其中一个版本；升级前需复核 FastAPI 启动、JWT 和 SSE 事件顺序 |
-| Chroma 0.5.0 全局变量 | 非线程安全 | 多请求并发可能竞态，如果要改需要加锁 |
+| Chroma 0.5.0并发与生命周期 | 初始化、读取、写入和删除已统一复用全局`RLock`；客户端仍是模块级单例，`close_resources()`无法主动关闭底层句柄（F39） | 新增任何Chroma入口必须复用`layers/chroma_sync.py`的同一把锁，不得另建互不协调的锁或改成每请求创建客户端；进程内换库需求出现时重新评估F39 |
 | .env BOM 污染 | python-dotenv 无法识别首行变量名 | .env 改动后确认无 BOM |
 | Docker Compose `env_file`插值 | 默认解析会把值中的`$...`当作变量引用，bcrypt哈希或未来外部凭据可能被误解析/截断；`format: raw`从Compose 2.30.0起可用 | 生产API的`env_file`必须使用`path + format: raw`长语法；部署前确认`docker compose version --short >= 2.30.0`，后端`.env`逐行采用不带引号的`KEY=value`。不得输出完整`docker compose config`，只用`--quiet`验证语法 |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |

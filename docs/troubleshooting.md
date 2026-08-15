@@ -15,15 +15,15 @@ docker compose logs --tail 200 zhitian-web
 docker compose logs --tail 200 reverse-proxy
 ```
 
-随后检查入口：
+随后在`zhitian-deploy`仓库根目录检查宿主机入口。Compose只把入口绑定到`.env`中的`SERVER_PUBLIC_IP`，因此这里必须读取实际值；容器内部执行的健康检查仍可使用容器自己的`127.0.0.1`或`localhost`：
 
-```powershell
-curl.exe --fail --silent --show-error http://127.0.0.1/
-curl.exe --fail --silent --show-error http://127.0.0.1/api/health
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+```bash
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/health"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 ```
-
-Linux服务器把`curl.exe`替换为`curl`。
 
 ## 2. 容器启动失败或反复重启
 
@@ -59,11 +59,7 @@ docker compose ps
 
 ### 干净镜像出现`np.float_`错误（F32，已修复）
 
-> **状态：2026-08-01已修复**——`requirements.txt`已显式锁定`numpy==1.26.4`，干净构建不再解析到NumPy 2.x。本节保留作为同类问题（元数据合法但运行时不兼容）的排查范式。
-
-2026-07-31真实干净构建发现：`requirements.txt`锁定`chromadb==0.5.0`但未直接锁定NumPy，pip解析到`numpy==2.2.6`；Chroma导入时仍访问NumPy 2已移除的`np.float_`。`pip check`会报告“无损坏依赖”，但应用仍无法导入，这是包元数据约束不足而不是代码可运行的证明。
-
-定位：
+当前已精确锁定`numpy==1.26.4`。若干净镜像再次出现`np.float_`或“`pip check`通过但应用导入失败”，用以下命令核对镜像内真实版本：
 
 ```powershell
 docker image inspect zhitian-api:dev-production --format "{{.Id}} {{.Created}}"
@@ -71,9 +67,7 @@ docker run --rm zhitian-api:dev-production python -c "import numpy; print(numpy.
 docker run --rm zhitian-api:dev-production python -c "import chromadb; print(chromadb.__version__)"
 ```
 
-当时的失败组合为`numpy==2.2.6`和`chromadb==0.5.0`，可运行组合为`numpy==1.26.4`和`chromadb==0.5.0`（现已写入`requirements.txt`）。不要只在运行容器里临时`pip install`后宣称修复；应单独评估并精确锁定兼容版本，重建镜像，再执行完整权威回归、Chroma读写、四服务健康和容器CI扫描。
-
-已解决标准：全新无缓存/无旧容器依赖的镜像可导入NumPy和Chroma，API新容器为`healthy`，备份脚本`--help`可执行，完整回归与安全扫描结果已记录。
+不要在运行容器里临时安装依赖后宣称修复。应精确锁定、从零重建，再验证应用导入、Chroma读写、`/ready`和完整回归。完整事故经过见`docs/history/incidents.md`。
 
 ## 3. 数据卷权限错误
 
@@ -96,17 +90,13 @@ docker compose run --rm --entrypoint sh zhitian-api -c 'id; ls -ld /app/data /ap
 
 ### 空白实例备份提示缺少`files.db`（F33，已修复）
 
-> **状态：2026-08-01已修复**——`layers/files_store.py`已补模块级`init_db()`，与auth/memory两库时机一致，应用启动即建好三库。全新空卷零文件操作即可直接备份，实测通过。本节保留用于排查"启动初始化未生效"的情形。
-
-F33修复前，`files.db`由个人文件存储在第一次访问时懒创建，而备份脚本要求三库都存在，全新空卷即使`/api/ready=200`、尚未使用个人文件功能时也会备份失败。核查命令：
+当前应用启动会初始化`files.db`。若全新实例仍提示缺失，先核对初始化是否成功：
 
 ```powershell
 docker compose run --rm zhitian-api python -c "from pathlib import Path; print(Path('/app/data/files.db').is_file())"
 ```
 
-正常启动过的实例应输出`True`。若仍为`False`，说明应用未成功启动或模块级初始化异常，应先查启动日志与`/app/data`权限；任何情况下都不要手工创建无schema的空文件绕过检查。
-
-已解决标准：全新实例不依赖人工文件操作即可立即完成三库备份，manifest包含`files.db`且恢复演练通过。
+正常实例应输出`True`。若为`False`，检查启动日志和`/app/data`权限；禁止手工创建无schema空文件绕过检查。完整事故经过见`docs/history/incidents.md`。
 
 ## 3.5 新账号用申请时填的密码登录失败（多角色密码同步）
 
@@ -167,10 +157,12 @@ docker compose logs --tail 200 zhitian-api
 
 定位：
 
-```powershell
+```bash
 docker compose exec zhitian-api sh -c 'whoami; echo "$LIBREOFFICE_PATH"; test -x "$LIBREOFFICE_PATH"; "$LIBREOFFICE_PATH" --version'
 docker compose exec zhitian-api sh -c 'ls -ld "$HOME" "$XDG_CONFIG_HOME" /app/data/tmp_uploads; test -w "$XDG_CONFIG_HOME"; test -w /app/data/tmp_uploads'
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 docker compose logs --tail 200 zhitian-api
 ```
 
@@ -184,13 +176,15 @@ Compose应覆盖`LIBREOFFICE_PATH=/usr/bin/soffice`，容器用户应为`appuser
 
 定位：
 
-```powershell
+```bash
 docker compose ps
 docker compose exec reverse-proxy nginx -t
 docker compose logs --tail 200 reverse-proxy
-curl.exe --fail --silent --show-error http://127.0.0.1/login.html
-curl.exe --fail --silent --show-error http://127.0.0.1/api/health
-curl.exe --fail --silent --show-error http://127.0.0.1/api/ready
+SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
+test -n "$SERVER_PUBLIC_IP"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/login.html"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/health"
+curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 ```
 
 `/api/`在代理层会去掉前缀后转发到`zhitian-api:8000`；管理后台走`zhitian-admin:8080`。不要通过临时映射8000/8080把内部服务直接暴露给公网。
