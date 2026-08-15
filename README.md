@@ -3,7 +3,7 @@
 [![CI](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml/badge.svg)](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
-![Release](https://img.shields.io/badge/release-v3.3-B87333)
+![Release](https://img.shields.io/badge/release-v3.4-B87333)
 
 **知天**是一套面向个人与小型团队的本地优先 AI Agent 平台。它把对话、企业知识库、联网检索、文件处理、任务分解、权限审核和运行诊断放进同一条可追踪链路，而不是停留在单轮聊天 Demo。
 
@@ -148,9 +148,9 @@ Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口�
 
 ## 质量证据
 
-- 后端最近完整权威回归：**401 passed, 5 deselected**（`.\run_tests.bat -q`，默认排除 integration 标记）。
+- 后端最近完整权威回归：**403 passed, 5 deselected**（`.\run_tests.bat -q`，默认排除 integration 标记）。
 - GitHub Actions 在 Windows 目标环境执行依赖安装、敏感文件检查、全量语法检查和离线测试。
-- 当前稳定标签为`v3.3`；历史里程碑及完整演进见[CHANGELOG.md](CHANGELOG.md)。
+- 当前稳定标签为`v3.4`；其后的纯文档整理提交不改变运行代码。历史里程碑及完整演进见[CHANGELOG.md](CHANGELOG.md)。
 
 ## 已知边界
 

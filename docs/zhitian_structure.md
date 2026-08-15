@@ -25,7 +25,7 @@ zhitian/
 ├── config.py                   环境变量与运行参数
 ├── requirements.txt            Python 3.10精确依赖
 ├── Dockerfile                  非root生产镜像、LibreOffice、中文字体、嵌入资产
-├── VERSION                     展示版本
+├── VERSION                     应用版本唯一来源（OpenAPI与根路由读取）
 ├── layers/
 │   ├── auth.py                 账号、JWT、RBAC、文档权威元数据
 │   ├── organizations.py        组织、成员关系、加入/退出审批、动态规范模块

@@ -15,12 +15,12 @@
 |---|---|
 | Docker 安全基线、后端生产镜像、管理后台镜像、四服务 Compose、健康检查 | Phase A 已在 Docker Desktop 29.6.2、Docker Compose 5.3.1、WSL2 环境真实验证 |
 | 本地 80 端口访问、同源 `/api` 反向代理、具名卷持久化、非 root 运行 | Phase A 已验证 |
-| 真实域名、HTTPS 证书、云防火墙、仅内网/VPN的首个管理员接管 | Phase B，服务器到位后执行 |
+| 真实域名、HTTPS 证书、云防火墙、仅内网/VPN的首个管理员接管 | Phase B，当前服务器继续完成 |
 | 定时和异地备份、真实服务器破坏恢复演练 | Phase B |
 | F38 `cryptography`上游约束和 Debian/LibreOffice 系统层无修复版本项 | F31已闭环；F38为用户已接受风险，但容器漏洞策略仍会红灯，Phase B公网部署前需要按最新扫描重新复核 |
 | F32 干净镜像启动、F33 空白实例首次备份、F34 具名卷就地恢复、F35 首次上传阻塞 | 均已于 2026-08-01 修复并实测通过，不再是部署阻断 |
 
-> **当前状态（2026-08-09）**：三个仓库目录契约、Compose、健康检查和运维命令均已核验；曾阻断从零部署的 F32（干净镜像 NumPy 与 Chroma 不兼容）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）已全部修复并在真实容器复验通过，本文所述流程可按顺序执行。F31依赖迁移已闭环；当前扫描未全绿来自F38已接受风险与Debian系统层无修复版本项，Phase B公网部署前仍需按届时的真实扫描重新确认。
+> **当前状态（2026-08-15）**：三个仓库目录契约、Compose、健康检查和运维命令均已核验，腾讯云实例已运行四项服务；曾阻断从零部署的 F32（干净镜像 NumPy 与 Chroma 不兼容）、F33（空白实例首次备份被拒）、F34（具名卷下就地恢复无法完成）、F35（首次上传阻塞全服务）已全部修复并在真实容器复验通过。当前待办是正式域名/HTTPS、境内访问线路风险、服务器加固和异地容灾等Phase B收尾；F38已接受风险与Debian系统层无修复版本项仍使漏洞策略门禁保持红灯，公网验收前需按届时扫描重新确认。
 
 ## 2. 前置要求
 
@@ -79,7 +79,7 @@ git clone https://github.com/z987645344-arch/zhitian.git
 git clone https://github.com/z987645344-arch/zhitian_admin.git
 git clone https://github.com/z987645344-arch/zhitian-deploy.git
 git -C zhitian fetch --tags origin
-git -C zhitian checkout --detach v3.3
+git -C zhitian checkout --detach v3.4
 git -C zhitian_admin fetch --tags origin
 git -C zhitian_admin checkout --detach v3.2
 git -C zhitian-deploy fetch --tags origin
@@ -93,7 +93,7 @@ cd zhitian-deploy
 
 当前共享服务器生产组合是：
 
-- 后端`zhitian`使用`v3.3`。它累计包含`v3.2`功能、其后的F49安全修复、共享服务器部署边界以及Compose `env_file`原样注入规范；同一仓库不能也不需要再叠加checkout `v3.2`。
+- 后端`zhitian`当前服务器仍使用已验收的`v3.3`；新实例或下一次受控升级应使用`v3.4`，取得配置模板补全、VERSION单一来源和生产配置文档校准。升级前仍须按本服务器真实环境重新验收，不因标签较新就跳过检查。
 - 部署配置`zhitian-deploy`使用`v3.3`，取得`${SERVER_PUBLIC_IP}:80:8080`变量绑定、对应`.env.example`及`env_file.format: raw`加固。
 - 管理后台`zhitian_admin`本轮没有共享服务器专属改动，继续使用其精确落在当前稳定HEAD的`v3.2`。
 
@@ -209,7 +209,7 @@ docker compose down
 
 ## 8. Phase B待补
 
-服务器到位后再补充并实测：
+在当前服务器继续补充并实测：
 
 - 真实域名、DNS、HTTPS证书、80到443跳转及证书续期；
 - 云防火墙、SSH和首个管理员初始化期间的内网/VPN访问范围；
