@@ -1321,3 +1321,19 @@
 - **v3.4.2 服务商校正**：生产实例已于2026-08-13迁至染云数据香港（Ubuntu 24.04），此前的腾讯云实例因跨境网络质量问题退款作废；`claude_memory.md`3处与`deployment_guide.md`1处过期记载全部更正，后者「当前状态」段此前是日期为新、内容为旧的状态。
 - **v3.4.2 Phase B进展**：两项前置核对经SSH实测通过——Compose实际版本`v5.4.0`（`env_file.format: raw`要求≥2.30.0）、后端`.env`共18个`KEY=value`且零个值带引号或含`$`（核对只读取变量名，未读取任何值）。确立正式域名`agent.zhiliaohub.com`（与同机另一项目共用顶层域名、按子域名分流到本项目专属IP），记录源站缺少443这一阻塞项及Cloudflare Origin CA解法，并说明共享服务器上不应使用certbot的原因。境内访问风险由「跨境线路质量」重新定性为「境外未备案域名＋境内SNI干扰」。服务器加固已完成SSH纯密钥登录、fail2ban与swap，主机防火墙仍待办。
 - **部署侧同期改动（不在本仓库）**：生产`.env`新增`EXPERT_COMPLEX_TIMEOUT=90.0`以对齐Cloudflare免费版100秒源站响应上限（`layers/planning.py:769`用该值设定`complex_deadline`，此前该项未声明、走`config.py`默认`120.0`）；仅重建`zhitian-api`容器、未重建镜像，容器内实测生效、健康检查通过、`/api/ready`返回200，其余容器未受影响。**仓库内`.env.example`与`config.py`默认保持`120.0`不变**——90秒来自「处于Cloudflare免费版之后」这一部署约束，直连暴露或未来白标部署无此需要。
+
+## 2026-08-16 部署仓库拆分双子域名并接入源站HTTPS（改动在`zhitian-deploy`，本仓库无代码变化）
+
+- **入口拓扑变化**：反向代理由单server块、仅HTTP改为三个server块。容器内8080只放行容器健康检查用的`location = /api/ready`，其余一律301到https；两个8443块按客户端与管理后台各自的`server_name`分流，共用同一份证书。客户端块排在前面因此同时是8443默认server，**IP直连或未知Host落到客户端站点而不是权限最高的企业后台**——这正是本次拆分要解决的问题：原先`/`即管理后台，且两个前端同源共享localStorage，客户端一个XSS就能读走developer令牌。`/customer`前缀的301与rewrite随之删除。
+- **配置注入机制**：Nginx配置改为官方镜像模板机制（`compose-nginx.conf.template`挂到`/etc/nginx/templates/`），`server_name`与证书路径经`ZHITIAN_*`环境变量注入，真实值只进被Git忽略的`.env`，跟踪文件内仍不出现任何真实域名。两处由镜像真实行为倒逼的必需改动：入口脚本不会替换`/etc/nginx/nginx.conf`，故`command`显式`nginx -c`指向渲染结果；入口脚本不创建输出目录、且遇不可写目录只打ERROR不失败，故输出目录单独挂tmpfs。
+- **envsubst过滤的真实作用**：入口脚本把容器内全部环境变量名作为替换清单，因此常见说法「不加`NGINX_ENVSUBST_FILTER`会把`$host`等清空」在该镜像下并不成立——当前容器无同名变量时它们恰好原样保留；但注入一个名为`host`的变量即可把`proxy_set_header Host`静默改写且nginx照常加载。过滤器保留为必需前置防线，注入变量统一用`ZHITIAN_`前缀。
+- **本机验证**：`docker compose config --quiet`退出码0且未展开任何值；一次性容器渲染后`nginx -t`成功；4个注入变量全部代入、5类nginx内置变量与3个上游`set`变量全部原样保留；接三个桩上游后8项路由实测全部符合预期（含`/api/`剥前缀、相对Location、`X-Forwarded-Proto=https`、未知Host落客户端块）。**证书签发、DNS记录、服务器`.env`、容器重建与线上验证均属服务器侧，本轮未执行。**
+- **待服务器侧决定的连带影响**：80端口除`/api/ready`外一律跳HTTPS，且Compose要求证书与私钥挂载源真实存在，**本机回环部署需自备本地证书并改走https**；部署仓库README与五个`.bat`中的HTTP访问口径、Flutter调试用`http://localhost/api`口径本轮均未同步，待域名接入实测后一并更新。
+
+## 2026-08-16 部署仓库恢复本机开发通道（改动在`zhitian-deploy`，本仓库无代码变化）
+
+- **问题来源**：上一条改动让8080除健康检查外一律跳HTTPS、且Compose要求证书文件真实存在，导致本机`docker compose up`直接失败、`一键启动MVP.bat`等既有验收流程全部作废。而"先在本机改好验证通过、再推送云服务器"是主路径而非可选项，因此本轮在**不改变`on`模式下任何生产行为**的前提下把本机通道恢复。
+- **实现方式**：8080块新增`set $force_https ${ZHITIAN_FORCE_HTTPS};`，恢复旧路由并在每个location首行加`if ($force_https != off) { return 301 ...; }`守卫——刻意不写成`= on`，使`ON`、末尾空格等笔误倒向生产行为而非落到else分支；`/api/ready`刻意不加守卫，否则反代永远不会healthy。443两块不受开关影响。新增`生成本机自签证书.bat`用一次性容器产出覆盖`localhost`/`admin.localhost`/`127.0.0.1`的自签证书（写入被Git忽略的`local-tls/`，私钥`root:101`+`0640`），本机因此也能走一遍与生产同形的双主机名HTTPS。
+- **修正上一轮的真实缺陷**：证书原按「宿主机路径＝容器内路径」挂载，Windows下实测报`invalid mount path ... must be absolute`——容器内挂载目标只能是POSIX绝对路径。改为固定挂到`/etc/nginx/tls/`，`ZHITIAN_TLS_*_PATH`退化为纯宿主机源路径。
+- **失败方向选择**：Compose侧默认值写成`${ZHITIAN_FORCE_HTTPS:-on}`，`.env`漏配时按生产行为运行（实测容器内收到`on`），不会静默把管理后台暴露在明文HTTP根路径上。
+- **本机验证**：两种取值各渲染一次`nginx -t`均successful；桩上游12项路由实测符合预期；并以真实四服务跑通完整流程——`docker compose up -d`四服务全部healthy，`off`下四条HTTP验收全部200且`/api/health`返回真实层状态JSON，`https://localhost`与`https://admin.localhost`同样200，切到`on`后HTTP全部301而`/api/ready`仍直通、反代仍healthy。证书签发、DNS与线上验证仍属服务器侧，本轮未执行。
