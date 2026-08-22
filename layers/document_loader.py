@@ -4,10 +4,11 @@
 import os
 import re
 
-import pdfplumber
 from docx import Document
 
-from layers.pdf_text import extract_pdf_page_text
+from layers.file_processing.models import FileProcessingRequest, FileTaskType
+from layers.file_processing.pdf import pdf_processor as _pdf_processor_registration
+from layers.file_processing.runtime import get_file_processor_registry
 
 
 LONG_PARAGRAPH_RATIO = 1.5
@@ -140,13 +141,16 @@ def _read_text_file(file_path: str) -> str:
 
 
 def _read_pdf(file_path: str) -> str:
-    texts = []
-    with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
-            text = extract_pdf_page_text(page)
-            if text.strip():
-                texts.append(text)
-    return "\n\n".join(texts)
+    request = FileProcessingRequest(
+        task_type=FileTaskType.EXTRACT_TEXT,
+        source_paths=[file_path],
+        source_format="pdf",
+    )
+    processor, _ = get_file_processor_registry().resolve(request)
+    result = processor.execute(request)
+    if not result.success:
+        raise ValueError(result.error_message or result.error_type or "PDF文件解析失败")
+    return result.text
 
 
 def _read_docx(file_path: str) -> str:

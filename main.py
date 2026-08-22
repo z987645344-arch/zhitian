@@ -1882,7 +1882,7 @@ async def convert_tool_file(
             target_format,
             source_task_id=file_id,
             generation_engine=(
-                "pdf_processor" if source_format == "pdf" else "libreoffice"
+                "pdf" if source_format == "pdf" else "libreoffice"
             ),
             generation_engine_version="1",
         )
@@ -2028,6 +2028,9 @@ async def merge_pdf_tool_files(
             download_filename,
             output_path,
             "pdf",
+            source_task_id=operation_id,
+            generation_engine="pdf",
+            generation_engine_version="1",
         )
         logger.info(
             "PDF合并完成：user_id_len=%s file_id=%s input_count=%s page_count=%s",
@@ -2100,6 +2103,9 @@ async def split_pdf_tool_file(
                 download_filename,
                 output_path,
                 "pdf",
+                source_task_id=operation_id,
+                generation_engine="pdf",
+                generation_engine_version="1",
             )
             saved_file_ids.append(file_id)
             response_files.append(

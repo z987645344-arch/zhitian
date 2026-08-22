@@ -26,6 +26,7 @@ class FileProcessingStatus(str, Enum):
 class QualityProfile(str, Enum):
     TEXT = "text"
     PDF = "pdf"
+    PNG = "png"
     DOCX = "docx"
     XLSX = "xlsx"
     PPTX = "pptx"

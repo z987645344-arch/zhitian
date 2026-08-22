@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """PDF合并/拆分核心；仅处理本地临时文件，不负责认证或持久化。"""
 
-import os
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from pypdf import PdfReader, PdfWriter
+
+from layers.file_processing.models import FileProcessingRequest, FileTaskType
+from layers.file_processing.pdf import pdf_processor as _pdf_processor_registration
+from layers.file_processing.runtime import get_file_processor_registry
 
 
 class PdfOperationResult(BaseModel):
@@ -15,34 +17,15 @@ class PdfOperationResult(BaseModel):
     error_type: Optional[str] = None
 
 
-def _reader(path: str) -> PdfReader:
-    reader = PdfReader(path)
-    if reader.is_encrypted:
-        raise ValueError("encrypted_pdf")
-    return reader
-
-
 def merge_pdfs(source_paths: List[str], output_path: str) -> PdfOperationResult:
-    writer = PdfWriter()
-    try:
-        for source_path in source_paths:
-            reader = _reader(source_path)
-            for page in reader.pages:
-                writer.add_page(page)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "wb") as output_file:
-            writer.write(output_file)
-        return PdfOperationResult(
-            success=True,
-            output_paths=[output_path],
-            page_count=len(writer.pages),
-        )
-    except ValueError as exc:
-        return PdfOperationResult(success=False, error_type=str(exc))
-    except Exception:
-        return PdfOperationResult(success=False, error_type="invalid_pdf")
-    finally:
-        writer.close()
+    request = FileProcessingRequest(
+        task_type=FileTaskType.MERGE,
+        source_paths=source_paths,
+        source_format="pdf",
+        target_format="pdf",
+        output_path=output_path,
+    )
+    return _execute_pdf_operation(request)
 
 
 def split_pdf(
@@ -50,33 +33,36 @@ def split_pdf(
     output_dir: str,
     max_pages: int,
 ) -> PdfOperationResult:
-    try:
-        reader = _reader(source_path)
-        page_count = len(reader.pages)
-        if page_count > max_pages:
-            return PdfOperationResult(
-                success=False,
-                page_count=page_count,
-                error_type="too_many_pages",
-            )
-        os.makedirs(output_dir, exist_ok=True)
-        output_paths = []
-        for index, page in enumerate(reader.pages, start=1):
-            output_path = os.path.join(output_dir, "page_%s.pdf" % index)
-            writer = PdfWriter()
-            try:
-                writer.add_page(page)
-                with open(output_path, "wb") as output_file:
-                    writer.write(output_file)
-            finally:
-                writer.close()
-            output_paths.append(output_path)
+    request = FileProcessingRequest(
+        task_type=FileTaskType.SPLIT,
+        source_paths=[source_path],
+        source_format="pdf",
+        target_format="pdf",
+        output_dir=output_dir,
+        max_pages=max_pages,
+    )
+    return _execute_pdf_operation(request)
+
+
+def _execute_pdf_operation(request: FileProcessingRequest) -> PdfOperationResult:
+    processor, _ = get_file_processor_registry().resolve(request)
+    result = processor.execute(request)
+    if not result.success:
         return PdfOperationResult(
-            success=True,
-            output_paths=output_paths,
-            page_count=page_count,
+            success=False,
+            page_count=result.page_count,
+            error_type=result.error_type or "invalid_pdf",
         )
-    except ValueError as exc:
-        return PdfOperationResult(success=False, error_type=str(exc))
-    except Exception:
-        return PdfOperationResult(success=False, error_type="invalid_pdf")
+    quality = processor.validate_output(request, result)
+    if not quality.passed:
+        processor.cleanup(request, result)
+        return PdfOperationResult(
+            success=False,
+            page_count=result.page_count,
+            error_type=quality.issues[0].code if quality.issues else "quality_check_failed",
+        )
+    return PdfOperationResult(
+        success=True,
+        output_paths=[artifact.output_path for artifact in result.artifacts],
+        page_count=result.page_count,
+    )

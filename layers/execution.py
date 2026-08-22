@@ -637,7 +637,7 @@ def _convert_document(
             session_id=session_id,
             source_task_id=processing_task_id,
             generation_engine=(
-                "pdf_processor" if source.format == "pdf" else "libreoffice"
+                "pdf" if source.format == "pdf" else "libreoffice"
             ),
             generation_engine_version="1",
         )

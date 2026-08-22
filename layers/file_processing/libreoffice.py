@@ -100,6 +100,8 @@ class LibreOfficeProcessor(FileProcessor):
             result.artifacts[0],
             _QUALITY_PROFILES[request.target_format],
             max_size_bytes=request.max_output_size_bytes,
+            minimum_pages=1 if request.target_format == "pdf" else 0,
+            minimum_paragraphs=1 if request.target_format == "docx" else 0,
         )
 
     def cleanup(

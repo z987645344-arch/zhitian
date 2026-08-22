@@ -22,6 +22,7 @@ from layers.file_processing.models import (
 _PROFILE_MIME_TYPES = {
     QualityProfile.TEXT: {"text/plain", "text/markdown"},
     QualityProfile.PDF: {"application/pdf"},
+    QualityProfile.PNG: {"image/png"},
     QualityProfile.DOCX: {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     },
@@ -92,6 +93,10 @@ class FileQualityChecker:
             with open(path, "rb") as source:
                 if source.read(5) != b"%PDF-":
                     return [QualityIssue(code="format_mismatch", message="文件内容不是有效PDF")]
+        elif profile == QualityProfile.PNG:
+            with open(path, "rb") as source:
+                if source.read(8) != b"\x89PNG\r\n\x1a\n":
+                    return [QualityIssue(code="format_mismatch", message="文件内容不是有效PNG")]
         elif profile in {QualityProfile.DOCX, QualityProfile.XLSX, QualityProfile.PPTX}:
             if not zipfile.is_zipfile(path):
                 return [QualityIssue(code="format_mismatch", message="Office文件容器无效")]
@@ -118,6 +123,14 @@ class FileQualityChecker:
                 reader = PdfReader(artifact.output_path)
                 artifact.page_count = len(reader.pages)
                 text_samples.extend((page.extract_text() or "") for page in reader.pages)
+            elif profile == QualityProfile.PNG:
+                import fitz
+
+                image = fitz.open(artifact.output_path)
+                try:
+                    artifact.page_count = len(image)
+                finally:
+                    image.close()
             elif profile == QualityProfile.DOCX:
                 document = Document(artifact.output_path)
                 artifact.paragraph_count = len(document.paragraphs)

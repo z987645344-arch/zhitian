@@ -101,6 +101,8 @@ def test_pdf_merge_and_split_store_downloadable_results(
     records = files_store.list_files(user["user_id"])
     assert len(records) == 4
     assert {record.source_type for record in records} == {"converted"}
+    assert {record.generation_engine for record in records} == {"pdf"}
+    assert all(record.source_task_id for record in records)
 
 
 def test_pdf_merge_rejects_file_count_and_non_pdf(
