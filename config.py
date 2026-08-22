@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # 配置中心：所有参数从环境变量读取，禁止硬编码
 
+import base64
+import binascii
 import os
 from dotenv import load_dotenv
 
@@ -8,6 +10,26 @@ load_dotenv()
 
 # LLM
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY = os.getenv(
+    "PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY", ""
+).strip()
+if not PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY:
+    raise RuntimeError("PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY must be configured")
+try:
+    _personal_key_encryption_bytes = base64.b64decode(
+        PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY.encode("ascii"),
+        altchars=b"-_",
+        validate=True,
+    )
+except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+    raise RuntimeError(
+        "PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY must be URL-safe Base64"
+    ) from exc
+if len(_personal_key_encryption_bytes) != 32:
+    raise RuntimeError(
+        "PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY must decode to exactly 32 bytes"
+    )
+del _personal_key_encryption_bytes
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_FAST_MODEL = os.getenv("DEEPSEEK_FAST_MODEL", "deepseek-v4-flash")
 DEEPSEEK_EXPERT_MODEL = os.getenv("DEEPSEEK_EXPERT_MODEL", "deepseek-v4-pro")

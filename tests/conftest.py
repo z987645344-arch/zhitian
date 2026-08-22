@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pytest公共夹具：默认隔离SQLite、Chroma及用户文件存储。"""
 
+import base64
 import logging
 import os
 import pathlib
@@ -28,6 +29,9 @@ os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-at-least-32-bytes-2026"
 os.environ["ENTERPRISE_PASSWORD_SEED"] = (
     "test-only-enterprise-password-seed-not-for-production"
 )
+os.environ["PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY"] = base64.urlsafe_b64encode(
+    b"test-only-personal-key-secret!!!"
+).decode("ascii")
 
 import pytest
 from fastapi.testclient import TestClient
