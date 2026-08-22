@@ -30,6 +30,10 @@ class UserFile(BaseModel):
     size_bytes: int
     created_at: str
     session_id: Optional[str] = None
+    organization_id: Optional[int] = None
+    source_task_id: Optional[str] = None
+    generation_engine: Optional[str] = None
+    generation_engine_version: Optional[str] = None
 
 
 def _database_path() -> str:
@@ -57,11 +61,31 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    _migrate_file_metadata_columns(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_user_files_owner_created "
         "ON user_files(owner_user_id, created_at DESC)"
     )
     return conn
+
+
+def _migrate_file_metadata_columns(conn: sqlite3.Connection) -> None:
+    """向后兼容补齐处理产物溯源字段，不重建既有user_files表。"""
+    existing = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(user_files)").fetchall()
+    }
+    additions = {
+        "organization_id": "INTEGER",
+        "source_task_id": "TEXT",
+        "generation_engine": "TEXT",
+        "generation_engine_version": "TEXT",
+    }
+    for column_name, column_type in additions.items():
+        if column_name not in existing:
+            conn.execute(
+                "ALTER TABLE user_files ADD COLUMN %s %s" % (column_name, column_type)
+            )
 
 
 def init_db() -> None:
@@ -112,6 +136,10 @@ def save_file(
     file_bytes_or_path: Union[bytes, bytearray, str, os.PathLike],
     format: str,
     session_id: Optional[str] = None,
+    organization_id: Optional[int] = None,
+    source_task_id: Optional[str] = None,
+    generation_engine: Optional[str] = None,
+    generation_engine_version: Optional[str] = None,
 ) -> str:
     """复制文件并写入元数据；任一步失败都会回滚已创建的磁盘文件。"""
     owner = str(owner_user_id or "")
@@ -119,8 +147,6 @@ def save_file(
         raise ValueError("invalid_owner_user_id")
     if source_type not in _SOURCE_TYPES:
         raise ValueError("invalid_source_type")
-    if source_type != "attachment":
-        session_id = None
     normalized_format = _normalize_format(format)
     file_id = str(uuid.uuid4())
     record = UserFile(
@@ -132,6 +158,10 @@ def save_file(
         size_bytes=0,
         created_at=datetime.now().astimezone().isoformat(),
         session_id=session_id,
+        organization_id=organization_id,
+        source_task_id=source_task_id,
+        generation_engine=generation_engine,
+        generation_engine_version=generation_engine_version,
     )
     destination = _file_path(record)
     temporary = destination + ".tmp"
@@ -153,8 +183,9 @@ def save_file(
                     """
                     INSERT INTO user_files (
                         file_id, owner_user_id, source_type, original_filename,
-                        format, size_bytes, created_at, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        format, size_bytes, created_at, session_id, organization_id,
+                        source_task_id, generation_engine, generation_engine_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.file_id,
@@ -165,6 +196,10 @@ def save_file(
                         record.size_bytes,
                         record.created_at,
                         record.session_id,
+                        record.organization_id,
+                        record.source_task_id,
+                        record.generation_engine,
+                        record.generation_engine_version,
                     ),
                 )
             return file_id

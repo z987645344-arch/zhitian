@@ -1880,6 +1880,11 @@ async def convert_tool_file(
             download_filename,
             converted_path,
             target_format,
+            source_task_id=file_id,
+            generation_engine=(
+                "pdf_processor" if source_format == "pdf" else "libreoffice"
+            ),
+            generation_engine_version="1",
         )
         file_size = os.path.getsize(converted_path)
         logger.info(

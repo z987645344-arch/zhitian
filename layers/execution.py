@@ -7,12 +7,23 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from collections.abc import Iterator
 from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 import config
 from layers import attachments, auth, converter, document_usage, files_store, llm_provider, memory, system_modules, web_search_provider
+from layers.file_processing.models import (
+    FileOwnershipContext,
+    FileProcessingRequest,
+    FileTaskType,
+)
+from layers.file_processing.native_text import NativeTextProcessor
+from layers.file_processing.runtime import (
+    get_file_processor_registry,
+    register_processor_once,
+)
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -585,6 +596,7 @@ def _convert_document(
     if source_path is None:
         return ConvertDocumentResult(success=False, error_type="file_not_found")
 
+    processing_task_id = str(uuid.uuid4())
     conversion = None
     converted_path = ""
     conversion_fn = (
@@ -622,6 +634,12 @@ def _convert_document(
             download_filename,
             converted_path,
             target,
+            session_id=session_id,
+            source_task_id=processing_task_id,
+            generation_engine=(
+                "pdf_processor" if source.format == "pdf" else "libreoffice"
+            ),
+            generation_engine_version="1",
         )
         logger.info(
             "附件转换完成：attachment_id=%s target_format=%s file_id=%s",
@@ -693,6 +711,7 @@ def generate_file(
             requested_format=requested_format,
         )
 
+    processing_task_id = str(uuid.uuid4())
     work_root = os.path.join(config.BASE_DIR, "data", "tmp_generated")
     os.makedirs(work_root, exist_ok=True)
     output_dir = tempfile.mkdtemp(prefix="generate_", dir=work_root)
@@ -725,6 +744,10 @@ def generate_file(
                 initial_filename,
                 initial_path,
                 requested_format,
+                session_id=session_id,
+                source_task_id=processing_task_id,
+                generation_engine="native_text",
+                generation_engine_version="1",
             )
         except Exception as exc:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -766,6 +789,10 @@ def generate_file(
                 final_filename,
                 converted_path,
                 requested_format,
+                session_id=session_id,
+                source_task_id=processing_task_id,
+                generation_engine="libreoffice",
+                generation_engine_version="1",
             )
             _log_generated_file(
                 session_id,
@@ -796,6 +823,10 @@ def generate_file(
             initial_filename,
             initial_path,
             "md",
+            session_id=session_id,
+            source_task_id=processing_task_id,
+            generation_engine="native_text",
+            generation_engine_version="1",
         )
     except Exception as exc:
         shutil.rmtree(output_dir, ignore_errors=True)
@@ -856,7 +887,7 @@ def _inner_markdown_fences_are_balanced(lines: list[str]) -> bool:
     return not inside_fence
 
 
-def _write_generated_text(
+def _write_generated_text_impl(
     output_path: str,
     text: str,
     session_id: str,
@@ -884,6 +915,41 @@ def _write_generated_text(
                 continue
             return type(exc).__name__
     return "file_write_failed"
+
+
+_native_text_processor = NativeTextProcessor(_write_generated_text_impl)
+register_processor_once(_native_text_processor)
+
+
+def _write_generated_text(
+    output_path: str,
+    text: str,
+    session_id: str,
+    requested_format: str,
+) -> str:
+    """通过统一注册表裁决后调用既有UTF-8原子写入链路。"""
+    actual_format = os.path.splitext(output_path)[1].lower().lstrip(".")
+    request = FileProcessingRequest(
+        task_type=FileTaskType.WRITE_TEXT,
+        source_format=requested_format,
+        target_format=actual_format,
+        output_path=output_path,
+        content=text,
+        max_output_size_bytes=max(1, len(text.encode("utf-8")) + 1),
+        ownership=FileOwnershipContext(
+            owner_user_id="internal",
+            session_id=session_id,
+        ),
+    )
+    processor, _ = get_file_processor_registry().resolve(request)
+    result = processor.execute(request)
+    if not result.success:
+        return result.error_type or "file_write_failed"
+    quality = processor.validate_output(request, result)
+    if quality.passed:
+        return ""
+    processor.cleanup(request, result)
+    return quality.issues[0].code if quality.issues else "quality_check_failed"
 
 
 def _log_generated_file(

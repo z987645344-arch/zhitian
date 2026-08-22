@@ -25,9 +25,7 @@ def test_files_store_save_list_get_and_delete_all_source_types(tmp_path, monkeyp
         record = files_store.get_file(file_id)
         assert record is not None
         assert record.source_type == source_type
-        assert record.session_id == (
-            "attachment-session" if source_type == "attachment" else None
-        )
+        assert record.session_id == "attachment-session"
         assert open(files_store.get_file_path(record), "rb").read() == source_type.encode("utf-8")
 
     records = files_store.list_files(owner)
@@ -38,6 +36,32 @@ def test_files_store_save_list_get_and_delete_all_source_types(tmp_path, monkeyp
     assert files_store.get_file(created[0]) is not None
     assert files_store.delete_file(created[0], owner) is True
     assert files_store.get_file(created[0]) is None
+
+
+def test_files_store_persists_processor_trace_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    owner = "33333333-3333-3333-3333-333333333333"
+
+    file_id = files_store.save_file(
+        owner,
+        "generated",
+        "report.md",
+        b"# report",
+        "md",
+        session_id="session-trace",
+        organization_id=7,
+        source_task_id="task-trace",
+        generation_engine="native_text",
+        generation_engine_version="1",
+    )
+
+    record = files_store.get_file(file_id)
+    assert record is not None
+    assert record.session_id == "session-trace"
+    assert record.organization_id == 7
+    assert record.source_task_id == "task-trace"
+    assert record.generation_engine == "native_text"
+    assert record.generation_engine_version == "1"
 
 
 def test_files_api_lists_downloads_and_deletes_owner_files(

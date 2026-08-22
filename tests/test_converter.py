@@ -6,6 +6,7 @@ import subprocess
 from types import SimpleNamespace
 
 import config
+from docx import Document
 from layers import converter, execution, planning
 
 
@@ -23,8 +24,9 @@ def test_convert_file_success(tmp_path, monkeypatch):
     def run(command, **kwargs):
         output_dir = command[command.index("--outdir") + 1]
         output_path = os.path.join(output_dir, "input.docx")
-        with open(output_path, "wb") as output:
-            output.write(b"converted")
+        document = Document()
+        document.add_paragraph("converted")
+        document.save(output_path)
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(converter.subprocess, "run", run)
@@ -98,3 +100,37 @@ def test_convert_document_is_registered_for_expert_only():
 
 def test_pdf_reconstruction_does_not_share_libreoffice_lock():
     assert converter._pdf_conversion_lock is not converter._conversion_lock
+
+
+def test_libreoffice_wrapper_matches_legacy_success_result(tmp_path, monkeypatch):
+    source = _source_file(tmp_path)
+    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
+    (tmp_path / "soffice.exe").write_bytes(b"stub")
+
+    def run(command, **kwargs):
+        output_dir = command[command.index("--outdir") + 1]
+        output_path = os.path.join(output_dir, "input.docx")
+        document = Document()
+        document.add_paragraph("中文转换对比")
+        document.save(output_path)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(converter.subprocess, "run", run)
+    legacy = converter._convert_file_impl(str(source), "docx")
+    wrapped = converter.convert_file(str(source), "docx")
+
+    assert wrapped.model_dump(exclude={"output_path"}) == legacy.model_dump(
+        exclude={"output_path"}
+    )
+    assert Document(wrapped.output_path).paragraphs[0].text == "中文转换对比"
+    converter.cleanup_conversion_output(legacy.output_path or "")
+    converter.cleanup_conversion_output(wrapped.output_path or "")
+
+
+def test_libreoffice_wrapper_matches_legacy_failure_result(tmp_path):
+    missing = str(tmp_path / "missing.doc")
+
+    legacy = converter._convert_file_impl(missing, "docx")
+    wrapped = converter.convert_file(missing, "docx")
+
+    assert wrapped == legacy

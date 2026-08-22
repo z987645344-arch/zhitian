@@ -62,7 +62,7 @@ class FileProcessingRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_destination(self) -> "FileProcessingRequest":
-        if self.task_type in {FileTaskType.WRITE_TEXT, FileTaskType.CONVERT, FileTaskType.MERGE}:
+        if self.task_type in {FileTaskType.WRITE_TEXT, FileTaskType.MERGE}:
             if not self.output_path:
                 raise ValueError("output_path_required")
         if self.task_type in {FileTaskType.RENDER_PAGES, FileTaskType.SPLIT}:

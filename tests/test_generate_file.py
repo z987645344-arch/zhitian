@@ -40,6 +40,26 @@ def test_generate_file_sanitizes_name_and_writes_utf8_without_bom(tmp_path, monk
     content = open(file_path, "rb").read()
     assert not content.startswith(b"\xef\xbb\xbf")
     assert content.decode("utf-8") == "标题\n正文"
+    assert record.session_id == "generate-session"
+    assert record.source_task_id
+    assert record.generation_engine == "native_text"
+    assert record.generation_engine_version == "1"
+
+
+def test_native_text_wrapper_matches_existing_atomic_writer(tmp_path):
+    legacy_path = tmp_path / "legacy.txt"
+    wrapped_path = tmp_path / "wrapped.txt"
+    content = "原生文本包装前后必须逐字一致"
+
+    legacy_error = execution._write_generated_text_impl(
+        str(legacy_path), content, "native-parity", "txt"
+    )
+    wrapped_error = execution._write_generated_text(
+        str(wrapped_path), content, "native-parity", "txt"
+    )
+
+    assert wrapped_error == legacy_error == ""
+    assert wrapped_path.read_bytes() == legacy_path.read_bytes()
 
 
 @pytest.mark.parametrize("output_format", ["md", "txt"])

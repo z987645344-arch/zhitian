@@ -43,6 +43,9 @@ class FileProcessorRegistry:
     def list_capabilities(self) -> List[ProcessorCapability]:
         return [item.model_copy(deep=True) for item in self._capabilities]
 
+    def has_processor(self, processor_name: str) -> bool:
+        return processor_name in self._processors
+
     def resolve(
         self,
         request: FileProcessingRequest,
@@ -68,7 +71,11 @@ class FileProcessorRegistry:
     ) -> bool:
         if request.task_type not in capability.task_types:
             return False
-        if capability.source_formats and request.source_format not in capability.source_formats:
+        if (
+            capability.source_formats
+            and "*" not in capability.source_formats
+            and request.source_format not in capability.source_formats
+        ):
             return False
         if capability.target_formats and request.target_format not in capability.target_formats:
             return False

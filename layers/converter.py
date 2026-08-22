@@ -13,6 +13,12 @@ from typing import Optional
 from pydantic import BaseModel
 
 import config
+from layers.file_processing.libreoffice import LibreOfficeProcessor
+from layers.file_processing.models import FileProcessingRequest, FileTaskType
+from layers.file_processing.runtime import (
+    get_file_processor_registry,
+    register_processor_once,
+)
 from layers.pdf_text import extract_pdf_page_text
 from utils.logger import get_logger
 
@@ -38,7 +44,7 @@ class ConversionResult(BaseModel):
     error_msg: str = ""
 
 
-def convert_file(source_path: str, target_format: str) -> ConversionResult:
+def _convert_file_impl(source_path: str, target_format: str) -> ConversionResult:
     """Convert one local file through headless soffice under a process-wide lock."""
     started_at = time.perf_counter()
     output_dir = ""
@@ -306,4 +312,56 @@ def _log_conversion(source_ext: str, target: str, status: str, started_at: float
         target,
         status,
         int((time.perf_counter() - started_at) * 1000),
+    )
+
+
+_libreoffice_processor = LibreOfficeProcessor(
+    conversion_delegate=_convert_file_impl,
+    cleanup_delegate=cleanup_conversion_output,
+    max_size_bytes=max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024,
+)
+register_processor_once(_libreoffice_processor)
+
+
+def convert_file(source_path: str, target_format: str) -> ConversionResult:
+    """通过统一注册表裁决后调用既有LibreOffice稳定链路。"""
+    source_ext = os.path.splitext(source_path or "")[1].lower()
+    target = (target_format or "").lower().lstrip(".")
+    request = FileProcessingRequest(
+        task_type=FileTaskType.CONVERT,
+        source_paths=[source_path] if source_path else [],
+        source_format=source_ext,
+        target_format=target,
+        max_input_size_bytes=max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024,
+        max_output_size_bytes=max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024,
+    )
+    try:
+        processor, _ = get_file_processor_registry().resolve(request)
+    except LookupError:
+        return _convert_file_impl(source_path, target_format)
+    result = processor.execute(request)
+    if not result.success:
+        return ConversionResult(
+            success=False,
+            status=ConversionStatus(result.status.value),
+            converted_from_format=source_ext.lstrip("."),
+            converted_to_format=target,
+            error_type=result.error_type,
+            error_msg=result.error_message,
+        )
+    quality = processor.validate_output(request, result)
+    if not quality.passed or quality.artifact is None:
+        processor.cleanup(request, result)
+        return _failed(
+            "转换产物质量检查未通过",
+            source_ext,
+            target,
+            quality.issues[0].code if quality.issues else "quality_check_failed",
+        )
+    return ConversionResult(
+        success=True,
+        status=ConversionStatus.SUCCESS,
+        output_path=quality.artifact.output_path,
+        converted_from_format=source_ext.lstrip("."),
+        converted_to_format=target,
     )
