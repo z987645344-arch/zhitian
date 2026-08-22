@@ -2,6 +2,7 @@
 """用户API额度来源的企业授权、按账号锁定与安全响应测试。"""
 
 from datetime import datetime, timedelta, timezone
+import uuid
 
 import pytest
 
@@ -11,6 +12,10 @@ from layers import api_quota, auth, enterprise_password
 def _wrong_enterprise_password() -> str:
     current = enterprise_password.get_current_enterprise_password()
     return "00000000" if current != "00000000" else "11111111"
+
+
+def _personal_key() -> str:
+    return "s" + "k-" + uuid.uuid4().hex
 
 
 def test_enterprise_password_fifth_failure_locks_exact_account_for_twelve_hours(
@@ -111,3 +116,111 @@ def test_enterprise_quota_endpoint_locks_on_fifth_failure(client, auth_headers):
 
     assert [response.status_code for response in responses] == [400, 400, 400, 400, 423]
     assert all(wrong not in response.text for response in responses)
+
+
+def test_personal_key_is_encrypted_at_rest_and_never_returned(
+    client, auth_headers, caplog
+):
+    headers, user = auth_headers("customer")
+    plaintext = _personal_key()
+
+    response = client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": plaintext},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == api_quota.SOURCE_PERSONAL
+    assert response.json()["personal_key_configured"] is True
+    assert plaintext not in response.text
+    assert plaintext not in caplog.text
+    with auth._connect() as conn:
+        row = conn.execute(
+            "SELECT personal_deepseek_key_enc FROM users WHERE user_id = ?",
+            (user["user_id"],),
+        ).fetchone()
+    ciphertext = str(row["personal_deepseek_key_enc"])
+    assert ciphertext.startswith("ztpk1.")
+    assert plaintext not in ciphertext
+
+
+def test_invalid_personal_key_error_does_not_echo_input(client, auth_headers):
+    headers, _ = auth_headers("customer")
+    invalid = "not-a-provider-key-" + uuid.uuid4().hex
+
+    response = client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": invalid},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "个人DeepSeek Key格式无效"}
+    assert invalid not in response.text
+
+
+def test_clearing_selected_personal_key_does_not_fallback_to_enterprise(
+    client, auth_headers
+):
+    headers, _ = auth_headers("customer")
+    enterprise_response = client.post(
+        "/account/api-quota/enterprise/authorize",
+        headers=headers,
+        json={
+            "enterprise_password": enterprise_password.get_current_enterprise_password()
+        },
+    )
+    assert enterprise_response.status_code == 200
+    personal_response = client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": _personal_key()},
+    )
+    assert personal_response.json()["source"] == api_quota.SOURCE_PERSONAL
+
+    cleared = client.delete("/account/api-quota/personal", headers=headers)
+
+    assert cleared.status_code == 200
+    assert cleared.json()["source"] is None
+    assert cleared.json()["personal_key_configured"] is False
+    assert cleared.json()["enterprise_authorized"] is True
+
+
+def test_user_can_manually_switch_only_between_configured_sources(
+    client, auth_headers
+):
+    headers, _ = auth_headers("customer")
+    unavailable = client.put(
+        "/account/api-quota/source",
+        headers=headers,
+        json={"source": api_quota.SOURCE_PERSONAL},
+    )
+    assert unavailable.status_code == 409
+
+    assert client.post(
+        "/account/api-quota/enterprise/authorize",
+        headers=headers,
+        json={
+            "enterprise_password": enterprise_password.get_current_enterprise_password()
+        },
+    ).status_code == 200
+    assert client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": _personal_key()},
+    ).status_code == 200
+
+    enterprise_selected = client.put(
+        "/account/api-quota/source",
+        headers=headers,
+        json={"source": api_quota.SOURCE_ENTERPRISE},
+    )
+    personal_selected = client.put(
+        "/account/api-quota/source",
+        headers=headers,
+        json={"source": api_quota.SOURCE_PERSONAL},
+    )
+
+    assert enterprise_selected.json()["source"] == api_quota.SOURCE_ENTERPRISE
+    assert personal_selected.json()["source"] == api_quota.SOURCE_PERSONAL

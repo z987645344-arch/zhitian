@@ -515,6 +515,14 @@ class EnterpriseQuotaAuthorizationRequest(BaseModel):
     enterprise_password: str
 
 
+class PersonalQuotaRequest(BaseModel):
+    deepseek_api_key: str
+
+
+class ApiQuotaSourceRequest(BaseModel):
+    source: str
+
+
 class RegistrationApplicationRequest(BaseModel):
     username: str
     password: str
@@ -1196,6 +1204,53 @@ async def authorize_enterprise_api_quota(
             status_code=423,
             detail="企业密码输入已锁定，请12小时后再试",
         )
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+
+@app.put(
+    "/account/api-quota/personal",
+    response_model=api_quota.ApiQuotaStatus,
+)
+async def save_personal_api_quota(
+    payload: PersonalQuotaRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        return api_quota.save_personal_source(
+            current_user["user_id"], payload.deepseek_api_key
+        )
+    except api_quota.PersonalDeepSeekKeyInvalidError:
+        raise HTTPException(status_code=400, detail="个人DeepSeek Key格式无效")
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+
+@app.delete(
+    "/account/api-quota/personal",
+    response_model=api_quota.ApiQuotaStatus,
+)
+async def clear_personal_api_quota(
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        return api_quota.clear_personal_source(current_user["user_id"])
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+
+@app.put(
+    "/account/api-quota/source",
+    response_model=api_quota.ApiQuotaStatus,
+)
+async def select_api_quota_source(
+    payload: ApiQuotaSourceRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        return api_quota.select_source(current_user["user_id"], payload.source)
+    except api_quota.ApiQuotaSourceUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except api_quota.ApiQuotaAccountNotFoundError:
         raise HTTPException(status_code=404, detail="账号不存在")
 

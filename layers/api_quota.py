@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """用户API额度来源：企业授权、个人凭据状态与请求期解析。"""
 
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from pydantic import BaseModel
 
-from layers import auth, enterprise_password
+from layers import auth, credential_crypto, enterprise_password
 from layers.db_transaction import transaction
 
 
@@ -43,6 +44,14 @@ class EnterprisePasswordLockedError(ApiQuotaError):
     def __init__(self, locked_until: str):
         super().__init__("企业密码输入已锁定")
         self.locked_until = locked_until
+
+
+class PersonalDeepSeekKeyInvalidError(ApiQuotaError):
+    pass
+
+
+class ApiQuotaSourceUnavailableError(ApiQuotaError):
+    pass
 
 
 def get_status(
@@ -177,6 +186,81 @@ def authorize_enterprise_source(
         raise pending_error
 
     return get_status(user_id, now=current)
+
+
+def save_personal_source(user_id: str, plaintext_key: str) -> ApiQuotaStatus:
+    """校验并加密保存个人Key，同时显式选中个人额度来源。"""
+    normalized = str(plaintext_key or "").strip()
+    if not _is_valid_personal_deepseek_key(normalized):
+        raise PersonalDeepSeekKeyInvalidError("个人DeepSeek Key格式无效")
+    encrypted = credential_crypto.encrypt_personal_deepseek_key(
+        normalized, user_id
+    )
+    if not credential_crypto.is_personal_key_ciphertext(encrypted):
+        raise PersonalDeepSeekKeyInvalidError("个人DeepSeek Key保存失败")
+    with transaction(auth.USERS_DB_PATH) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET personal_deepseek_key_enc = ?, api_quota_source = ?
+            WHERE user_id = ?
+            """,
+            (encrypted, SOURCE_PERSONAL, user_id),
+        )
+        if cursor.rowcount < 1:
+            raise ApiQuotaAccountNotFoundError("账号不存在")
+    return get_status(user_id)
+
+
+def clear_personal_source(user_id: str) -> ApiQuotaStatus:
+    """清除个人Key；若当前选中个人来源则回到未配置，不自动回退企业。"""
+    with transaction(auth.USERS_DB_PATH) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET personal_deepseek_key_enc = NULL,
+                api_quota_source = CASE
+                    WHEN api_quota_source = ? THEN NULL
+                    ELSE api_quota_source
+                END
+            WHERE user_id = ?
+            """,
+            (SOURCE_PERSONAL, user_id),
+        )
+        if cursor.rowcount < 1:
+            raise ApiQuotaAccountNotFoundError("账号不存在")
+    return get_status(user_id)
+
+
+def select_source(user_id: str, source: str) -> ApiQuotaStatus:
+    """只允许手动选择已经完成授权/配置的来源，不做自动降级。"""
+    normalized = str(source or "").strip().lower()
+    if normalized not in {SOURCE_ENTERPRISE, SOURCE_PERSONAL}:
+        raise ApiQuotaSourceUnavailableError("额度来源无效")
+    with transaction(auth.USERS_DB_PATH) as conn:
+        row = conn.execute(
+            """
+            SELECT enterprise_api_authorized_at, personal_deepseek_key_enc
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if not row:
+            raise ApiQuotaAccountNotFoundError("账号不存在")
+        if normalized == SOURCE_ENTERPRISE and not row["enterprise_api_authorized_at"]:
+            raise ApiQuotaSourceUnavailableError("请先验证企业流动密码")
+        if normalized == SOURCE_PERSONAL and not row["personal_deepseek_key_enc"]:
+            raise ApiQuotaSourceUnavailableError("请先配置个人DeepSeek Key")
+        conn.execute(
+            "UPDATE users SET api_quota_source = ? WHERE user_id = ?",
+            (normalized, user_id),
+        )
+    return get_status(user_id)
+
+
+def _is_valid_personal_deepseek_key(value: str) -> bool:
+    """只做本地形状校验，不发起付费请求，也不在错误中回显输入。"""
+    return bool(re.fullmatch(r"sk-[A-Za-z0-9_-]{16,253}", value))
 
 
 def _utc_now(value: Optional[datetime] = None) -> datetime:
