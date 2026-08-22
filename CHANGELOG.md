@@ -1499,3 +1499,11 @@
 - **释放放在`_run_ingest_task`最外层`finally`**，覆盖成功`return`、两次重试与任何未预期异常。进程内泄漏一个槽位要重启才能恢复——`_recover_interrupted_tasks`只管数据库里的任务状态，管不了进程内的信号量。注入失败实测任务转`failed`且槽位与队列深度双双回到0。未引入Celery/Redis/RQ：独立worker要再加载一份嵌入模型，4核4G跑不起，且迁移在9-08，现在加基础设施等于迁移时重搭一遍。
 - **新增6条用例，核心是「后台在跑时槽位>0」的直证**：在`memory.save_document`内部取样，得槽位占用=1、队列深度=1、任务状态`processing`——只在任务结束后看计数是无效证明，那时看到0既可能是正确归还也可能是从头没占过。排队直证：槽位占满(2/2)时排队任务状态停在`pending`且线程存活，释放一个后推进到`done`。两道闸门并存互不绕过，且被账号上限拦下时队列深度不变（`0 -> 0`），不会漏占后一道的位置。
 - **顺手修VERSION漂移**：`VERSION`自`v3.4.6`起停在`3.4.0`，漂了四个版本，现改为`3.8.0`（`_read_application_version`的regex要求三段式，两段式标签不能直接写入）。上一轮11条用例未经修改即在新设计下全绿；权威回归`459 passed, 5 deselected`（上一轮453）。
+
+## 2026-08-22 v3.8.1 修补 /documents/upload 的队列位泄漏
+
+- **缺陷**：`/documents/upload`的`finally`里三个清理动作（`await file.close()`、`cleanup_conversion_output`、`_remove_temp_upload`）均无异常防护。任一抛出时异常穿出端点，FastAPI返回500、`BackgroundTasks`不执行，于是`_run_ingest_task`的`release_ingest_slot()`永远不跑，返回`accepted`之前预留的`_ingest_depth`永久泄漏；原有的`release_reserved_ingest_slot()`只覆盖`create_task`失败一条路径。泄漏是累积型的：攒够`MAX_INGEST_QUEUE_DEPTH=8`次后全站上传永久返回`ingest_queue_full`，只能重启恢复。上一轮我在该`finally`首行写了「槽位先还」的注释、为同步槽位做了排序防护，却没把同一层保护给队列位。
+- **修法一：三个清理动作各自兜住异常并记日志**。它们都是清理，任何一个都不该把一个已经`accepted`的请求变成500。这同时修掉一个既有问题——原先若`file.close()`抛出，后面两个清理动作根本不会执行，临时文件与转换产物一并泄漏；实测调用序列现为`['close_raised', 'cleanup_conversion_output', '_remove_temp_upload']`，后两个确实仍执行。
+- **修法二：把队列位的归还改成结构性保证**，不再依赖「我们枚举全了所有会抛的语句」。新增`ingest_reserved`与`ingest_handed_off`两个标志，`finally`中仅当「已预留但未成功交接后台」时才归还；正常路径由`_run_ingest_task`的`finally`归还，两条路径由标志互斥，不会重复归还。`background_tasks.add_task`之后先把响应体存入变量、置`ingest_handed_off = True`、再`return`，两行之间不允许插入任何会抛的语句。原先包在`create_task`外的`try/except`随之删除——归还逻辑收敛成单一出口。
+- **`/knowledge/input`确认无此暴露**：其`reserve_ingest_slot()`到`return`之间没有`finally`清理段，唯一的`try`就是`create_task`那处，本轮不改。
+- **新增3条用例，并做了反向对照**：注入`cleanup_conversion_output`抛异常后请求仍返回`accepted`、后台任务`done`、队列深度与槽位双双为0；注入`file.close()`抛异常后另两个清理动作仍执行；连打10次得深度序列`[0]*10`——泄漏是累积型的，单次通过不足以证明。**三条用例在修补前的`main.py`上全部失败**，确认不是空跑。权威回归`462 passed, 5 deselected`（v3.8为459），v3.8的17条用例全绿。

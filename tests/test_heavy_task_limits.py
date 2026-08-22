@@ -525,6 +525,120 @@ def test_user_cap_and_queue_do_not_bypass_each_other(client, auth_headers):
         heavy_task_limits.release_reserved_ingest_slot()
 
 
+# ---------- v3.8.1：清理动作抛异常不得泄漏队列位 ----------
+
+def test_cleanup_failure_does_not_leak_queue_slot(client, auth_headers, monkeypatch):
+    """直证：清理动作抛异常时，请求仍accepted、队列深度归零、后台照常完成。
+
+    修补前：异常穿出端点 -> FastAPI返回500 -> BackgroundTasks不执行 ->
+    _run_ingest_task的release_ingest_slot永远不跑 -> 预留的队列位永久泄漏。
+    """
+    headers, user = auth_headers("employee")
+    org = grant_work_organization(user["user_id"])
+
+    def failing_cleanup(*args, **kwargs):
+        raise RuntimeError("注入的转换产物清理失败")
+
+    monkeypatch.setattr(main.converter, "cleanup_conversion_output", failing_cleanup)
+    response = _upload(client, headers, org, "cleanup_boom.docx")
+
+    print(
+        "\n[清理] 注入cleanup_conversion_output抛异常 -> HTTP %d status=%s"
+        % (response.status_code, response.json().get("status"))
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "accepted"
+
+    task_id = response.json()["task_id"]
+    final_status = task_store.get_task(task_id).status
+    print(
+        "[清理] 后台任务状态=%s 队列深度=%d 后台槽位=%d"
+        % (
+            final_status,
+            heavy_task_limits.ingest_depth(),
+            heavy_task_limits.ingest_slots_in_use(),
+        )
+    )
+    assert final_status == "done", "后台任务没跑完，说明异常仍穿出了端点"
+    assert heavy_task_limits.ingest_depth() == 0
+    assert heavy_task_limits.ingest_slots_in_use() == 0
+
+
+def test_close_failure_does_not_skip_the_remaining_cleanups(
+    client, auth_headers, monkeypatch
+):
+    """file.close()抛出时，后面两个清理动作仍须执行——否则临时文件与转换产物一并泄漏。"""
+    from starlette.datastructures import UploadFile
+
+    headers, user = auth_headers("employee")
+    org = grant_work_organization(user["user_id"])
+    called = []
+
+    real_close = UploadFile.close
+
+    async def failing_close(self):
+        # 只让第一次调用抛出，也就是端点finally里的那次。Starlette在请求
+        # 收尾时还会再关一遍表单文件，全局让它抛会打断测试客户端本身，
+        # 那属于被测代码之外的路径。
+        if "close_raised" not in called:
+            called.append("close_raised")
+            raise RuntimeError("注入的关闭失败")
+        return await real_close(self)
+
+    real_cleanup = main.converter.cleanup_conversion_output
+    real_remove = main._remove_temp_upload
+
+    def tracking_cleanup(*args, **kwargs):
+        called.append("cleanup_conversion_output")
+        return real_cleanup(*args, **kwargs)
+
+    def tracking_remove(*args, **kwargs):
+        called.append("_remove_temp_upload")
+        return real_remove(*args, **kwargs)
+
+    monkeypatch.setattr(UploadFile, "close", failing_close, raising=False)
+    monkeypatch.setattr(main.converter, "cleanup_conversion_output", tracking_cleanup)
+    monkeypatch.setattr(main, "_remove_temp_upload", tracking_remove)
+
+    response = _upload(client, headers, org, "close_boom.docx")
+    print(
+        "\n[清理] 注入file.close()抛异常 -> HTTP %d，清理动作调用序列=%s"
+        % (response.status_code, called)
+    )
+    assert response.status_code == 200, response.text
+    assert "close_raised" in called
+    assert "cleanup_conversion_output" in called, "close抛出后转换产物清理被跳过"
+    assert "_remove_temp_upload" in called, "close抛出后临时文件清理被跳过"
+    assert heavy_task_limits.ingest_depth() == 0
+
+
+def test_repeated_cleanup_failures_do_not_accumulate_queue_depth(
+    client, auth_headers, monkeypatch
+):
+    """泄漏是累积型的，单次不足以证明。连打10次，深度必须始终回到0。"""
+    headers, user = auth_headers("employee")
+    org = grant_work_organization(user["user_id"])
+
+    def failing_cleanup(*args, **kwargs):
+        raise RuntimeError("注入的转换产物清理失败")
+
+    monkeypatch.setattr(main.converter, "cleanup_conversion_output", failing_cleanup)
+
+    depths = []
+    for index in range(10):
+        _clear_inflight()
+        response = _upload(client, headers, org, "leak_%d.docx" % index)
+        assert response.status_code == 200, response.text
+        depths.append(heavy_task_limits.ingest_depth())
+
+    print(
+        "\n[累积] 连续10次清理失败后的队列深度序列=%s（上限%d）"
+        % (depths, config.MAX_INGEST_QUEUE_DEPTH)
+    )
+    assert depths == [0] * 10, "队列深度在累积，说明仍有泄漏"
+    assert heavy_task_limits.ingest_slots_in_use() == 0
+
+
 def test_sync_and_ingest_gates_are_independent_semaphores():
     """同步段与后台段是两道独立闸门，占用其一不该影响另一。"""
     assert heavy_task_limits._conversion_slots is not heavy_task_limits._ingest_slots

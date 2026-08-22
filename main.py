@@ -2227,6 +2227,8 @@ async def upload_document(
     temp_path = ""
     converted_path = ""
     converted_from = ""
+    ingest_reserved = False
+    ingest_handed_off = False
     # 全局槽位：占不到立刻429，不排队。与上面的try:之间不允许插入任何可能
     # 抛异常的语句，否则会漏掉release。
     heavy_task_limits.acquire_slot()
@@ -2285,14 +2287,11 @@ async def upload_document(
         # 队列位必须在返回accepted**之前**占住：满了就当场拒绝，
         # 不许先收下再异步失败——那样用户拿到的是accepted，轮询才发现没戏。
         heavy_task_limits.reserve_ingest_slot()
-        try:
-            task = task_store.create_task(
-                "upload", file_hash, filename, organization_id,
-                current_user["user_id"],
-            )
-        except Exception:
-            heavy_task_limits.release_reserved_ingest_slot()
-            raise
+        ingest_reserved = True
+        task = task_store.create_task(
+            "upload", file_hash, filename, organization_id,
+            current_user["user_id"],
+        )
         background_tasks.add_task(
             _run_ingest_task,
             task.task_id,
@@ -2303,7 +2302,7 @@ async def upload_document(
             organization_id,
             current_user["user_id"],
         )
-        return {
+        accepted_body = {
             "status": "accepted",
             "task_id": task.task_id,
             "doc_id": doc_id,
@@ -2312,12 +2311,34 @@ async def upload_document(
             "chunks": len(chunks),
             "trust_level": "pending",
         }
+        # 只有走到这里，BackgroundTasks才一定会执行、队列位才一定由
+        # _run_ingest_task的finally归还。这两行之间不允许插入任何会抛的语句。
+        ingest_handed_off = True
+        return accepted_body
     finally:
-        # 槽位先还：后面三个清理动作任一抛异常都不该让槽位泄漏。
+        # 同步槽位先还：后面的清理动作再怎么出问题都不该让它泄漏。
         heavy_task_limits.release_slot()
-        await file.close()
-        converter.cleanup_conversion_output(converted_path)
-        _remove_temp_upload(temp_path)
+        # 队列位：预留过、但后台任务没能挂上时由这里归还。异常穿出端点会让
+        # FastAPI返回500且BackgroundTasks不执行，_run_ingest_task的
+        # release_ingest_slot永远不会跑。两条归还路径由ingest_handed_off
+        # 互斥，不会重复归还。
+        if ingest_reserved and not ingest_handed_off:
+            heavy_task_limits.release_reserved_ingest_slot()
+        # 三个清理动作各自兜住异常：它们都是清理，任何一个都不该把一个已经
+        # accepted的请求变成500，也不该因为自己抛了就让后面两个不执行——
+        # 那会让临时文件与转换产物一并泄漏。
+        try:
+            await file.close()
+        except Exception as exc:
+            logger.warning("上传清理：关闭文件失败 error_type=%s", type(exc).__name__)
+        try:
+            converter.cleanup_conversion_output(converted_path)
+        except Exception as exc:
+            logger.warning("上传清理：删除转换产物失败 error_type=%s", type(exc).__name__)
+        try:
+            _remove_temp_upload(temp_path)
+        except Exception as exc:
+            logger.warning("上传清理：删除临时文件失败 error_type=%s", type(exc).__name__)
 
 
 @app.post("/knowledge/input")
