@@ -43,8 +43,44 @@ def test_auth_schema_migration_is_idempotent(tmp_path, monkeypatch):
     assert columns["email"] == "TEXT"
     assert columns["is_active"] == "BOOLEAN"
     assert columns["is_default_account"] == "BOOLEAN"
+    assert columns["api_quota_source"] == "TEXT"
+    assert columns["personal_deepseek_key_enc"] == "TEXT"
+    assert columns["enterprise_api_authorized_at"] == "TEXT"
+    assert columns["enterprise_password_fail_count"] == "INTEGER"
+    assert columns["enterprise_password_locked_until"] == "TEXT"
     assert "registration_requests" in tables
     assert ["username", "role"] in unique_indexes
+
+
+def test_users_quota_columns_defaults_and_constraints(tmp_path, monkeypatch):
+    database = tmp_path / "users.db"
+    monkeypatch.setattr(auth, "USERS_DB_PATH", str(database))
+    auth.init_db()
+    password_hash = auth.hash_registration_password("SharedPass123!")
+
+    with auth._connect() as conn:
+        conn.execute(
+            "INSERT INTO users (user_id, username, password_hash, role) "
+            "VALUES (?, ?, ?, ?)",
+            ("quota-user", "quota@example.test", password_hash, "customer"),
+        )
+        row = conn.execute(
+            "SELECT api_quota_source, personal_deepseek_key_enc, "
+            "enterprise_api_authorized_at, enterprise_password_fail_count, "
+            "enterprise_password_locked_until FROM users WHERE user_id = ?",
+            ("quota-user",),
+        ).fetchone()
+        assert row["api_quota_source"] is None
+        assert row["personal_deepseek_key_enc"] is None
+        assert row["enterprise_api_authorized_at"] is None
+        assert row["enterprise_password_fail_count"] == 0
+        assert row["enterprise_password_locked_until"] is None
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE users SET api_quota_source = ? WHERE user_id = ?",
+                ("automatic", "quota-user"),
+            )
 
 
 def test_users_unique_constraint_is_username_and_role(tmp_path, monkeypatch):

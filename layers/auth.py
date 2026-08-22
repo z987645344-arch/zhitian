@@ -101,6 +101,13 @@ def _migrate_users_unique_constraint(conn: sqlite3.Connection) -> None:
             last_login_at DATETIME,
             flagged BOOLEAN DEFAULT 0,
             notes TEXT,
+            api_quota_source TEXT
+                CHECK (api_quota_source IN ('enterprise', 'personal')
+                       OR api_quota_source IS NULL),
+            personal_deepseek_key_enc TEXT,
+            enterprise_api_authorized_at TEXT,
+            enterprise_password_fail_count INTEGER NOT NULL DEFAULT 0,
+            enterprise_password_locked_until TEXT,
             UNIQUE(username, role)
         )
         """
@@ -109,10 +116,16 @@ def _migrate_users_unique_constraint(conn: sqlite3.Connection) -> None:
         """
         INSERT INTO users_migrating (
             user_id, username, password_hash, role, created_at, email,
-            is_active, is_default_account, last_login_at, flagged, notes
+            is_active, is_default_account, last_login_at, flagged, notes,
+            api_quota_source, personal_deepseek_key_enc,
+            enterprise_api_authorized_at, enterprise_password_fail_count,
+            enterprise_password_locked_until
         )
         SELECT user_id, username, password_hash, role, created_at, email,
-               is_active, is_default_account, last_login_at, flagged, notes
+               is_active, is_default_account, last_login_at, flagged, notes,
+               api_quota_source, personal_deepseek_key_enc,
+               enterprise_api_authorized_at, enterprise_password_fail_count,
+               enterprise_password_locked_until
         FROM users
         """
     )
@@ -230,7 +243,14 @@ def init_db() -> None:
                     is_default_account BOOLEAN DEFAULT 0,
                     last_login_at DATETIME,
                     flagged BOOLEAN DEFAULT 0,
-                    notes TEXT
+                    notes TEXT,
+                    api_quota_source TEXT
+                        CHECK (api_quota_source IN ('enterprise', 'personal')
+                               OR api_quota_source IS NULL),
+                    personal_deepseek_key_enc TEXT,
+                    enterprise_api_authorized_at TEXT,
+                    enterprise_password_fail_count INTEGER NOT NULL DEFAULT 0,
+                    enterprise_password_locked_until TEXT
                 )
                 """
             )
@@ -255,6 +275,29 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE users ADD COLUMN flagged BOOLEAN DEFAULT 0")
             if "notes" not in user_columns:
                 conn.execute("ALTER TABLE users ADD COLUMN notes TEXT")
+            if "api_quota_source" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN api_quota_source TEXT "
+                    "CHECK (api_quota_source IN ('enterprise', 'personal') "
+                    "OR api_quota_source IS NULL)"
+                )
+            if "personal_deepseek_key_enc" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN personal_deepseek_key_enc TEXT"
+                )
+            if "enterprise_api_authorized_at" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN enterprise_api_authorized_at TEXT"
+                )
+            if "enterprise_password_fail_count" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN "
+                    "enterprise_password_fail_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "enterprise_password_locked_until" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN enterprise_password_locked_until TEXT"
+                )
             _migrate_users_unique_constraint(conn)
             conn.execute(
                 """
