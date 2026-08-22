@@ -31,6 +31,7 @@ def test_stream_wrapper_emits_heartbeat_without_changing_event_order(monkeypatch
                 "test-trace",
                 [],
                 [],
+                "heartbeat-test-provider-key",
             )
         ]
 

@@ -184,6 +184,9 @@ def test_personal_key_is_encrypted_at_rest_and_never_returned(
     ciphertext = str(row["personal_deepseek_key_enc"])
     assert ciphertext.startswith("ztpk1.")
     assert plaintext not in ciphertext
+    resolved = api_quota.resolve_api_credential(user["user_id"])
+    assert resolved.model_dump() == {"source": api_quota.SOURCE_PERSONAL}
+    assert plaintext not in repr(resolved)
 
 
 def test_invalid_personal_key_error_does_not_echo_input(client, auth_headers):
@@ -355,3 +358,36 @@ def test_cleared_personal_source_does_not_fallback_during_chat(
 
     assert response.status_code == 409
     assert model_called == []
+
+
+def test_damaged_personal_ciphertext_returns_safe_error_without_credential_data(
+    client, auth_headers, caplog
+):
+    headers, user = auth_headers("customer", api_quota_source=None)
+    personal_key = _personal_key()
+    assert client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": personal_key},
+    ).status_code == 200
+    with auth._connect() as conn:
+        stored = conn.execute(
+            "SELECT personal_deepseek_key_enc FROM users WHERE user_id = ?",
+            (user["user_id"],),
+        ).fetchone()[0]
+        damaged = str(stored)[:-1] + ("A" if str(stored)[-1] != "A" else "B")
+        conn.execute(
+            "UPDATE users SET personal_deepseek_key_enc = ? WHERE user_id = ?",
+            (damaged, user["user_id"]),
+        )
+
+    response = client.post("/chat", headers=headers, json=_chat_payload())
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "当前选择的模型服务凭据不可用，请检查设置或联系管理员"
+    }
+    assert personal_key not in response.text
+    assert personal_key not in caplog.text
+    assert str(stored) not in response.text
+    assert str(stored) not in caplog.text

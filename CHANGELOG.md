@@ -1,7 +1,7 @@
 # 知天（zhitian）改动记录
 > 每轮完成改动后必须追加到此文件（新条目追加在**末尾**，本文件为旧在前的时间正序）。
 > 执行agent与指挥师同此要求；纯文档/流程整理的三段式补丁存档同样需要记录，不得省略。
-> **最后追加：2026-08-17**
+> **最后追加：2026-08-22**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -1454,3 +1454,12 @@
 - **token 与字面量按提交基线复算**：以 `7c95cc5` 为起点，`:root` token **40 → 45**，新增的正是 `--placeholder`（轮 A）与 `--selection-bg` / `--selection-text` / `--scrollbar-thumb` / `--scrollbar-track`（轮 B）四项；`:root` **外**颜色字面量 **hex 0 / rgba 0** 仍然成立；`var()` 引用 148 → **180**，`style.css` 517 → **570** 行。三页缓存参数 **9 处**全部为 `?v=visual-kinship-a-3`，无一处残留 `a-2` 或 `a-1`。
 - **六组视口与文件输入**：三页 × (1280×900 / 390×844) 共 6 组，`documentElement.scrollWidth` 均等于 `clientWidth`、逐元素扫描越界元素 **0**；三页 HTML 与全部静态资源 **200**，唯一 404 是 `/api/memory/sessions`——我的静态环境没有后端，属测试装置所致，无脚本或样式错误。390px 聊天侧栏可见宽 **0 → 300 → 0**。文件输入实测 `hidden=true`、`offsetParent` 为空（确未渲染）、**`multiple=false`**、`accept` 9 种，可见按钮背景 `rgb(41,52,58)` 配浅色文字，接线在 `chat.js:487`（`attachButton` → `attachmentInput.click()`）；**我没有真的点击它**——那会弹出系统级文件对话框并可能阻塞窗格，故只验结构与接线，未验对话框本身。
 - **两条环境限制与未验边界，如实标注**：①本环境浏览器窗格 `document.visibilityState` **恒为 `hidden`**（`tabs_select` 也改不动），CSS 过渡不会推进，侧栏与动效**无法按动画实测**；沿用上一轮的办法，关掉 `transition` 后按层叠解析读值——**这是环境限制，不是代码问题**。②**`color-scheme: dark` 对 Chrome 自动填充背景的实际效果未验证，已交回用户实测**——Codex 曾请求在应用内浏览器保存虚构测试账号以触发密码管理器，指挥师不批准：autofill 动的是用户自己的密码管理器，不该由 agent 写条目（哪怕值是编的），且用户在真实 Chrome 上测才是访客的真实场景，按手册「人工步骤不代报通过」交还用户。
+
+## 2026-08-22 用户自选API额度来源（企业流动密码 / 个人DeepSeek Key）
+
+- **加密与数据结构**：新增独立必填配置`PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY`，必须是URL-safe Base64编码的32字节密钥，缺失或格式错误时拒绝启动；个人Key使用AES-256-GCM加密，12字节随机nonce，AAD绑定`user_id`，密文格式为`ztpk1.<base64url(nonce+ciphertext+tag)>`。该密钥与`BACKUP_ENCRYPTION_KEY`完全分离。`users`表按既有`PRAGMA table_info + ALTER TABLE`模式幂等补充额度来源、个人Key密文、企业授权时间、失败次数和锁定截止时间五列，不重建现有表。
+- **企业与个人来源**：复用既有`enterprise_password.py`流动密码；账号首次验证成功后永久获得企业额度授权，不受每日轮换或手工刷新影响。连续失败第5次时只锁当前账号12小时，其他账号不受影响。个人Key保存、清除和两种来源手动切换均通过`/account/api-quota/*`接口完成；接口只返回“已授权/已配置/当前来源”等状态，明文与密文永不返回。清除当前个人Key后来源变为空，不自动回退企业。
+- **公共对话路径**：`llm_provider`新增请求级`ContextVar`绑定；`/chat`、`/chat/stream`的SSE工作线程和长期记忆后台任务都显式继承同一用户所选Key。企业来源使用服务端`DEEPSEEK_API_KEY`，个人来源仅在请求期解密；未选择来源返回HTTP 409，所选凭据损坏或不可用返回503，任何状态都不跨来源自动回退。非用户对话的内部调用仍沿用服务端Key。
+- **网页版设置页**：`web_client/settings.html`与`js/settings.js`提供企业密码授权、锁定/剩余次数提示、个人Key保存/清除和额度来源切换；个人Key只存在于当前密码输入框和单次请求体，不写入localStorage/sessionStorage。页面沿用v3.5暗色token体系，四页缓存参数统一推进为`?v=api-quota-source-1`；1280×720和390×844实测无横向溢出，390px操作按钮为全宽。Flutter与管理后台按用户要求留待各自独立批次，本轮未修改。
+- **不外泄验证**：个人Key保存响应、格式错误、损坏密文503及日志均不含明文或密文；`ResolvedApiCredential`用Pydantic`SecretStr`并排除序列化。隔离数据执行真实加密备份后，`.ztbackup`原始字节不含明文；解密包内`users.db`仍只有`ztpk1.`密文。推送前扫描覆盖`sk-`形状、长十六进制/base64和真实`.env`文件，阶段扫描均未发现凭据。
+- **验证**：加密、锁定、状态接口、同步/SSE双路径、无回退、日志与备份专项均通过；管理前端JavaScript三文件`node --check`通过；最终权威回归为`428 passed, 5 deselected`。阶段提交为`ae03204`（加密基线）、`e6eaef9`（字段迁移）、`954ccef`（企业授权锁定）、`a0937e7`（个人Key与手选接口）、`ef644bd`（公共对话路由）、`4e6ee83`（网页版设置）。本条目和最终安全测试位于后续收尾提交；标签由指挥师审查后决定。

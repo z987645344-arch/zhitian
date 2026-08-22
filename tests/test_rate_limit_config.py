@@ -11,9 +11,19 @@ from layers import auth
 
 
 def _make_user(role: str) -> str:
-    """按真实注册路径建账号并返回其JWT。"""
+    """按真实注册路径建账号，并显式授权企业额度后返回JWT。"""
     username = "%s-%s@example.com" % (role, uuid.uuid4().hex[:8])
-    auth.register_user(username, "RateLimitPwd123", role)
+    user = auth.register_user(username, "RateLimitPwd123", role)
+    with auth._connect() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET api_quota_source = 'enterprise',
+                enterprise_api_authorized_at = '2026-08-22T00:00:00+00:00'
+            WHERE user_id = ?
+            """,
+            (user["user_id"],),
+        )
     return auth.login_user(username, "RateLimitPwd123", role)
 
 

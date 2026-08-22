@@ -9,7 +9,7 @@ from pathlib import Path
 import chromadb
 import pytest
 
-from layers import memory
+from layers import credential_crypto, memory
 from scripts import backup_data, restore_data
 
 
@@ -41,7 +41,8 @@ def _create_data(data_dir: Path) -> None:
             );
             CREATE TABLE users (
                 user_id TEXT PRIMARY KEY,
-                username TEXT NOT NULL
+                username TEXT NOT NULL,
+                personal_deepseek_key_enc TEXT
             );
             CREATE TABLE documents (
                 doc_id TEXT PRIMARY KEY,
@@ -49,7 +50,7 @@ def _create_data(data_dir: Path) -> None:
                 FOREIGN KEY (organization_id) REFERENCES organizations(id)
             );
             INSERT INTO organizations VALUES (1, '法律');
-            INSERT INTO users VALUES ('u1', 'user@example.test');
+            INSERT INTO users (user_id, username) VALUES ('u1', 'user@example.test');
             INSERT INTO documents VALUES ('d1', 1);
             """
         )
@@ -237,3 +238,38 @@ def test_retention_and_service_stop_guard(backup_environment):
         backup_time=base_time + timedelta(seconds=10),
     )
     assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 1
+
+
+def test_personal_provider_key_remains_ciphertext_inside_decrypted_backup(
+    backup_environment, tmp_path
+):
+    data_dir, backup_dir = backup_environment
+    plaintext = "s" + "k-" + secrets.token_hex(18)
+    ciphertext = credential_crypto.encrypt_personal_deepseek_key(
+        plaintext, "u1"
+    )
+    with sqlite3.connect(data_dir / "users.db") as conn:
+        conn.execute(
+            "UPDATE users SET personal_deepseek_key_enc = ? WHERE user_id = 'u1'",
+            (ciphertext,),
+        )
+
+    backup = backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        confirm_service_stopped=True,
+    )
+    inspect_dir = tmp_path / "inspect"
+    inspect_dir.mkdir()
+    payload_root, _ = restore_data.decrypt_and_validate_backup(
+        backup.archive_path, inspect_dir
+    )
+    with sqlite3.connect(payload_root / "data" / "users.db") as conn:
+        stored = conn.execute(
+            "SELECT personal_deepseek_key_enc FROM users WHERE user_id = 'u1'"
+        ).fetchone()[0]
+
+    assert stored == ciphertext
+    assert stored.startswith("ztpk1.")
+    assert plaintext not in stored
+    assert plaintext.encode("utf-8") not in backup.archive_path.read_bytes()
