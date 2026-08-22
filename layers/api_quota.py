@@ -1,0 +1,198 @@
+# -*- coding: utf-8 -*-
+"""用户API额度来源：企业授权、个人凭据状态与请求期解析。"""
+
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from pydantic import BaseModel
+
+from layers import auth, enterprise_password
+from layers.db_transaction import transaction
+
+
+ENTERPRISE_PASSWORD_MAX_FAILURES = 5
+ENTERPRISE_PASSWORD_LOCK_HOURS = 12
+SOURCE_ENTERPRISE = "enterprise"
+SOURCE_PERSONAL = "personal"
+
+
+class ApiQuotaStatus(BaseModel):
+    source: Optional[str] = None
+    enterprise_authorized: bool
+    personal_key_configured: bool
+    enterprise_password_attempts_remaining: int
+    enterprise_password_locked_until: Optional[str] = None
+
+
+class ApiQuotaError(Exception):
+    """额度来源业务错误基类；错误文本不得包含任何凭据内容。"""
+
+
+class ApiQuotaAccountNotFoundError(ApiQuotaError):
+    pass
+
+
+class EnterprisePasswordInvalidError(ApiQuotaError):
+    def __init__(self, attempts_remaining: int):
+        super().__init__("企业密码不正确")
+        self.attempts_remaining = max(0, int(attempts_remaining))
+
+
+class EnterprisePasswordLockedError(ApiQuotaError):
+    def __init__(self, locked_until: str):
+        super().__init__("企业密码输入已锁定")
+        self.locked_until = locked_until
+
+
+def get_status(
+    user_id: str,
+    now: Optional[datetime] = None,
+) -> ApiQuotaStatus:
+    """返回可供前端展示的状态，永不读取或返回个人Key密文。"""
+    current = _utc_now(now)
+    with auth._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT api_quota_source, personal_deepseek_key_enc,
+                   enterprise_api_authorized_at,
+                   enterprise_password_fail_count,
+                   enterprise_password_locked_until
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    if not row:
+        raise ApiQuotaAccountNotFoundError("账号不存在")
+
+    locked_until = _parse_utc(row["enterprise_password_locked_until"])
+    lock_active = bool(locked_until and locked_until > current)
+    fail_count = int(row["enterprise_password_fail_count"] or 0)
+    if not lock_active and locked_until:
+        fail_count = 0
+        locked_until = None
+    remaining = max(0, ENTERPRISE_PASSWORD_MAX_FAILURES - fail_count)
+    return ApiQuotaStatus(
+        source=row["api_quota_source"],
+        enterprise_authorized=bool(row["enterprise_api_authorized_at"]),
+        personal_key_configured=bool(row["personal_deepseek_key_enc"]),
+        enterprise_password_attempts_remaining=remaining,
+        enterprise_password_locked_until=(
+            locked_until.isoformat() if lock_active and locked_until else None
+        ),
+    )
+
+
+def authorize_enterprise_source(
+    user_id: str,
+    supplied_password: str,
+    now: Optional[datetime] = None,
+) -> ApiQuotaStatus:
+    """首次校验企业流动密码；成功授权永久保留并选中企业来源。"""
+    current = _utc_now(now)
+    expected_password = enterprise_password.get_current_enterprise_password()
+    supplied = str(supplied_password or "")
+    pending_error: Optional[ApiQuotaError] = None
+
+    with transaction(auth.USERS_DB_PATH) as conn:
+        row = conn.execute(
+            """
+            SELECT enterprise_api_authorized_at,
+                   enterprise_password_fail_count,
+                   enterprise_password_locked_until
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if not row:
+            raise ApiQuotaAccountNotFoundError("账号不存在")
+
+        # 一次验证后永久授权：后续业务日轮换或手工刷新不撤销该状态。
+        if row["enterprise_api_authorized_at"]:
+            conn.execute(
+                "UPDATE users SET api_quota_source = ? WHERE user_id = ?",
+                (SOURCE_ENTERPRISE, user_id),
+            )
+        else:
+            locked_until = _parse_utc(row["enterprise_password_locked_until"])
+            if locked_until and locked_until > current:
+                pending_error = EnterprisePasswordLockedError(
+                    locked_until.isoformat()
+                )
+            else:
+                fail_count = int(row["enterprise_password_fail_count"] or 0)
+                if locked_until and locked_until <= current:
+                    fail_count = 0
+
+                if secrets.compare_digest(supplied, expected_password):
+                    conn.execute(
+                        """
+                        UPDATE users
+                        SET api_quota_source = ?, enterprise_api_authorized_at = ?,
+                            enterprise_password_fail_count = 0,
+                            enterprise_password_locked_until = NULL
+                        WHERE user_id = ?
+                        """,
+                        (SOURCE_ENTERPRISE, current.isoformat(), user_id),
+                    )
+                else:
+                    fail_count += 1
+                    if fail_count >= ENTERPRISE_PASSWORD_MAX_FAILURES:
+                        locked_until = current + timedelta(
+                            hours=ENTERPRISE_PASSWORD_LOCK_HOURS
+                        )
+                        conn.execute(
+                            """
+                            UPDATE users
+                            SET enterprise_password_fail_count = ?,
+                                enterprise_password_locked_until = ?
+                            WHERE user_id = ?
+                            """,
+                            (
+                                ENTERPRISE_PASSWORD_MAX_FAILURES,
+                                locked_until.isoformat(),
+                                user_id,
+                            ),
+                        )
+                        pending_error = EnterprisePasswordLockedError(
+                            locked_until.isoformat()
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE users
+                            SET enterprise_password_fail_count = ?,
+                                enterprise_password_locked_until = NULL
+                            WHERE user_id = ?
+                            """,
+                            (fail_count, user_id),
+                        )
+                        pending_error = EnterprisePasswordInvalidError(
+                            ENTERPRISE_PASSWORD_MAX_FAILURES - fail_count
+                        )
+
+    # 失败计数和锁定状态必须先提交，再把业务错误交给API层映射；若在事务内
+    # 直接raise，transaction()会回滚，表面报错却永远累计不到第5次。
+    if pending_error:
+        raise pending_error
+
+    return get_status(user_id, now=current)
+
+
+def _utc_now(value: Optional[datetime] = None) -> datetime:
+    current = value or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        return current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc)
+
+
+def _parse_utc(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)

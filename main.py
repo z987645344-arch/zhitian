@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
+from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
 from utils.logger import get_logger
 from utils import observability
 
@@ -509,6 +509,10 @@ class LoginRequest(BaseModel):
     username: str
     password: str
     role: str
+
+
+class EnterpriseQuotaAuthorizationRequest(BaseModel):
+    enterprise_password: str
 
 
 class RegistrationApplicationRequest(BaseModel):
@@ -1158,6 +1162,42 @@ async def reset_user_password(user_id: str, current_user: dict = Depends(require
         "new_password": plaintext,
         "detail": "该密码已同步到此邮箱名下全部角色账号",
     }
+
+
+@app.get("/account/api-quota", response_model=api_quota.ApiQuotaStatus)
+async def get_api_quota_status(
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        return api_quota.get_status(current_user["user_id"])
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+
+@app.post(
+    "/account/api-quota/enterprise/authorize",
+    response_model=api_quota.ApiQuotaStatus,
+)
+async def authorize_enterprise_api_quota(
+    payload: EnterpriseQuotaAuthorizationRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        return api_quota.authorize_enterprise_source(
+            current_user["user_id"], payload.enterprise_password
+        )
+    except api_quota.EnterprisePasswordInvalidError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="企业密码不正确，还可尝试%d次" % exc.attempts_remaining,
+        )
+    except api_quota.EnterprisePasswordLockedError:
+        raise HTTPException(
+            status_code=423,
+            detail="企业密码输入已锁定，请12小时后再试",
+        )
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在")
 
 
 @app.post("/chat", response_model=ChatResponse)
