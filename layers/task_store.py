@@ -111,6 +111,12 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_upload_tasks_status ON upload_tasks(status)"
         )
+        conn.execute(
+            # count_unfinished_by_user按(created_by, status)过滤，单列status索引
+            # 选择性不足（done会占绝大多数行）。复合索引让在途计数不随历史增长变慢。
+            "CREATE INDEX IF NOT EXISTS idx_upload_tasks_user_status "
+            "ON upload_tasks(created_by, status)"
+        )
 
 
 def compute_content_hash(payload: bytes) -> str:
@@ -220,6 +226,24 @@ def list_unfinished() -> List[UploadTask]:
             "SELECT * FROM upload_tasks WHERE status IN ('pending', 'processing')"
         ).fetchall()
     return [_row_to_task(r) for r in rows]
+
+
+def count_unfinished_by_user(user_id: str) -> int:
+    """单账号在途任务数：pending与processing都还占着后台处理资源。
+
+    done/failed/interrupted都是终结态，不再消耗槽位，因此不计入。
+    """
+    if not user_id:
+        return 0
+    with _task_lock, _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM upload_tasks
+            WHERE created_by = ? AND status IN ('pending', 'processing')
+            """,
+            (user_id,),
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 init_db()

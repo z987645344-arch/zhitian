@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
+from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits
 from utils.logger import get_logger
 from utils import observability
 
@@ -317,6 +317,19 @@ def _chat_rate_limit(key: str) -> str:
     return "%d/minute" % auth.get_role_rate_limit(role)
 
 
+def _heavy_task_rate_limit(key: str) -> str:
+    """重资源端点按角色返回slowapi限流串。
+
+    与`_chat_rate_limit()`共用同一个key_func（`_rate_limit_key`产出的
+    `角色:身份`），因此分桶粒度一致、不需要另起一套键。区别只在配额来源：
+    聊天走developer可在管理后台调整的`auth.get_role_rate_limit()`，
+    重资源端点走`config.HEAVY_TASK_RATE_LIMIT_PER_MINUTE`——刻意不做成
+    后台可调，避免把并发闸门的安全边界暴露成一个界面上的数字。
+    """
+    role = str(key or "").split(":", 1)[0]
+    return "%d/minute" % config.HEAVY_TASK_RATE_LIMIT_PER_MINUTE.get(role, 5)
+
+
 limiter = Limiter(key_func=_rate_limit_key)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -331,6 +344,20 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         status_code=429,
         content={"detail": "请求过于频繁，请稍后重试"}
     )
+
+@app.exception_handler(heavy_task_limits.HeavyTaskRejected)
+async def heavy_task_rejected_handler(
+    request: Request,
+    exc: heavy_task_limits.HeavyTaskRejected,
+):
+    # 只记拒绝码与角色，不记文件名、内容或任何用户数据
+    role = _rate_limit_key(request).split(":", 1)[0]
+    logger.warning("重资源闸门拒绝：role=%s code=%s", role, exc.code)
+    return JSONResponse(
+        status_code=429,
+        content={"detail": exc.message, "code": exc.code},
+    )
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -2140,7 +2167,9 @@ async def split_pdf_tool_file(
 
 
 @app.post("/documents/upload")
+@limiter.limit(_heavy_task_rate_limit)
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     organization_id: int = Form(...),
@@ -2148,6 +2177,8 @@ async def upload_document(
 ):
     _require_custom_organization(current_user, "上传文档")
     _require_upload_organization(current_user, organization_id)
+    # 单账号在途上限先于任何IO判定：拒绝要尽量便宜，不该先把文件读进内存。
+    heavy_task_limits.ensure_user_quota(current_user["user_id"])
     filename = _safe_upload_filename(file.filename or "")
     logger.info("收到/documents/upload请求：filename_len=%s", len(filename))
     if not filename:
@@ -2183,6 +2214,9 @@ async def upload_document(
     temp_path = ""
     converted_path = ""
     converted_from = ""
+    # 全局槽位：占不到立刻429，不排队。与上面的try:之间不允许插入任何可能
+    # 抛异常的语句，否则会漏掉release。
+    heavy_task_limits.acquire_slot()
     try:
         temp_path = _save_temp_upload(file, doc_id, filename)
         parse_path = temp_path
@@ -2258,26 +2292,31 @@ async def upload_document(
             "trust_level": "pending",
         }
     finally:
+        # 槽位先还：后面三个清理动作任一抛异常都不该让槽位泄漏。
+        heavy_task_limits.release_slot()
         await file.close()
         converter.cleanup_conversion_output(converted_path)
         _remove_temp_upload(temp_path)
 
 
 @app.post("/knowledge/input")
+@limiter.limit(_heavy_task_rate_limit)
 async def input_knowledge(
-    request: KnowledgeInputRequest,
+    request: Request,
+    knowledge_request: KnowledgeInputRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(require_employee)
 ):
     _require_custom_organization(current_user, "提交知识")
-    _require_upload_organization(current_user, request.organization_id)
-    content = (request.content or "").strip()
+    _require_upload_organization(current_user, knowledge_request.organization_id)
+    heavy_task_limits.ensure_user_quota(current_user["user_id"])
+    content = (knowledge_request.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content不能为空")
 
     # F36异步化：与上传同一口径，按内容哈希在本组织内去重
     file_hash = task_store.compute_content_hash(content.encode("utf-8"))
-    existing = task_store.find_done_by_hash(file_hash, request.organization_id)
+    existing = task_store.find_done_by_hash(file_hash, knowledge_request.organization_id)
     if existing:
         raise HTTPException(
             status_code=409,
@@ -2288,10 +2327,11 @@ async def input_knowledge(
             },
         )
 
-    title = (request.title or "").strip()
+    title = (knowledge_request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
     # F35：与/documents/upload同因，切分与向量化一并下放线程池
-    chunks = await asyncio.to_thread(document_loader.chunk_text, content)
+    with heavy_task_limits.occupy_slot():
+        chunks = await asyncio.to_thread(document_loader.chunk_text, content)
     # F37：与/documents/upload同一约束，文字录入同样按切片数设上限
     if len(chunks) > config.MAX_DOCUMENT_CHUNKS:
         raise HTTPException(
@@ -2304,7 +2344,7 @@ async def input_knowledge(
     doc_id = str(uuid.uuid4())
     task = task_store.create_task(
         "knowledge_input", file_hash, source,
-        request.organization_id, current_user["user_id"],
+        knowledge_request.organization_id, current_user["user_id"],
     )
     background_tasks.add_task(
         _run_ingest_task,
@@ -2313,7 +2353,7 @@ async def input_knowledge(
         source,
         chunks,
         "",
-        request.organization_id,
+        knowledge_request.organization_id,
         current_user["user_id"],
     )
     return {

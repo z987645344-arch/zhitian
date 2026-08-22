@@ -97,6 +97,38 @@ LIBREOFFICE_PATH = os.getenv(
     r"C:\Program Files\LibreOffice\program\soffice.exe",
 )
 
+# 重资源端点（/documents/upload、/knowledge/input）的并发闸门。
+# 这两个端点会串行占用LibreOffice转换锁、解析PDF、跑嵌入模型并写Chroma，
+# 单次转换最长CONVERSION_TIMEOUT_SECONDS秒、Agent路径最长61秒。
+#
+# 全局槽位刻意设计成「满了直接拒绝」而不是排队：转换体持锁，排队者会在
+# 等待中烧完自己的响应预算，最终一个用户的洪水会变成所有人的超时。
+# 拒绝是立刻可重试的，排队不是。
+MAX_CONCURRENT_HEAVY_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_HEAVY_TASKS", "4")))
+# 单账号在途（pending/processing）任务上限。必须严格小于全局槽位，
+# 否则一个账号占满后其他人将完全无法提交——这正是本限制存在的理由。
+MAX_USER_INFLIGHT_HEAVY_TASKS = max(
+    1, int(os.getenv("MAX_USER_INFLIGHT_HEAVY_TASKS", "2"))
+)
+if MAX_USER_INFLIGHT_HEAVY_TASKS >= MAX_CONCURRENT_HEAVY_TASKS:
+    raise RuntimeError(
+        "MAX_USER_INFLIGHT_HEAVY_TASKS must be smaller than MAX_CONCURRENT_HEAVY_TASKS"
+    )
+# 每分钟请求上限，按角色。只有employee与reviewer能到达这两个端点
+# （require_employee），另两个角色的值仅为取值完整性保留。
+#
+# 取值依据：真实LibreOffice转换实测单次1.7~2.0秒墙钟。并发已由上面两道闸门
+# 单独兜住（全局4槽、单账号在途2），所以本限流只需拦住脚本化猛打，不需要去
+# 塑形正常的批量操作。employee 12/分钟约合每5秒一次，高于人工连续上传的实际
+# 节奏、又远低于聊天的20/分钟；reviewer要成批灌知识库，给到30。
+# 初版曾按5/分钟，被真实批量上传用例（一次7个文件）当场证伪，据此上调。
+HEAVY_TASK_RATE_LIMIT_PER_MINUTE = {
+    "customer": 12,
+    "employee": 12,
+    "reviewer": 30,
+    "developer": 30,
+}
+
 # 认证
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 JWT_EXPIRE_HOURS = 24

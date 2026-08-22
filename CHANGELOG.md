@@ -1483,3 +1483,11 @@
 - **格式字面量五处逐一追到落点，确认不参与选处理器**：`:570`与`:754`是工具函数入参的类型注解与默认值，`:766`是入参合法性校验（在任何处理器介入之前就拒绝），`:798`决定先落盘的中间稿格式（md还是txt），`:819`决定**是否需要转换**而非由谁转换——其else分支调用`converter.convert_file`，由`registry.resolve()`裁决执行者。五处均为工具签名与流程分叉，与能力裁决职责不同，指挥师的判断成立，不构成遗漏。
 - **61秒是响应预算不是资源预算，已实证并补进约束表**：数值来源核实为`CONVERSION_TIMEOUT_SECONDS`(30)×2+`RETRY_DELAY`(1.0)=61.0。机制核实于`_run_conversion_with_agent_budget`：`future.result(timeout=)`保证用户按时拿到超时，而`executor.shutdown(wait=False, cancel_futures=True)`只能取消**排队中**的future，已在执行的第三方解析函数会跑到自然结束——`add_done_callback(_cleanup_late_conversion_result)`的存在本身即是对此的承认。补充一条实施方未提及的推论：迟到线程仍持有`_conversion_lock`/`_pdf_processing_lock`，**后续请求会排队等锁并因此消耗自己的预算**，并发下线程数随超时次数累积。该约束原先在`docs/claude_memory.md`中查无记载（全文命中0），本轮由验证存档方补入「已知技术约束」表。
 - **未独立验证的部分**：PDF反向转换与LibreOffice转换的**产物观感质量**未做人工目检，仅以质量门禁的结构化校验和自动化用例为准；OfficeCLI、图片/音频/视频/压缩包处理器本轮不在范围内，无从验证。
+
+## 2026-08-22 重资源端点的限流与并发上限
+
+- **两个最重的端点此前没有任何限流**：`/documents/upload`与`/knowledge/input`会串行占用LibreOffice转换锁、解析PDF、跑嵌入模型并写Chroma，而5个auth端点有`10/hour`、2个聊天端点有`_chat_rate_limit`，这两个一个都没有。现按角色补上`@limiter.limit(_heavy_task_rate_limit)`，复用`_rate_limit_key`产出的`角色:身份`分桶，不另起key_func。配额employee 12/分钟、reviewer 30/分钟：依据是真实LibreOffice转换实测单次1.7~2.0秒墙钟，12/分钟约合每5秒一次，高于人工连续上传的节奏又远低于聊天的20/分钟；reviewer要成批灌知识库故给到30。**初版按5/分钟，被真实批量上传用例（一次7个文件）当场证伪后上调**——该数字不是推算出来的，是被测出来的。
+- **新增模块级并发信号量`layers/heavy_task_limits.py`**：`threading.BoundedSemaphore(MAX_CONCURRENT_HEAVY_TASKS=4)`是模块级单例，进程内唯一。这补的是`execution.py`那个**每次调用新建**的`ThreadPoolExecutor(max_workers=1)`留下的缺口——后者只保证单次调用内单线程，不构成全局上限。占不到槽位**直接返回429，不排队**：转换体持有转换锁，排队者会在等待中烧完自己的响应预算（Agent路径61秒），等于把一个用户的洪水转嫁成所有人的超时；拒绝是立刻可重试的，排队不是。
+- **新增单账号在途上限**，按`upload_tasks`的`created_by`加未终结状态（pending/processing）判定，`MAX_USER_INFLIGHT_HEAVY_TASKS=2`。config层强制该值**严格小于**全局槽位，否则一个账号占满后其他人将完全无法提交——隔离才是这道闸门的目的，只做"超限会被拒"等于没做。`task_store`同步新增`count_unfinished_by_user()`与`(created_by, status)`复合索引，避免在途计数随历史行数增长变慢。
+- **三道闸门各自实测触发**，新增`tests/test_heavy_task_limits.py`共11条：槽位空闲时上传200、4个槽位占满后429`heavy_task_busy`；在途2个时429`user_inflight_limit`、全部置done后恢复200；第13次请求429（employee配额12）。**核心用例单独验证隔离**：用户A在途占满被429的同一时刻，用户B提交返回200 accepted，`/documents/upload`与`/knowledge/input`两条路径均如此。另有两条防泄漏用例覆盖成功与失败路径的槽位归还。权威回归`453 passed, 5 deselected`（v3.7为442），存量上传测试全绿。
+- **本轮刻意不做**：用量统计与落库、`observability.py`、`extract_cache_usage`、开发者界面均未触碰，61秒预算本身未改。限流配额刻意不做成后台可调，避免把并发闸门的安全边界暴露成界面上的一个数字。
