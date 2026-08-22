@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
+from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store
 from utils.logger import get_logger
 from utils import observability
 
@@ -1255,6 +1255,27 @@ async def select_api_quota_source(
         raise HTTPException(status_code=404, detail="账号不存在")
 
 
+def _resolve_chat_api_key(user_id: str) -> str:
+    """把额度来源业务状态映射为稳定HTTP错误，绝不回显凭据。"""
+    try:
+        resolved = api_quota.resolve_api_credential(user_id)
+        return resolved.api_key.get_secret_value()
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="账号不存在") from None
+    except api_quota.ApiQuotaNotConfiguredError:
+        raise HTTPException(
+            status_code=409,
+            detail="请先在设置中选择API额度来源",
+        ) from None
+    except api_quota.ApiQuotaSourceUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except api_quota.ApiCredentialUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail="当前选择的模型服务凭据不可用，请检查设置或联系管理员",
+        ) from None
+
+
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit(_chat_rate_limit)
 async def chat(
@@ -1264,6 +1285,7 @@ async def chat(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    api_key = _resolve_chat_api_key(current_user["user_id"])
     attachment_context = _resolve_attachment_context(
         chat_request.session_id,
         chat_request.attachment_ids,
@@ -1272,6 +1294,7 @@ async def chat(
     trace_id = str(uuid.uuid4())
     trace_token = observability.set_trace_id(trace_id, mode=mode)
     usage_token = document_usage.begin_request()
+    api_key_token = llm_provider.bind_request_api_key(api_key)
     cited_doc_ids: List[str] = []
     try:
         layer_trace = ["perception", "planning", "execution", "output"]
@@ -1323,6 +1346,8 @@ async def chat(
             )
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
+                llm_provider.run_with_api_key,
+                api_key,
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "user",
@@ -1331,6 +1356,8 @@ async def chat(
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
+                    llm_provider.run_with_api_key,
+                    api_key,
                     memory.maybe_save_to_vector,
                     perception_output.session_id,
                     "assistant",
@@ -1377,6 +1404,7 @@ async def chat(
         document_usage.flush_request(cited_doc_ids)
         document_usage.end_request(usage_token)
         observability.reset_trace_id(trace_token)
+        llm_provider.reset_request_api_key(api_key_token)
 
 
 @app.post("/chat/stream")
@@ -1388,6 +1416,7 @@ async def chat_stream(
     current_user: dict = Depends(get_current_user)
 ):
     mode = _validate_chat_mode(chat_request.mode)
+    api_key = _resolve_chat_api_key(current_user["user_id"])
     attachment_context = _resolve_attachment_context(
         chat_request.session_id,
         chat_request.attachment_ids,
@@ -1410,6 +1439,7 @@ async def chat_stream(
             trace_id,
             attachment_context,
             chat_request.attachment_ids,
+            api_key,
         ),
         background=background_tasks,
         media_type="text/event-stream"
@@ -3033,6 +3063,7 @@ def _chat_stream_events(
     trace_id: str,
     attachment_context: List[str],
     attachment_ids: List[str],
+    api_key: str,
 ):
     trace_token = observability.set_trace_id(trace_id, mode=request.mode)
     usage_token = document_usage.begin_request()
@@ -3082,6 +3113,8 @@ def _chat_stream_events(
                 auth.bind_session(perception_output.session_id, current_user["user_id"])
                 if final_data:
                     background_tasks.add_task(
+                        llm_provider.run_with_api_key,
+                        api_key,
                         memory.maybe_save_to_vector,
                         perception_output.session_id,
                         "user",
@@ -3089,6 +3122,8 @@ def _chat_stream_events(
                         "fast"
                     )
                     background_tasks.add_task(
+                        llm_provider.run_with_api_key,
+                        api_key,
                         memory.maybe_save_to_vector,
                         perception_output.session_id,
                         "assistant",
@@ -3210,6 +3245,8 @@ def _chat_stream_events(
         yield _sse_data({"chunk": "[DONE]"})
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
+                llm_provider.run_with_api_key,
+                api_key,
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "user",
@@ -3218,6 +3255,8 @@ def _chat_stream_events(
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
+                    llm_provider.run_with_api_key,
+                    api_key,
                     memory.maybe_save_to_vector,
                     perception_output.session_id,
                     "assistant",
@@ -3250,12 +3289,14 @@ async def _chat_stream_events_with_heartbeat(
     trace_id: str,
     attachment_context: List[str],
     attachment_ids: List[str],
+    api_key: str,
 ):
     """Run blocking stream work separately so long stages can emit SSE heartbeats."""
     loop = asyncio.get_running_loop()
     event_queue = asyncio.Queue()
 
     def produce() -> None:
+        api_key_token = llm_provider.bind_request_api_key(api_key)
         try:
             for event in _chat_stream_events(
                 request,
@@ -3264,11 +3305,13 @@ async def _chat_stream_events_with_heartbeat(
                 trace_id,
                 attachment_context,
                 attachment_ids,
+                api_key,
             ):
                 loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
         except BaseException as exc:
             loop.call_soon_threadsafe(event_queue.put_nowait, ("error", exc))
         finally:
+            llm_provider.reset_request_api_key(api_key_token)
             loop.call_soon_threadsafe(event_queue.put_nowait, ("done", None))
 
     producer_task = asyncio.create_task(asyncio.to_thread(produce))

@@ -3,11 +3,13 @@
 
 import re
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
+import config
 from layers import auth, credential_crypto, enterprise_password
 from layers.db_transaction import transaction
 
@@ -18,12 +20,22 @@ SOURCE_ENTERPRISE = "enterprise"
 SOURCE_PERSONAL = "personal"
 
 
+logger = logging.getLogger(__name__)
+
+
 class ApiQuotaStatus(BaseModel):
     source: Optional[str] = None
     enterprise_authorized: bool
     personal_key_configured: bool
     enterprise_password_attempts_remaining: int
     enterprise_password_locked_until: Optional[str] = None
+
+
+class ResolvedApiCredential(BaseModel):
+    """请求期凭据；SecretStr禁止repr显示，Field排除防止意外序列化。"""
+
+    source: str
+    api_key: SecretStr = Field(exclude=True, repr=False)
 
 
 class ApiQuotaError(Exception):
@@ -51,6 +63,14 @@ class PersonalDeepSeekKeyInvalidError(ApiQuotaError):
 
 
 class ApiQuotaSourceUnavailableError(ApiQuotaError):
+    pass
+
+
+class ApiQuotaNotConfiguredError(ApiQuotaError):
+    pass
+
+
+class ApiCredentialUnavailableError(ApiQuotaError):
     pass
 
 
@@ -256,6 +276,58 @@ def select_source(user_id: str, source: str) -> ApiQuotaStatus:
             (normalized, user_id),
         )
     return get_status(user_id)
+
+
+def resolve_api_credential(user_id: str) -> ResolvedApiCredential:
+    """按用户明确选择解析请求期Key；任何状态异常均不自动回退。"""
+    with auth._connect() as conn:
+        row = conn.execute(
+            """
+            SELECT api_quota_source, personal_deepseek_key_enc,
+                   enterprise_api_authorized_at
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    if not row:
+        raise ApiQuotaAccountNotFoundError("账号不存在")
+
+    source = row["api_quota_source"]
+    if not source:
+        raise ApiQuotaNotConfiguredError("尚未选择API额度来源")
+
+    if source == SOURCE_ENTERPRISE:
+        if not row["enterprise_api_authorized_at"]:
+            raise ApiQuotaSourceUnavailableError("企业额度来源尚未授权")
+        api_key = str(config.DEEPSEEK_API_KEY or "").strip()
+        if not api_key:
+            raise ApiCredentialUnavailableError("企业模型服务暂不可用")
+        return ResolvedApiCredential(
+            source=SOURCE_ENTERPRISE,
+            api_key=SecretStr(api_key),
+        )
+
+    if source == SOURCE_PERSONAL:
+        encrypted = row["personal_deepseek_key_enc"]
+        if not encrypted:
+            raise ApiQuotaSourceUnavailableError("个人额度来源尚未配置")
+        try:
+            api_key = credential_crypto.decrypt_personal_deepseek_key(
+                str(encrypted), user_id
+            )
+        except credential_crypto.CredentialCryptoError as exc:
+            logger.error(
+                "个人DeepSeek Key解密失败：user_id=%s error_type=%s",
+                user_id,
+                type(exc).__name__,
+            )
+            raise ApiCredentialUnavailableError("个人模型服务凭据不可用") from None
+        return ResolvedApiCredential(
+            source=SOURCE_PERSONAL,
+            api_key=SecretStr(api_key),
+        )
+
+    raise ApiQuotaSourceUnavailableError("额度来源状态无效")
 
 
 def _is_valid_personal_deepseek_key(value: str) -> bool:

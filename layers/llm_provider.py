@@ -2,6 +2,8 @@
 """Thin DeepSeek adapter for fast and expert model tiers."""
 
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from typing import Any, Iterator, Optional
 
 from openai import OpenAI
@@ -13,6 +15,36 @@ from utils import observability
 
 logger = get_logger("llm_provider")
 VALID_TIERS = {"fast", "expert"}
+_request_api_key: ContextVar[Optional[str]] = ContextVar(
+    "deepseek_request_api_key", default=None
+)
+
+
+@contextmanager
+def use_request_api_key(api_key: str) -> Iterator[None]:
+    """在当前执行上下文绑定用户选择的Key，退出时可靠清理。"""
+    token = bind_request_api_key(api_key)
+    try:
+        yield
+    finally:
+        reset_request_api_key(token)
+
+
+def bind_request_api_key(api_key: str) -> Token:
+    normalized = str(api_key or "").strip()
+    if not normalized:
+        raise ValueError("模型服务凭据不可用")
+    return _request_api_key.set(normalized)
+
+
+def reset_request_api_key(token: Token) -> None:
+    _request_api_key.reset(token)
+
+
+def run_with_api_key(api_key: str, function: Any, *args: Any, **kwargs: Any) -> Any:
+    """供后台任务显式继承请求凭据，不依赖线程上下文自动传播。"""
+    with use_request_api_key(api_key):
+        return function(*args, **kwargs)
 
 
 def chat_completion(
@@ -36,11 +68,12 @@ def chat_completion(
     if response_format is not None:
         request_kwargs["response_format"] = response_format
 
-    if not config.DEEPSEEK_API_KEY:
+    api_key = _request_api_key.get() or config.DEEPSEEK_API_KEY
+    if not api_key:
         raise ValueError("DEEPSEEK_API_KEY未配置")
 
     client = OpenAI(
-        api_key=config.DEEPSEEK_API_KEY,
+        api_key=api_key,
         base_url=config.DEEPSEEK_BASE_URL,
         timeout=request_timeout,
         max_retries=0,

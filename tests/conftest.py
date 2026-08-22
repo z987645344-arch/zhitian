@@ -262,8 +262,19 @@ def user_factory(client):
 
 @pytest.fixture
 def auth_headers(client, user_factory):
-    def make_headers(role="customer"):
+    def make_headers(role="customer", api_quota_source="enterprise"):
         user = user_factory(role)
+        if api_quota_source == "enterprise":
+            with auth._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET api_quota_source = 'enterprise',
+                        enterprise_api_authorized_at = ?
+                    WHERE user_id = ?
+                    """,
+                    ("2026-08-22T00:00:00+00:00", user["user_id"]),
+                )
         response = client.post(
             "/auth/login",
             json={

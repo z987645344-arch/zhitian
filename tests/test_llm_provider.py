@@ -77,3 +77,29 @@ def test_extract_cache_usage_supports_openai_compatible_response():
         "prompt_cache_hit_tokens": 120,
         "prompt_cache_miss_tokens": 30,
     }
+
+
+def test_request_api_key_override_is_scoped_and_restored(monkeypatch):
+    used_keys = []
+
+    def create_client(**kwargs):
+        used_keys.append(kwargs["api_key"])
+        return _client_with_create(
+            lambda **request_kwargs: {
+                "choices": [{"message": {"content": "ok"}}]
+            }
+        )
+
+    monkeypatch.setattr(llm_provider.config, "DEEPSEEK_API_KEY", "global-test-key")
+    monkeypatch.setattr(llm_provider, "OpenAI", create_client)
+
+    llm_provider.chat_completion([{"role": "user", "content": "before"}])
+    with llm_provider.use_request_api_key("personal-test-key"):
+        llm_provider.chat_completion([{"role": "user", "content": "inside"}])
+    llm_provider.chat_completion([{"role": "user", "content": "after"}])
+
+    assert used_keys == [
+        "global-test-key",
+        "personal-test-key",
+        "global-test-key",
+    ]

@@ -2,11 +2,13 @@
 """用户API额度来源的企业授权、按账号锁定与安全响应测试。"""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import uuid
 
 import pytest
 
-from layers import api_quota, auth, enterprise_password
+import main
+from layers import api_quota, auth, enterprise_password, llm_provider
 
 
 def _wrong_enterprise_password() -> str:
@@ -16,6 +18,45 @@ def _wrong_enterprise_password() -> str:
 
 def _personal_key() -> str:
     return "s" + "k-" + uuid.uuid4().hex
+
+
+def _chat_payload() -> dict:
+    return {
+        "session_id": "api-quota-chat-%s" % uuid.uuid4().hex,
+        "message": "测试额度来源",
+        "mode": "fast",
+    }
+
+
+def _install_chat_key_probe(monkeypatch, observed_keys):
+    def create_client(**kwargs):
+        observed_keys.append(kwargs["api_key"])
+        response = {"choices": [{"message": {"content": "ok"}}]}
+        return SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **request_kwargs: response)
+            )
+        )
+
+    def run_graph_state(*args, **kwargs):
+        response = llm_provider.chat_completion(
+            [{"role": "user", "content": "test"}], tier="fast"
+        )
+        return {
+            "response": llm_provider.extract_text(response),
+            "citations": [],
+            "error": "",
+            "layer_trace": [],
+            "decision_reasoning": "",
+        }
+
+    monkeypatch.setattr(llm_provider, "OpenAI", create_client)
+    monkeypatch.setattr(main.planning, "run_graph_state", run_graph_state)
+    monkeypatch.setattr(main.memory, "save_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        main.memory, "maybe_save_to_vector", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args, **kwargs: None)
 
 
 def test_enterprise_password_fifth_failure_locks_exact_account_for_twelve_hours(
@@ -77,7 +118,7 @@ def test_enterprise_authorization_survives_password_refresh(user_factory):
 
 
 def test_enterprise_quota_endpoints_never_echo_password(client, auth_headers):
-    headers, _ = auth_headers("customer")
+    headers, _ = auth_headers("customer", api_quota_source=None)
     wrong = _wrong_enterprise_password()
 
     response = client.post(
@@ -102,7 +143,7 @@ def test_enterprise_quota_endpoints_never_echo_password(client, auth_headers):
 
 
 def test_enterprise_quota_endpoint_locks_on_fifth_failure(client, auth_headers):
-    headers, _ = auth_headers("customer")
+    headers, _ = auth_headers("customer", api_quota_source=None)
     wrong = _wrong_enterprise_password()
 
     responses = [
@@ -121,7 +162,7 @@ def test_enterprise_quota_endpoint_locks_on_fifth_failure(client, auth_headers):
 def test_personal_key_is_encrypted_at_rest_and_never_returned(
     client, auth_headers, caplog
 ):
-    headers, user = auth_headers("customer")
+    headers, user = auth_headers("customer", api_quota_source=None)
     plaintext = _personal_key()
 
     response = client.put(
@@ -146,7 +187,7 @@ def test_personal_key_is_encrypted_at_rest_and_never_returned(
 
 
 def test_invalid_personal_key_error_does_not_echo_input(client, auth_headers):
-    headers, _ = auth_headers("customer")
+    headers, _ = auth_headers("customer", api_quota_source=None)
     invalid = "not-a-provider-key-" + uuid.uuid4().hex
 
     response = client.put(
@@ -163,7 +204,7 @@ def test_invalid_personal_key_error_does_not_echo_input(client, auth_headers):
 def test_clearing_selected_personal_key_does_not_fallback_to_enterprise(
     client, auth_headers
 ):
-    headers, _ = auth_headers("customer")
+    headers, _ = auth_headers("customer", api_quota_source=None)
     enterprise_response = client.post(
         "/account/api-quota/enterprise/authorize",
         headers=headers,
@@ -190,7 +231,7 @@ def test_clearing_selected_personal_key_does_not_fallback_to_enterprise(
 def test_user_can_manually_switch_only_between_configured_sources(
     client, auth_headers
 ):
-    headers, _ = auth_headers("customer")
+    headers, _ = auth_headers("customer", api_quota_source=None)
     unavailable = client.put(
         "/account/api-quota/source",
         headers=headers,
@@ -224,3 +265,93 @@ def test_user_can_manually_switch_only_between_configured_sources(
 
     assert enterprise_selected.json()["source"] == api_quota.SOURCE_ENTERPRISE
     assert personal_selected.json()["source"] == api_quota.SOURCE_PERSONAL
+
+
+@pytest.mark.parametrize("endpoint", ["/chat", "/chat/stream"])
+def test_chat_uses_explicit_enterprise_source(
+    endpoint, client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    observed_keys = []
+    enterprise_key = "enterprise-provider-test-key"
+    monkeypatch.setattr(llm_provider.config, "DEEPSEEK_API_KEY", enterprise_key)
+    _install_chat_key_probe(monkeypatch, observed_keys)
+
+    response = client.post(endpoint, headers=headers, json=_chat_payload())
+
+    assert response.status_code == 200
+    assert observed_keys == [enterprise_key]
+
+
+@pytest.mark.parametrize("endpoint", ["/chat", "/chat/stream"])
+def test_chat_uses_explicit_personal_source(
+    endpoint, client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer", api_quota_source=None)
+    personal_key = _personal_key()
+    saved = client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": personal_key},
+    )
+    assert saved.status_code == 200
+    observed_keys = []
+    _install_chat_key_probe(monkeypatch, observed_keys)
+
+    response = client.post(endpoint, headers=headers, json=_chat_payload())
+
+    assert response.status_code == 200
+    assert observed_keys == [personal_key]
+    assert personal_key not in response.text
+
+
+@pytest.mark.parametrize("endpoint", ["/chat", "/chat/stream"])
+def test_chat_rejects_unconfigured_source_without_model_call(
+    endpoint, client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer", api_quota_source=None)
+    model_called = []
+    monkeypatch.setattr(
+        main.planning,
+        "run_graph_state",
+        lambda *args, **kwargs: model_called.append(True),
+    )
+
+    response = client.post(endpoint, headers=headers, json=_chat_payload())
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "请先在设置中选择API额度来源"}
+    assert model_called == []
+
+
+@pytest.mark.parametrize("endpoint", ["/chat", "/chat/stream"])
+def test_cleared_personal_source_does_not_fallback_during_chat(
+    endpoint, client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer", api_quota_source=None)
+    assert client.post(
+        "/account/api-quota/enterprise/authorize",
+        headers=headers,
+        json={
+            "enterprise_password": enterprise_password.get_current_enterprise_password()
+        },
+    ).status_code == 200
+    assert client.put(
+        "/account/api-quota/personal",
+        headers=headers,
+        json={"deepseek_api_key": _personal_key()},
+    ).status_code == 200
+    assert client.delete(
+        "/account/api-quota/personal", headers=headers
+    ).json()["source"] is None
+    model_called = []
+    monkeypatch.setattr(
+        main.planning,
+        "run_graph_state",
+        lambda *args, **kwargs: model_called.append(True),
+    )
+
+    response = client.post(endpoint, headers=headers, json=_chat_payload())
+
+    assert response.status_code == 409
+    assert model_called == []
