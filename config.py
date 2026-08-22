@@ -114,6 +114,19 @@ if MAX_USER_INFLIGHT_HEAVY_TASKS >= MAX_CONCURRENT_HEAVY_TASKS:
     raise RuntimeError(
         "MAX_USER_INFLIGHT_HEAVY_TASKS must be smaller than MAX_CONCURRENT_HEAVY_TASKS"
     )
+# 后台入库段（向量化+Chroma写入）的并发与排队。与上面的同步段策略**刻意不同**：
+# 同步段占不到就拒绝，因为请求还挂着、等待会烧掉61秒响应预算；后台段响应早已
+# 返回accepted、用户在轮询task_id，没有响应预算可烧，因此改为阻塞排队，
+# 等待期间任务状态保持pending（TASK_STATUSES里的pending本就是这个位置）。
+MAX_CONCURRENT_INGEST_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_INGEST_TASKS", "2")))
+# 队列深度上限。排队的是已切好的chunks（List[str]，在内存里，单文档最多
+# MAX_DOCUMENT_CHUNKS=2000片、源文件最大MAX_UPLOAD_SIZE_MB=5MB），不是文件引用。
+# 按最坏情形每个排队项约10~15MB常驻，深度8约合80~120MB——在4核4G上与嵌入模型
+# 共存尚可；再深就是拿RAM换吞吐，而RAM正是嵌入模型要抢的东西。
+# 超过深度必须在返回accepted**之前**拒绝，不许先收下再异步失败。
+MAX_INGEST_QUEUE_DEPTH = max(
+    MAX_CONCURRENT_INGEST_TASKS, int(os.getenv("MAX_INGEST_QUEUE_DEPTH", "8"))
+)
 # 每分钟请求上限，按角色。只有employee与reviewer能到达这两个端点
 # （require_employee），另两个角色的值仅为取值完整性保留。
 #

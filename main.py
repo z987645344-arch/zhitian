@@ -117,50 +117,63 @@ def _run_ingest_task(
 
     错误分级按既有规范：向量化失败按Level1重试1次，仍失败则标记failed并
     记录error_type，同时清掉可能已写入的半成品，避免留下孤儿切片。
+
+    并发上限与同步段是**两道独立的闸门**，策略也相反：这里阻塞排队而不是拒绝，
+    因为响应早已返回accepted、用户在轮询task_id，没有响应预算可烧。等待期间
+    任务状态保持pending，拿到槽位后才转processing——前端本就在轮询，能看到
+    「排队中」。队列位在端点返回accepted之前就已预留（reserve_ingest_slot）。
     """
-    task_store.update_task(
-        task_id, status="processing", total_chunks=len(chunks), progress=0
-    )
-    last_error = None
-    for attempt in (1, 2):
-        try:
-            count = memory.save_document(
-                source,
-                chunks,
-                doc_id=doc_id,
-                converted_from=converted_from,
-                organization_id=organization_id,
-            )
-            auth.register_document(
-                doc_id,
-                source,
-                uploaded_by,
-                converted_from=converted_from,
-                organization_id=organization_id,
-            )
-            task_store.update_task(
-                task_id,
-                status="done",
-                progress=100,
-                processed_chunks=count,
-                result_doc_id=doc_id,
-            )
-            logger.info("入库任务完成：task_id=%s chunks=%s", task_id[:8], count)
-            return
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "入库任务第%d次失败：task_id=%s error_type=%s",
-                attempt, task_id[:8], type(exc).__name__,
-            )
-            # 重试前先清掉可能写了一半的切片，避免第二次写入产生重复
-            _purge_partial_document(doc_id)
-    task_store.update_task(
-        task_id,
-        status="failed",
-        error_message="入库失败（%s），请重试" % type(last_error).__name__,
-        result_doc_id="",
-    )
+    # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
+    heavy_task_limits.acquire_ingest_slot()
+    try:
+        task_store.update_task(
+            task_id, status="processing", total_chunks=len(chunks), progress=0
+        )
+        last_error = None
+        for attempt in (1, 2):
+            try:
+                count = memory.save_document(
+                    source,
+                    chunks,
+                    doc_id=doc_id,
+                    converted_from=converted_from,
+                    organization_id=organization_id,
+                )
+                auth.register_document(
+                    doc_id,
+                    source,
+                    uploaded_by,
+                    converted_from=converted_from,
+                    organization_id=organization_id,
+                )
+                task_store.update_task(
+                    task_id,
+                    status="done",
+                    progress=100,
+                    processed_chunks=count,
+                    result_doc_id=doc_id,
+                )
+                logger.info("入库任务完成：task_id=%s chunks=%s", task_id[:8], count)
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "入库任务第%d次失败：task_id=%s error_type=%s",
+                    attempt, task_id[:8], type(exc).__name__,
+                )
+                # 重试前先清掉可能写了一半的切片，避免第二次写入产生重复
+                _purge_partial_document(doc_id)
+        task_store.update_task(
+            task_id,
+            status="failed",
+            error_message="入库失败（%s），请重试" % type(last_error).__name__,
+            result_doc_id="",
+        )
+    finally:
+        # 必须在最外层：覆盖成功return、两次重试、以及任何未预期异常。
+        # 进程内泄漏一个槽位要重启才能恢复，_recover_interrupted_tasks只管
+        # 数据库里的任务状态，管不了进程内的信号量。
+        heavy_task_limits.release_ingest_slot()
 
 
 @asynccontextmanager
@@ -2269,9 +2282,17 @@ async def upload_document(
         # F36异步化：转换/解析/切分都在秒级，留在请求内同步完成；
         # 只有向量化是真正的瓶颈（实测21.2切片/秒、2000切片上限约94秒），
         # 因此从这里开始转入后台，请求立即带task_id返回。
-        task = task_store.create_task(
-            "upload", file_hash, filename, organization_id, current_user["user_id"]
-        )
+        # 队列位必须在返回accepted**之前**占住：满了就当场拒绝，
+        # 不许先收下再异步失败——那样用户拿到的是accepted，轮询才发现没戏。
+        heavy_task_limits.reserve_ingest_slot()
+        try:
+            task = task_store.create_task(
+                "upload", file_hash, filename, organization_id,
+                current_user["user_id"],
+            )
+        except Exception:
+            heavy_task_limits.release_reserved_ingest_slot()
+            raise
         background_tasks.add_task(
             _run_ingest_task,
             task.task_id,
@@ -2342,10 +2363,16 @@ async def input_knowledge(
             ),
         )
     doc_id = str(uuid.uuid4())
-    task = task_store.create_task(
-        "knowledge_input", file_hash, source,
-        knowledge_request.organization_id, current_user["user_id"],
-    )
+    # 与上传同一口径：队列位在返回accepted之前占住，满了当场拒绝。
+    heavy_task_limits.reserve_ingest_slot()
+    try:
+        task = task_store.create_task(
+            "knowledge_input", file_hash, source,
+            knowledge_request.organization_id, current_user["user_id"],
+        )
+    except Exception:
+        heavy_task_limits.release_reserved_ingest_slot()
+        raise
     background_tasks.add_task(
         _run_ingest_task,
         task.task_id,
