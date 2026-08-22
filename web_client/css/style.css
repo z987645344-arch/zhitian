@@ -372,6 +372,27 @@ button.session-delete:hover { background: var(--danger-bg); }
 .account-copy strong { display: block; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-account button { padding: 6px 9px; font-size: 11px; }
 
+.sidebar-settings-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 6px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease);
+}
+
+.sidebar-settings-link:hover {
+  border-color: var(--accent-line);
+  background: var(--surface);
+  color: var(--primary-hover);
+}
+
 .chat-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--bg); }
 
 .chat-header {
@@ -522,6 +543,106 @@ button.generated-file-download { padding: 7px 11px; font-size: 11px; }
 .composer-hint { margin: 0; color: var(--subtle); font-size: 11px; }
 .active-mode-label { flex: none; padding: 2px 7px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-hover); font-size: 10px; font-weight: 700; }
 
+/* ---------- API额度设置 ---------- */
+
+.settings-page { min-height: 100vh; background: var(--surface-low); }
+
+.settings-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 66px;
+  padding: 12px max(22px, calc((100vw - 1040px) / 2));
+  border-bottom: 1px solid var(--line);
+  background: var(--header-bg);
+}
+
+.settings-back {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.settings-back:hover { color: var(--primary-hover); }
+.settings-account { display: grid; justify-items: end; }
+.settings-account span { color: var(--subtle); font-size: 10px; }
+.settings-account strong { font-size: 11px; }
+
+.settings-shell {
+  width: min(100% - 36px, 1040px);
+  margin: 0 auto;
+  padding: 64px 0 80px;
+}
+
+.settings-heading { max-width: 720px; margin-bottom: 28px; }
+.settings-heading h1 { font-size: clamp(28px, 4vw, 42px); }
+.settings-heading > p:not(.eyebrow) { margin: 12px 0 0; color: var(--muted); }
+
+.source-summary {
+  display: inline-flex;
+  margin-top: 20px;
+  padding: 7px 11px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quota-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+
+.quota-card {
+  padding: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--bubble-shadow);
+  transition: border-color var(--duration-base) var(--ease), background var(--duration-base) var(--ease);
+}
+
+.quota-card.selected { border-color: var(--accent-line); background: var(--surface-high); }
+.quota-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.quota-card-heading h2 { font-size: 20px; }
+.quota-description { min-height: 76px; margin: 14px 0 20px; color: var(--muted); font-size: 13px; }
+
+.status-badge {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.status-badge.active { border-color: var(--accent-line); background: var(--primary-soft); color: var(--primary-hover); }
+.quota-form { display: grid; gap: 10px; }
+.quota-form label { color: var(--text); font-size: 12px; font-weight: 650; }
+.quota-form input { width: 100%; }
+.quota-hint { min-height: 42px; margin: 0; color: var(--subtle); font-size: 11px; }
+.quota-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.quota-actions button { min-height: 42px; }
+
+button.danger-button {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+button.danger-button:hover { border-color: var(--danger); background: var(--surface-high); }
+
+.settings-message {
+  min-height: 28px;
+  margin: 20px 2px 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-message.success { color: var(--success); }
+.settings-message.error { color: var(--danger); }
+
 @media (max-width: 1280px) {
   .mode-description { display: none; }
 }
@@ -535,6 +656,8 @@ button.generated-file-download { padding: 7px 11px; font-size: 11px; }
   .sidebar-backdrop { position: fixed; z-index: 15; inset: 0; width: 100%; height: 100%; padding: 0; border: none; border-radius: 0; background: var(--backdrop-bg); opacity: 0; pointer-events: none; transition: opacity var(--duration-base) var(--ease); }
   .sidebar-open .sidebar-backdrop { display: block; opacity: 1; pointer-events: auto; }
   .sidebar-toggle { display: inline-flex; }
+  .quota-grid { grid-template-columns: 1fr; }
+  .quota-description { min-height: 0; }
 }
 
 @media (max-width: 620px) {
@@ -554,6 +677,15 @@ button.generated-file-download { padding: 7px 11px; font-size: 11px; }
   .composer-meta { align-items: flex-start; }
   .auth-card { padding: 22px; }
   .auth-form-area { padding: 24px 14px; }
+  .settings-topbar { min-height: 58px; padding: 10px 16px; }
+  .settings-shell { width: min(100% - 24px, 1040px); padding: 36px 0 54px; }
+  .settings-heading { margin-bottom: 20px; }
+  .settings-heading h1 { font-size: 27px; }
+  .source-summary { align-items: flex-start; border-radius: var(--radius); line-height: 1.5; }
+  .quota-card { padding: 20px 16px; }
+  .quota-card-heading { gap: 10px; }
+  .quota-actions { display: grid; grid-template-columns: 1fr; }
+  .quota-actions button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

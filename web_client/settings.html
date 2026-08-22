@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>API 额度设置 · 知天</title>
+    <link rel="stylesheet" href="./css/style.css?v=api-quota-source-1" />
+  </head>
+  <body class="settings-page">
+    <header class="settings-topbar">
+      <a class="settings-back" href="./chat.html" aria-label="返回对话工作台">← 返回工作台</a>
+      <div class="settings-account">
+        <span>当前账号</span>
+        <strong id="currentUser">-</strong>
+      </div>
+    </header>
+
+    <main class="settings-shell">
+      <section class="settings-heading">
+        <p class="eyebrow">模型服务设置</p>
+        <h1>选择 API 额度来源</h1>
+        <p>你可以使用企业提供的共享额度，也可以使用自己的 DeepSeek Key。两种方式由你手动选择，系统不会自动切换。</p>
+        <div id="sourceSummary" class="source-summary" aria-live="polite">正在读取当前设置…</div>
+      </section>
+
+      <div class="quota-grid">
+        <section id="enterpriseCard" class="quota-card" aria-labelledby="enterpriseTitle">
+          <div class="quota-card-heading">
+            <div>
+              <p class="eyebrow">企业额度</p>
+              <h2 id="enterpriseTitle">企业流动密码</h2>
+            </div>
+            <span id="enterpriseBadge" class="status-badge">未授权</span>
+          </div>
+          <p class="quota-description">首次验证企业流动密码后，该账号将持续具备企业额度使用权；每日密码轮换不会撤销已完成的授权。</p>
+          <form id="enterpriseForm" class="quota-form">
+            <label for="enterprisePassword">企业流动密码</label>
+            <input id="enterprisePassword" type="password" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="请输入 8 位企业流动密码" />
+            <p id="enterpriseHint" class="quota-hint">连续失败 5 次后，仅当前账号会锁定 12 小时。</p>
+            <div class="quota-actions">
+              <button id="enterpriseSubmit" type="submit">验证并使用</button>
+              <button id="enterpriseSelect" class="secondary" type="button" hidden>切换到企业额度</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="personalCard" class="quota-card" aria-labelledby="personalTitle">
+          <div class="quota-card-heading">
+            <div>
+              <p class="eyebrow">个人额度</p>
+              <h2 id="personalTitle">个人 DeepSeek Key</h2>
+            </div>
+            <span id="personalBadge" class="status-badge">未配置</span>
+          </div>
+          <p class="quota-description">Key 通过加密后保存，页面不会读取或显示已保存的内容。重新填写会替换旧 Key，并立即切换到个人额度。</p>
+          <form id="personalForm" class="quota-form">
+            <label for="personalKey">DeepSeek API Key</label>
+            <input id="personalKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-lpignore="true" placeholder="填写后保存；已保存的 Key 不会回显" />
+            <p class="quota-hint">请只在此输入框中粘贴 Key；网页不会把它写入本地存储。</p>
+            <div class="quota-actions">
+              <button id="personalSubmit" type="submit">保存并使用</button>
+              <button id="personalSelect" class="secondary" type="button" hidden>切换到个人额度</button>
+              <button id="personalClear" class="danger-button" type="button" hidden>清除个人 Key</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
+    </main>
+
+    <script src="./config.js"></script>
+    <script src="./js/api.js?v=api-quota-source-1"></script>
+    <script src="./js/settings.js?v=api-quota-source-1"></script>
+  </body>
+</html>

@@ -144,6 +144,31 @@ const API = (() => {
       return data.deleted === true;
     },
 
+    getApiQuotaStatus: () => request('/account/api-quota'),
+
+    authorizeEnterpriseQuota: (enterprisePassword) => request(
+      '/account/api-quota/enterprise/authorize',
+      {
+        method: 'POST',
+        body: JSON.stringify({ enterprise_password: enterprisePassword }),
+      },
+    ),
+
+    savePersonalQuotaKey: (deepseekApiKey) => request('/account/api-quota/personal', {
+      method: 'PUT',
+      body: JSON.stringify({ deepseek_api_key: deepseekApiKey }),
+    }),
+
+    clearPersonalQuotaKey: () => request('/account/api-quota/personal', {
+      method: 'DELETE',
+      json: false,
+    }),
+
+    selectApiQuotaSource: (source) => request('/account/api-quota/source', {
+      method: 'PUT',
+      body: JSON.stringify({ source }),
+    }),
+
     async uploadAttachment(sessionId, file) {
       const form = new FormData();
       form.append('session_id', sessionId);
