@@ -9,7 +9,8 @@ import tempfile
 import time
 import uuid
 from collections.abc import Iterator
-from typing import Literal, Optional, Union
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Callable, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 import config
@@ -82,6 +83,10 @@ class OutputAnomalyCheck(BaseModel):
 MAX_RETRIES = 1
 RETRY_DELAY = 1.0
 TIMEOUT = 10.0
+DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS = max(
+    1.0,
+    float(config.CONVERSION_TIMEOUT_SECONDS) * 2 + RETRY_DELAY,
+)
 SEARCH_SUMMARY_FALLBACK_MESSAGE = "很抱歉，联网搜索遇到问题，暂时无法为您整理结果，建议稍后重试或换个方式提问。"
 CONTENT_TAINT_BLOCK_MESSAGE = "本次请求包含联网搜索结果，为安全考虑本次不支持生成文件或格式转换操作，如需使用请另起一次不包含联网搜索的请求。"
 WRITE_TOOLS = {"generate_file", "convert_document"}
@@ -565,6 +570,7 @@ def _convert_document(
     target_format: Literal["pdf", "docx", "xlsx", "pptx"],
     session_id: str,
     owner_user_id: str,
+    agent_budget_seconds: Optional[float] = None,
 ) -> ConvertDocumentResult:
     """转换当前会话附件，并将新产物写入owner的统一文件库。"""
     target = str(target_format or "").lower()
@@ -597,6 +603,11 @@ def _convert_document(
         return ConvertDocumentResult(success=False, error_type="file_not_found")
 
     processing_task_id = str(uuid.uuid4())
+    budget_seconds = max(
+        0.001,
+        float(agent_budget_seconds or DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS),
+    )
+    deadline = time.perf_counter() + budget_seconds
     conversion = None
     converted_path = ""
     conversion_fn = (
@@ -605,7 +616,16 @@ def _convert_document(
         else converter.convert_file
     )
     for attempt in range(2):
-        conversion = conversion_fn(source_path, target)
+        remaining_budget = deadline - time.perf_counter()
+        if remaining_budget <= 0:
+            conversion = _agent_conversion_timeout(source.format, target)
+            break
+        conversion = _run_conversion_with_agent_budget(
+            conversion_fn,
+            source_path,
+            target,
+            remaining_budget,
+        )
         converted_path = conversion.output_path or ""
         if conversion.success and converted_path:
             break
@@ -616,6 +636,11 @@ def _convert_document(
             attempt + 1,
             conversion.error_type or "conversion_failed",
         )
+        if (
+            conversion.status == converter.ConversionStatus.TIMEOUT
+            and time.perf_counter() >= deadline
+        ):
+            break
         if attempt == 0:
             time.sleep(RETRY_DELAY)
     if conversion is None or not conversion.success or not converted_path:
@@ -665,6 +690,61 @@ def _convert_document(
         )
     finally:
         converter.cleanup_conversion_output(converted_path)
+
+
+def _run_conversion_with_agent_budget(
+    conversion_fn: Callable[[str, str], converter.ConversionResult],
+    source_path: str,
+    target_format: str,
+    timeout_seconds: float,
+) -> converter.ConversionResult:
+    """限制Agent附件转换等待时间；超时后的临时产物由回调清理。"""
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-convert")
+    future = executor.submit(conversion_fn, source_path, target_format)
+    try:
+        return future.result(timeout=max(0.001, timeout_seconds))
+    except FutureTimeoutError:
+        future.add_done_callback(_cleanup_late_conversion_result)
+        logger.warning(
+            "附件转换达到Agent预算：target_format=%s budget_ms=%s",
+            target_format,
+            int(max(0.0, timeout_seconds) * 1000),
+        )
+        return _agent_conversion_timeout(
+            os.path.splitext(source_path or "")[1].lstrip("."),
+            target_format,
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _cleanup_late_conversion_result(future: Future) -> None:
+    if future.cancelled():
+        return
+    try:
+        result = future.result()
+    except Exception as exc:
+        logger.warning(
+            "超时附件转换后台结束：status=failed error_type=%s",
+            type(exc).__name__,
+        )
+        return
+    converter.cleanup_conversion_output(result.output_path or "")
+    logger.info("超时附件转换后台产物已清理：status=cleaned")
+
+
+def _agent_conversion_timeout(
+    source_format: str,
+    target_format: str,
+) -> converter.ConversionResult:
+    return converter.ConversionResult(
+        success=False,
+        status=converter.ConversionStatus.TIMEOUT,
+        converted_from_format=str(source_format or "").lstrip("."),
+        converted_to_format=target_format,
+        error_type="timeout",
+        error_msg="附件转换超时，请稍后重试",
+    )
 
 
 def generate_file(

@@ -1465,6 +1465,10 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
                 "target_format": state["conversion_target_format"],
                 "session_id": state["session_id"],
                 "owner_user_id": state["owner_user_id"],
+                "agent_budget_seconds": min(
+                    _remaining_complex_budget(state),
+                    execution.DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS,
+                ),
             },
             order=order,
         )

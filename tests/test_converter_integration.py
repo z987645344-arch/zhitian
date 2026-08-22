@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Real local LibreOffice conversion coverage; excluded from CI by integration mark."""
 
+import io
 import os
 import subprocess
 
@@ -8,7 +9,7 @@ import pytest
 from docx import Document
 
 import config
-from layers import auth, memory
+from layers import auth, memory, task_store
 from tests.conftest import grant_work_organization
 
 
@@ -112,7 +113,12 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
             )
         assert response.status_code == 200, response.text
         payload = response.json()
-        assert payload["status"] == "success"
+        assert payload["status"] == "accepted"
+        assert payload["task_id"]
+        task = task_store.get_task(payload["task_id"])
+        assert task is not None
+        assert task.status == "done"
+        assert task.result_doc_id == payload["doc_id"]
         expected_converted_from = (
             "" if sample_path.endswith(".docx") else os.path.basename(sample_path)
         )
@@ -132,18 +138,21 @@ def test_real_soffice_uploads_doc_xlsx_and_pptx(
 
     monkeypatch.setattr(config, "MAX_CONVERSION_FILE_SIZE_MB", 0)
     with open(samples[1], "rb") as oversized_sample:
+        oversized_unique_payload = oversized_sample.read() + b"\x00"
         rejected_response = client.post(
             "/documents/upload",
             headers=headers,
             files={
                 "file": (
                     "oversized.doc",
-                    oversized_sample,
+                    io.BytesIO(oversized_unique_payload),
                     "application/msword",
                 )
             },
             data={"organization_id": upload_org},
         )
+    # 末尾附加一个字节只为避开前面已入库样本的内容哈希去重；本用例在转换前
+    # 就会被0MB门槛拒绝，不依赖修改后的文件能否被LibreOffice解析。
     # 这里断言的422来自**转换层**的体积门槛（layers/converter.py的
     # MAX_CONVERSION_FILE_SIZE_MB检查，返回"文件超过转换大小限制"），
     # 与F36改成413的那个MAX_UPLOAD_SIZE_MB上传体积检查是两条独立路径，不要混淆。

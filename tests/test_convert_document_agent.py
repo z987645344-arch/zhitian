@@ -2,6 +2,7 @@
 """expert会话附件转换工具的离线覆盖。"""
 
 import os
+import time
 
 import pytest
 
@@ -210,6 +211,66 @@ def test_convert_document_retries_converter_once(tmp_path, monkeypatch):
     assert result.success is True
     assert calls == ["pdf", "pdf"]
     attachments.clear_session("session-retry")
+
+
+def test_convert_document_agent_budget_returns_timeout_and_cleans_late_output(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    record = _store_attachment(tmp_path, "session-budget", OWNER_A)
+    output_dir = tmp_path / "conversion_late"
+    output_path = output_dir / "converted.pdf"
+
+    def slow_convert(source_path, target_format):
+        time.sleep(0.08)
+        output_dir.mkdir(exist_ok=True)
+        output_path.write_bytes(b"%PDF-late")
+        return ConversionResult(
+            success=True,
+            status=ConversionStatus.SUCCESS,
+            output_path=str(output_path),
+            converted_from_format="xlsx",
+            converted_to_format="pdf",
+        )
+
+    monkeypatch.setattr(converter, "convert_file", slow_convert)
+    started_at = time.perf_counter()
+    result = execution._convert_document(
+        record.attachment_id,
+        "pdf",
+        "session-budget",
+        OWNER_A,
+        agent_budget_seconds=0.01,
+    )
+    elapsed = time.perf_counter() - started_at
+
+    assert result.success is False
+    assert result.error_type == "timeout"
+    assert elapsed < 0.06
+    assert files_store.list_files(OWNER_A) == [
+        files_store.get_file(record.file_id)
+    ]
+    time.sleep(0.12)
+    assert not output_path.exists()
+    attachments.clear_session("session-budget")
+
+
+def test_convert_document_task_receives_explicit_agent_budget():
+    state = planning._new_agent_state(
+        "session-budget-task",
+        "转换附件",
+        "expert",
+        owner_user_id=OWNER_A,
+        attachment_ids=["attachment-id"],
+    )
+    state["intent"] = "convert_document"
+    state["conversion_target_format"] = "pdf"
+    state["complex_deadline"] = time.perf_counter() + 5
+
+    task = planning._task_from_intent(state, order=1)
+
+    assert 0 < task.params["agent_budget_seconds"] <= 5
 
 
 def test_convert_document_missing_and_multiple_attachment_prompts(monkeypatch):

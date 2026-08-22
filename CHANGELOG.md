@@ -1463,3 +1463,11 @@
 - **网页版设置页**：`web_client/settings.html`与`js/settings.js`提供企业密码授权、锁定/剩余次数提示、个人Key保存/清除和额度来源切换；个人Key只存在于当前密码输入框和单次请求体，不写入localStorage/sessionStorage。页面沿用v3.5暗色token体系，四页缓存参数统一推进为`?v=api-quota-source-1`；1280×720和390×844实测无横向溢出，390px操作按钮为全宽。Flutter与管理后台按用户要求留待各自独立批次，本轮未修改。
 - **不外泄验证**：个人Key保存响应、格式错误、损坏密文503及日志均不含明文或密文；`ResolvedApiCredential`用Pydantic`SecretStr`并排除序列化。隔离数据执行真实加密备份后，`.ztbackup`原始字节不含明文；解密包内`users.db`仍只有`ztpk1.`密文。推送前扫描覆盖`sk-`形状、长十六进制/base64和真实`.env`文件，阶段扫描均未发现凭据。
 - **验证**：加密、锁定、状态接口、同步/SSE双路径、无回退、日志与备份专项均通过；管理前端JavaScript三文件`node --check`通过；最终权威回归为`428 passed, 5 deselected`。阶段提交为`ae03204`（加密基线）、`e6eaef9`（字段迁移）、`954ccef`（企业授权锁定）、`a0937e7`（个人Key与手选接口）、`ef644bd`（公共对话路由）、`4e6ee83`（网页版设置）。本条目和最终安全测试位于后续收尾提交；标签由指挥师审查后决定。
+
+## 2026-08-22 文件处理器架构第一阶段（实施方现场记录）
+
+- **统一契约、注册表与质量门禁**：新增Pydantic层间模型和统一`FileProcessor`契约（`supports/execute/validate_output/cleanup`），服务端能力注册表按源/目标格式与任务类型确定处理器，AI只负责意图判断、不选择处理器或拼接命令。质量层统一检查产物存在且非空、MIME/签名、可重新打开、中文替换字符、最低页数/段落/工作表、大小上限与临时文件清理；宿主机路径被排除在模型序列化之外，失败产物不进入用户交付链路。
+- **原生文本与LibreOffice仅做包装**：MD/TXT继续复用原子UTF-8写入，LibreOffice继续复用既有进程级串行锁、`CONVERSION_TIMEOUT_SECONDS`、结构化错误与日志；有效输入的字节/结果字段与包装前逐项对比一致。真实LibreOffice六类输入（DOC/DOCX/XLS/XLSX/PPT/PPTX）转换、下载及知识库零污染用例通过。`files_store`以幂等补列保存可选的`organization_id/source_task_id/generation_engine/generation_engine_version`，下载权限仍由既有JWT+owner校验控制。
+- **PDF能力收拢但不换库**：新增统一`PdfProcessor`暴露`extract_text/extract_tables/render_pages/merge/split/to_docx/to_xlsx/to_pptx`，上层不再分别直接打开PDF；继续依赖共享核心`pdf_text.py`，并保留pdfplumber/pypdf/fitz各自既有职责。重构前既有PDF语义基线`8 passed`，重构后同组连同新增能力测试`32 passed`，扩展附件/上传/工具箱相关回归`35 passed`，内容、结构化错误与成功日志口径一致。
+- **F21按实际缺口闭环**：底层LibreOffice已有单次30秒超时，但Agent此前确实没有覆盖重试和PDF内存路径的独立总预算。现由规划层把当前complex剩余时间与默认61秒上限中的较小值传给`convert_document`，执行层用单调时钟约束整次工具调用；10毫秒预算实测快速返回、不写`files_store`，迟到线程产物完成后自动清理。边界是Python线程无法强杀正在执行的第三方解析函数，超时后底层工作可能继续到自然返回，但不会被持久化或交付。
+- **integration断言与总回归**：`tests/test_converter_integration.py`已按F36异步契约改为断言`accepted + task_id`并核对任务完成与`result_doc_id`；同时修正该用例中会被内容哈希去重提前拦截的旧测试数据，真实integration复跑`1 passed`。当前默认排除的integration共5项：真实附件对话、真实六类上传、真实工具箱转换、真实expert生成PDF、真实聊天冒烟；本轮明确复跑两项转换用例，其余不冒充本轮完整重验。最终权威回归为`442 passed, 5 deselected`（240.14秒），本轮不引入OfficeCLI、不改前端、不更换PDF底层库。
