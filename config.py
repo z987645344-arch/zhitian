@@ -163,6 +163,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VECTORDB_PATH = os.path.join(BASE_DIR, "data", "vectordb")
 HISTORY_DB_PATH = os.path.join(BASE_DIR, "data", "history.db")
 
+# 进程内加密备份调度。默认关闭，正式Compose部署会显式开启并把目录挂到独立具名卷；
+# 这样直接运行main.py、pytest导入应用时不会在开发工作区后台生成归档。
+SCHEDULED_BACKUP_ENABLED = (
+    os.getenv("SCHEDULED_BACKUP_ENABLED", "false").strip().lower() == "true"
+)
+SCHEDULED_BACKUP_PATH = os.getenv(
+    "SCHEDULED_BACKUP_PATH", os.path.join(BASE_DIR, "backups", "scheduled")
+)
+SCHEDULED_BACKUP_INTERVAL_SECONDS = max(
+    1, int(os.getenv("SCHEDULED_BACKUP_INTERVAL_SECONDS", "86400"))
+)
+SCHEDULED_BACKUP_RETENTION = max(
+    1, int(os.getenv("SCHEDULED_BACKUP_RETENTION", "3"))
+)
+
 # 工具
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 WEB_SEARCH_PROVIDER = os.getenv("WEB_SEARCH_PROVIDER", "tavily").strip().lower()

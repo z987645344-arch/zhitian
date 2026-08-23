@@ -554,7 +554,7 @@ def _parse_args() -> argparse.Namespace:
         "--retention",
         type=int,
         default=backup_data.DEFAULT_RETENTION,
-        help="安全备份目录保留最近N份，默认7",
+        help="安全备份目录保留最近N份，默认3",
     )
     parser.add_argument(
         "--confirm-service-stopped",

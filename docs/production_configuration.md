@@ -1,6 +1,6 @@
 # 生产配置与密钥注入
 
-本文只规定配置和密钥如何进入运行环境，不保存任何真实值。后端变量清单、格式要求和生成方式详见仓库根目录`.env.example`，该模板涵盖`config.py`读取的全部57项配置变量，并额外包含备份脚本使用的`BACKUP_ENCRYPTION_KEY`；部署仓库自身的`SERVER_PUBLIC_IP`见`zhitian-deploy/.env.example`。
+本文只规定配置和密钥如何进入运行环境，不保存任何真实值。后端变量清单、格式要求和生成方式详见仓库根目录`.env.example`，该模板涵盖`config.py`读取的全部62项配置变量，并额外包含手工加密备份脚本使用的`BACKUP_ENCRYPTION_KEY`；部署仓库自身的`SERVER_PUBLIC_IP`见`zhitian-deploy/.env.example`。
 
 ## 共同安全边界
 
@@ -53,4 +53,5 @@
 - 两个命令都必须先停止后端服务或暂停所有写入。SQLite使用官方热备API，但项目Chroma锁只在单进程内有效，不能用它跨进程暂停仍在运行的服务。
 - 恢复命令会先用同一个`BACKUP_ENCRYPTION_KEY`自动备份当前数据，再验证目标包并切换数据。目标包认证或manifest校验失败时不进入恢复；恢复后检查出现差异时保留已恢复数据和安全备份，等待人工判断。
 - 默认备份目录为`backups/`，已由`.gitignore`和`.dockerignore`排除；默认保留最近7份，命令行可用`--retention`调整，但任何配置都至少保留1份。
-- 当前只提供人工命令，不包含cron、Windows任务计划或其他自动调度。Phase B在真实服务器上另行配置调度、异地复制和恢复演练。
+- Compose显式开启进程内加密备份：`SCHEDULED_BACKUP_PATH=/app/backups`、间隔86400秒、保留3份（用户决定与另一项目保持一致），落在独立具名卷；直接运行main.py与测试环境默认关闭。调度层调用同一个`backup_data.create_backup()`，因此同样要求`BACKUP_ENCRYPTION_KEY`，产物可直接由`restore_data.py`读取。
+- 当前尚未提供自动异地复制或服务器真实破坏恢复演练；这些仍属于Phase B服务器工作。

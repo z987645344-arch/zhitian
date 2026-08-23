@@ -5,7 +5,8 @@ SQLite使用Connection.backup()生成一致性热备份。Chroma现有锁是进�
 RLock，无法暂停另一个后端进程，因此运行本脚本前必须停止后端服务或确认
 所有写入已经暂停，并显式传入--confirm-service-stopped。
 
-脚本不接入应用启动、pytest、CI或定时调度。Phase B的定时任务需另行配置。
+命令行入口不自动接入应用启动、pytest或CI；进程内调度器只复用本模块的
+create_backup()，并使用独立文件名前缀和轮转范围。
 """
 
 import argparse
@@ -14,6 +15,7 @@ import gc
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -41,10 +43,11 @@ DEFAULT_BACKUP_DIR = PROJECT_ROOT / "backups"
 SQLITE_FILENAMES = ("users.db", "history.db", "files.db")
 VECTOR_DIRNAME = "vectordb"
 USER_FILES_DIRNAME = "user_files"
-BACKUP_GLOB = "zhitian-backup-*.ztbackup"
+DEFAULT_ARCHIVE_PREFIX = "zhitian-backup"
+BACKUP_GLOB = DEFAULT_ARCHIVE_PREFIX + "-*.ztbackup"
 MANIFEST_NAME = "manifest.json"
 FORMAT_VERSION = 1
-DEFAULT_RETENTION = 7
+DEFAULT_RETENTION = 3
 
 ARCHIVE_MAGIC = b"ZHITIAN-BACKUP-V1\n"
 NONCE_SIZE = 12
@@ -374,18 +377,25 @@ def _archive_sort_key(path: Path) -> Tuple[int, str]:
     return (path.stat().st_mtime_ns, path.name)
 
 
+def _validate_archive_prefix(archive_prefix: str) -> None:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", archive_prefix) is None:
+        raise BackupError("备份文件名前缀只能包含字母、数字、连字符和下划线")
+
+
 def enforce_retention(
     backup_dir: Path,
     retention: int,
     protected_paths: Optional[Iterable[Path]] = None,
+    archive_prefix: str = DEFAULT_ARCHIVE_PREFIX,
 ) -> List[Path]:
-    """保留最新N份；N小于1时仍至少保留最新1份。"""
+    """只在指定文件名集合内保留最新N份；N小于1时仍至少保留1份。"""
+    _validate_archive_prefix(archive_prefix)
     keep_count = max(1, int(retention))
     protected: Set[Path] = {
         path.resolve() for path in (protected_paths or ())
     }
     archives = sorted(
-        backup_dir.glob(BACKUP_GLOB),
+        backup_dir.glob(archive_prefix + "-*.ztbackup"),
         key=_archive_sort_key,
         reverse=True,
     )
@@ -412,6 +422,7 @@ def create_backup(
     encryption_key: Optional[str] = None,
     protected_paths: Optional[Sequence[Path]] = None,
     backup_time: Optional[datetime] = None,
+    archive_prefix: str = DEFAULT_ARCHIVE_PREFIX,
 ) -> BackupResult:
     """创建加密备份并应用保留策略。"""
     _require_service_stopped(confirm_service_stopped)
@@ -432,8 +443,9 @@ def create_backup(
         "%Y%m%dT%H%M%S%fZ"
     )
     resolved_backup.mkdir(parents=True, exist_ok=True)
+    _validate_archive_prefix(archive_prefix)
     archive_path = resolved_backup / (
-        "zhitian-backup-%s.ztbackup" % stamp
+        "%s-%s.ztbackup" % (archive_prefix, stamp)
     )
 
     with tempfile.TemporaryDirectory(
@@ -473,6 +485,7 @@ def create_backup(
         resolved_backup,
         retention,
         protected_paths=protected,
+        archive_prefix=archive_prefix,
     )
     return BackupResult(
         archive_path=archive_path,
@@ -501,7 +514,7 @@ def _parse_args() -> argparse.Namespace:
         "--retention",
         type=int,
         default=DEFAULT_RETENTION,
-        help="保留最近N份备份，默认7；小于1时仍保留1份",
+        help="保留最近N份备份，默认3；小于1时仍保留1份",
     )
     parser.add_argument(
         "--confirm-service-stopped",

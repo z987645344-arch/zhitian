@@ -1507,3 +1507,20 @@
 - **修法二：把队列位的归还改成结构性保证**，不再依赖「我们枚举全了所有会抛的语句」。新增`ingest_reserved`与`ingest_handed_off`两个标志，`finally`中仅当「已预留但未成功交接后台」时才归还；正常路径由`_run_ingest_task`的`finally`归还，两条路径由标志互斥，不会重复归还。`background_tasks.add_task`之后先把响应体存入变量、置`ingest_handed_off = True`、再`return`，两行之间不允许插入任何会抛的语句。原先包在`create_task`外的`try/except`随之删除——归还逻辑收敛成单一出口。
 - **`/knowledge/input`确认无此暴露**：其`reserve_ingest_slot()`到`return`之间没有`finally`清理段，唯一的`try`就是`create_task`那处，本轮不改。
 - **新增3条用例，并做了反向对照**：注入`cleanup_conversion_output`抛异常后请求仍返回`accepted`、后台任务`done`、队列深度与槽位双双为0；注入`file.close()`抛异常后另两个清理动作仍执行；连打10次得深度序列`[0]*10`——泄漏是累积型的，单次通过不足以证明。**三条用例在修补前的`main.py`上全部失败**，确认不是空跑。权威回归`462 passed, 5 deselected`（v3.8为459），v3.8的17条用例全绿。
+
+## 2026-08-23 既有加密备份接入进程内调度（实施方现场记录）
+
+- **调度层保持薄且只有一套备份实现**：`layers/backup_scheduler.py`接入FastAPI lifespan，不引入APScheduler，只负责可配置间隔、跨重启续算、非阻塞并发锁和异常隔离；归档生成统一调用既有`scripts/backup_data.py::create_backup()`。上一版自建SQLite快照、manifest与`os.link()`硬链接去重代码已全部删除，不再让同一仓库出现两种备份格式。
+- **加密、清单、文件范围与恢复入口全部复用**：定时产物仍为`ZHITIAN-BACKUP-V1`的AES-256-GCM `.ztbackup`，SQLite在线备份、Chroma、`user_files`、manifest校验及成功后轮转沿用已验证实现，可直接交给`restore_data.py`。调度时额外持有`files_store.backup_consistency_lock()`，让`files.db`与物理文件复制不夹入并发写入；Chroma继续由`backup_data.py`取得共享`CHROMA_LOCK`。调度归档使用独立`zhitian-scheduled-backup-`前缀，手工归档继续使用`zhitian-backup-`前缀，同目录各自轮转、互不删除；两类备份的默认保留数统一为3。这个单一策略数字是用户决定并与另一项目保持一致，并非根据当前数据量推算。
+- **缺密钥与运行失败不影响服务**：生产继续从既有`BACKUP_ENCRYPTION_KEY`取密钥，不读取或修改真实`.env`；本地或测试缺失时捕获`BackupError`，日志明确提示缺少该变量并跳过本轮。任何其他异常也只记录类型并返回失败，不穿透到lifespan或请求路径；上一轮尚未结束时新触发直接跳过。
+- **隔离验收**：先手工生成1份，再由调度连续生成4份，最终调度前缀只保留3份且手工归档仍在；调度归档可由`restore_data.read_backup_manifest()`成功读取，manifest确认包含`user_files`实体和Chroma collection。不足24小时的现有调度归档使重启续等剩余23小时；并发第二轮被拒；缺密钥时TestClient仍正常启动、`/health`返回200、日志含明确告警且目录中无归档。调度层+既有备份恢复+lifespan针对性回归`12 passed`，权威回归`467 passed, 5 deselected`，与修订前验收基线一致且不低于要求。
+- **尚待验证存档方补验**：本Codex会话中`docker`命令不在PATH且常见Docker Desktop路径不存在，因此没有冒充执行`docker compose config --quiet`、镜像重建或容器内`/app/backups`权限实测；部署仓库改动已落盘，须由有Docker环境的Claude Code完成Compose与容器级验收后再存档。
+
+### 我怎么证实的（验证存档方）
+
+- **补上了实施方点名交还的那三项**：实施方会话无Docker CLI，明确把`docker compose config --quiet`、镜像构建与容器卷权限实测交给验证存档方。本机Docker 29.6.2 + Compose v5.3.1可用，三项均已实跑，不是静态审阅冒充。
+- **第2层配置解析**：用**全占位**`.env`（回环IP、localhost两个主机名、相对证书路径，无任何真实凭据或域名）执行`docker compose config --quiet`，退出码0且无任何输出——按红线只用`--quiet`，全程未展开完整config。解析出的卷为`zhitian_data`与`zhitian_backups`两个，与部署仓库声明一致。占位`.env`验后即删，该文件本就被`.gitignore`忽略。
+- **第3层镜像构建与卷权限实测**：实际构建API镜像后查得`/app/backups`属主`appuser:appuser`（uid 999），与`/app/data`一致；再挂一个全新具名卷到该路径，属主**仍为**`appuser:appuser`，容器以`appuser`身份`touch`归档文件**写入成功**（`-rw-r--r-- appuser appuser`）。即Dockerfile里`mkdir -p /app/backups`加`chown`确实生效，「新建卷归root导致非root容器写不进去」这个典型失败模式不存在。验证镜像与探针卷均已删除。
+- **未做的一层**：第4层真实部署不归验证存档方（手册一.5「云服务器现场操作」），服务器仍是v3.6，本轮不含部署。
+- **未重复的部分**：权威回归`467 passed, 5 deselected`、前缀隔离双向实证、`DEFAULT_RETENTION=3`、`restore_data.py`仅改帮助文本，四项由指挥师本机实跑核过，按指令不重复。
+- **存档前例行核对（手册九.1）**：两个仓库的改动与新增文件中，IPv4字面量0处、密钥凭据形态0处、二进制0处；唯一命中的绝对路径`/home/appuser/.config/libreoffice`是镜像既有的容器内路径（HEAD已有9处引用），本轮那行只新增`/app/backups`，非服务器主机路径。`zhitian_admin`与`zhitian_app`均0处改动，无跨仓库误改。两个未跟踪文件是本轮新增的`layers/backup_scheduler.py`与`tests/test_backup_scheduler.py`，属预期产物。

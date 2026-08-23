@@ -26,7 +26,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import api_quota, attachments, auth, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits
+from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits
 from utils.logger import get_logger
 from utils import observability
 
@@ -186,6 +186,12 @@ async def lifespan(app: FastAPI):
     with _request_gate_lock:
         _accepting_requests = True
     try:
+        # 备份在线程中运行，首次快照不会阻塞lifespan进入服务状态；即便线程
+        # 创建失败也只降级备份能力，不能让主服务拒绝启动。
+        backup_scheduler.start_scheduler()
+    except Exception as exc:
+        logger.error("启动进程内备份调度失败：error_type=%s", type(exc).__name__)
+    try:
         yield
     finally:
         with _request_gate_lock:
@@ -198,6 +204,10 @@ async def lifespan(app: FastAPI):
             logger.warning("优雅关闭等待超时：active_requests=%s", remaining)
         else:
             logger.info("优雅关闭完成：active_requests=0")
+        try:
+            backup_scheduler.stop_scheduler()
+        except Exception as exc:
+            logger.warning("停止进程内备份调度失败：error_type=%s", type(exc).__name__)
         try:
             memory.close_resources()
         except Exception as e:

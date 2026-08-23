@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
@@ -19,6 +20,13 @@ import config
 _files_lock = threading.RLock()
 _SOURCE_TYPES = {"attachment", "generated", "converted"}
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@contextmanager
+def backup_consistency_lock():
+    """让备份与files.db、user_files实体文件的写入共享同一把锁。"""
+    with _files_lock:
+        yield
 
 
 class UserFile(BaseModel):

@@ -70,7 +70,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 RUN groupadd --system appuser \
     && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser \
-    && mkdir -p /app/data /home/appuser/.config/libreoffice \
+    && mkdir -p /app/data /app/backups /home/appuser/.config/libreoffice \
     && chown -R appuser:appuser /app /home/appuser
 
 COPY --chown=appuser:appuser . .
