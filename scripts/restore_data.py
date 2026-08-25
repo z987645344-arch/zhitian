@@ -37,6 +37,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from scripts import backup_data
 
 
+# 恢复前安全备份必须与手工、定时归档使用两两互斥的前缀：
+# `zhitian-pre-restore-*`不会被`zhitian-backup-*`或
+# `zhitian-scheduled-backup-*`的轮转glob匹配。
+PRE_RESTORE_ARCHIVE_PREFIX = "zhitian-pre-restore"
+PRE_RESTORE_BACKUP_GLOB = PRE_RESTORE_ARCHIVE_PREFIX + "-*.ztbackup"
+DEFAULT_PRE_RESTORE_RETENTION = 3
+
+
 # 暂存区与回滚区都必须建在data目录内部：只有同一文件系统内的路径才能用
 # rename完成激活，而具名卷部署下data目录就是挂载点，其同级目录属于镜像
 # 层文件系统，跨设备rename会失败。
@@ -465,7 +473,7 @@ def restore_backup(
     archive_path: Path,
     data_dir: Path = backup_data.DEFAULT_DATA_DIR,
     backup_dir: Path = backup_data.DEFAULT_BACKUP_DIR,
-    retention: int = backup_data.DEFAULT_RETENTION,
+    retention: int = DEFAULT_PRE_RESTORE_RETENTION,
     confirm_service_stopped: bool = False,
     encryption_key: Optional[str] = None,
 ) -> RestoreResult:
@@ -487,6 +495,7 @@ def restore_backup(
         confirm_service_stopped=True,
         encryption_key=encryption_key,
         protected_paths=[source_archive],
+        archive_prefix=PRE_RESTORE_ARCHIVE_PREFIX,
     )
 
     with tempfile.TemporaryDirectory(
@@ -553,8 +562,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--retention",
         type=int,
-        default=backup_data.DEFAULT_RETENTION,
-        help="安全备份目录保留最近N份，默认3",
+        default=DEFAULT_PRE_RESTORE_RETENTION,
+        help="仅保留最近N份恢复前安全备份，默认3；不影响手工或定时归档",
     )
     parser.add_argument(
         "--confirm-service-stopped",

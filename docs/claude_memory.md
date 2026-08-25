@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-23**（定时备份已改为显式UTC+8每日零点，实施方验证完成，等待Claude Code验证存档）
+> **最后更新：2026-08-25**（恢复前安全备份已改用独立前缀与轮转计数；功能专项通过，权威回归被v4.0既有的本地时区相关邮件统计失败阻断）
 
 ---
 
@@ -54,9 +54,9 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；2026-08-22完成文件处理器架构第一阶段的实施方工作，权威回归`442 passed, 5 deselected`。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题仍为L9、F14、F22、F24、F38、F39、F44、F48；后端容器漏洞策略门禁因F38及Debian系统层无修复版本项保持红灯，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-22完成统一`FileProcessor`契约、服务端能力注册表和质量检查层；以适配器接入原生MD/TXT与既有LibreOffice稳定链路；把PDF提取、渲染、合并、拆分与转Office能力收拢到统一`PdfProcessor`，继续复用`pdf_text.py`且不更换底层库；补齐Agent层转换总预算并修复异步上传integration断言。四阶段均为独立本地提交，未推送、未打标签，等待验证存档方复核 |
-| 当前等待 | 等待Claude Code按本轮交接清单独立验证、存档并决定后续推送；版本号与标签由指挥师在验证后决定。OfficeCLI不在本轮范围，图片/音频/视频/压缩包/电子书处理器也未引入。此前用户自选API额度来源功能仍要求服务器部署前新增`PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY`，否则新版按安全设计拒绝启动 |
+| 状态 | 🟡 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；后端当前标签为`v4.0`。2026-08-25已完成恢复前安全备份三前缀隔离的实施方改动，专项`12 passed`；权威回归受v4.0既有的两项本地时区相关邮件统计失败阻断，不能写成全绿。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题仍为L9、F14、F22、F24、F38、F39、F44、F48；后端容器漏洞策略门禁因F38及Debian系统层无修复版本项保持红灯，不代表应用功能回归 |
+| 上一轮完成 | 2026-08-25完成恢复前安全备份隔离：新增`zhitian-pre-restore-*`前缀与独立默认保留数3，真实恢复会自动生成该前缀归档；三方向轮转用例证明手工、调度、恢复前三族glob两两互斥。针对性回归`12 passed` |
+| 当前等待 | 等待Claude Code验证存档；本轮权威回归为`470 passed, 2 failed, 5 deselected`，两项失败均为邮件业务日统计。临时检出的原始`v4.0`基线在同一时刻复跑相同两项也为`2 failed`，确认并非本轮备份改动引入，但“不低于471且全绿”的验收条件尚未满足。需另轮处理本地UTC+8晚20点后验证码本地naive写入与UTC-naive统计窗口错位问题，不能在本轮顺手扩大认证时间语义范围 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档状态 | 2026-08-15完成系统性审计与交接收尾：历史架构决策和事故记录位于`docs/history/`，协作角色以`docs/claude_skill.md`为准；CHANGELOG历史中的旧工具名称不回写为当前流程 |
@@ -137,7 +137,7 @@
 ### Phase A：自用云端MVP，不依赖真实服务器
 
 - [x] 已完成Docker安全基线、生产镜像、管理后台与customer静态站点容器、四服务Compose、一次性管理员引导、生产配置模板、schema/外键基线、加密备份恢复、Windows客户端、CI/CD基础门禁、运维文档和干净环境验收。当前运行约束保留在「已知技术约束」，完整实施与验证历史见`CHANGELOG.md`。
-- [x] 当前最新标签组合：后端`v3.4`、部署仓库`v3.3`、管理后台与Flutter客户端`v3.2`。生产服务器目前仍检出已使用的后端/部署`v3.3`，升级必须显式切换标签，不跟随`master/main`。
+- [x] 当前仓库最新标签组合：后端`v4.0`、部署仓库`v3.4.3`、管理后台与Flutter客户端`v3.2`。生产服务器实际检出版本必须在现场核对，升级必须显式切换标签，不跟随`master/main`。
 
 ### Phase B：自用云端MVP，需要服务器后处理
 
@@ -260,7 +260,7 @@ GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/h
 | Compose配置输出保密 | 含真实`env_file`时，`docker compose config`的完整文本/JSON会展开所有环境变量，禁止输出到CI日志、任务记录或交接文档；语法验证只用`docker compose config --quiet`，需要检查端口/网络时优先直接读取受版本控制的YAML或使用不展开敏感值的方式。2026-08-13曾误把本机开发配置展开到任务工具输出，未进入Git/镜像，但仍要求轮换其中仍有效的外部API和应用密钥 |
 | Compose `env_file`原样注入 | 知了Hub在生产部署中真实遇到bcrypt等含`$`值被Compose当成变量引用、导致容器启动崩溃的坑；知天当前自动生成的token_urlsafe/base64url密钥字符集不含`$`且用户确认现有外部凭据也不含`$`，虽未实际触发，仍预防性采用`format: raw`消除未来轮换隐患。该能力要求Compose 2.30.0+；服务器切换前必须只核对变量名是否存在引号（不显示值），发现`KEY="value"`先停止并等待用户确认，因为raw会保留引号本身；不得擅改真实`.env` |
 | 生产配置与密钥注入 | 后端`.env.example`现有59项：完整覆盖`config.py`读取的58项运行配置，并额外声明备份脚本使用的`BACKUP_ENCRYPTION_KEY`；2026-08-22新增的`PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY`是个人Key密文的独立AES-256主密钥，必须与备份密钥分离，缺失或无效时应用拒绝启动。模板只允许真实默认参数、格式说明和`CHANGE_ME_*`占位符。当前本地与服务器Compose都从后端工作树内、被`.gitignore`排除的`.env`通过`env_file.path + format: raw`注入，`.dockerignore`再保证它不进入镜像；这是逻辑隔离，不是物理目录隔离。Phase B必须在服务器现场创建实例独立配置，不得复制开发机`.env`。生产CORS不得包含`null`。部署仓库自己的`.env`保存`SERVER_PUBLIC_IP`及四项`ZHITIAN_*`主机名/证书路径变量；这些参与Compose插值，与后端`.env`的`format: raw`边界不同 |
-| 加密备份与恢复 | `scripts/backup_data.py`与`restore_data.py`仍提供人工备份/恢复入口；独立运行时要求`--confirm-service-stopped`，因为共享Chroma锁不能跨进程暂停API。应用lifespan另接入薄调度层，复用同一个`create_backup()`，Compose默认按代码内显式UTC+8每日00:00生成AES-256-GCM `.ztbackup`；空目录启动立即补第一份，同一UTC+8日内重启不重复。调度与手工归档使用不同前缀，各自默认保留3份、最低1份，写入独立具名卷`/app/backups`，不写回业务数据卷。恢复先安全备份，再校验GCM、manifest文件集合/大小/SHA-256、三库完整性/外键和Chroma数量；激活方式按F34只rename `/app/data`内部条目，不对挂载点自身改名。只留同机备份卷不算灾备，Phase B仍需自动异地复制及服务器破坏恢复演练 |
+| 加密备份与恢复 | `scripts/backup_data.py`与`restore_data.py`仍提供人工备份/恢复入口；独立运行时要求`--confirm-service-stopped`，因为共享Chroma锁不能跨进程暂停API。应用lifespan另接入薄调度层，复用同一个`create_backup()`，Compose默认按代码内显式UTC+8每日00:00生成AES-256-GCM `.ztbackup`；空目录启动立即补第一份，同一UTC+8日内重启不重复。手工`zhitian-backup-*`、调度`zhitian-scheduled-backup-*`、恢复前`zhitian-pre-restore-*`三类归档使用两两互斥的glob，各自默认保留3份、最低1份；任一类别轮转均不会删除另外两类。归档写入独立具名卷`/app/backups`，不写回业务数据卷。恢复先安全备份，再校验GCM、manifest文件集合/大小/SHA-256、三库完整性/外键和Chroma数量；激活方式按F34只rename `/app/data`内部条目，不对挂载点自身改名。只留同机备份卷不算灾备，Phase B仍需自动异地复制及服务器破坏恢复演练 |
 | 自用运维文档 | `docs/deployment_guide.md`为总入口，另有`backup_restore_guide.md`、`upgrade_rollback_guide.md`和`troubleshooting.md`。四份文档只覆盖自用单实例MVP，真实域名/HTTPS/定时异地备份明确留给Phase B；任何交接都必须clone`zhitian`、`zhitian_admin`和私有`zhitian-deploy`三个仓库并保持同级目录，单独clone任一仓库都不是完整部署包 |
 | 附件转换Agent预算是响应预算不是资源预算 | `convert_document`的61秒总预算（`CONVERSION_TIMEOUT_SECONDS`30秒×2次尝试+1秒重试间隔）由`_run_conversion_with_agent_budget`用`ThreadPoolExecutor`+`future.result(timeout=)`兑现：**用户一定按时拿到超时结果，但底层第三方解析函数杀不掉**。`executor.shutdown(wait=False, cancel_futures=True)`只能取消排队中的future，已在执行的那个会跑到自然结束，产物由`add_done_callback`善后清理。由于转换体在`_conversion_lock`/`_pdf_processing_lock`之内，迟到线程仍占着锁，**后续请求会排队等锁并因此消耗自己的预算**；并发下线程数随超时次数累积。调整预算或引入OfficeCLI等进程级方案前，必须先认识到这一点。 |
 | 完整回归口径 | 本地和CI一律以根目录`run_tests.bat`为唯一权威入口，默认执行非integration完整回归；不要直接调用`python -m pytest`或使用“系统Python + .venv site-packages”替代。`tests/conftest.py`在收集阶段强制项目`.venv` Python 3.10，避免MCP子进程隔离`PYTHONPATH`后产生伪失败 |

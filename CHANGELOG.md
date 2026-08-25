@@ -1549,3 +1549,32 @@
 - **⚠️ 遗留影响**：开发者界面的历史人数曲线在**2026-08-23前后口径不同**，读图时需注意——之前按UTC 04:00划分业务日，之后按UTC+8零点。这不是数据错误，是边界定义变更，不会自愈。
 - **本机数字不能替代生产**：验证存档方没有服务器访问权限（手册一.5「云服务器现场操作」），生产行数由指挥师执行。本机`./data/users.db`只读查得两表均为0行——`daily_role_headcount_snapshot`一项与生产的3行**不一致**，这正说明以本机推断生产存量是不成立的推理，此处记下以免后人重蹈。
 - **未重复的部分**：权威回归`471 passed, 5 deselected`、业务日边界实证（UTC 20:00翻天、UTC 04:00不翻天）、备份触发实证（UTC 15:59:59剩1秒、16:00:00剩0秒）、范围核查（`auth.py`仅改一行docstring、`main.py`改的是其自有的凌晨4点计算、其余33处naive `datetime.now()`未动），四项由指挥师本机实跑核过，按指令不重复。
+
+## 2026-08-25 恢复前安全备份使用独立前缀与轮转计数（实施方现场记录）
+
+- **根因与隔离方案**：`restore_data.restore_backup()`原来没有向`create_backup()`传`archive_prefix`，恢复前安全备份因此落入手工`zhitian-backup-*`族，之后可能被普通手工备份按3份轮转删除。现新增恢复专用`zhitian-pre-restore-*`前缀与独立默认保留数3；现有`--retention`只控制恢复前这一族，不新增环境变量，也不改变AES-GCM格式、密钥、调度策略或手工备份默认值。
+- **三族glob两两互斥**：手工`zhitian-backup-*`、调度`zhitian-scheduled-backup-*`、恢复前`zhitian-pre-restore-*`没有包含关系。隔离测试在同一目录依次执行三个方向：手工4留3时另外两族不变；调度4留3时另外两族路径集合不变；恢复前4留3时另外两族路径集合不变。真实“备份→清空隔离数据→恢复”往返确认自动安全备份文件名使用新前缀，恢复后的SQLite、Chroma与`user_files`内容仍与备份前一致。
+- **验证结果与既有基线阻断**：Python 3.10 `py_compile`通过，备份恢复与调度针对性回归`12 passed`。权威回归实际为`470 passed, 2 failed, 5 deselected`；失败项仅为`test_email_usage_endpoint_reflects_new_sends`与`test_correct_enterprise_password_sends_and_counts_usage`。在临时检出的未修改`v4.0`（`b57eedd`）上同一时刻复跑这两项也全部失败，根因是Windows本地20点后验证码用本地naive时间写入、邮件统计按UTC-naive窗口查询的既有时区偏差，与本轮备份文件零重叠。本轮没有越界修改认证时间语义，因此要求的“不低于471且全绿”尚未完成，交验证存档方决定另轮修复。
+
+### 我怎么证实的（验证存档方）
+
+- **存档前例行核对（手册九.1）**：IPv4字面量0处、密钥凭据形态0处、服务器绝对路径0处、二进制0处、未跟踪文件0个；`zhitian-deploy`、`zhitian_admin`、`zhitian_app`均0处改动，无跨仓库误改。本轮只动`zhitian`一个仓库。
+- **未重复的部分**：三方向隔离实测（轮转任一条线另外两条份数不变、三个前缀两两互不为前缀）、`restore_data.py`接线正确（`archive_prefix=PRE_RESTORE_ARCHIVE_PREFIX`、retention默认为独立的`DEFAULT_PRE_RESTORE_RETENTION`）、未新增密钥且未改加密格式/调度逻辑/保留数——三项由指挥师用真函数跑脚本核过，按指令不重复。
+
+#### 权威回归的2个失败：是用例的时点依赖，不是v4.0的缺陷
+
+失败项为`test_email_usage_stats.py::test_email_usage_endpoint_reflects_new_sends`与`test_email_verification.py::test_correct_enterprise_password_sends_and_counts_usage`，**两个文件本轮均未改动**。
+
+需要澄清一处措辞：实施方记为「在v4.0基线上也稳定复现」，容易被读成「v4.0一直坏着」。**实际是这两个用例依赖运行机器的时区与运行时的钟点**——同一份v4.0代码，指挥师当日14:xx跑得`471 passed / 0 failed`，20:29再跑即`470 / 2 failed`。
+
+验证存档方独立复核了机制本身，不止复现症状。本机UTC+8、当时本地20:37，直接取真函数算出边界：
+
+- 业务日窗口按UTC+8算得本地04:00边界，`get_business_day_storage_range()`返回的转存库口径窗口为UTC-naive `2026-08-24 20:00:00` → `2026-08-25 20:00:00`
+- 而验证码用naive `datetime.now()`写入，在UTC+8机器上取到的是**本地**`2026-08-25 20:37:39`，超出窗口末端37分钟 → 落在窗口外 → 计数0
+- 边界探针（同一窗口、只挪钟点）：本地14:00在窗口内、19:59在窗口内、**20:00不在**、20:36不在
+
+即分界点精确落在**本地20:00**：本地过20:00必失败，20:00前必通过。根因是把**本地naive**的`datetime.now()`拿去和**UTC-naive**的窗口比较，而不是任何业务逻辑错误。
+
+**生产不受影响**，同一套算术即可推出：生产容器为UTC，容器内`datetime.now()`得到的naive值就是UTC值（指挥师实测12:30），稳落在UTC-naive窗口内。
+
+**本轮不打标**，待这两个时区依赖的用例修复后合并打标。修复方向属另一轮，本轮不动这两个文件。

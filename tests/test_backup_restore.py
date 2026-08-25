@@ -9,7 +9,7 @@ from pathlib import Path
 import chromadb
 import pytest
 
-from layers import credential_crypto, memory
+from layers import backup_scheduler, credential_crypto, memory
 from scripts import backup_data, restore_data
 
 
@@ -180,7 +180,99 @@ def test_backup_restore_round_trip_and_manifest(backup_environment):
         confirm_service_stopped=True,
     )
     assert result.safety_backup.is_file()
+    assert result.safety_backup.match(
+        restore_data.PRE_RESTORE_BACKUP_GLOB
+    )
+    assert result.safety_backup.name.startswith(
+        restore_data.PRE_RESTORE_ARCHIVE_PREFIX + "-"
+    )
     assert _summary(data_dir) == expected
+
+
+def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
+    backup_environment,
+):
+    data_dir, backup_dir = backup_environment
+    base_time = datetime(2026, 8, 25, tzinfo=timezone.utc)
+    archive_families = (
+        (backup_data.DEFAULT_ARCHIVE_PREFIX, backup_data.BACKUP_GLOB),
+        (
+            backup_scheduler.SCHEDULED_ARCHIVE_PREFIX,
+            backup_scheduler.SCHEDULED_BACKUP_GLOB,
+        ),
+        (
+            restore_data.PRE_RESTORE_ARCHIVE_PREFIX,
+            restore_data.PRE_RESTORE_BACKUP_GLOB,
+        ),
+    )
+    assert len({prefix for prefix, _ in archive_families}) == 3
+    assert restore_data.DEFAULT_PRE_RESTORE_RETENTION == 3
+
+    def create_series(prefix: str, offset: int) -> None:
+        for index in range(4):
+            backup_data.create_backup(
+                data_dir=data_dir,
+                backup_dir=backup_dir,
+                retention=3,
+                confirm_service_stopped=True,
+                backup_time=base_time + timedelta(seconds=offset + index),
+                archive_prefix=prefix,
+            )
+
+    # 先给另两族各放一份哨兵，再轮转手工归档；只有手工族可被删除。
+    backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        retention=3,
+        confirm_service_stopped=True,
+        backup_time=base_time - timedelta(seconds=2),
+        archive_prefix=backup_scheduler.SCHEDULED_ARCHIVE_PREFIX,
+    )
+    backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        retention=3,
+        confirm_service_stopped=True,
+        backup_time=base_time - timedelta(seconds=1),
+        archive_prefix=restore_data.PRE_RESTORE_ARCHIVE_PREFIX,
+    )
+    create_series(backup_data.DEFAULT_ARCHIVE_PREFIX, 0)
+    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 3
+    assert len(
+        list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
+    ) == 1
+    assert len(
+        list(backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB))
+    ) == 1
+
+    # 调度族轮转后，手工族与恢复前族的路径集合必须逐项保持不变。
+    manual_before = set(backup_dir.glob(backup_data.BACKUP_GLOB))
+    pre_restore_before = set(
+        backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB)
+    )
+    create_series(backup_scheduler.SCHEDULED_ARCHIVE_PREFIX, 10)
+    assert len(
+        list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
+    ) == 3
+    assert set(backup_dir.glob(backup_data.BACKUP_GLOB)) == manual_before
+    assert (
+        set(backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB))
+        == pre_restore_before
+    )
+
+    # 恢复前族轮转后，手工族与调度族也必须逐项保持不变。
+    scheduled_before = set(
+        backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB)
+    )
+    create_series(restore_data.PRE_RESTORE_ARCHIVE_PREFIX, 20)
+    assert len(
+        list(backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB))
+    ) == 3
+    assert set(backup_dir.glob(backup_data.BACKUP_GLOB)) == manual_before
+    assert (
+        set(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
+        == scheduled_before
+    )
 
 
 def test_tampered_backup_is_rejected_without_changing_data(

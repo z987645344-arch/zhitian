@@ -2,7 +2,7 @@
 
 当前只有一套备份格式与恢复路径：`scripts/backup_data.py`生成AES-256-GCM加密的`.ztbackup`，`scripts/restore_data.py`读取并恢复同一格式。触发方式分为两种，但不会再各自实现快照、manifest或轮转：
 
-- **进程内定时触发**：`layers/backup_scheduler.py`随应用启动，只负责固定时刻触发、避免重叠和异常隔离，最终仍调用`backup_data.create_backup()`。调度归档使用`zhitian-scheduled-backup-`前缀，手工归档继续使用`zhitian-backup-`前缀；同目录下两类归档各自轮转，互不删除。
+- **进程内定时触发**：`layers/backup_scheduler.py`随应用启动，只负责固定时刻触发、避免重叠和异常隔离，最终仍调用`backup_data.create_backup()`。调度归档使用`zhitian-scheduled-backup-`前缀，手工归档使用`zhitian-backup-`前缀，恢复前安全备份使用`zhitian-pre-restore-`前缀；同目录下三类归档各自轮转，互不删除。
 - **人工触发与恢复**：运维人员停服务后显式运行`backup_data.py`或`restore_data.py`，用于升级、迁移、异地导出和破坏恢复。
 
 ## A. 进程内每日加密备份
@@ -21,7 +21,7 @@
 - 两个脚本都必须在后端停止或全部写入暂停后执行，并显式传入`--confirm-service-stopped`。共享Chroma `RLock`只在单进程内有效，不能暂停另一个仍运行的API进程。
 - 密钥只从进程环境变量`BACKUP_ENCRYPTION_KEY`读取，格式为URL-safe Base64编码的32字节随机值。它不得与JWT或企业密码种子复用，不得与备份包放在同一失效域。
 - 脚本不会自行加载宿主机`.env`；直接在宿主机运行时，应由当前进程安全注入该变量。Compose运行时则由`env_file`注入。
-- 恢复会先用同一密钥自动备份当前数据，再验证目标包，不能跳过安全备份。
+- 恢复会先用同一密钥自动备份当前数据，再验证目标包，不能跳过安全备份。该快照使用独立`zhitian-pre-restore-`前缀和独立保留计数（默认3），之后的手工或定时轮转不会把它挤掉。
 - `full_reset.py`是开发清空工具，不是恢复方案。
 - 脚本要求`users.db`、`history.db`、`files.db`三者都存在。F33曾使`files.db`直到第一次个人文件操作才懒创建，空白实例首次备份因此被拒；已于2026-08-01修复——`files_store`补了模块级`init_db()`，应用启动即建好三库，全新实例无需先使用个人文件功能。若日后仍遇到缺库报错，不要手工伪造一个不含正确schema的空文件，应查为什么启动初始化没有生效。
 
@@ -34,7 +34,7 @@
 - `manifest.json`，记录UTC时间、schema版本、SQLite各表行数、Chroma collection计数、文件大小和SHA-256；
 - ZIP-deflate压缩后使用流式AES-256-GCM加密和认证。
 
-默认保留最近3份；`--retention N`可调整，`N<1`仍至少保留1份。只有新包成功生成后才清理旧包。
+手工归档默认保留最近3份；`backup_data.py --retention N`可调整手工归档，`restore_data.py --retention N`只调整恢复前安全备份。`N<1`仍至少保留1份。只有同前缀的新包成功生成后，才清理该前缀的旧包；三类归档不会相互参与轮转。
 
 ### 3. Compose部署的日常人工备份
 
@@ -145,7 +145,7 @@ $backupName = "zhitian-backup-<UTC时间戳>.ztbackup"
 docker compose cp ".\offline-backups\$backupName" "zhitian-api:/app/data/$backupName"
 ```
 
-4. 执行恢复。`--backup-dir /app/backups/manual`确保恢复前安全备份也写入独立备份卷：
+4. 执行恢复。`--backup-dir /app/backups/manual`确保恢复前安全备份也写入独立备份卷；文件名会使用`zhitian-pre-restore-<UTC时间戳>.ztbackup`，不会与同目录的手工、定时归档混用轮转计数：
 
 ```powershell
 docker compose run --rm -e BACKUP_ENCRYPTION_KEY=$env:BACKUP_ENCRYPTION_KEY zhitian-api python scripts/restore_data.py "/app/data/$backupName" --backup-dir /app/backups/manual --retention 3 --confirm-service-stopped
