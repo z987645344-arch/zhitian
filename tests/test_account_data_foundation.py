@@ -5,14 +5,18 @@ import os
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import bcrypt
 
-from layers import auth
+from layers import auth, enterprise_password
 from layers.db_transaction import transaction
-from layers.enterprise_password import get_current_enterprise_password
+from layers.enterprise_password import (
+    BUSINESS_TIMEZONE,
+    get_business_day,
+    get_current_enterprise_password,
+)
 
 
 def test_auth_schema_migration_is_idempotent(tmp_path, monkeypatch):
@@ -208,6 +212,39 @@ def test_enterprise_password_is_deterministic_and_switches_at_four():
     assert before == get_current_enterprise_password(same_password_day)
     assert before != get_current_enterprise_password(at_boundary)
     assert before.isdigit() and len(before) == 8
+
+
+def test_enterprise_password_switches_at_utc_eight_pm_not_utc_four_am():
+    before_boundary = datetime(2026, 8, 23, 19, 59, 59, tzinfo=timezone.utc)
+    at_boundary = datetime(2026, 8, 23, 20, 0, 0, tzinfo=timezone.utc)
+    before_local_noon = datetime(2026, 8, 23, 3, 59, 59, tzinfo=timezone.utc)
+    at_local_noon = datetime(2026, 8, 23, 4, 0, 0, tzinfo=timezone.utc)
+
+    assert get_business_day(before_boundary).isoformat() == "2026-08-23"
+    assert get_business_day(at_boundary).isoformat() == "2026-08-24"
+    assert get_current_enterprise_password(before_boundary) != (
+        get_current_enterprise_password(at_boundary)
+    )
+    assert get_current_enterprise_password(before_local_noon) == (
+        get_current_enterprise_password(at_local_noon)
+    )
+    assert at_boundary.astimezone(BUSINESS_TIMEZONE).hour == 4
+
+
+def test_default_business_clock_requests_explicit_utc_eight(monkeypatch):
+    requested_timezones = []
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            requested_timezones.append(tz)
+            current_utc = cls(2026, 8, 23, 20, 0, 0, tzinfo=timezone.utc)
+            return current_utc.astimezone(tz) if tz is not None else current_utc
+
+    monkeypatch.setattr(enterprise_password, "datetime", FixedDateTime)
+
+    assert get_business_day().isoformat() == "2026-08-24"
+    assert requested_timezones == [BUSINESS_TIMEZONE]
 
 
 def test_enterprise_password_preserves_leading_zero():

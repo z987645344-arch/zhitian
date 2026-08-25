@@ -134,7 +134,7 @@ def _send_payload(email, purpose="register", enterprise_pass=None):
 
 
 def _sent_today():
-    start, end = enterprise_password.get_business_day_range()
+    start, end = enterprise_password.get_business_day_storage_range()
     return auth.count_verification_codes_in_range(start.isoformat(), end.isoformat())
 
 

@@ -171,9 +171,25 @@ SCHEDULED_BACKUP_ENABLED = (
 SCHEDULED_BACKUP_PATH = os.getenv(
     "SCHEDULED_BACKUP_PATH", os.path.join(BASE_DIR, "backups", "scheduled")
 )
-SCHEDULED_BACKUP_INTERVAL_SECONDS = max(
-    1, int(os.getenv("SCHEDULED_BACKUP_INTERVAL_SECONDS", "86400"))
-)
+SCHEDULED_BACKUP_LOCAL_TIME = os.getenv(
+    "SCHEDULED_BACKUP_LOCAL_TIME", "00:00"
+).strip()
+_scheduled_backup_time_parts = SCHEDULED_BACKUP_LOCAL_TIME.split(":")
+if (
+    len(_scheduled_backup_time_parts) != 2
+    or any(not part.isdigit() for part in _scheduled_backup_time_parts)
+    or len(_scheduled_backup_time_parts[0]) != 2
+    or len(_scheduled_backup_time_parts[1]) != 2
+):
+    raise RuntimeError("SCHEDULED_BACKUP_LOCAL_TIME must use HH:MM format")
+SCHEDULED_BACKUP_LOCAL_HOUR = int(_scheduled_backup_time_parts[0])
+SCHEDULED_BACKUP_LOCAL_MINUTE = int(_scheduled_backup_time_parts[1])
+if (
+    not 0 <= SCHEDULED_BACKUP_LOCAL_HOUR <= 23
+    or not 0 <= SCHEDULED_BACKUP_LOCAL_MINUTE <= 59
+):
+    raise RuntimeError("SCHEDULED_BACKUP_LOCAL_TIME must be a valid local time")
+del _scheduled_backup_time_parts
 SCHEDULED_BACKUP_RETENTION = max(
     1, int(os.getenv("SCHEDULED_BACKUP_RETENTION", "3"))
 )

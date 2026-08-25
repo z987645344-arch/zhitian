@@ -32,33 +32,47 @@ def test_business_day_range_reuses_four_am_boundary():
     assert enterprise_password.get_business_day(after_dawn).isoformat() == "2026-07-25"
 
     start, end = enterprise_password.get_business_day_range(before_dawn)
-    assert start == datetime(2026, 7, 24, 4, 0, 0)
-    assert end == datetime(2026, 7, 25, 4, 0, 0)
+    assert start == datetime(
+        2026, 7, 24, 4, 0, 0, tzinfo=enterprise_password.BUSINESS_TIMEZONE
+    )
+    assert end == datetime(
+        2026, 7, 25, 4, 0, 0, tzinfo=enterprise_password.BUSINESS_TIMEZONE
+    )
 
     start, end = enterprise_password.get_business_day_range(after_dawn)
-    assert start == datetime(2026, 7, 25, 4, 0, 0)
-    assert end == datetime(2026, 7, 26, 4, 0, 0)
+    assert start == datetime(
+        2026, 7, 25, 4, 0, 0, tzinfo=enterprise_password.BUSINESS_TIMEZONE
+    )
+    assert end == datetime(
+        2026, 7, 26, 4, 0, 0, tzinfo=enterprise_password.BUSINESS_TIMEZONE
+    )
+
+    utc_start, utc_end = enterprise_password.get_business_day_storage_range(
+        after_dawn
+    )
+    assert utc_start == datetime(2026, 7, 24, 20, 0, 0)
+    assert utc_end == datetime(2026, 7, 25, 20, 0, 0)
 
 
 def test_count_excludes_records_outside_business_day_window():
     now = datetime(2026, 7, 25, 10, 0, 0)
-    start, end = enterprise_password.get_business_day_range(now)
+    start, end = enterprise_password.get_business_day_storage_range(now)
 
-    _insert_code(datetime(2026, 7, 25, 3, 59, 59))   # 属于前一个业务日
-    _insert_code(datetime(2026, 7, 25, 4, 0, 0))     # 窗口起点，含
-    _insert_code(datetime(2026, 7, 25, 23, 59, 59))  # 当日深夜，含
-    _insert_code(datetime(2026, 7, 26, 3, 59, 59))   # 次日凌晨仍属当前业务日，含
-    _insert_code(datetime(2026, 7, 26, 4, 0, 0))     # 窗口止点，不含
+    _insert_code(datetime(2026, 7, 24, 19, 59, 59))  # 本地03:59:59，窗口外
+    _insert_code(datetime(2026, 7, 24, 20, 0, 0))    # 本地04:00，窗口起点
+    _insert_code(datetime(2026, 7, 25, 15, 59, 59))  # 本地23:59:59，窗口内
+    _insert_code(datetime(2026, 7, 25, 19, 59, 59))  # 次日本地03:59:59，窗口内
+    _insert_code(datetime(2026, 7, 25, 20, 0, 0))    # 次日本地04:00，窗口止点
 
     assert auth.count_verification_codes_in_range(start.isoformat(), end.isoformat()) == 3
 
 
 def test_count_includes_all_purposes():
     now = datetime(2026, 7, 25, 12, 0, 0)
-    start, end = enterprise_password.get_business_day_range(now)
+    start, end = enterprise_password.get_business_day_storage_range(now)
 
-    _insert_code(datetime(2026, 7, 25, 9, 0, 0), purpose="register")
-    _insert_code(datetime(2026, 7, 25, 9, 30, 0), purpose="reset_password")
+    _insert_code(datetime(2026, 7, 25, 1, 0, 0), purpose="register")
+    _insert_code(datetime(2026, 7, 25, 1, 30, 0), purpose="reset_password")
 
     assert auth.count_verification_codes_in_range(start.isoformat(), end.isoformat()) == 2
 

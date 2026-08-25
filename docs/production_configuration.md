@@ -52,6 +52,6 @@
 - 恢复：`python scripts/restore_data.py <备份包路径> --confirm-service-stopped`
 - 两个命令都必须先停止后端服务或暂停所有写入。SQLite使用官方热备API，但项目Chroma锁只在单进程内有效，不能用它跨进程暂停仍在运行的服务。
 - 恢复命令会先用同一个`BACKUP_ENCRYPTION_KEY`自动备份当前数据，再验证目标包并切换数据。目标包认证或manifest校验失败时不进入恢复；恢复后检查出现差异时保留已恢复数据和安全备份，等待人工判断。
-- 默认备份目录为`backups/`，已由`.gitignore`和`.dockerignore`排除；默认保留最近7份，命令行可用`--retention`调整，但任何配置都至少保留1份。
-- Compose显式开启进程内加密备份：`SCHEDULED_BACKUP_PATH=/app/backups`、间隔86400秒、保留3份（用户决定与另一项目保持一致），落在独立具名卷；直接运行main.py与测试环境默认关闭。调度层调用同一个`backup_data.create_backup()`，因此同样要求`BACKUP_ENCRYPTION_KEY`，产物可直接由`restore_data.py`读取。
+- 默认备份目录为`backups/`，已由`.gitignore`和`.dockerignore`排除；默认保留最近3份，命令行可用`--retention`调整，但任何配置都至少保留1份。
+- Compose显式开启进程内加密备份：`SCHEDULED_BACKUP_PATH=/app/backups`、`SCHEDULED_BACKUP_LOCAL_TIME=00:00`、保留3份（用户决定与另一项目保持一致），落在独立具名卷；时刻由代码显式按UTC+8解释，不依赖容器TZ。空目录启动会立即产出第一份，此后同一UTC+8日内重启不重复、每日本地00:00触发下一份。直接运行main.py与测试环境默认关闭。调度层调用同一个`backup_data.create_backup()`，因此同样要求`BACKUP_ENCRYPTION_KEY`，产物可直接由`restore_data.py`读取。
 - 当前尚未提供自动异地复制或服务器真实破坏恢复演练；这些仍属于Phase B服务器工作。

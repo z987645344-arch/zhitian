@@ -2,13 +2,13 @@
 """既有加密备份能力的进程内薄调度层。
 
 归档、SQLite在线备份、manifest、AES-256-GCM加密和轮转全部由
-scripts.backup_data负责；本模块只处理执行间隔、跨重启避免重复、进程内
+scripts.backup_data负责；本模块只处理固定时刻触发、跨重启避免重复、进程内
 不重叠和故障隔离。
 """
 
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +22,9 @@ logger = get_logger("backup_scheduler")
 _backup_run_lock = threading.Lock()
 SCHEDULED_ARCHIVE_PREFIX = "zhitian-scheduled-backup"
 SCHEDULED_BACKUP_GLOB = SCHEDULED_ARCHIVE_PREFIX + "-*.ztbackup"
+# 容器未设置TZ且实际使用UTC。备份时刻是UTC+8的本地日历语义，必须显式
+# 指定固定时区；若依赖datetime.now()或系统零点，会错误落在本地08:00。
+BACKUP_TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
 
 
 def _latest_archive(backup_dir: Path) -> Optional[Path]:
@@ -33,16 +36,58 @@ def _latest_archive(backup_dir: Path) -> Optional[Path]:
 
 def _seconds_until_next_backup(
     backup_dir: Path,
-    interval_seconds: int,
+    trigger_hour: int,
+    trigger_minute: int,
     now: Optional[datetime] = None,
 ) -> float:
-    """按最新归档mtime跨容器重启续算间隔，避免重启即重复备份。"""
+    """按UTC+8日历日判断是否已备份；空目录或错过当日时刻则立即到期。"""
     latest = _latest_archive(backup_dir)
     if latest is None:
         return 0.0
-    current = (now or datetime.now(timezone.utc)).timestamp()
-    elapsed = max(0.0, current - latest.stat().st_mtime)
-    return max(0.0, float(max(1, interval_seconds)) - elapsed)
+    current = now or datetime.now(BACKUP_TIMEZONE)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("备份调度计算必须传入带时区的时间")
+    current_local = current.astimezone(BACKUP_TIMEZONE)
+    today_trigger = current_local.replace(
+        hour=trigger_hour,
+        minute=trigger_minute,
+        second=0,
+        microsecond=0,
+    )
+    if current_local < today_trigger:
+        active_boundary = today_trigger - timedelta(days=1)
+        next_trigger = today_trigger
+    else:
+        active_boundary = today_trigger
+        next_trigger = today_trigger + timedelta(days=1)
+    latest_local = datetime.fromtimestamp(
+        latest.stat().st_mtime,
+        tz=BACKUP_TIMEZONE,
+    )
+    if latest_local < active_boundary:
+        return 0.0
+    return max(0.0, (next_trigger - current_local).total_seconds())
+
+
+def _seconds_until_next_trigger(
+    trigger_hour: int,
+    trigger_minute: int,
+    now: Optional[datetime] = None,
+) -> float:
+    """返回距离下一个UTC+8固定触发时刻的秒数。"""
+    current = now or datetime.now(BACKUP_TIMEZONE)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("备份调度计算必须传入带时区的时间")
+    current_local = current.astimezone(BACKUP_TIMEZONE)
+    next_trigger = current_local.replace(
+        hour=trigger_hour,
+        minute=trigger_minute,
+        second=0,
+        microsecond=0,
+    )
+    if next_trigger <= current_local:
+        next_trigger += timedelta(days=1)
+    return max(0.0, (next_trigger - current_local).total_seconds())
 
 
 def run_backup_once_safely() -> bool:
@@ -89,10 +134,11 @@ def run_backup_once_safely() -> bool:
 
 
 class BackupScheduler:
-    """无需外部调度库的单线程间隔调度器。"""
+    """无需外部调度库的单线程固定时钟调度器。"""
 
-    def __init__(self, interval_seconds: int):
-        self._interval_seconds = max(1, int(interval_seconds))
+    def __init__(self, trigger_hour: int, trigger_minute: int):
+        self._trigger_hour = int(trigger_hour)
+        self._trigger_minute = int(trigger_minute)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -110,22 +156,35 @@ class BackupScheduler:
             logger.warning("备份任务仍在收尾，应用关闭不继续等待")
 
     def _run(self) -> None:
-        try:
-            initial_delay = _seconds_until_next_backup(
-                Path(config.SCHEDULED_BACKUP_PATH), self._interval_seconds
-            )
-        except Exception as exc:
-            logger.warning(
-                "读取最近备份时间失败，本轮立即尝试：error_type=%s",
-                type(exc).__name__,
-            )
-            initial_delay = 0.0
-        if initial_delay and self._stop_event.wait(initial_delay):
-            return
         while not self._stop_event.is_set():
+            try:
+                delay = _seconds_until_next_backup(
+                    Path(config.SCHEDULED_BACKUP_PATH),
+                    self._trigger_hour,
+                    self._trigger_minute,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "读取最近备份时间失败，本轮立即尝试：error_type=%s",
+                    type(exc).__name__,
+                )
+                delay = 0.0
+            if delay and self._stop_event.wait(delay):
+                return
             run_backup_once_safely()
-            if self._stop_event.wait(self._interval_seconds):
-                break
+            try:
+                next_delay = _seconds_until_next_trigger(
+                    self._trigger_hour,
+                    self._trigger_minute,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "计算下次备份时刻失败，24小时后重试：error_type=%s",
+                    type(exc).__name__,
+                )
+                next_delay = 24 * 60 * 60
+            if self._stop_event.wait(max(1.0, next_delay)):
+                return
 
 
 _scheduler_lock = threading.Lock()
@@ -139,10 +198,17 @@ def start_scheduler() -> None:
     with _scheduler_lock:
         if _scheduler is not None:
             return
-        scheduler = BackupScheduler(config.SCHEDULED_BACKUP_INTERVAL_SECONDS)
+        scheduler = BackupScheduler(
+            config.SCHEDULED_BACKUP_LOCAL_HOUR,
+            config.SCHEDULED_BACKUP_LOCAL_MINUTE,
+        )
         scheduler.start()
         _scheduler = scheduler
-    logger.info("进程内加密备份调度已启动：retention=%s", config.SCHEDULED_BACKUP_RETENTION)
+    logger.info(
+        "进程内加密备份调度已启动：local_time=%s timezone=UTC+8 retention=%s",
+        config.SCHEDULED_BACKUP_LOCAL_TIME,
+        config.SCHEDULED_BACKUP_RETENTION,
+    )
 
 
 def stop_scheduler() -> None:

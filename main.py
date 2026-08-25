@@ -733,11 +733,9 @@ def _ensure_session_owner(session_id: str, current_user: dict) -> None:
 
 
 def _current_enterprise_password_response() -> dict:
-    """返回当前密码与下一次凌晨4点刷新时间，不持久化也不写审计日志。"""
-    now = datetime.now()
-    next_refresh = now.replace(hour=4, minute=0, second=0, microsecond=0)
-    if next_refresh <= now:
-        next_refresh += timedelta(days=1)
+    """返回当前密码与下一次UTC+8凌晨4点刷新时间。"""
+    now = enterprise_password.get_business_now()
+    next_refresh = enterprise_password.get_next_business_day_start(now)
     return {
         "password": enterprise_password.get_current_enterprise_password(now),
         "next_refresh_at": next_refresh.isoformat(),
@@ -1088,8 +1086,8 @@ async def developer_email_usage_stats(
     current_user: dict = Depends(require_developer),
 ):
     """当前业务日邮件发送量；业务日边界复用enterprise_password统一口径。"""
-    now = datetime.now()
-    start, end = enterprise_password.get_business_day_range(now)
+    now = enterprise_password.get_business_now()
+    start, end = enterprise_password.get_business_day_storage_range(now)
     return {
         "used_today": auth.count_verification_codes_in_range(
             start.isoformat(), end.isoformat()

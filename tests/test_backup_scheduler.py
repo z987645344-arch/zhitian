@@ -7,7 +7,7 @@ import os
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import chromadb
@@ -111,18 +111,87 @@ def test_scheduler_retention_does_not_delete_manual_backup(tmp_path, monkeypatch
     assert manual.archive_path.is_file()
 
 
-def test_recent_archive_delays_restart_duplicate(tmp_path):
+def test_empty_backup_directory_is_due_immediately(tmp_path):
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+
+    assert backup_scheduler._seconds_until_next_backup(
+        backup_dir,
+        0,
+        0,
+        now=datetime(2026, 8, 23, 8, tzinfo=timezone.utc),
+    ) == 0.0
+
+
+def test_next_local_midnight_is_utc_16_not_utc_midnight(tmp_path):
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir()
     archive = backup_dir / "zhitian-scheduled-backup-recent.ztbackup"
     archive.write_bytes(b"placeholder")
-    now = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
-    timestamp = (now - timedelta(hours=1)).timestamp()
-    os.utime(archive, (timestamp, timestamp))
+    # 2026-08-22 16:01 UTC == 2026-08-23 00:01 UTC+8，表示本地当天已备份。
+    latest = datetime(2026, 8, 22, 16, 1, tzinfo=timezone.utc)
+    os.utime(archive, (latest.timestamp(), latest.timestamp()))
 
     assert backup_scheduler._seconds_until_next_backup(
-        backup_dir, 86400, now=now
-    ) == 23 * 60 * 60
+        backup_dir,
+        0,
+        0,
+        now=datetime(2026, 8, 23, 15, 59, 59, tzinfo=timezone.utc),
+    ) == 1.0
+    assert backup_scheduler._seconds_until_next_trigger(
+        0,
+        0,
+        now=datetime(2026, 8, 23, 15, 59, 59, tzinfo=timezone.utc),
+    ) == 1.0
+    assert backup_scheduler._seconds_until_next_backup(
+        backup_dir,
+        0,
+        0,
+        now=datetime(2026, 8, 23, 16, 0, tzinfo=timezone.utc),
+    ) == 0.0
+    assert backup_scheduler._seconds_until_next_trigger(
+        0,
+        0,
+        now=datetime(2026, 8, 23, 16, 0, tzinfo=timezone.utc),
+    ) == 24 * 60 * 60
+
+
+def test_restarts_same_local_day_do_not_duplicate_and_next_day_runs(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+    backup_dir = tmp_path / "backups"
+    _prepare_data_tree(data_dir)
+    monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", _key())
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(backup_dir))
+    monkeypatch.setattr(config, "SCHEDULED_BACKUP_RETENTION", 3)
+
+    def run_if_due(now: datetime) -> None:
+        if backup_scheduler._seconds_until_next_backup(
+            backup_dir, 0, 0, now=now
+        ) == 0.0:
+            assert backup_scheduler.run_backup_once_safely() is True
+            latest = backup_scheduler._latest_archive(backup_dir)
+            assert latest is not None
+            os.utime(latest, (now.timestamp(), now.timestamp()))
+
+    first_start = datetime(2026, 8, 23, 3, tzinfo=timezone.utc)
+    run_if_due(first_start)
+    assert len(list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))) == 1
+
+    # 同一个UTC+8日历日内模拟三次容器重启，不能重复生成归档。
+    for restart_time in (
+        datetime(2026, 8, 23, 4, tzinfo=timezone.utc),
+        datetime(2026, 8, 23, 8, tzinfo=timezone.utc),
+        datetime(2026, 8, 23, 15, 59, 59, tzinfo=timezone.utc),
+    ):
+        run_if_due(restart_time)
+    assert len(list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))) == 1
+
+    # UTC 16:00正是UTC+8次日00:00，此时应生成第二份。
+    run_if_due(datetime(2026, 8, 23, 16, tzinfo=timezone.utc))
+    assert len(list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))) == 2
 
 
 def test_overlapping_backup_is_skipped(monkeypatch):
@@ -158,7 +227,8 @@ def test_missing_key_does_not_block_lifespan_or_health(
     monkeypatch.delenv("BACKUP_ENCRYPTION_KEY", raising=False)
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_ENABLED", True)
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(tmp_path / "backups"))
-    monkeypatch.setattr(config, "SCHEDULED_BACKUP_INTERVAL_SECONDS", 3600)
+    monkeypatch.setattr(config, "SCHEDULED_BACKUP_LOCAL_HOUR", 0)
+    monkeypatch.setattr(config, "SCHEDULED_BACKUP_LOCAL_MINUTE", 0)
     monkeypatch.setattr(
         main.db_schema_version, "initialize_and_validate_databases", lambda *args: None
     )

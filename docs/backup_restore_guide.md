@@ -2,12 +2,12 @@
 
 当前只有一套备份格式与恢复路径：`scripts/backup_data.py`生成AES-256-GCM加密的`.ztbackup`，`scripts/restore_data.py`读取并恢复同一格式。触发方式分为两种，但不会再各自实现快照、manifest或轮转：
 
-- **进程内定时触发**：`layers/backup_scheduler.py`随应用启动，只负责执行间隔、避免重叠和异常隔离，最终仍调用`backup_data.create_backup()`。调度归档使用`zhitian-scheduled-backup-`前缀，手工归档继续使用`zhitian-backup-`前缀；同目录下两类归档各自轮转，互不删除。
+- **进程内定时触发**：`layers/backup_scheduler.py`随应用启动，只负责固定时刻触发、避免重叠和异常隔离，最终仍调用`backup_data.create_backup()`。调度归档使用`zhitian-scheduled-backup-`前缀，手工归档继续使用`zhitian-backup-`前缀；同目录下两类归档各自轮转，互不删除。
 - **人工触发与恢复**：运维人员停服务后显式运行`backup_data.py`或`restore_data.py`，用于升级、迁移、异地导出和破坏恢复。
 
 ## A. 进程内每日加密备份
 
-- Compose显式设置`SCHEDULED_BACKUP_ENABLED=true`，容器启动后若没有归档会立即在后台创建；若上一份不足24小时，重启容器只等待剩余间隔。备份失败只记日志，不阻塞应用启动或请求；缺少`BACKUP_ENCRYPTION_KEY`时明确告警并跳过本轮。
+- Compose显式设置`SCHEDULED_BACKUP_ENABLED=true`与`SCHEDULED_BACKUP_LOCAL_TIME=00:00`。触发时刻按代码内显式UTC+8解释，不依赖容器的UTC系统时区；默认本地00:00等于前一UTC日16:00。容器启动时若没有调度归档会立即在后台创建，避免新部署出现最长24小时空窗；已有当日归档时，同一UTC+8日内重复重启不会再生成，错过当日时刻且没有当日归档时则立即补跑。备份失败只记日志，不阻塞应用启动或请求；缺少`BACKUP_ENCRYPTION_KEY`时明确告警并跳过本轮。
 - 归档、SQLite在线备份、`user_files/`、Chroma、manifest、AES-256-GCM加密和保留轮转全部复用既有`backup_data.py`；调度层不再维护第二套文件格式。`data/tmp_uploads/`不在既有备份范围内。
 - 进程内调用继续复用`CHROMA_LOCK`，并额外持有文件存储锁，使`files.db`与随后复制的`user_files/`不夹入并发写入。定时与手工备份默认均保留3份（用户决定统一为一个策略数字，并与另一项目保持一致），至少保留1份；两者仍按各自前缀独立轮转、互不删除。定时值可由`SCHEDULED_BACKUP_RETENTION`调整，手工命令也可显式传入`--retention N`。
 - 归档写入独立具名卷`zhitian-mvp-backups`的`/app/backups`。`docker compose down`保留业务卷和备份卷；`down -v`会同时删除两者，不能作为日常操作。

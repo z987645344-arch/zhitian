@@ -1,19 +1,35 @@
 # -*- coding: utf-8 -*-
-"""企业密码推导：按凌晨 4 点边界确定密码日，不存储生成结果。"""
+"""企业密码推导：按UTC+8凌晨4点边界确定密码日，不存储生成结果。"""
 
 import hashlib
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, Tuple
 
 import config
 from layers import auth
 
 BUSINESS_DAY_START_HOUR = 4
+BUSINESS_TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
+
+
+def get_business_now() -> datetime:
+    """返回显式UTC+8当前时间，不依赖宿主机或容器默认时区。"""
+    return datetime.now(BUSINESS_TIMEZONE)
+
+
+def _as_business_time(now: Optional[datetime]) -> datetime:
+    if now is None:
+        return get_business_now()
+    if now.tzinfo is None:
+        # 保留既有测试和内部显式传参契约：naive入参代表业务本地时间，
+        # 但无参生产路径始终使用上面的显式UTC+8时区。
+        return now.replace(tzinfo=BUSINESS_TIMEZONE)
+    return now.astimezone(BUSINESS_TIMEZONE)
 
 
 def get_business_day(now: Optional[datetime] = None) -> date:
-    """按凌晨4点边界返回当前业务日，供密码和每日快照复用。"""
-    current = now or datetime.now()
+    """按UTC+8凌晨4点边界返回当前业务日，供密码和每日快照复用。"""
+    current = _as_business_time(now)
     business_day = current.date()
     if current.hour < BUSINESS_DAY_START_HOUR:
         business_day -= timedelta(days=1)
@@ -23,14 +39,41 @@ def get_business_day(now: Optional[datetime] = None) -> date:
 def get_business_day_range(
     now: Optional[datetime] = None,
 ) -> Tuple[datetime, datetime]:
-    """返回当前业务日的[起, 止)时间窗：业务日当天04:00到次日04:00。
+    """返回带UTC+8时区的业务日[起, 止)时间窗。
 
     复用 get_business_day() 的边界判断，避免各处重复实现跨天算法。
     """
     start = datetime.combine(
-        get_business_day(now), time(hour=BUSINESS_DAY_START_HOUR)
+        get_business_day(now),
+        time(hour=BUSINESS_DAY_START_HOUR),
+        tzinfo=BUSINESS_TIMEZONE,
     )
     return start, start + timedelta(days=1)
+
+
+def get_business_day_storage_range(
+    now: Optional[datetime] = None,
+) -> Tuple[datetime, datetime]:
+    """返回与既有SQLite UTC-naive时间戳可比较的业务日窗口。"""
+    start, end = get_business_day_range(now)
+    return (
+        start.astimezone(timezone.utc).replace(tzinfo=None),
+        end.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
+def get_next_business_day_start(now: Optional[datetime] = None) -> datetime:
+    """返回下一次UTC+8凌晨4点边界，结果保留明确时区。"""
+    current = _as_business_time(now)
+    next_start = current.replace(
+        hour=BUSINESS_DAY_START_HOUR,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if next_start <= current:
+        next_start += timedelta(days=1)
+    return next_start
 
 
 def init_db() -> None:

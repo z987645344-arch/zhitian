@@ -49,7 +49,11 @@ def test_enterprise_password_endpoints_are_role_isolated(client, auth_headers):
     assert developer_payload["password"].isdigit()
     assert len(developer_payload["password"]) == 8
     assert developer_payload["next_refresh_at"] == reviewer_payload["next_refresh_at"]
-    assert datetime.fromisoformat(developer_payload["next_refresh_at"]).hour == 4
+    next_refresh = datetime.fromisoformat(developer_payload["next_refresh_at"])
+    assert next_refresh.hour == 4
+    assert next_refresh.utcoffset() == (
+        enterprise_password.BUSINESS_TIMEZONE.utcoffset(None)
+    )
 
     for headers in (employee_headers, customer_headers):
         assert client.get("/developer/enterprise-password", headers=headers).status_code == 403

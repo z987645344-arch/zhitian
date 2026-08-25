@@ -1050,7 +1050,7 @@ def count_verification_codes_in_range(start_iso: str, end_iso: str) -> int:
 
     每条记录代表一次真实触发过的发送动作（发送失败不落库），
     因此无论后续是否被使用或过期都计入当日发送量。时间窗由调用方按
-    enterprise_password.get_business_day_range() 提供，此处不重复实现日期边界。
+    enterprise_password.get_business_day_storage_range() 提供，此处不重复实现日期边界。
     """
     with _connect() as conn:
         row = conn.execute(
