@@ -604,8 +604,22 @@ def _normalize_verification_email(email: str) -> str:
     return normalized
 
 
-def _now_iso(now: Optional[datetime] = None) -> str:
-    return (now or datetime.now()).isoformat()
+def _verification_utc_naive(now: Optional[datetime] = None) -> datetime:
+    """统一验证码表的时间轴为UTC-naive。
+
+    SQLite中的`email_verification_codes.created_at/expires_at`历史契约是
+    UTC-naive。默认时钟必须显式取UTC，不能依赖进程或容器默认时区；显式
+    传入的naive值视为调用方已经按该契约提供，aware值则先转换到UTC。
+    """
+    if now is None:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+    if now.tzinfo is not None:
+        return now.astimezone(timezone.utc).replace(tzinfo=None)
+    return now
+
+
+def _verification_now_iso(now: Optional[datetime] = None) -> str:
+    return _verification_utc_naive(now).isoformat()
 
 
 def get_verification_send_limit(
@@ -619,7 +633,7 @@ def get_verification_send_limit(
     normalized_email = _normalize_verification_email(email)
     normalized_purpose = _validate_verification_purpose(purpose)
     rule = VERIFICATION_SEND_RULES[normalized_purpose]
-    current = now or datetime.now()
+    current = _verification_utc_naive(now)
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -631,7 +645,11 @@ def get_verification_send_limit(
     timestamps = []
     for row in rows:
         try:
-            timestamps.append(datetime.fromisoformat(str(row["created_at"])))
+            timestamps.append(
+                _verification_utc_naive(
+                    datetime.fromisoformat(str(row["created_at"]))
+                )
+            )
         except ValueError:
             continue
     if timestamps and current - timestamps[0] < timedelta(
@@ -653,7 +671,7 @@ def create_verification_code(
     value = (code or "").strip()
     if not value.isdigit() or len(value) != 6:
         raise ValueError("验证码格式无效")
-    current = now or datetime.now()
+    current = _verification_utc_naive(now)
     code_hash = bcrypt.hashpw(value.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     with transaction(USERS_DB_PATH) as conn:
         conn.execute(
@@ -676,7 +694,7 @@ def verify_and_hold_code(email: str, purpose: str, code: str) -> bool:
     """验证最新可用验证码；成功不消费，供后续业务事务成功时再显式消费。"""
     normalized_email = _normalize_verification_email(email)
     normalized_purpose = _validate_verification_purpose(purpose)
-    now = _now_iso()
+    now = _verification_now_iso()
     with transaction(USERS_DB_PATH) as conn:
         row = conn.execute(
             """
@@ -722,7 +740,7 @@ def _mark_code_used_in_connection(
         (
             normalized_email,
             normalized_purpose,
-            _now_iso(),
+            _verification_now_iso(),
             VERIFICATION_CODE_MAX_ATTEMPTS,
         ),
     )
@@ -1052,13 +1070,19 @@ def count_verification_codes_in_range(start_iso: str, end_iso: str) -> int:
     因此无论后续是否被使用或过期都计入当日发送量。时间窗由调用方按
     enterprise_password.get_business_day_storage_range() 提供，此处不重复实现日期边界。
     """
+    start = _verification_utc_naive(
+        datetime.fromisoformat(start_iso)
+    ).isoformat()
+    end = _verification_utc_naive(
+        datetime.fromisoformat(end_iso)
+    ).isoformat()
     with _connect() as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) FROM email_verification_codes
             WHERE created_at >= ? AND created_at < ?
             """,
-            (start_iso, end_iso),
+            (start, end),
         ).fetchone()
     return int(row[0])
 

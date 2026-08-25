@@ -36,7 +36,7 @@ def test_verification_code_expires_and_locks_after_five_failures():
         expired_email,
         "register",
         "123456",
-        now=datetime.now() - timedelta(minutes=6),
+        now=auth._verification_utc_naive() - timedelta(minutes=6),
     )
     assert auth.verify_and_hold_code(expired_email, "register", "123456") is False
 
@@ -47,7 +47,7 @@ def test_verification_code_expires_and_locks_after_five_failures():
 
 
 def test_enterprise_send_limits_are_180_seconds_and_ten_per_day():
-    now = datetime.now()
+    now = datetime(2026, 8, 25, 12, 0)
     email = "limit@example.test"
     assert auth.get_verification_send_limit(email, "register", now) is None
     auth.create_verification_code(email, "register", "123456", now)
@@ -72,7 +72,7 @@ def test_enterprise_send_limits_are_180_seconds_and_ten_per_day():
 
 
 def test_customer_send_limits_are_180_seconds_and_five_per_day():
-    now = datetime.now()
+    now = datetime(2026, 8, 25, 12, 0)
     email = "customer_limit@example.test"
     purpose = auth.CUSTOMER_REGISTER_PURPOSE
     auth.create_verification_code(email, purpose, "123456", now)
@@ -94,7 +94,7 @@ def test_customer_send_limits_are_180_seconds_and_five_per_day():
 
 def test_customer_and_enterprise_send_counts_do_not_interfere():
     """两类用途按purpose分组统计，配额互不占用。"""
-    now = datetime.now()
+    now = datetime(2026, 8, 25, 12, 0)
     email = "shared@example.test"
     # 先把customer用途打满5次
     for index in range(5):
@@ -417,7 +417,7 @@ def test_customer_register_expired_code_is_rejected(client):
         email,
         auth.CUSTOMER_REGISTER_PURPOSE,
         "123456",
-        now=datetime.now() - timedelta(minutes=6),
+        now=auth._verification_utc_naive() - timedelta(minutes=6),
     )
     response = client.post(
         "/auth/register",

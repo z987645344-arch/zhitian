@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """邮箱发送量监控：业务日窗口复用、purpose全计入、权限隔离。"""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from layers import auth, enterprise_password
 
@@ -97,8 +97,32 @@ def test_email_usage_endpoint_is_developer_only(client, auth_headers):
     ).status_code == 403
 
 
-def test_email_usage_endpoint_reflects_new_sends(client, auth_headers):
+def test_email_usage_endpoint_reflects_new_sends(
+    client, auth_headers, monkeypatch
+):
     developer_headers, _ = auth_headers("developer")
+    # 固定在已知旧失败点UTC+8 20:29：旧实现把created_at写成20:29，
+    # 但统计窗口末端是UTC-naive 20:00，新增发送会错误地统计为0。
+    local_now = datetime(
+        2026,
+        8,
+        25,
+        20,
+        29,
+        tzinfo=enterprise_password.BUSINESS_TIMEZONE,
+    )
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return local_now.replace(tzinfo=None)
+            return local_now.astimezone(tz)
+
+    monkeypatch.setattr(auth, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        enterprise_password, "get_business_now", lambda: local_now
+    )
     before = client.get(
         "/developer/email-usage-stats", headers=developer_headers
     ).json()["used_today"]
@@ -110,3 +134,27 @@ def test_email_usage_endpoint_reflects_new_sends(client, auth_headers):
         "/developer/email-usage-stats", headers=developer_headers
     ).json()["used_today"]
     assert after == before + 2
+
+    with auth._connect() as conn:
+        rows = conn.execute(
+            "SELECT created_at, expires_at FROM email_verification_codes "
+            "WHERE email IN (?, ?) ORDER BY email",
+            ("usage_a@example.test", "usage_b@example.test"),
+        ).fetchall()
+    assert [row["created_at"] for row in rows] == [
+        "2026-08-25T12:29:00",
+        "2026-08-25T12:29:00",
+    ]
+    assert [row["expires_at"] for row in rows] == [
+        "2026-08-25T12:34:00",
+        "2026-08-25T12:34:00",
+    ]
+    assert auth.get_verification_send_limit(
+        "usage_a@example.test", "register"
+    ) == "cooldown"
+    assert auth.verify_and_hold_code(
+        "usage_a@example.test", "register", "123456"
+    ) is True
+    assert auth._verification_utc_naive(
+        datetime(2026, 8, 25, 12, 0, tzinfo=timezone.utc)
+    ) == datetime(2026, 8, 25, 12, 0)

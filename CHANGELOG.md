@@ -1578,3 +1578,19 @@
 **生产不受影响**，同一套算术即可推出：生产容器为UTC，容器内`datetime.now()`得到的naive值就是UTC值（指挥师实测12:30），稳落在UTC-naive窗口内。
 
 **本轮不打标**，待这两个时区依赖的用例修复后合并打标。修复方向属另一轮，本轮不动这两个文件。
+
+## 2026-08-25 验证码表时间轴统一为显式UTC-naive（实施方现场记录）
+
+- **根因与范围**：`email_verification_codes.created_at/expires_at`原来由裸`datetime.now()`写入，冷却与有效期比较也跟随进程时区；开发者邮件用量窗口则已经是由UTC+8凌晨4点换算出的UTC-naive。两端只在容器恰好运行UTC时一致，在UTC+8机器本地20:00后新增记录会落到当日窗口末端之外。本轮只统一验证码表，不设置容器`TZ`、不修改其余naive时间戳，也不改变既定业务日边界。
+- **端到端UTC契约**：新增验证码专用时间归一化函数；默认显式调用`datetime.now(timezone.utc)`并去除tzinfo，aware入参先转UTC，naive入参按既有内部契约视作UTC-naive。写入的`created_at/expires_at`、180秒冷却、分purpose的24小时配额、5分钟有效期、验证码消费和业务日范围统计均复用这一口径；`count_verification_codes_in_range()`也会把aware边界归一化后再查询。生产容器既有行本来就是UTC-naive，无需迁移。
+- **已知失败点实证**：原`test_email_usage_endpoint_reflects_new_sends`固定模拟UTC+8本地`2026-08-25 20:29+08:00`，同时让裸`now()`（若误用）返回本地20:29。修复后两条记录的`created_at`精确为UTC-naive`12:29`、`expires_at`为`12:34`，开发者发送量增加2，冷却返回`cooldown`且验证码仍可验证；该用例不再依赖测试机实际钟点。冷却、每日配额、过期与消费相关时间用例也改用固定UTC-naive或专用时钟。
+- **验证**：Python 3.10 `py_compile`通过；邮件统计与验证码专项`24 passed`。本机真实时间仍处于UTC+8晚20点后的情况下，权威入口`run_tests.bat -q`为`472 passed, 5 deselected, 0 failed in 385.65s`。比指令中的471多1，是上一轮已提交的恢复前三向隔离测试进入当前基线；本轮把20:29证据并入原有用例，没有增加测试函数。
+
+### 我怎么证实的（验证存档方）
+
+- **同一时刻的对照实验，而不只是「现在能过」**：本机UTC+8，存档时本地**21:39**——正处修复前那两条必然失败的时段。先跑修复后：`2 passed`。再把`layers/auth.py`与两个测试文件退回`ee4c468`、**在同一分钟内**重跑：`2 failed`。唯一变化的变量是代码本身，排除了「碰巧换了个时段所以变绿」。随后恢复修复版，工作区回到5处改动。
+- **归一化确实不看进程时区**：`_verification_utc_naive()`在`now is None`时取`datetime.now(timezone.utc).replace(tzinfo=None)`，是显式UTC而非本地时钟；传入aware值先`astimezone(utc)`再去tzinfo，传入naive值则视为调用方已按契约提供。
+- **生产存量无断裂（算术可证）**：本机实测旧写法`datetime.now()`得`21:40:21`、新写法得`13:40:21`，差值恰为本机UTC偏移8小时。因此在UTC容器中偏移为0、新旧写法取值完全相同，既有行不需要迁移或回填。
+- **存档前例行核对（手册九.1）**：IPv4字面量0处、密钥凭据形态0处、服务器绝对路径0处、二进制0处、未跟踪文件0个；`zhitian-deploy`、`zhitian_admin`、`zhitian_app`均0处改动。本轮只动`zhitian`。
+- **未重复的部分**：权威回归`472 passed / 5 deselected / 0 failed`（指挥师在本地21:09实跑，正是修复前必红的时段）、上一轮的三方向前缀隔离实测——两项由指挥师核过，按指令不重复。
+- **一句留给后人的**：这两条用例此前**按本地钟点变色**——本地20:00前跑必绿、之后跑必红，曾导致一轮验收无法判定「是修好了还是碰上了好时候」。根因是拿本地naive的`datetime.now()`与UTC-naive的业务日窗口相比较。现在两端统一为显式UTC-naive，钟点不再影响结果。
