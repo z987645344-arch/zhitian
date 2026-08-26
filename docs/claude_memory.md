@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-25**（验证码表时间轴已统一为显式UTC-naive，UTC+8本地20点后的既有统计失败闭环）
+> **最后更新：2026-08-27**（F38已通过cryptography 50.0.1闭环；容器漏洞完成A/B/C可达性分类，门禁继续如实拦截剩余系统层记录）
 
 ---
 
@@ -18,7 +18,7 @@
 | 技术设计 | 见 docs/zhitian_structure.md |
 | 工作手册 | 见 docs/claude_skill.md |
 | 部署仓库 | D:\zhiliao\zhitian\zhitian-deploy\（私有仓库，与三个应用仓库同级） |
-| 仓库状态 | zhitian / zhitian_admin / zhitian_app 三个应用仓库已公开，zhitian-deploy保持私有。常规代码/测试流水线已建立；后端容器工作流的应用导入与`/ready`门禁通过，但漏洞策略门禁仍因F38及Debian系统层无修复版本项保持红灯，不能笼统表述为“CI均通过” |
+| 仓库状态 | zhitian / zhitian_admin / zhitian_app 三个应用仓库已公开，zhitian-deploy保持私有。常规代码/测试流水线已建立；后端容器工作流的应用导入与`/ready`门禁通过，F38已消除，但漏洞策略仍因Chroma服务端三条记录及Debian系统层HIGH/CRITICAL保持红灯，不能笼统表述为“CI均通过” |
 
 > 补充定位（2026-07-16 对话中澄清）：开发者本人计划长期自用此项目，核心诉求是“方便持续接入新工具/小能力”，类似 Codex 那种可扩展体验，不只是学习/作品集用途。这是 MCP 相关工作（版本升级、`mcp_connector.py`）优先级被提前、且放弃采用 `langchain-mcp-adapters` 改为自建通用连接层的核心原因：自建是为了不受 LangGraph 版本绑定，同时保留协议实现的可控性。
 
@@ -54,13 +54,13 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；后端当前标签为`v4.0`。恢复前安全备份三前缀隔离及验证码UTC时间轴两轮实施均完成，最新权威回归`472 passed, 5 deselected, 0 failed`。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题仍为L9、F14、F22、F24、F38、F39、F44、F48；后端容器漏洞策略门禁因F38及Debian系统层无修复版本项保持红灯，不代表应用功能回归 |
-| 上一轮完成 | 2026-08-25把`email_verification_codes.created_at/expires_at`及其冷却、24小时配额、有效期、消费和业务日统计比较统一为显式UTC-naive；固定模拟UTC+8本地20:29的原失败点，写入精确落为UTC 12:29且统计、冷却、验证均正确。邮件专项`24 passed`，权威回归`472 passed, 5 deselected` |
-| 当前等待 | 等待Claude Code验证存档；上一轮恢复前安全备份独立前缀已提交但未打标，本轮保持未提交。两轮按用户决定合并进入下一个标签，版本号与标签由指挥师审查后确定；本轮不部署 |
+| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；后端当前最新标签为`v4.1`，本轮安全依赖修复位于标签后的`master`。最新无`.env`权威回归`472 passed, 5 deselected, 0 failed`，普通CI成功；容器CI完整执行构建与扫描后被未放宽的漏洞策略门禁拦截。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题为L9、F14、F22、F24、F39、F44、F48 |
+| 上一轮完成 | 2026-08-27完成392条Trivy记录A/B/C可达性分类，并把`cryptography`从48.0.1升级到50.0.1、显式锁定兼容的`alibabacloud-tea-openapi==0.4.6`。pip-audit由6条/2包降为3条/1包；Trivy HIGH由46降至44、MEDIUM由125降至124，系统层CRITICAL/HIGH未减少。升级前生成的个人Key密文与AES-GCM备份均可由升级后代码解开；生产实物仍由有服务器权限的指挥师复核 |
+| 当前等待 | 本轮不打标、不部署。代码修复已提交推送；漏洞评估与CI扫描证据完成后等待指挥师审核生产归档/真实个人密文兼容性，并决定是否接受B/C类剩余HIGH/CRITICAL继续使容器门禁保持红灯 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档状态 | 2026-08-15完成系统性审计与交接收尾：历史架构决策和事故记录位于`docs/history/`，协作角色以`docs/claude_skill.md`为准；CHANGELOG历史中的旧工具名称不回写为当前流程 |
-| 下一步 | 当前已知待办汇总：①**Phase B正式域名接入——已确定使用`agent.zhiliaohub.com`**（与同机的知了Hub共用同一顶层域名，按子域名分流到本项目专属IP；域名解析与跳转属跨项目协调背景，不构成运行依赖，真实值仍只进未跟踪`.env`）。**入口已按双子域名拆分**：客户端与管理后台各占一个主机名、互不同源，避免客户端XSS读走管理后台令牌，也避免访问根域直接看到企业后台。**仓库侧443监听已于2026-08-16在`zhitian-deploy`完成（未提交），本机开发通道同日经`ZHITIAN_FORCE_HTTPS=off`恢复并实测通过**，剩下的阻塞项全部在服务器：该域名DNS权威在Cloudflare且SSL/TLS模式为zone级，直接开代理会以HTTPS回源失败返回502，因此必须先签**Cloudflare Origin CA证书**（免费、覆盖根域与一级通配）并放到`.env`指定路径——**不要用certbot**，共享服务器上`certbot --standalone`默认绑`0.0.0.0`会与知了Hub冲突。另需在接入前实测**Cloudflare免费版100秒响应上限与expert 120秒全局预算的冲突**（预期真流式`/chat/stream`因持续有数据与心跳不受影响，非流式`/chat`超100秒会被`524`掐断），结果决定走代理还是DNS only；随后完成80→443与生产CORS；②境内访问风险**需重新定性**：交接材料记录的真实现象是"境外未备案域名+境内SNI干扰"导致间歇性`ERR_CONNECTION_RESET`，这与"跨境线路质量"是不同问题、处置方式也不同，且知了Hub已通过Cloudflare代理缓解，不能继续按线路问题评估；③进程内同机定时加密备份已具备，仍缺自动异地副本和真实破坏恢复演练；④运维自动化三缺口——Linux服务器一键启停/健康验收、镜像registry发布、按精确标签的无损升级/回滚自动化；⑤8项低优先遗留编号`L9/F14/F22/F24/F38/F39/F44/F48`；⑥清理源码中过时F编号依据注释；⑦评估developer只读统一配置快照机制。网页版剩余批次和Phase C继续按用户后续时机安排，不混入当前Phase B |
+| 下一步 | 当前已知待办汇总：①**Phase B正式域名接入——已确定使用`agent.zhiliaohub.com`**（与同机的知了Hub共用同一顶层域名，按子域名分流到本项目专属IP；域名解析与跳转属跨项目协调背景，不构成运行依赖，真实值仍只进未跟踪`.env`）。**入口已按双子域名拆分**：客户端与管理后台各占一个主机名、互不同源，避免客户端XSS读走管理后台令牌，也避免访问根域直接看到企业后台。**仓库侧443监听已于2026-08-16在`zhitian-deploy`完成（未提交），本机开发通道同日经`ZHITIAN_FORCE_HTTPS=off`恢复并实测通过**，剩下的阻塞项全部在服务器：该域名DNS权威在Cloudflare且SSL/TLS模式为zone级，直接开代理会以HTTPS回源失败返回502，因此必须先签**Cloudflare Origin CA证书**（免费、覆盖根域与一级通配）并放到`.env`指定路径——**不要用certbot**，共享服务器上`certbot --standalone`默认绑`0.0.0.0`会与知了Hub冲突。另需在接入前实测**Cloudflare免费版100秒响应上限与expert 120秒全局预算的冲突**（预期真流式`/chat/stream`因持续有数据与心跳不受影响，非流式`/chat`超100秒会被`524`掐断），结果决定走代理还是DNS only；随后完成80→443与生产CORS；②境内访问风险**需重新定性**：交接材料记录的真实现象是"境外未备案域名+境内SNI干扰"导致间歇性`ERR_CONNECTION_RESET`，这与"跨境线路质量"是不同问题、处置方式也不同，且知了Hub已通过Cloudflare代理缓解，不能继续按线路问题评估；③进程内同机定时加密备份已具备，仍缺自动异地副本和真实破坏恢复演练；④运维自动化三缺口——Linux服务器一键启停/健康验收、镜像registry发布、按精确标签的无损升级/回滚自动化；⑤7项低优先遗留编号`L9/F14/F22/F24/F39/F44/F48`；⑥清理源码中过时F编号依据注释；⑦评估developer只读统一配置快照机制。网页版剩余批次和Phase C继续按用户后续时机安排，不混入当前Phase B |
 
 > 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单；无工具时1次模型调用，文档证据不足时2次，文档证据充分时最多3次，文件清单仍为2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
@@ -102,7 +102,7 @@
 | 监控 | ✅ 基础进程内 metrics/tracing，支持fast/expert独立P50/P95/P99；reviewer可手动查看，重启清零且不跨实例聚合 |
 | 生产部署 | 后端和管理后台历史生产镜像已在Docker Desktop 29.6.2+WSL2真实构建；独立私有仓库`z987645344-arch/zhitian-deploy`中的Compose已真实验证同源`/api`转发、具名卷、tmpfs、日志轮转、重启与资源限制。染云数据香港Phase B实例当前四服务可用（此前腾讯云实例已因跨境网络质量问题退款作废）；2026-08-13因同机知了Hub需要使用另一公网IP的80端口，源码把知天反代发布地址由通配80收窄为`${SERVER_PUBLIC_IP}:80`，真实值只进入未跟踪`.env`。2026-08-16已通过SSH实测确认该绑定真实生效（宿主机仅在本项目专属IP的80端口监听，API 8000无宿主机映射），且Compose为`v5.4.0`、后端`.env`全部为无引号无`$`的`KEY=value`。2026-08-01锁定`numpy==1.26.4`后的干净镜像已通过启动、`/ready`和Chroma读写；正式域名/HTTPS、异地备份与系统加固仍待继续完成 |
 | 测试 | ✅ 认证、规划/ReAct/复杂任务、记忆、execution搜索、可观测性、生命周期、上传安全和聊天附件测试已覆盖 |
-| CI | ✅ 既有Python/JS/Flutter测试流水线保持；后端和管理后台已有push/PR容器双标签构建、digest/artifact、安全基线与Trivy，后端另有pip-audit和应用导入/`/ready`硬门禁。F31依赖组、Starlette和F43均已闭环，当前pip-audit为F38的`cryptography` 3条/1包；后端漏洞策略仍因F38与Debian系统层无修复版本项红灯。5项真实外部integration只允许手动触发，F40/F42修复后已实跑5/5通过 |
+| CI | ✅ 既有Python/JS/Flutter测试流水线保持；后端和管理后台已有push/PR容器双标签构建、digest/artifact、安全基线与Trivy，后端另有pip-audit和应用导入/`/ready`硬门禁。F31依赖组、Starlette、F38和F43均已闭环；当前pip-audit只剩嵌入式模式不可达且无修复版的Chroma 3条/1包。最新Trivy为391条（CRITICAL 6/HIGH 44/MEDIUM 124/LOW 209/UNKNOWN 8），漏洞策略仍被未忽略的HIGH/CRITICAL正确拦截。5项真实外部integration只允许手动触发，F40/F42修复后已实跑5/5通过 |
 | 数据库 | SQLite（已启用 WAL + busy_timeout；仍是单机文件数据库） |
 | 水平扩展 | 不支持 |
 
@@ -123,7 +123,6 @@
 | F14 | DeepSeek客户端调用封装无连接池复用，每次请求新建连接 | layers/llm_provider.py | P3 |
 | F22 | 2026-07-19 Flutter真实使用中短时间内观察到多次DeepSeek `APITimeoutError`（重排序、长期记忆重要性判断、一次trace_id=none的调用），均`attempts=1`未见重试；即使重排序超时降级为hybrid原始顺序，回答仍正确，暂未构成功能故障，但值得作为F16可观测性告警评估的真实触发案例持续观察 | llm_provider.py / memory.py | P3（观察中） |
 | F24 | Windows MCP进程树测试曾报告`UnicodeDecodeError`，但指定用例连续5次及`PYTHONUTF8=1`附加复测均通过；两个相关文件自2026-07-17创建后未修改。风险点是测试辅助函数`_pid_exists()`以`text=True`读取`tasklist`本地化输出，原失败堆栈未留存，当前按历史环境敏感波动观察而非近期回归 | tests/test_mcp_connector.py `_pid_exists` | P3（低优先观察） |
-| F38 | `cryptography==48.0.1`仍报告3条CVE，但项目只使用AES-GCM，未调用漏洞所在的X.509链验证或PKCS7解密；升级到彻底修复版50.0.0会违反最新版`alibabacloud-tea-openapi`声明的`cryptography<49.0.0`。用户已明确选择维持现状；待上游放宽上界、替换邮件SDK或项目开始使用受影响API时重新评估 | requirements.txt / scripts/backup_data.py / DirectMail传递依赖 | P2（已接受风险，等待触发条件） |
 | F39 | `close_resources()`对Chroma 0.5.0客户端调用不存在的`close`方法，底层句柄实际未主动释放。客户端是模块级单例，生产关闭后进程随即退出且Linux不受Windows目录rename限制，当前无可观测生产影响；若改为每请求建客户端或要求进程内替换vectordb，需提高优先级 | layers/memory.py `close_resources` | P3（待修复，当前无生产影响） |
 | F44 | expert在本地文档已有高分命中时仍可能走不经济的后续路径：本次“什么是宪法”本地命中0.57（超过0.55阈值），但重排序一次超时降级后仍追加联网搜索，总耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志确认无卡死、无异常重试，回答与引用正确，属于性能体验问题而非功能缺陷；暂不排期，后续讨论是否在本地证据充分时跳过联网搜索 | layers/planning.py / layers/execution.py | P3（待讨论） |
 | F48 | 入库任务SSE字段是真实数据库状态，不是前端伪造，但当前`_run_ingest_task()`只在开始写`progress=0/processed_chunks=0`，`memory.save_document()`一次性调用Chroma `collection.add()`，完成后才写`progress=100/processed_chunks=N`；因此用户看到0/79直接跳79/79是现有实现的必然表现，不是小文档处理过快，也不存在绕开F36的第二条旧上传路径。若要连续进度，需把向量写入改为可回滚/可清理的分批提交并增加回调，不能只在前端造假百分比 | main.py `_run_ingest_task` / layers/memory.py `save_document` / zhitian_admin `trackIngestProgress` | P3（体验问题，待决定是否重构） |
@@ -137,7 +136,7 @@
 ### Phase A：自用云端MVP，不依赖真实服务器
 
 - [x] 已完成Docker安全基线、生产镜像、管理后台与customer静态站点容器、四服务Compose、一次性管理员引导、生产配置模板、schema/外键基线、加密备份恢复、Windows客户端、CI/CD基础门禁、运维文档和干净环境验收。当前运行约束保留在「已知技术约束」，完整实施与验证历史见`CHANGELOG.md`。
-- [x] 当前仓库最新标签组合：后端`v4.0`、部署仓库`v3.4.3`、管理后台与Flutter客户端`v3.2`。生产服务器实际检出版本必须在现场核对，升级必须显式切换标签，不跟随`master/main`。
+- [x] 当前仓库最新标签组合：后端`v4.1`、部署仓库`v3.4.3`、管理后台与Flutter客户端`v3.2`。后端本轮F38修复位于`v4.1`后的`master`，尚未打标；生产服务器实际检出版本必须在现场核对，升级必须显式切换标签，不跟随`master/main`。
 
 ### Phase B：自用云端MVP，需要服务器后处理
 
@@ -215,7 +214,7 @@ GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/h
 | Flutter认证页外壳 | 登录与注册页共用`lib/widgets/auth_shell.dart`（2026-07-26起），改动任一页的版式规范都应改外壳而非单页，否则两页会重新分头漂移。2026-08-09起两页还必须保留认证前“服务器设置”入口、当前地址展示和旧`:8000`直连地址警告，用户即使尚未登录也能修正错误服务器配置。宽窗口>=960px为左品牌栏+右表单卡片，窄窗口退化为居中单卡片。注意两个坑：①外壳卡片Column为`CrossAxisAlignment.stretch`，放固定尺寸块必须用`Align`包住，否则被拉成整行宽；②认证表单在默认800x600测试窗口装不下，涉及点击提交按钮的widget测试必须先设桌面视口（见`test/auth_layout_test.dart`与`widget_test.dart`的`useDesktopViewport`） |
 | Flutter Compose API基址 | Compose反向代理只把`/api/`转发到后端，Flutter保存的是API基址而不是网站根地址，因此本地MVP必须使用`http://localhost/api`；`http://localhost`会请求到管理后台且`/health`为404，`http://localhost:8000`则因后端不映射宿主机端口而拒绝连接。`:8000`仅限运行`本机后端调试（非Compose、勿用于MVP验收）.bat`等宿主机直启后端场景。部署脚本、README、首次引导和认证前设置入口必须保持这一口径；本轮不会静默覆盖用户已有SharedPreferences，发现旧值时由界面警告并让用户确认修改 |
 | Flutter Windows发布 | `pubspec.yaml`当前源码版本为`3.2.0+320`，Inno Setup默认版本同步为`3.2.0+320`、下一产物基名为`zhitian-windows-setup-3.2.0`；安装器仍独立维护常量并留有自动读取pubspec的后续注释。本轮未重建安装包，最后一份已真实验证的现有产物仍是`dist/zhitian-windows-setup-3.0.0.exe`（11,508,985字节，SHA-256=`896D2013AE956970D806C69A201D4384309414CE6C2FE0DFE9FCB34C01AC4065`），不得误称为3.2.0。MSVC runner必须保留`/utf-8`；窗口/文件说明和安装器显示名为“知天”，可执行文件为`zhitian.exe`。**不得随意改Runner.rc中的内部`CompanyName=com.zhitian`和`ProductName=zhitian_app`**，否则SharedPreferences目录变化会让旧用户配置看似丢失。最终安装包输出在被Git忽略的`dist/`；当前包未签名，公开/商业分发前必须处理Authenticode签名及安装器商业许可或迁移 |
-| 依赖版本锁定 | `requirements.txt`当前有**32项**直接依赖精确锁定。当前关键版本：`FastAPI==0.141.1`、`Starlette==1.4.1`、`python-dotenv==1.2.2`、`pypdf==6.15.0`；未使用的`langchain`顶层依赖已移除且`langchain-text-splitters`不再安装。LangGraph依赖组为`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`、`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`，真实安装还会带入`langchain-protocol`、`uuid-utils`等传递依赖。`numpy==1.26.4`用于避免Chroma 0.5.0与NumPy 2.x运行时不兼容。`cryptography==48.0.1`的3条记录按F38接受风险。直接依赖精确锁定不等于传递闭包完整锁定，今后依赖验收必须包含全新环境应用导入、`/ready`与真实读写，不能只看`pip check` |
+| 依赖版本锁定 | `requirements.txt`当前有**33项**直接依赖精确锁定。当前关键版本：`FastAPI==0.141.1`、`Starlette==1.4.1`、`python-dotenv==1.2.2`、`pypdf==6.15.0`、`cryptography==50.0.1`；为解除旧版阿里云SDK的`cryptography<49`约束，显式锁定`alibabacloud-tea-openapi==0.4.6`，DirectMail业务包仍为`alibabacloud_dm20151123==1.11.0`。未使用的`langchain`顶层依赖已移除且`langchain-text-splitters`不再安装。LangGraph依赖组为`langgraph==1.0.10`、`langchain-core==1.5.3`、`langsmith==0.10.15`、`langgraph-checkpoint==4.1.1`、`langgraph-prebuilt==1.0.13`、`langgraph-sdk==0.3.15`，真实安装还会带入`langchain-protocol`、`uuid-utils`等传递依赖。`numpy==1.26.4`用于避免Chroma 0.5.0与NumPy 2.x运行时不兼容。直接依赖精确锁定不等于传递闭包完整锁定，今后依赖验收必须包含全新环境应用导入、`/ready`与真实读写，不能只看`pip check` |
 | mcp 版本 | `mcp==1.28.1`、`uvicorn==0.51.0`、`PyJWT==2.13.0`和`sse-starlette==3.0.3`继续保持既有锁定。FastAPI/Starlette已联动升级到`0.141.1/1.4.1`且没有牵动这四项；真实uvicorn下`/chat/stream`与F36任务SSE心跳、认证、上传、下载及容器`/ready`均通过。联动升级当批回归为`383 passed, 5 deselected`，F49后当前完整权威基线为`401 passed, 5 deselected` |
 | MCP外部连接 | `mcp_connector.py`当前仅支持stdio；子进程使用安全环境白名单并默认排除`PYTHONPATH`，显式覆盖仅通过`env_overrides`传入。Windows超时/取消依赖MCP 1.28.1 Job Object终止整棵进程树，新增server必须真实验证环境隔离和无残留进程后才能考虑接入业务 |
 | Chroma | 0.5.0 启动时打印 telemetry 日志，不影响功能；当前用全局 RLock 串行化 Chroma 初始化、读写和删除 |
@@ -251,7 +250,7 @@ GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/h
 | Codex沙盒与本机用户身份 | **2026-07-28实测确认根因是身份/ACL隔离，不是解释器不存在，也不是间歇性损坏。**未提权命令身份为`zheng\CodexSandboxOnline`，不是路径中的`z9876`，且`GroupsMatchAdminSid=False`、`IsInRoleAdministrator=False`；该身份对`C:\Users\z9876\AppData\Local\Programs\Python\Python310\python.exe`执行`Test-Path`返回`True`，但直接运行报“程序python.exe无法运行: 拒绝访问”，`Get-Acl`也报`UnauthorizedAccessException`，项目`.venv\Scripts\python.exe --version`随之报`Unable to create process using '"...\Python310\python.exe" --version'`。沙盒外（工具参数中的“提权”）身份变为`zheng\z9876`，仍然**不是管理员**（两个管理员检测均False）；此时读到文件Owner/Group均为`ZHENG\z9876`，ACL只给`SYSTEM`、`Administrators`、`zheng\z9876` FullControl，基础解释器与`.venv`均正常输出`Python 3.10.11`。因此这里“提权”实际指**退出Codex文件执行沙盒、切换到真实文件所有者上下文**，不是UAC管理员提权。以后遇到同样报错应先记录`whoami`、`Test-Path`和直接执行结果，再用沙盒外方式重试项目`.venv`；**不要据此判断文件已删除，不要下载替代解释器，也不要临时改`pyvenv.cfg`** |
 | Codex沙盒PATH与Python解析 | 2026-07-28未提权会话的完整PATH包含`Python310\Scripts`、`Python310`（各重复两次，一组带尾反斜杠、一组不带）、`Python\Launcher`、`WindowsApps`及Codex override/fallback目录；`PYTHONHOME`、`PYTHONPATH`、`VIRTUAL_ENV`均未设置，Codex override/fallback中也没有`python*`文件。沙盒身份下`where python`、`where py`和`Get-Command python`均无结果；同一机器切到真实用户身份后，`where python`依次解析到真实`Python310\python.exe`与`WindowsApps\python.exe`，`where py`解析到Launcher，裸`python --version`为3.10.11。PATH中确有重复项和WindowsApps占位项，但真实Python310排在WindowsApps之前，**没有发现多个真实Python版本互相抢占；本次失败由ACL/身份造成，不是PATH冲突** |
 | .venv | `pyvenv.cfg`固定记录`home = C:\Users\z9876\AppData\Local\Programs\Python\Python310`、`version = 3.10.11`；该基础解释器真实存在且在`zheng\z9876`上下文可正常运行。Codex未提权沙盒不能执行它，因此验证项目运行时必须直接以沙盒外方式调用`.venv\Scripts\python.exe`，不要先在沙盒内失败后误判环境损坏 |
-| Docker安全基线 | 2026-07-30起后端构建上下文由根目录`.dockerignore`排除`.env*`、`data/`、`.venv/`、Git/缓存/日志/测试等非运行时内容；Dockerfile先复制`requirements.txt`安装锁定依赖，再复制业务代码，以非root `appuser`运行并预建可写`/app/data`，CMD显式固定Uvicorn 8000。`config.PORT`只对`python main.py`宿主机直启有效，Compose修改该变量不会改变容器监听端口，当前仅为历史兼容保留。Docker Desktop 29.6.2+WSL2真实构建成功；镜像内无`.env`、`/app/data`为空、运行用户为`appuser`。当前生产镜像另含LibreOffice、中文字体、`/ready`、优雅退出及固定SHA-256校验的BGE ONNX资产；安全扫描仍有F38与系统层风险 |
+| Docker安全基线 | 2026-07-30起后端构建上下文由根目录`.dockerignore`排除`.env*`、`data/`、`.venv/`、Git/缓存/日志/测试等非运行时内容；Dockerfile先复制`requirements.txt`安装锁定依赖，再复制业务代码，以非root `appuser`运行并预建可写`/app/data`，CMD显式固定Uvicorn 8000。`config.PORT`只对`python main.py`宿主机直启有效，Compose修改该变量不会改变容器监听端口，当前仅为历史兼容保留。Docker Desktop 29.6.2+WSL2真实构建成功；最新容器CI再次确认镜像内无`.env`、`/app/data`为空、运行用户为`appuser`。当前生产镜像另含LibreOffice、中文字体、`/ready`、优雅退出及固定SHA-256校验的BGE ONNX资产；F38已消除，剩余扫描风险为Chroma服务端不可达记录和Debian系统层B/C类项 |
 | 管理后台容器 | `zhitian-admin:dev-production`基于`nginx:stable-alpine`，以非root `nginx`监听8080；HTML和`config.js`为`no-cache`，JS/CSS等静态资源缓存1小时，`autoindex off`并设置严格同源CSP、nosniff、DENY frame及Referrer-Policy。`js/api.js`按`window.ZHITIAN_CONFIG.apiBaseUrl`→`/api`顺序取值，生产`config.js`默认同源`/api`；本地联调可显式设为`http://localhost:8000`。生产环境同源`/api`现已由Compose反向代理实现 |
 | 自用Compose编排 | 独立私有仓库`https://github.com/z987645344-arch/zhitian-deploy`跟踪`docker-compose.yml`与`nginx/compose-nginx.conf.template`，默认分支`main`；它必须与`zhitian`、`zhitian_admin`两个应用仓库同级，Compose分别用`../zhitian`、`../zhitian_admin`作为构建上下文，并从`../zhitian/.env`运行时注入后端配置。API的注入已使用Compose 2.30.0+长语法`env_file.path + format: raw`，后端`.env`必须为不带引号的`KEY=value`；部署仓库同目录`.env`仍只负责`${SERVER_PUBLIC_IP}`的YAML插值，二者边界不同。API只接backend网络，两个静态站点只接internal frontend网络，代理同时接入两网；当前发布`${SERVER_PUBLIC_IP}`的`80→8080`与`443→8443`，不再通配占用所有网卡，API仍没有宿主机端口。backend不设`internal: true`，因为DeepSeek/Tavily/DirectMail需要出站网络。`zhitian-mvp-data`统一挂载`/app/data`，`/app/data/tmp_uploads`以256MiB tmpfs覆盖，API总内存限制2GiB。容器健康检查访问各自loopback端口（反代仍打容器内`8080/api/ready`，该路径是8080块唯一不跳转HTTPS的位置）、反代上游使用Docker服务名，均不依赖宿主机绑定IP。2026-08-16起反代为三个server块：8080按`ZHITIAN_FORCE_HTTPS`决定是只放行健康检查（`on`，生产）还是保留完整旧HTTP路由（`off`，仅本机回环），两个8443块按客户端/管理后台主机名分流并共用同一证书，客户端块排在前面因此也是8443默认server。证书按`.env`给出的宿主机路径只读挂到容器内固定的`/etc/nginx/tls/` |
 | 部署仓库自包含边界 | **`zhitian-deploy`必须保持自包含，不依赖任何外部项目，包括个人计划共用服务器的知了Hub。**2026-08-13为解决同机双公网IP的Linux通配符80绑定冲突，知天入口改由`SERVER_PUBLIC_IP`实例变量限定，没有在Compose/Nginx中加入知了Hub域名、IP、路径、容器或网络引用；另一项目使用另一专属IP只属于跨项目协调背景，不构成运行依赖。真实值只保存在未跟踪`.env`，Phase C客户填写自己的地址。若未来两项目共用顶层域名反代，仍必须在`zhitian-deploy`之外实现，不得污染本仓库内部拓扑。2026-08-16接入双子域名时按同一口径执行：两个`server_name`与证书路径全部经`ZHITIAN_*`环境变量注入，跟踪文件内只留`CHANGE_ME_*`占位符，全仓库检索真实域名字样0命中 |
@@ -283,4 +282,4 @@ GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/h
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master，Compose地址契约与Windows标题乱码已修复并重建3.0.0安装包；5MB同步批次新增共享常量断言后，`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`45 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；统一参考图视觉已随`v2.6`提交，当前`js/`目录10个JavaScript文件，桌面及768px验证无页面级横向溢出 |
-| Git 存档 | ✅ 后端最近已审稳定标签为`zhitian v3.5`；本轮用户自选API额度来源位于其后的阶段提交，等待指挥师审查后决定新版本号与标签，不得把未打标HEAD冒充`v3.5`。部署仓库、管理后台、Flutter客户端仍按各自独立标签演进，本轮明确未修改。后端`VERSION`仍是应用版本源，标签与部署检出必须显式指定，不跟随默认分支；漏洞策略仍因F38及系统层无修复版本项红灯 |
+| Git 存档 | ✅ 后端最近已审稳定标签为`zhitian v4.1`；F38依赖修复位于其后的`master`提交，等待指挥师审查后决定版本号与标签，不得把未打标HEAD冒充`v4.1`。部署仓库、管理后台、Flutter客户端仍按各自独立标签演进，本轮明确未修改。后端`VERSION`仍是应用版本源，标签与部署检出必须显式指定，不跟随默认分支；漏洞策略仍因Chroma服务端不可达记录及系统层B/C类HIGH/CRITICAL保持红灯 |
