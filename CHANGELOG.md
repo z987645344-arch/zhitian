@@ -1611,3 +1611,12 @@
 - **真实扫描前后对比**：升级前pip-audit为6条/2包（Chroma 3、cryptography 3），升级后容器CI运行[33018646783](https://github.com/z987645344-arch/zhitian/actions/runs/33018646783)的原始artifact为3条/1包（仅Chroma 3）。Trivy为`392 → 391`：CRITICAL `6→6`、HIGH `46→44`、MEDIUM `125→124`、LOW `209→209`、UNKNOWN `6→8`；减少的2条HIGH+1条MEDIUM恰为cryptography，新增2条UNKNOWN是扫描数据库新识别的`libsqlite3-0 CVE-2026-39113`与`libtiff6 CVE-2026-52491`。两次构建的`python:3.10-slim`材料digest均为`bb5bd66c…ac586`，说明这6小时内浮动基础镜像实际未变化，系统层CRITICAL/HIGH也没有减少；没有为了数字变绿而更换发行版。
 - **门禁与回归**：临时移走本机`.env`后，权威入口为`472 passed, 5 deselected, 0 failed`；升级前生成、升级后读取的凭据/备份兼容专项与相关认证、备份测试共`34 passed`。普通CI运行[33018646784](https://github.com/z987645344-arch/zhitian/actions/runs/33018646784)全部成功。容器CI已真实完成镜像构建、安全基线、应用导入、`/ready`、pip-audit、Trivy全量扫描和artifact上传，最终仅在既有HIGH/CRITICAL策略汇总步骤失败；镜像内仍为`.env=absent`、`/app/data=empty`、`appuser uid=999`。门禁的severity与exit-code没有修改，剩余CRITICAL/HIGH属于上述B/C类，红灯是仍有风险记录的真实结果，不是流水线故障。
 - **本地附加构建边界**：曾尝试以Docker Desktop 29.6.2执行`docker build --pull --no-cache`，但当前网络访问Docker Hub令牌端点超时，未生成第二份本地镜像；本轮镜像重建与扫描结论来自GitHub托管runner的真实构建及两份原始artifact，而不是把失败的本地尝试记成通过。
+
+### 我怎么证实的（验证存档方）
+
+- **`VERSION`本轮补升为4.2.0**：三个提交都没动它，而它是仓库唯一版本文件——`main._read_application_version()`在缺失或格式不合法时`raise RuntimeError`导致容器拒绝启动，`/`与`/openapi.json`对外报的也是它。停在4.1.0会让v4.2的线上版本号自称v4.1。
+- **「门禁未被放宽」这条我自己看过**：`container-ci.yml`本轮确有6行改动，但全部是为导入检查注入`PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY`（v3.6起的启动校验要求），**没有触碰任何门禁参数**。策略步现值仍为`severity: HIGH,CRITICAL`、`ignore-unfixed: false`、`exit-code: "1"`。该文件里那个`ci-only-personal-key-secret-2026`是CI专用固定值、仅用于满足启动校验以完成镜像导入检查，与`tests/conftest.py`里的测试密钥同性质，不是生产凭据。
+- **依赖改动与声明一致**：`requirements.txt`实为`cryptography==48.0.1` → `50.0.1`，并新增`alibabacloud-tea-openapi==0.4.6`——后者是因为tea-openapi 0.4.5在Python>=3.9下约束`cryptography<49`，不显式锁定就会与50.x冲突。`Dockerfile`未出现在本轮改动列表中，与「未改」的说明相符。
+- **存档前例行核对（手册九.1）**：对`v4.1..HEAD`三个提交，IPv4字面量0处、密钥凭据形态0处、服务器绝对路径0处、二进制0处、未跟踪文件0个；`zhitian-deploy`、`zhitian_admin`、`zhitian_app`均0处改动。
+- **未重复的部分**：普通CI success（469 passed / 3 skipped / 5 deselected，自2026-08-22连红11次后首次转绿）、容器CI逐步核对（唯一失败步骤是最后的Apply vulnerability policy，即被真实漏洞门禁拦截而非坏掉）、以及**生产真实归档兼容性**（用cryptography 50.0.1的新镜像解开生产全部3份`.ztbackup`含08-26零点自动产出的那份、manifest均可读、ALL PASS；个人Key密文生产存量0条）——三项由指挥师执行，其中生产验证需服务器权限，验证存档方无从执行。
+- **一句留给后人的**：本版本发布时容器CI为红，**这是预期状态而非遗漏**。判断CI健康度时应看「失败停在哪一步」——本轮镜像基线、应用导入、`/ready`、pip-audit、Trivy扫描、报告上传全部通过，只有最后的漏洞策略步按设计拦截。把这种红当成「CI坏了」去修，真实后果是有人去放宽门禁。
