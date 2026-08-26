@@ -24,11 +24,12 @@ assert ".venv" in str(_py).lower() and sys.version_info[:2] == (3, 10), (
     f"（版本 {sys.version_info[:2]}）。请使用根目录 run_tests.bat，不要直接调用 python -m pytest。"
 )
 
-# Test-only key. Keep tests isolated from the production secret loaded from .env.
+# Test-only credentials. Keep the suite independent from untracked production .env.
 os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-at-least-32-bytes-2026"
 os.environ["ENTERPRISE_PASSWORD_SEED"] = (
     "test-only-enterprise-password-seed-not-for-production"
 )
+os.environ["DEEPSEEK_API_KEY"] = "test-only-deepseek-key-not-for-production"
 os.environ["PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY"] = base64.urlsafe_b64encode(
     b"test-only-personal-key-secret!!!"
 ).decode("ascii")

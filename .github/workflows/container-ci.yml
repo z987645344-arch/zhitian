@@ -105,6 +105,7 @@ jobs:
           # chromadb导入即失败，而构建、pip check和安全基线全部通过，因此漏检。
           # 这一步必须真实导入Chroma并启动API请求/ready，失败即整条流水线失败。
           image='${{ steps.image.outputs.version_tag }}'
+          personal_key="$(printf '%s' 'ci-only-personal-key-secret-2026' | base64 | tr -d '\n')"
 
           echo "== 关键第三方导入 =="
           docker run --rm --entrypoint python "$image" -c '
@@ -116,13 +117,16 @@ jobs:
 
           echo "== 应用模块导入 =="
           docker run --rm --entrypoint python -e ENTERPRISE_PASSWORD_SEED=ci-import-check \
-            -e JWT_SECRET_KEY=ci-import-check-secret-at-least-32-bytes "$image" \
+            -e JWT_SECRET_KEY=ci-import-check-secret-at-least-32-bytes \
+            -e PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY="$personal_key" \
+            "$image" \
             -c 'import main; print("main imported")' | tee -a ci-reports/app-import.txt
 
           echo "== 启动API并请求/ready =="
           container="$(docker run -d -p 18000:8000 \
             -e ENTERPRISE_PASSWORD_SEED=ci-readiness-check \
             -e JWT_SECRET_KEY=ci-readiness-check-secret-at-least-32-bytes \
+            -e PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY="$personal_key" \
             "$image")"
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 
