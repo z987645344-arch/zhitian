@@ -643,6 +643,48 @@ button.danger-button:hover { border-color: var(--danger); background: var(--surf
 .settings-message.success { color: var(--success); }
 .settings-message.error { color: var(--danger); }
 
+.execution-timeline {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-low);
+}
+
+.execution-title {
+  color: var(--subtle);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.execution-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.execution-item[data-phase="started"] .execution-detail { color: var(--primary-hover); }
+.execution-item[data-phase="degraded"] .execution-detail,
+.execution-item[data-phase="failed"] .execution-detail { color: var(--warning); }
+.execution-name { color: var(--text); font-weight: 650; }
+.execution-detail { text-align: right; }
+
+.request-status-notice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 11px;
+}
+
 @media (max-width: 1280px) {
   .mode-description { display: none; }
 }
@@ -670,6 +712,8 @@ button.danger-button:hover { border-color: var(--danger); background: var(--surf
   .chat-composer { padding: 10px 12px 13px; }
   .bubble { max-width: 100%; }
   .generated-file-card { grid-template-columns: auto minmax(0, 1fr); }
+  .execution-item { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .execution-detail { text-align: left; }
   button.generated-file-download { grid-column: 1 / -1; width: 100%; }
   .chat-welcome { padding: 28px 18px; }
   .composer-row { grid-template-columns: 1fr auto; }

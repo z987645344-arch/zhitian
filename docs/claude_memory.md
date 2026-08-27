@@ -1,7 +1,7 @@
 # 知天项目状态 · 指挥师记忆
 > 每次新对话开头贴给指挥师，确保上下文连续。
 > 此文档只描述"当前状态"，不记录历史。历史改动看 CHANGELOG.md。
-> **最后更新：2026-08-27**（F38已通过cryptography 50.0.1闭环；容器漏洞完成A/B/C可达性分类，门禁继续如实拦截剩余系统层记录）
+> **最后更新：2026-08-27**（Expert请求内超时熔断、结构化降级原因与网页执行动态已完成；F44以保守本地证据门槛闭环）
 
 ---
 
@@ -54,15 +54,15 @@
 
 | 项 | 说明 |
 |------|------|
-| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；后端当前最新标签为`v4.1`，本轮安全依赖修复位于标签后的`master`。最新无`.env`权威回归`472 passed, 5 deselected, 0 failed`，普通CI成功；容器CI完整执行构建与扫描后被未放宽的漏洞策略门禁拦截。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题为L9、F14、F22、F24、F39、F44、F48 |
-| 上一轮完成 | 2026-08-27完成392条Trivy记录A/B/C可达性分类，并把`cryptography`从48.0.1升级到50.0.1、显式锁定兼容的`alibabacloud-tea-openapi==0.4.6`。pip-audit由6条/2包降为3条/1包；Trivy HIGH由46降至44、MEDIUM由125降至124，系统层CRITICAL/HIGH未减少。升级前生成的个人Key密文与AES-GCM备份均可由升级后代码解开；生产实物仍由有服务器权限的指挥师复核 |
-| 当前等待 | 本轮不打标、不部署。代码修复已提交推送；漏洞评估与CI扫描证据完成后等待指挥师审核生产归档/真实个人密文兼容性，并决定是否接受B/C类剩余HIGH/CRITICAL继续使容器门禁保持红灯 |
+| 状态 | 🟢 自用云端MVP Phase A功能验证已闭合，Phase B服务器落地进行中；后端当前最新标签为`v4.2`，本轮Expert超时治理与网页执行动态位于该标签后的`master`提交，尚未打标。最新权威回归`479 passed, 5 deselected, 0 failed`；本轮CI以本次推送后触发的实际运行结果为准，不能用`v4.2`既有结果冒充。当前没有已知开放P0/P1，但尚不具备不可篡改安全审计，也不等于所有接口都完成形式化安全证明。开放问题为L9、F14、F22、F24、F39、F48 |
+| 上一轮完成 | 2026-08-27复用既有`complex_deadline`完成Expert请求内DeepSeek超时熔断：首次超时后跳过可选重排、搜索词改写、反思和输出观察，仅保留一次最终回答机会；两个漏网调用已接入剩余预算。SSE新增脱敏`tool_status`执行动态与结构化`request_status`降级终态，网页版桌面和390px均完成真实浏览器渲染核验。F44以保守证据门槛闭环：单条0.579召回仍会联网，只有多条高质量、重排成功的本地证据才跳过联网 |
+| 当前等待 | 本轮已获授权提交并推送，但不打标、不部署；等待Flutter客户端在独立任务中补齐执行动态后再统一打标。Flutter对未知SSE事件会安全忽略，现有聊天不受影响，但当前不会显示新的执行动态 |
 | 真实账号现状 | 2026-08-09只读复核Compose具名卷：`users=1`，唯一账号为用户名0/developer、`is_active=1`、`is_default_account=1`，创建时间原值`2026-08-09 03:38:40`，邮箱与`last_login_at`均为空；跨users/history/files库扫描未发现该账号的会话、文档、组织关系、申请、重置日志或用户文件引用。0号一次性密码已经遗失，但主卷账号记录与密码哈希在本轮隔离测试前后完全一致，尚未执行真实重置。宿主机`data/`仍是此前清理后的独立空数据环境，F37备份包保持不变 |
 | 视觉参考 | `D:\zhiliao\zhitian\design_reference\zhitian-unified-office-ui-reference-v1.png`（1,049,665字节，位于三仓库外的共享工作区）；当前管理后台与Flutter客户端均以此图为统一设计基准 |
 | 文档状态 | 2026-08-15完成系统性审计与交接收尾：历史架构决策和事故记录位于`docs/history/`，协作角色以`docs/claude_skill.md`为准；CHANGELOG历史中的旧工具名称不回写为当前流程 |
-| 下一步 | 当前已知待办汇总：①**Phase B正式域名接入——已确定使用`agent.zhiliaohub.com`**（与同机的知了Hub共用同一顶层域名，按子域名分流到本项目专属IP；域名解析与跳转属跨项目协调背景，不构成运行依赖，真实值仍只进未跟踪`.env`）。**入口已按双子域名拆分**：客户端与管理后台各占一个主机名、互不同源，避免客户端XSS读走管理后台令牌，也避免访问根域直接看到企业后台。**仓库侧443监听已于2026-08-16在`zhitian-deploy`完成（未提交），本机开发通道同日经`ZHITIAN_FORCE_HTTPS=off`恢复并实测通过**，剩下的阻塞项全部在服务器：该域名DNS权威在Cloudflare且SSL/TLS模式为zone级，直接开代理会以HTTPS回源失败返回502，因此必须先签**Cloudflare Origin CA证书**（免费、覆盖根域与一级通配）并放到`.env`指定路径——**不要用certbot**，共享服务器上`certbot --standalone`默认绑`0.0.0.0`会与知了Hub冲突。另需在接入前实测**Cloudflare免费版100秒响应上限与expert 120秒全局预算的冲突**（预期真流式`/chat/stream`因持续有数据与心跳不受影响，非流式`/chat`超100秒会被`524`掐断），结果决定走代理还是DNS only；随后完成80→443与生产CORS；②境内访问风险**需重新定性**：交接材料记录的真实现象是"境外未备案域名+境内SNI干扰"导致间歇性`ERR_CONNECTION_RESET`，这与"跨境线路质量"是不同问题、处置方式也不同，且知了Hub已通过Cloudflare代理缓解，不能继续按线路问题评估；③进程内同机定时加密备份已具备，仍缺自动异地副本和真实破坏恢复演练；④运维自动化三缺口——Linux服务器一键启停/健康验收、镜像registry发布、按精确标签的无损升级/回滚自动化；⑤7项低优先遗留编号`L9/F14/F22/F24/F39/F44/F48`；⑥清理源码中过时F编号依据注释；⑦评估developer只读统一配置快照机制。网页版剩余批次和Phase C继续按用户后续时机安排，不混入当前Phase B |
+| 下一步 | 当前已知待办汇总：①**Phase B正式域名接入——已确定使用`agent.zhiliaohub.com`**（与同机的知了Hub共用同一顶层域名，按子域名分流到本项目专属IP；域名解析与跳转属跨项目协调背景，不构成运行依赖，真实值仍只进未跟踪`.env`）。**入口已按双子域名拆分**：客户端与管理后台各占一个主机名、互不同源，避免客户端XSS读走管理后台令牌，也避免访问根域直接看到企业后台。**仓库侧443监听已于2026-08-16在`zhitian-deploy`完成（未提交），本机开发通道同日经`ZHITIAN_FORCE_HTTPS=off`恢复并实测通过**，剩下的阻塞项全部在服务器：该域名DNS权威在Cloudflare且SSL/TLS模式为zone级，直接开代理会以HTTPS回源失败返回502，因此必须先签**Cloudflare Origin CA证书**（免费、覆盖根域与一级通配）并放到`.env`指定路径——**不要用certbot**，共享服务器上`certbot --standalone`默认绑`0.0.0.0`会与知了Hub冲突。另需在接入前实测**Cloudflare免费版100秒响应上限与expert 120秒全局预算的冲突**（预期真流式`/chat/stream`因持续有数据与心跳不受影响，非流式`/chat`超100秒会被`524`掐断），结果决定走代理还是DNS only；随后完成80→443与生产CORS；②境内访问风险**需重新定性**：交接材料记录的真实现象是"境外未备案域名+境内SNI干扰"导致间歇性`ERR_CONNECTION_RESET`，这与"跨境线路质量"是不同问题、处置方式也不同，且知了Hub已通过Cloudflare代理缓解，不能继续按线路问题评估；③进程内同机定时加密备份已具备，仍缺自动异地副本和真实破坏恢复演练；④运维自动化三缺口——Linux服务器一键启停/健康验收、镜像registry发布、按精确标签的无损升级/回滚自动化；⑤6项低优先遗留编号`L9/F14/F22/F24/F39/F48`；⑥清理源码中过时F编号依据注释；⑦评估developer只读统一配置快照机制。网页版剩余批次、Flutter执行动态和Phase C继续按用户后续时机安排，不混入当前Phase B |
 
-> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单；无工具时1次模型调用，文档证据不足时2次，文档证据充分时最多3次，文件清单仍为2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
+> 如果你是新接手的指挥师：后端支持请求级`mode=fast|expert`，缺省fast。fast是独立简化路径，只保留Chroma/SQLite上下文、本地文档检索和文件清单；无工具时1次模型调用，文档证据不足时2次，文档证据充分时最多3次，文件清单仍为2次。expert使用DeepSeek完整LangGraph，并支持complex_task线性任务链：最多10个历史累计任务、整体重规划最多1次、每个任务位置局部调整最多1次、当前不支持DAG或并行。expert全程共享请求级总预算；首次DeepSeek超时会打开请求内熔断，跳过后续可选模型阶段并通过SSE返回结构化降级原因。长期记忆已接入重要性判断和遗忘；文档检索已接入BM25+向量、title/source补充召回和批量重排序。
 
 ---
 
@@ -77,6 +77,8 @@
   - expert的generate_file可生成Markdown/TXT/PDF/DOCX；convert_document已接入对话意图，仅允许转换当前session已上传且owner匹配的附件
 - reflect 会误判重复 search_web，靠代码层 tool_call_history 拦截兜底
 - ReAct仅保留在document路径；普通chat和search均单轮respond，避免重复联网搜索放大延迟
+- DeepSeek首次超时会在当前请求state上打开熔断：跳过可选重排、改写、反思与输出观察，仅保留一次最终回答机会；所有模型阶段受同一`complex_deadline`约束，不改变`EXPERT_COMPLEX_TIMEOUT`数值
+- 文档路径只有在多条高质量候选、重排成功且分数明显越过阈值时才视为本地证据充分并跳过联网；单条0.579召回仍按证据不足继续联网，避免F44优化牺牲答案质量
 - 当前请求带`attachment_ids`时，expert分类通过结构化附件信号优先选择当前附件直答，fast将附件正文作为独立上下文直接回答；仅转换请求进入`convert_document`。无附件时知识库`search_documents/list_documents`行为保持不变，document低置信度附件fallback继续保留。
 
 ### 2. MCP已具备独立外部连接基础设施，尚未接入Agent
@@ -124,7 +126,6 @@
 | F22 | 2026-07-19 Flutter真实使用中短时间内观察到多次DeepSeek `APITimeoutError`（重排序、长期记忆重要性判断、一次trace_id=none的调用），均`attempts=1`未见重试；即使重排序超时降级为hybrid原始顺序，回答仍正确，暂未构成功能故障，但值得作为F16可观测性告警评估的真实触发案例持续观察 | llm_provider.py / memory.py | P3（观察中） |
 | F24 | Windows MCP进程树测试曾报告`UnicodeDecodeError`，但指定用例连续5次及`PYTHONUTF8=1`附加复测均通过；两个相关文件自2026-07-17创建后未修改。风险点是测试辅助函数`_pid_exists()`以`text=True`读取`tasklist`本地化输出，原失败堆栈未留存，当前按历史环境敏感波动观察而非近期回归 | tests/test_mcp_connector.py `_pid_exists` | P3（低优先观察） |
 | F39 | `close_resources()`对Chroma 0.5.0客户端调用不存在的`close`方法，底层句柄实际未主动释放。客户端是模块级单例，生产关闭后进程随即退出且Linux不受Windows目录rename限制，当前无可观测生产影响；若改为每请求建客户端或要求进程内替换vectordb，需提高优先级 | layers/memory.py `close_resources` | P3（待修复，当前无生产影响） |
-| F44 | expert在本地文档已有高分命中时仍可能走不经济的后续路径：本次“什么是宪法”本地命中0.57（超过0.55阈值），但重排序一次超时降级后仍追加联网搜索，总耗时72.4秒，约为历史纯文档路径25.67秒的2.8倍。日志确认无卡死、无异常重试，回答与引用正确，属于性能体验问题而非功能缺陷；暂不排期，后续讨论是否在本地证据充分时跳过联网搜索 | layers/planning.py / layers/execution.py | P3（待讨论） |
 | F48 | 入库任务SSE字段是真实数据库状态，不是前端伪造，但当前`_run_ingest_task()`只在开始写`progress=0/processed_chunks=0`，`memory.save_document()`一次性调用Chroma `collection.add()`，完成后才写`progress=100/processed_chunks=N`；因此用户看到0/79直接跳79/79是现有实现的必然表现，不是小文档处理过快，也不存在绕开F36的第二条旧上传路径。若要连续进度，需把向量写入改为可回滚/可清理的分批提交并增加回调，不能只在前端造假百分比 | main.py `_run_ingest_task` / layers/memory.py `save_document` / zhitian_admin `trackIngestProgress` | P3（体验问题，待决定是否重构） |
 
 ---
@@ -136,7 +137,7 @@
 ### Phase A：自用云端MVP，不依赖真实服务器
 
 - [x] 已完成Docker安全基线、生产镜像、管理后台与customer静态站点容器、四服务Compose、一次性管理员引导、生产配置模板、schema/外键基线、加密备份恢复、Windows客户端、CI/CD基础门禁、运维文档和干净环境验收。当前运行约束保留在「已知技术约束」，完整实施与验证历史见`CHANGELOG.md`。
-- [x] 当前仓库最新标签组合：后端`v4.1`、部署仓库`v3.4.3`、管理后台与Flutter客户端`v3.2`。后端本轮F38修复位于`v4.1`后的`master`，尚未打标；生产服务器实际检出版本必须在现场核对，升级必须显式切换标签，不跟随`master/main`。
+- [x] 当前仓库最新标签组合：后端`v4.2`、部署仓库`v3.4.3`、管理后台与Flutter客户端`v3.2`。后端本轮Expert超时治理位于`v4.2`后的`master`提交、尚未打标；生产服务器实际检出版本必须在现场核对，升级必须显式切换标签，不跟随`master/main`。
 
 ### Phase B：自用云端MVP，需要服务器后处理
 
@@ -277,9 +278,9 @@ GraphRAG与PixelRAG的讨论背景、实施取舍和A/B结论已归档到`docs/h
 | RAG 知识库 | ✅ 基础链路完整（上传→审核→检索→可信回答→引用→调试） |
 | 用户认证 | ✅ JWT + bcrypt + 四档角色（customer/employee/reviewer/developer）+ 邮箱username + `(username, role)`联合唯一多角色共享密码 + session归属；四类角色注册均需邮箱验证码，企业角色额外需要企业密码。用户对话额度来源现支持企业流动密码一次授权或个人DeepSeek Key密文配置，必须手动选择且不自动回退 |
 | 文档审核 | ✅ pending/verified/rejected 完整审核流 |
-| 流式输出 | ✅ SSE 真流式（clarify 逐字 / search DeepSeek流式整理 / chat 流式） |
+| 流式输出 | ✅ SSE 真流式（clarify逐字 / search DeepSeek流式整理 / chat流式），并提供脱敏`tool_status`执行动态与`request_status`结构化终态；网页已展示，Flutter当前安全忽略这两类新增事件、尚未做可视化 |
 | 日志脱敏 | ✅ 用户消息/文档内容/搜索结果不进日志 |
 | 隐私隔离 | ✅ Chroma strict_session + 文档 doc_id 白名单 |
 | Flutter 前端 | ✅ Windows桌面端已跑通登录、注册、聊天、历史、文件、工具箱和设置；统一视觉与服务地址配置、安装升级链路均已验证。2026-08-09 F36/F37上传上限改动已合并master，Compose地址契约与Windows标题乱码已修复并重建3.0.0安装包；5MB同步批次新增共享常量断言后，`flutter analyze --no-pub`无问题、`flutter test --no-pub`为`45 tests passed` |
 | 管理后台 | ✅ 员工/审核员/developer三角色静态后台已支持组织下钻、上传/录入、审核/调试及系统治理；统一参考图视觉已随`v2.6`提交，当前`js/`目录10个JavaScript文件，桌面及768px验证无页面级横向溢出 |
-| Git 存档 | ✅ 后端最近已审稳定标签为`zhitian v4.1`；F38依赖修复位于其后的`master`提交，等待指挥师审查后决定版本号与标签，不得把未打标HEAD冒充`v4.1`。部署仓库、管理后台、Flutter客户端仍按各自独立标签演进，本轮明确未修改。后端`VERSION`仍是应用版本源，标签与部署检出必须显式指定，不跟随默认分支；漏洞策略仍因Chroma服务端不可达记录及系统层B/C类HIGH/CRITICAL保持红灯 |
+| Git 存档 | ✅ 后端最近已审稳定标签为`zhitian v4.2`；本轮Expert超时治理已进入其后的`master`提交，尚未打标，不得冒充已经进入`v4.2`。部署仓库、管理后台、Flutter客户端仍按各自独立标签演进，本轮明确未修改。后端`VERSION`仍是应用版本源，标签与部署检出必须显式指定，不跟随默认分支；漏洞策略仍因Chroma服务端不可达记录及系统层B/C类HIGH/CRITICAL保持红灯 |

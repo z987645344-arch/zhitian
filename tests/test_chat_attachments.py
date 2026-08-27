@@ -243,7 +243,7 @@ def test_fast_and_expert_receive_attachment_context(
 
     def fake_run(
         session_id, message, mode, extra_context=None, owner_user_id="",
-        attachment_ids=None,
+        attachment_ids=None, tool_event_sink=None,
     ):
         captured.append((mode, extra_context))
         return _success_state(mode, extra_context)
@@ -294,7 +294,7 @@ def test_fast_stream_receives_attachment_context(
 
     def fake_run(
         session_id, message, mode, extra_context=None, owner_user_id="",
-        attachment_ids=None,
+        attachment_ids=None, tool_event_sink=None,
     ):
         captured["context"] = extra_context
         return _success_state(mode, extra_context)

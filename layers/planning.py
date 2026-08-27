@@ -4,7 +4,7 @@
 import json
 import re
 import time
-from typing import Literal, Optional, TypedDict
+from typing import Callable, Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -98,6 +98,11 @@ class AgentState(TypedDict):
     complex_deadline: float
     stream_prepared: bool
     external_content_tainted: bool
+    deepseek_circuit_open: bool
+    post_timeout_final_attempted: bool
+    degradation_reasons: list[str]
+    tool_status_events: list[execution.ToolStatusEvent]
+    tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]]
     layer_trace: list[str]
 
 
@@ -388,12 +393,21 @@ def classify_node(state: AgentState) -> AgentState:
     )
     observability.log_stage("classify_context", int((time.perf_counter() - started_at) * 1000))
     started_at = time.perf_counter()
-    decision = _classify_with_model(
-        state["message"],
-        state["context"],
-        tier=state["mode"],
-        attachment_ids=state.get("attachment_ids", []),
-    )
+    try:
+        decision = _classify_with_model(
+            state["message"],
+            state["context"],
+            tier=state["mode"],
+            attachment_ids=state.get("attachment_ids", []),
+            timeout=execution.remaining_request_budget(
+                state,
+                config.EXPERT_LLM_TIMEOUT if state["mode"] == "expert" else config.FAST_LLM_TIMEOUT,
+            ),
+        )
+    except Exception as exc:
+        if llm_provider.is_timeout_error(exc):
+            execution.open_deepseek_circuit(state, "classification_timeout")
+        raise
     observability.log_stage("classify_model", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
     state["is_complex_task"] = state["intent"] == "complex_task"
@@ -500,6 +514,7 @@ def complex_plan_node(state: AgentState) -> AgentState:
     try:
         tasks = _generate_complex_tasks(state, config.MAX_COMPLEX_TASKS)
     except TimeoutError:
+        execution.open_deepseek_circuit(state, "planning_timeout")
         observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
         return _mark_complex_timeout(state)
     observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
@@ -562,6 +577,9 @@ def checkpoint_node(state: AgentState) -> AgentState:
     _append_layer_trace(state, "checkpoint")
     if _complex_budget_exhausted(state):
         return _mark_complex_timeout(state)
+    if execution.deepseek_circuit_open(state):
+        state["complex_action"] = "respond"
+        return state
     if state["current_task_pointer"] >= len(state["complex_task_list"]):
         state["complex_action"] = "respond"
         return state
@@ -575,6 +593,10 @@ def checkpoint_node(state: AgentState) -> AgentState:
         try:
             route = _check_complex_route_with_model(state)
         except Exception as e:
+            if llm_provider.is_timeout_error(e):
+                execution.open_deepseek_circuit(state, "planning_timeout")
+                state["complex_action"] = "respond"
+                return state
             logger.warning("复杂任务路线判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
             route = "keep"
         observability.log_stage("complex_checkpoint_route_model", int((time.perf_counter() - started_at) * 1000))
@@ -586,6 +608,10 @@ def checkpoint_node(state: AgentState) -> AgentState:
                 try:
                     replacement = _generate_complex_tasks(state, remaining_budget, remaining_only=True)
                 except Exception as e:
+                    if llm_provider.is_timeout_error(e):
+                        execution.open_deepseek_circuit(state, "planning_timeout")
+                        state["complex_action"] = "respond"
+                        return state
                     logger.warning("复杂任务重规划失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
                     replacement = []
                 observability.log_stage("complex_replan_model", int((time.perf_counter() - started_at) * 1000))
@@ -609,6 +635,10 @@ def checkpoint_node(state: AgentState) -> AgentState:
             next_task.adjusted = True
             state["complex_task_list"][state["current_task_pointer"]] = next_task
         except Exception as e:
+            if llm_provider.is_timeout_error(e):
+                execution.open_deepseek_circuit(state, "planning_timeout")
+                state["complex_action"] = "respond"
+                return state
             logger.warning("复杂任务局部调整失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
             adjusted_task = None
         observability.log_stage("complex_checkpoint_adjust_model", int((time.perf_counter() - started_at) * 1000))
@@ -627,6 +657,11 @@ def complex_respond_node(state: AgentState) -> AgentState:
     if state["error"] == "complex_task_timeout" or _complex_budget_exhausted(state):
         state["error"] = "complex_task_timeout"
         state["response"] = _complex_timeout_response(state["complex_task_results"])
+        observability.log_stage("complex_respond_model", 0)
+        _append_layer_trace(state, "complex_respond")
+        return state
+    if not execution.claim_post_timeout_final_attempt(state):
+        state["response"] = _fallback_complex_response(state["complex_task_results"])
         observability.log_stage("complex_respond_model", 0)
         _append_layer_trace(state, "complex_respond")
         return state
@@ -658,9 +693,20 @@ def complex_respond_node(state: AgentState) -> AgentState:
         if not state["response"]:
             raise ValueError("empty complex response")
     except TimeoutError:
+        execution.open_deepseek_circuit(
+            state,
+            "final_answer_timeout",
+            final_attempt_consumed=True,
+        )
         state["error"] = "complex_task_timeout"
         state["response"] = _complex_timeout_response(state["complex_task_results"])
     except Exception as e:
+        if llm_provider.is_timeout_error(e):
+            execution.open_deepseek_circuit(
+                state,
+                "final_answer_timeout",
+                final_attempt_consumed=True,
+            )
         logger.error("复杂任务汇总失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
         state["error"] = state["error"] or "complex_respond_failed"
         state["response"] = _fallback_complex_response(state["complex_task_results"])
@@ -690,13 +736,13 @@ def respond_node(state: AgentState) -> AgentState:
     failed_results = [result for result in state["results"] if result.status == "error"]
     if failed_results:
         state["error"] = failed_results[0].error_msg or "工具调用失败"
-        state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
+        state["response"] = _structured_degraded_response(state)
         state["citations"] = []
         observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
 
     if state["error"]:
-        state["response"] = "抱歉，搜索结果处理失败，请稍后重试"
+        state["response"] = _structured_degraded_response(state)
         state["citations"] = []
         observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
         return state
@@ -720,6 +766,19 @@ def respond_node(state: AgentState) -> AgentState:
         state["response"] = _with_react_limit_notice(state, base_response)
     observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
     return state
+
+
+def _structured_degraded_response(state: AgentState) -> str:
+    reasons = set(state.get("degradation_reasons", []))
+    if "final_answer_timeout" in reasons:
+        return "模型最终回答生成超时，请稍后重试。"
+    if "search_summary_timeout" in reasons:
+        return "已取得联网搜索结果，但模型整理超时，请稍后重试。"
+    if "web_provider_failed" in reasons:
+        return "联网搜索服务暂时不可用，请稍后重试。"
+    if "web_no_results" in reasons:
+        return "联网搜索没有返回结果，请换个方式提问。"
+    return "本次请求未能完整处理，请稍后重试。"
 
 
 def run_graph(
@@ -749,6 +808,7 @@ def run_graph_state(
     owner_user_id: str = "",
     attachment_ids: Optional[list[str]] = None,
     prepared_state: Optional[AgentState] = None,
+    tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]] = None,
 ) -> AgentState:
     """运行规划层状态机并返回完整状态，供接口层判断降级和记忆写入。"""
     state = prepared_state or _new_agent_state(
@@ -758,27 +818,39 @@ def run_graph_state(
         extra_context=extra_context,
         owner_user_id=owner_user_id,
         attachment_ids=attachment_ids,
+        tool_event_sink=tool_event_sink,
     )
     if prepared_state is not None:
         state["stream_prepared"] = True
+        if tool_event_sink is not None:
+            state["tool_event_sink"] = tool_event_sink
     if mode == "fast":
         return _run_fast_state(state)
     if mode != "expert":
         raise ValueError("mode只支持fast或expert")
 
-    state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
+    if float(state.get("complex_deadline") or 0.0) <= 0:
+        state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     try:
         return graph.invoke(state)
     except Exception as e:
         logger.error("规划层异常，降级为普通chat：session_id=%s error_type=%s", session_id, type(e).__name__)
+        if llm_provider.is_timeout_error(e):
+            execution.open_deepseek_circuit(state, "planning_timeout")
         # Level2：expert规划层出错时仅使用同tier普通chat降级。
+        if not execution.claim_post_timeout_final_attempt(state):
+            state["error"] = "planning_degraded"
+            state["response"] = "模型服务本轮已超时，未继续生成回答。"
+            return state
         fallback = execution.run(
             "llm_chat",
             {
                 "message": message,
                 "session_id": session_id,
-                "tier": mode
-            }
+                "tier": mode,
+                "timeout": min(config.EXPERT_LLM_TIMEOUT, execution.remaining_request_budget(state, config.EXPERT_LLM_TIMEOUT)),
+            },
+            state=state,
         )
         if fallback.status == "success":
             state["results"] = [fallback]
@@ -800,6 +872,7 @@ def _new_agent_state(
     extra_context: Optional[list[str]] = None,
     owner_user_id: str = "",
     attachment_ids: Optional[list[str]] = None,
+    tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]] = None,
 ) -> AgentState:
     return AgentState(
         session_id=session_id,
@@ -835,6 +908,11 @@ def _new_agent_state(
         complex_deadline=0.0,
         stream_prepared=False,
         external_content_tainted=False,
+        deepseek_circuit_open=False,
+        post_timeout_final_attempted=False,
+        degradation_reasons=[],
+        tool_status_events=[],
+        tool_event_sink=tool_event_sink,
         layer_trace=[]
     )
 
@@ -1351,6 +1429,22 @@ def should_continue_react(state: AgentState) -> dict:
     max_total_rounds = 1 + int(config.MAX_REACT_ROUNDS)
     if state["error"] or not state["results"]:
         return {"action": "respond"}
+    if execution.deepseek_circuit_open(state):
+        logger.info("ReAct反思已跳过：session_id=%s reason=deepseek_circuit_open", state["session_id"])
+        if (
+            state["intent"] == "document"
+            and not _local_document_evidence_sufficient(state)
+            and not _has_called_tool(state["tool_call_history"], "search_web")
+        ):
+            return {
+                "action": "continue",
+                "task": Task(
+                    tool="search_web",
+                    params={"query": state["message"], "tier": state["mode"]},
+                    order=len(state["tasks"]) + 1,
+                ),
+            }
+        return {"action": "respond"}
 
     reflection = _reflect_with_model(state)
     if state["round_count"] >= max_total_rounds:
@@ -1375,12 +1469,13 @@ def next_after_execute(state: AgentState) -> str:
         "chat", "search", "document_list", "generate_file", "convert_document"
     }:
         return "respond"
-    if _should_skip_reflect_for_title_match(state):
+    if _local_document_evidence_sufficient(state):
         return "respond"
     return "reflect"
 
 
-def _should_skip_reflect_for_title_match(state: AgentState) -> bool:
+def _local_document_evidence_sufficient(state: AgentState) -> bool:
+    """Conservatively skip web only for title matches or strong reranked local evidence."""
     if state["intent"] != "document" or not state["results"]:
         return False
     latest_result = state["results"][-1]
@@ -1389,11 +1484,7 @@ def _should_skip_reflect_for_title_match(state: AgentState) -> bool:
     metadata = latest_result.metadata or {}
     if metadata.get("supplied_context_answer"):
         return True
-    if not metadata.get("title_source_match"):
-        return False
-    candidate_count = int(metadata.get("candidate_count", 0) or 0)
-    trusted_count = int(metadata.get("trusted_count", 0) or 0)
-    return candidate_count <= 3 and trusted_count <= 3
+    return execution.local_evidence_is_strong(metadata)
 
 
 def _reflect_with_model(state: AgentState) -> dict:
@@ -1424,10 +1515,16 @@ def _reflect_with_model(state: AgentState) -> dict:
         include_date=True,
     )
     try:
-        response = llm_provider.chat_completion(messages, tier=state["mode"])
+        response = llm_provider.chat_completion(
+            messages,
+            tier=state["mode"],
+            timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
+        )
         raw = llm_provider.extract_text(response)
         return _parse_reflection(raw)
     except Exception as e:
+        if llm_provider.is_timeout_error(e):
+            execution.open_deepseek_circuit(state, "reflection_timeout")
         logger.error("ReAct反思判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
         return {"action": "respond"}
 
@@ -1750,6 +1847,7 @@ def _classify_with_model(
     context: list[str] = None,
     tier: str = "fast",
     attachment_ids: Optional[list[str]] = None,
+    timeout: Optional[float] = None,
 ) -> dict:
     """使用所选模型的 Function Call 选择搜索或直接回答。"""
     context_text = "\n".join(context or [])
@@ -1819,9 +1917,13 @@ def _classify_with_model(
         tools=INTENT_TOOLS,
         tool_choice="auto",
         timeout=(
-            config.EXPERT_LLM_TIMEOUT
-            if tier == "expert"
-            else config.FAST_LLM_TIMEOUT
+            float(timeout)
+            if timeout is not None
+            else (
+                config.EXPERT_LLM_TIMEOUT
+                if tier == "expert"
+                else config.FAST_LLM_TIMEOUT
+            )
         )
     )
     tool_calls = _extract_tool_calls(response)
@@ -1850,14 +1952,29 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         }],
         include_date=True,
     )
+    if not execution.claim_post_timeout_final_attempt(state):
+        return base_response
     try:
         started_at = time.perf_counter()
         response = llm_provider.extract_text(
-            llm_provider.chat_completion(messages, tier=state["mode"])
+            llm_provider.chat_completion(
+                messages,
+                tier=state["mode"],
+                timeout=execution.remaining_request_budget(
+                    state,
+                    config.EXPERT_LLM_TIMEOUT,
+                ),
+            )
         )
         observability.log_stage("respond_context_model", int((time.perf_counter() - started_at) * 1000))
         return response
-    except Exception:
+    except Exception as exc:
+        if llm_provider.is_timeout_error(exc):
+            execution.open_deepseek_circuit(
+                state,
+                "final_answer_timeout",
+                final_attempt_consumed=True,
+            )
         return base_response
 
 

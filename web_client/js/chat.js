@@ -22,6 +22,34 @@
       waiting: '专家模式正在规划、检索并组织答案，请耐心等待…',
     },
   };
+  const TOOL_LABELS = {
+    web_search: '联网检索',
+    knowledge_search: '知识库检索',
+    document_list: '文件清单',
+    answer_generation: '回答生成',
+    file_generation: '文件生成',
+    document_conversion: '格式转换',
+  };
+  const TOOL_PHASE_LABELS = {
+    started: '进行中',
+    succeeded: '已完成',
+    degraded: '降级完成',
+    failed: '失败',
+    skipped: '已跳过',
+  };
+  const REASON_LABELS = {
+    web_provider_failed: '搜索服务不可用',
+    web_no_results: '搜索无结果',
+    query_rewrite_timeout: '搜索词改写超时，已使用原问题',
+    search_summary_timeout: '搜索结果整理超时',
+    search_summary_failed: '搜索结果整理失败',
+    document_rerank_timeout: '文档精排超时，已保留原排序',
+    final_answer_timeout: '最终回答生成超时',
+    classification_timeout: '请求分类超时',
+    planning_timeout: '任务规划超时',
+    reflection_timeout: '补充判断超时',
+    output_observation_timeout: '结果校验超时',
+  };
 
   const logInner = document.querySelector('#chatLogInner');
   const logArea = document.querySelector('#chatLog');
@@ -312,6 +340,57 @@
     scrollToBottom();
   }
 
+  function renderToolStatus(bubble, event) {
+    let timeline = bubble.querySelector('.execution-timeline');
+    if (!timeline) {
+      timeline = document.createElement('section');
+      timeline.className = 'execution-timeline';
+      timeline.setAttribute('aria-live', 'polite');
+      const heading = document.createElement('div');
+      heading.className = 'execution-title';
+      heading.textContent = '执行动态';
+      timeline.appendChild(heading);
+      bubble.appendChild(timeline);
+    }
+    const key = `${event.tool || 'tool'}-${event.display_code || 'execution'}`;
+    let row = Array.from(timeline.querySelectorAll('.execution-item'))
+      .find((item) => item.dataset.executionKey === key);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'execution-item';
+      row.dataset.executionKey = key;
+      const name = document.createElement('span');
+      name.className = 'execution-name';
+      const detail = document.createElement('span');
+      detail.className = 'execution-detail';
+      row.append(name, detail);
+      timeline.appendChild(row);
+    }
+    row.dataset.phase = event.phase || '';
+    row.querySelector('.execution-name').textContent = TOOL_LABELS[event.display_code] || '工具执行';
+    const parts = [TOOL_PHASE_LABELS[event.phase] || '状态更新'];
+    if (Number.isFinite(event.result_count)) parts.push(`${event.result_count} 项结果`);
+    if (Number.isFinite(event.elapsed_ms)) parts.push(`${(event.elapsed_ms / 1000).toFixed(1)} 秒`);
+    if (event.reason_code && REASON_LABELS[event.reason_code]) parts.push(REASON_LABELS[event.reason_code]);
+    row.querySelector('.execution-detail').textContent = parts.join(' · ');
+    scrollToBottom();
+  }
+
+  function renderRequestStatus(bubble, event) {
+    bubble.dataset.requestStatus = event.status || '';
+    if (event.status !== 'degraded') return;
+    let notice = bubble.querySelector('.request-status-notice');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.className = 'request-status-notice';
+      bubble.appendChild(notice);
+    }
+    const labels = (event.reason_codes || []).map((code) => REASON_LABELS[code]).filter(Boolean);
+    notice.textContent = labels.length
+      ? `本次回答已降级：${labels.join('；')}`
+      : '本次回答未能完整完成，请留意正文说明。';
+  }
+
   function renderSessions() {
     sessionList.replaceChildren();
     if (!sessions.length) {
@@ -559,6 +638,12 @@
         },
         onFile(file) {
           renderFileCard(bubble, file);
+        },
+        onToolStatus(toolEvent) {
+          renderToolStatus(bubble, toolEvent);
+        },
+        onRequestStatus(statusEvent) {
+          renderRequestStatus(bubble, statusEvent);
         },
         onReasoning() {
           if (!answer && requestMode === 'expert') {

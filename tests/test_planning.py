@@ -331,7 +331,12 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
         "file_type": "pdf",
     }
     assert events[3] == {"type": "citations", "citations": []}
-    assert events[4] == {"chunk": "[DONE]"}
+    assert events[4] == {
+        "type": "request_status",
+        "status": "success",
+        "reason_codes": [],
+    }
+    assert events[5] == {"chunk": "[DONE]"}
     assistant_save = next(
         item for item in saved_messages if item[0][1] == "assistant"
     )

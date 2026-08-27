@@ -217,10 +217,12 @@ const API = (() => {
       };
     },
 
-    // 流式对话：后端SSE载荷有四类业务形状——
+    // 流式对话：后端SSE载荷还包含脱敏工具动态与结构化请求终态。
     //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
     //   {"type": "citations", "citations": [...]} 引用来源
     //   {"type": "file", "file_id": "...", ...} 生成文件交付信息
+    //   {"type": "tool_status", ...} 工具开始/结束（不含参数与正文）
+    //   {"type": "request_status", ...} 完整成功或结构化降级终态
     //   {"error": "..."} 服务端异常
     async chatStream(sessionId, message, mode, attachmentIds, handlers) {
       const response = await fetch(`${backendUrl}/chat/stream`, {
@@ -287,6 +289,30 @@ const API = (() => {
           }
           if (payload.type === 'citations') {
             handlers.onCitations?.(payload.citations || []);
+            continue;
+          }
+          if (payload.type === 'tool_status') {
+            handlers.onToolStatus?.({
+              tool: String(payload.tool || ''),
+              phase: String(payload.phase || ''),
+              display_code: String(payload.display_code || ''),
+              elapsed_ms: payload.elapsed_ms !== null && Number.isFinite(Number(payload.elapsed_ms))
+                ? Number(payload.elapsed_ms)
+                : null,
+              result_count: payload.result_count !== null && Number.isFinite(Number(payload.result_count))
+                ? Number(payload.result_count)
+                : null,
+              reason_code: String(payload.reason_code || ''),
+            });
+            continue;
+          }
+          if (payload.type === 'request_status') {
+            handlers.onRequestStatus?.({
+              status: String(payload.status || ''),
+              reason_codes: Array.isArray(payload.reason_codes)
+                ? payload.reason_codes.map((item) => String(item))
+                : [],
+            });
             continue;
           }
           if (payload.chunk === '[DONE]') {

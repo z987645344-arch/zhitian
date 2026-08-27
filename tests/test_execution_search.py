@@ -123,7 +123,7 @@ def test_search_summary_failure_returns_friendly_message_and_counts_fallback(mon
 
     result = execution._search_web("原始问题")
 
-    assert result == execution.SEARCH_SUMMARY_FALLBACK_MESSAGE
+    assert result == "已取得联网搜索结果，但模型整理超时，请稍后重试。"
     assert "测试结果" not in result
     assert "https://" not in result
     fallback_counter.assert_called_once()
@@ -156,7 +156,7 @@ def test_search_budget_returns_friendly_message_without_llm_wait(monkeypatch):
 
     result = execution._search_web("原始问题")
 
-    assert result == execution.SEARCH_SUMMARY_FALLBACK_MESSAGE
+    assert result == "已取得联网搜索结果，但模型整理时间不足，请稍后重试。"
     assert "测试结果" not in result
     llm.assert_not_called()
     fallback_counter.assert_called_once()
@@ -175,7 +175,7 @@ def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
 
     chunks = list(execution.stream_search_result("原始问题", tier="expert"))
 
-    assert chunks == [execution.SEARCH_SUMMARY_FALLBACK_MESSAGE]
+    assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]
     assert "测试结果" not in chunks[0]
     assert "https://" not in chunks[0]
     fallback_counter.assert_called_once()

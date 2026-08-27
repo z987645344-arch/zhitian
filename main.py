@@ -15,7 +15,7 @@ import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -413,6 +413,14 @@ class ChatFileEvent(BaseModel):
     file_id: str
     download_filename: str
     file_type: str
+
+
+class ChatRequestStatusEvent(BaseModel):
+    """SSE终态事件；HTTP流已开始后用它区分完整成功与结构化降级。"""
+
+    type: Literal["request_status"] = "request_status"
+    status: Literal["success", "degraded", "error"]
+    reason_codes: List[str] = Field(default_factory=list)
 
 
 class SessionRenameRequest(BaseModel):
@@ -3171,6 +3179,7 @@ def _chat_stream_events(
     attachment_context: List[str],
     attachment_ids: List[str],
     api_key: str,
+    tool_event_sink=None,
 ):
     trace_token = observability.set_trace_id(trace_id, mode=request.mode)
     usage_token = document_usage.begin_request()
@@ -3197,6 +3206,7 @@ def _chat_stream_events(
                 extra_context=attachment_context,
                 owner_user_id=current_user["user_id"],
                 attachment_ids=attachment_ids,
+                tool_event_sink=tool_event_sink,
             )
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
@@ -3204,6 +3214,7 @@ def _chat_stream_events(
             has_error = bool(final_state.get("error"))
             yield _sse_data({"chunk": final_data})
             yield _sse_data({"type": "citations", "citations": citations})
+            yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
                 memory.save_message(
@@ -3237,7 +3248,11 @@ def _chat_stream_events(
                         final_data,
                         "fast"
                     )
-            request_status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
+            request_status = (
+                "degraded"
+                if has_error or final_state.get("degradation_reasons") or _is_degraded_response(final_data)
+                else "success"
+            )
             return
 
         state = _prepare_stream_state(
@@ -3247,6 +3262,7 @@ def _chat_stream_events(
             extra_context=attachment_context,
             owner_user_id=current_user["user_id"],
             attachment_ids=attachment_ids,
+            tool_event_sink=tool_event_sink,
         )
         reasoning = state.get("decision_reasoning")
         yield _sse_data({"chunk": "", "reasoning": reasoning})
@@ -3265,6 +3281,9 @@ def _chat_stream_events(
                 time.sleep(0.03)
         elif state["intent"] == "search":
             emitted = False
+            search_started_at = time.perf_counter()
+            reasons_before = list(state.get("degradation_reasons", []))
+            execution.emit_tool_status(state, "search_web", "started")
             try:
                 stream = execution.stream_search_result(
                     query=perception_output.message,
@@ -3272,12 +3291,40 @@ def _chat_stream_events(
                     session_id=perception_output.session_id,
                     tier=perception_output.mode,
                     execution_state=state,
+                    total_budget=execution.remaining_request_budget(
+                        state,
+                        config.SEARCH_TOTAL_TIMEOUT,
+                    ),
                 )
                 for chunk in stream:
                     emitted = True
                     chunks.append(chunk)
                     yield _sse_data({"chunk": chunk})
+                new_reasons = [
+                    code for code in state.get("degradation_reasons", [])
+                    if code not in reasons_before
+                ]
+                execution.emit_tool_status(
+                    state,
+                    "search_web",
+                    "degraded" if new_reasons else "succeeded",
+                    elapsed_ms=int((time.perf_counter() - search_started_at) * 1000),
+                    reason_code=new_reasons[0] if new_reasons else None,
+                )
             except Exception as e:
+                if llm_provider.is_timeout_error(e):
+                    execution.open_deepseek_circuit(
+                        state,
+                        "search_summary_timeout",
+                        final_attempt_consumed=True,
+                    )
+                execution.emit_tool_status(
+                    state,
+                    "search_web",
+                    "failed",
+                    elapsed_ms=int((time.perf_counter() - search_started_at) * 1000),
+                    reason_code=(state.get("degradation_reasons") or [None])[-1],
+                )
                 logger.error("/chat/stream搜索流式处理失败：session_id=%s error_type=%s", request.session_id, type(e).__name__)
                 has_error = True
                 if not emitted:
@@ -3289,22 +3336,59 @@ def _chat_stream_events(
                         owner_user_id=current_user["user_id"],
                         attachment_ids=attachment_ids,
                         prepared_state=state,
+                        tool_event_sink=tool_event_sink,
                     )
                     final_data = final_state["response"] or "抱歉，搜索结果处理失败，请稍后重试"
+                    state = final_state
                     citations = _serialize_citations(final_state.get("citations", []))
                     chunks.append(final_data)
                     yield _sse_data({"chunk": final_data})
         elif state["intent"] == "chat":
-            stream = execution._llm_chat(
-                message=perception_output.message,
-                session_id=perception_output.session_id,
-                stream=True,
-                system_prompt=_build_stream_system_prompt(state["context"]),
-                tier=perception_output.mode
-            )
-            for chunk in stream:
-                chunks.append(chunk)
-                yield _sse_data({"chunk": chunk})
+            answer_started_at = time.perf_counter()
+            execution.emit_tool_status(state, "llm_chat", "started")
+            try:
+                if not execution.claim_post_timeout_final_attempt(state):
+                    answer = "模型服务本轮已超时，未继续生成回答。"
+                    chunks.append(answer)
+                    yield _sse_data({"chunk": answer})
+                else:
+                    stream = execution._llm_chat(
+                        message=perception_output.message,
+                        session_id=perception_output.session_id,
+                        stream=True,
+                        system_prompt=_build_stream_system_prompt(state["context"]),
+                        tier=perception_output.mode,
+                        timeout=execution.remaining_request_budget(
+                            state,
+                            config.EXPERT_LLM_TIMEOUT,
+                        ),
+                        _execution_state=state,
+                    )
+                    for chunk in stream:
+                        chunks.append(chunk)
+                        yield _sse_data({"chunk": chunk})
+                execution.emit_tool_status(
+                    state,
+                    "llm_chat",
+                    "degraded" if state.get("degradation_reasons") else "succeeded",
+                    elapsed_ms=int((time.perf_counter() - answer_started_at) * 1000),
+                    reason_code=(state.get("degradation_reasons") or [None])[-1],
+                )
+            except Exception as exc:
+                if llm_provider.is_timeout_error(exc):
+                    execution.open_deepseek_circuit(
+                        state,
+                        "final_answer_timeout",
+                        final_attempt_consumed=True,
+                    )
+                execution.emit_tool_status(
+                    state,
+                    "llm_chat",
+                    "failed",
+                    elapsed_ms=int((time.perf_counter() - answer_started_at) * 1000),
+                    reason_code=(state.get("degradation_reasons") or [None])[-1],
+                )
+                raise
         else:
             final_state = planning.run_graph_state(
                 perception_output.session_id,
@@ -3314,7 +3398,9 @@ def _chat_stream_events(
                 owner_user_id=current_user["user_id"],
                 attachment_ids=attachment_ids,
                 prepared_state=state,
+                tool_event_sink=tool_event_sink,
             )
+            state = final_state
             final_data = final_state["response"]
             citations = _serialize_citations(final_state.get("citations", []))
             generated_file_events = _serialize_generated_file_events(final_state)
@@ -3326,13 +3412,18 @@ def _chat_stream_events(
                 request_status = "degraded"
                 request_error_type = str(final_state.get("error") or "")
                 yield _sse_data({"type": "citations", "citations": citations})
+                yield _sse_data(_request_status_event(final_state, True).model_dump())
                 yield _sse_data({"chunk": "[DONE]"})
                 return
             for file_event in generated_file_events:
                 yield _sse_data(file_event.model_dump())
 
         final_data = "".join(chunks)
-        status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
+        status = (
+            "degraded"
+            if has_error or state.get("degradation_reasons") or _is_degraded_response(final_data)
+            else "success"
+        )
         request_status = status
         if not has_error:
             memory.save_message(
@@ -3349,6 +3440,7 @@ def _chat_stream_events(
         if status == "success":
             auth.bind_session(perception_output.session_id, current_user["user_id"])
         yield _sse_data({"type": "citations", "citations": citations})
+        yield _sse_data(_request_status_event(state, has_error).model_dump())
         yield _sse_data({"chunk": "[DONE]"})
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
@@ -3372,6 +3464,7 @@ def _chat_stream_events(
                 )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), request.session_id, type(e).__name__)
+        yield _sse_data(ChatRequestStatusEvent(status="error").model_dump())
         yield _sse_data({"error": "服务暂时异常，请重试"})
         request_error_type = type(e).__name__
     finally:
@@ -3404,6 +3497,11 @@ async def _chat_stream_events_with_heartbeat(
 
     def produce() -> None:
         api_key_token = llm_provider.bind_request_api_key(api_key)
+        def emit_tool_event(event: execution.ToolStatusEvent) -> None:
+            loop.call_soon_threadsafe(
+                event_queue.put_nowait,
+                ("event", _sse_data(event.model_dump())),
+            )
         try:
             for event in _chat_stream_events(
                 request,
@@ -3413,6 +3511,7 @@ async def _chat_stream_events_with_heartbeat(
                 attachment_context,
                 attachment_ids,
                 api_key,
+                tool_event_sink=emit_tool_event,
             ):
                 loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
         except BaseException as exc:
@@ -3451,6 +3550,7 @@ def _prepare_stream_state(
     extra_context: Optional[List[str]] = None,
     owner_user_id: str = "",
     attachment_ids: Optional[List[str]] = None,
+    tool_event_sink=None,
 ) -> planning.AgentState:
     state = planning._new_agent_state(
         session_id,
@@ -3459,7 +3559,11 @@ def _prepare_stream_state(
         extra_context=extra_context,
         owner_user_id=owner_user_id,
         attachment_ids=attachment_ids,
+        tool_event_sink=tool_event_sink,
     )
+    if mode == "expert":
+        # 容器时钟与本地时区无关；这里只使用单调时钟维护已有请求级总预算。
+        state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     try:
         state = planning.classify_node(state)
         state = planning.retrieve_node(state)
@@ -3495,6 +3599,20 @@ def _serialize_citations(citations: list) -> list[dict]:
                 "score": float(citation.get("score", 0.0))
             })
     return serialized
+
+
+def _request_status_event(state: dict, has_error: bool = False) -> ChatRequestStatusEvent:
+    """Build one terminal status from structured state rather than response wording."""
+    reason_codes = [
+        code
+        for code in (state.get("degradation_reasons", []) or [])
+        if code in execution.DEGRADATION_REASON_CODES
+    ]
+    if has_error and not reason_codes:
+        return ChatRequestStatusEvent(status="error", reason_codes=[])
+    if has_error or reason_codes or state.get("error"):
+        return ChatRequestStatusEvent(status="degraded", reason_codes=reason_codes)
+    return ChatRequestStatusEvent(status="success", reason_codes=[])
 
 
 def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:

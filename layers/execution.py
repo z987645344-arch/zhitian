@@ -49,6 +49,44 @@ class ToolResult(BaseModel):
     blocked_by_content_taint: bool = False
 
 
+class ToolStatusEvent(BaseModel):
+    """可安全发送给客户端的工具执行状态，不包含参数或内容。"""
+
+    type: Literal["tool_status"] = "tool_status"
+    tool: str
+    phase: Literal["started", "succeeded", "degraded", "failed", "skipped"]
+    display_code: str
+    elapsed_ms: Optional[int] = None
+    result_count: Optional[int] = None
+    reason_code: Optional[str] = None
+
+
+DEGRADATION_REASON_CODES = {
+    "classification_timeout",
+    "planning_timeout",
+    "reflection_timeout",
+    "web_provider_failed",
+    "web_no_results",
+    "query_rewrite_timeout",
+    "search_summary_timeout",
+    "search_summary_failed",
+    "document_rerank_timeout",
+    "final_answer_timeout",
+    "output_observation_timeout",
+}
+
+TOOL_DISPLAY_CODES = {
+    "search_web": "web_search",
+    "search_documents": "knowledge_search",
+    "list_documents": "document_list",
+    "llm_chat": "answer_generation",
+    "generate_file": "file_generation",
+    "convert_document": "document_conversion",
+}
+LOCAL_EVIDENCE_STRONG_SCORE_MARGIN = 0.10
+LOCAL_EVIDENCE_STRONG_RERANK_SCORE = 8.5
+
+
 class DocumentListItem(BaseModel):
     source: str
     doc_id: str
@@ -87,7 +125,7 @@ DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS = max(
     1.0,
     float(config.CONVERSION_TIMEOUT_SECONDS) * 2 + RETRY_DELAY,
 )
-SEARCH_SUMMARY_FALLBACK_MESSAGE = "很抱歉，联网搜索遇到问题，暂时无法为您整理结果，建议稍后重试或换个方式提问。"
+SEARCH_SUMMARY_FALLBACK_MESSAGE = "已取得联网搜索结果，但模型未能完成整理，请稍后重试。"
 CONTENT_TAINT_BLOCK_MESSAGE = "本次请求包含联网搜索结果，为安全考虑本次不支持生成文件或格式转换操作，如需使用请另起一次不包含联网搜索的请求。"
 WRITE_TOOLS = {"generate_file", "convert_document"}
 OUTPUT_ANOMALY_REASON_TYPES = {
@@ -106,6 +144,103 @@ TOOL_REGISTRY = {
     "convert_document": "_convert_document",
     "generate_file": "generate_file",
 }
+
+
+def add_degradation_reason(state: Optional[dict], reason_code: str) -> None:
+    """在请求状态内追加稳定原因码；不记录用户输入或供应商返回内容。"""
+    if state is None or reason_code not in DEGRADATION_REASON_CODES:
+        return
+    reasons = state.setdefault("degradation_reasons", [])
+    if reason_code not in reasons:
+        reasons.append(reason_code)
+
+
+def open_deepseek_circuit(
+    state: Optional[dict],
+    reason_code: str,
+    final_attempt_consumed: bool = False,
+) -> None:
+    """标记本请求已发生DeepSeek超时，供后续可选模型阶段快速跳过。"""
+    if state is None:
+        return
+    add_degradation_reason(state, reason_code)
+    state["deepseek_circuit_open"] = True
+    if final_attempt_consumed:
+        state["post_timeout_final_attempted"] = True
+
+
+def deepseek_circuit_open(state: Optional[dict]) -> bool:
+    return bool(state and state.get("deepseek_circuit_open"))
+
+
+def remaining_request_budget(state: Optional[dict], fallback: float) -> float:
+    """读取AgentState中的既有请求截止时间；无截止时间时沿用调用方预算。"""
+    deadline = float((state or {}).get("complex_deadline") or 0.0)
+    if deadline <= 0:
+        return max(0.0, float(fallback))
+    return max(0.0, min(float(fallback), deadline - time.perf_counter()))
+
+
+def claim_post_timeout_final_attempt(state: Optional[dict]) -> bool:
+    """熔断后全请求只允许一次必要的最终回答调用。"""
+    if not deepseek_circuit_open(state):
+        return True
+    if state.get("post_timeout_final_attempted"):
+        return False
+    state["post_timeout_final_attempted"] = True
+    return True
+
+
+def emit_tool_status(
+    state: Optional[dict],
+    tool: str,
+    phase: str,
+    elapsed_ms: Optional[int] = None,
+    result_count: Optional[int] = None,
+    reason_code: Optional[str] = None,
+) -> ToolStatusEvent:
+    """在真实工具边界产生脱敏事件；可选sink用于SSE实时转发。"""
+    safe_reason_code = reason_code if reason_code in DEGRADATION_REASON_CODES else None
+    event = ToolStatusEvent(
+        tool=tool,
+        phase=phase,
+        display_code=TOOL_DISPLAY_CODES.get(tool, "tool_execution"),
+        elapsed_ms=elapsed_ms,
+        result_count=result_count,
+        reason_code=safe_reason_code,
+    )
+    if state is not None:
+        state.setdefault("tool_status_events", []).append(event)
+        sink = state.get("tool_event_sink")
+        if callable(sink):
+            sink(event)
+    return event
+
+
+def _result_count(result: ToolResult) -> Optional[int]:
+    if result.tool == "search_documents":
+        return int((result.metadata or {}).get("candidate_count", 0) or 0)
+    if result.tool == "list_documents":
+        return int((result.metadata or {}).get("document_count", 0) or 0)
+    return None
+
+
+def local_evidence_is_strong(metadata: dict) -> bool:
+    """Conservative server-side F44 gate; never relies on response wording."""
+    candidate_count = int(metadata.get("candidate_count", 0) or 0)
+    trusted_count = int(metadata.get("trusted_count", 0) or 0)
+    if metadata.get("supplied_context_answer"):
+        return True
+    if metadata.get("title_source_match"):
+        return candidate_count <= 3 and trusted_count <= 3
+    return bool(
+        metadata.get("rerank_succeeded")
+        and trusted_count >= 2
+        and float(metadata.get("best_score", 0.0) or 0.0)
+        >= float(config.RAG_SCORE_THRESHOLD) + LOCAL_EVIDENCE_STRONG_SCORE_MARGIN
+        and float(metadata.get("best_rerank_score", 0.0) or 0.0)
+        >= LOCAL_EVIDENCE_STRONG_RERANK_SCORE
+    )
 
 
 def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
@@ -129,6 +264,9 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
 
     func = globals()[TOOL_REGISTRY[tool]]
     last_error = ""
+    started_at = time.perf_counter()
+    reasons_before = set((state or {}).get("degradation_reasons", []))
+    emit_tool_status(state, tool, "started")
     max_attempts = 1 if tool in {
         "search_web", "llm_chat", "convert_document", "generate_file"
     } else MAX_RETRIES + 1
@@ -136,33 +274,96 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
         try:
             if tool == "search_web":
                 result = func(**params, _execution_state=state)
+            elif tool in {"search_documents", "llm_chat"}:
+                result = func(**params, _execution_state=state)
             else:
                 result = func(**params)
             if isinstance(result, ToolResult):
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                new_reasons = [
+                    item
+                    for item in (state or {}).get("degradation_reasons", [])
+                    if item not in reasons_before
+                ]
+                if result.status == "success":
+                    emit_tool_status(
+                        state,
+                        tool,
+                        "degraded" if new_reasons else "succeeded",
+                        elapsed_ms=elapsed_ms,
+                        result_count=_result_count(result),
+                        reason_code=new_reasons[0] if new_reasons else None,
+                    )
+                else:
+                    emit_tool_status(
+                        state,
+                        tool,
+                        "failed",
+                        elapsed_ms=elapsed_ms,
+                    )
                 return result
             if isinstance(result, GenerateFileResult):
-                return ToolResult(
+                tool_result = ToolResult(
                     tool=tool,
                     status="success" if result.success else "error",
                     data=result.model_dump_json(),
                     error_msg=result.error_type if not result.success else "",
                     metadata=result.model_dump(),
                 )
+                emit_tool_status(
+                    state,
+                    tool,
+                    "succeeded" if result.success else "failed",
+                    elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+                return tool_result
             if isinstance(result, ConvertDocumentResult):
-                return ToolResult(
+                tool_result = ToolResult(
                     tool=tool,
                     status="success" if result.success else "error",
                     data=result.model_dump_json(),
                     error_msg=result.error_type if not result.success else "",
                     metadata=result.model_dump(),
                 )
-            return ToolResult(tool=tool, status="success", data=result, error_msg="")
+                emit_tool_status(
+                    state,
+                    tool,
+                    "succeeded" if result.success else "failed",
+                    elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+                return tool_result
+            tool_result = ToolResult(tool=tool, status="success", data=result, error_msg="")
+            emit_tool_status(
+                state,
+                tool,
+                "succeeded",
+                elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+            )
+            return tool_result
         except Exception as e:
             last_error = str(e)
+            if llm_provider.is_timeout_error(e):
+                reason_code = (
+                    "final_answer_timeout"
+                    if tool == "llm_chat"
+                    else "search_summary_timeout"
+                )
+                open_deepseek_circuit(state, reason_code)
             logger.warning("工具调用失败：tool=%s attempt=%s error_type=%s", tool, attempt + 1, type(e).__name__)
+            if deepseek_circuit_open(state):
+                break
             if attempt + 1 < max_attempts:
                 time.sleep(RETRY_DELAY)
 
+    emit_tool_status(
+        state,
+        tool,
+        "failed",
+        elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+        reason_code=(state or {}).get("degradation_reasons", [None])[-1]
+        if (state or {}).get("degradation_reasons")
+        else None,
+    )
     return ToolResult(tool=tool, status="error", data="", error_msg=last_error)
 
 
@@ -179,9 +380,12 @@ def _search_web(
         raise ValueError("TAVILY_API_KEY未配置")
 
     started_at = time.perf_counter()
-    search_budget = min(
-        config.SEARCH_TOTAL_TIMEOUT,
-        float(total_budget or config.SEARCH_TOTAL_TIMEOUT),
+    search_budget = remaining_request_budget(
+        _execution_state,
+        min(
+            config.SEARCH_TOTAL_TIMEOUT,
+            float(total_budget or config.SEARCH_TOTAL_TIMEOUT),
+        ),
     )
     deadline = started_at + max(0.001, search_budget)
     original_question = query
@@ -189,7 +393,8 @@ def _search_web(
         original_question,
         context,
         timeout=min(config.SEARCH_QUERY_REWRITE_TIMEOUT, _remaining_budget(deadline)),
-        tier=tier
+        tier=tier,
+        _execution_state=_execution_state,
     )
     provider = web_search_provider.create_web_search_provider(
         config.WEB_SEARCH_PROVIDER,
@@ -202,6 +407,7 @@ def _search_web(
             if _execution_state is not None:
                 _execution_state["external_content_tainted"] = True
     except Exception as e:
+        add_degradation_reason(_execution_state, "web_provider_failed")
         logger.warning("Tavily调用失败，降级为模型知识回答：error_type=%s", type(e).__name__)
         answer = _fallback_llm_answer(
             original_question,
@@ -209,12 +415,14 @@ def _search_web(
             context=context,
             prefix="（搜索服务暂时不可用，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=_execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, _execution_state)
         return answer
 
     if not results:
+        add_degradation_reason(_execution_state, "web_no_results")
         logger.warning("Tavily返回空结果，降级为模型知识回答：query_len=%s", len(optimized_query or ""))
         answer = _fallback_llm_answer(
             original_question,
@@ -222,7 +430,8 @@ def _search_web(
             context=context,
             prefix="（网络搜索无结果，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=_execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, _execution_state)
         return answer
@@ -235,7 +444,8 @@ def _search_web(
             context=context,
             prefix="（搜索结果相关性不足，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=_execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, _execution_state)
         return answer
@@ -247,19 +457,25 @@ def _search_web(
             len(optimized_query or ""),
         )
         observability.record_search_fallback()
-        return SEARCH_SUMMARY_FALLBACK_MESSAGE
+        add_degradation_reason(_execution_state, "search_summary_timeout")
+        return "已取得联网搜索结果，但模型整理时间不足，请稍后重试。"
 
     search_results = json.dumps(
         [candidate.model_dump() for candidate in results],
         ensure_ascii=False,
     )
     try:
+        if not claim_post_timeout_final_attempt(_execution_state):
+            add_degradation_reason(_execution_state, "search_summary_timeout")
+            return "已取得联网搜索结果，但模型服务本轮已超时，未继续整理。"
         answer = _llm_chat(
             message=original_question,
             search_results=search_results,
             original_question=original_question,
             tier=tier,
-            timeout=remaining
+            timeout=remaining,
+            _execution_state=_execution_state,
+            _timeout_reason_code="search_summary_timeout",
         )
         _observe_external_search_output(
             original_question,
@@ -269,13 +485,25 @@ def _search_web(
         )
         return answer
     except Exception as e:
+        if llm_provider.is_timeout_error(e):
+            open_deepseek_circuit(
+                _execution_state,
+                "search_summary_timeout",
+                final_attempt_consumed=True,
+            )
+        else:
+            add_degradation_reason(_execution_state, "search_summary_failed")
         logger.warning(
             "搜索结果整理失败：query_len=%s error_type=%s",
             len(optimized_query or ""),
             type(e).__name__
         )
         observability.record_search_fallback()
-        return SEARCH_SUMMARY_FALLBACK_MESSAGE
+        return (
+            "已取得联网搜索结果，但模型整理超时，请稍后重试。"
+            if llm_provider.is_timeout_error(e)
+            else SEARCH_SUMMARY_FALLBACK_MESSAGE
+        )
 
 
 def stream_search_result(
@@ -284,18 +512,24 @@ def stream_search_result(
     session_id: str = None,
     tier: str = "fast",
     execution_state: Optional[dict] = None,
+    total_budget: Optional[float] = None,
 ) -> Iterator[str]:
     """流式联网搜索：Tavily完成后用所选模型逐chunk整理搜索结果。"""
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
         raise ValueError("TAVILY_API_KEY未配置")
 
-    deadline = time.perf_counter() + config.SEARCH_TOTAL_TIMEOUT
+    search_budget = remaining_request_budget(
+        execution_state,
+        min(config.SEARCH_TOTAL_TIMEOUT, float(total_budget or config.SEARCH_TOTAL_TIMEOUT)),
+    )
+    deadline = time.perf_counter() + max(0.001, search_budget)
     original_question = query
     optimized_query = _rewrite_search_query(
         original_question,
         context,
         timeout=min(config.SEARCH_QUERY_REWRITE_TIMEOUT, _remaining_budget(deadline)),
-        tier=tier
+        tier=tier,
+        _execution_state=execution_state,
     )
     provider = web_search_provider.create_web_search_provider(
         config.WEB_SEARCH_PROVIDER,
@@ -308,6 +542,7 @@ def stream_search_result(
             if execution_state is not None:
                 execution_state["external_content_tainted"] = True
     except Exception as e:
+        add_degradation_reason(execution_state, "web_provider_failed")
         logger.warning("Tavily调用失败，流式搜索降级为模型知识回答：error_type=%s", type(e).__name__)
         answer = _fallback_llm_answer(
             original_question,
@@ -315,13 +550,15 @@ def stream_search_result(
             context=context,
             prefix="（搜索服务暂时不可用，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, execution_state)
         yield answer
         return
 
     if not results:
+        add_degradation_reason(execution_state, "web_no_results")
         logger.warning("Tavily返回空结果，流式搜索降级为模型知识回答：query_len=%s", len(optimized_query or ""))
         answer = _fallback_llm_answer(
             original_question,
@@ -329,7 +566,8 @@ def stream_search_result(
             context=context,
             prefix="（网络搜索无结果，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, execution_state)
         yield answer
@@ -343,7 +581,8 @@ def stream_search_result(
             context=context,
             prefix="（搜索结果相关性不足，以下为模型知识回答）",
             timeout=_remaining_budget(deadline),
-            tier=tier
+            tier=tier,
+            _execution_state=execution_state,
         )
         _observe_external_search_output(original_question, answer, tier, execution_state)
         yield answer
@@ -356,7 +595,8 @@ def stream_search_result(
             len(optimized_query or ""),
         )
         observability.record_search_fallback()
-        yield SEARCH_SUMMARY_FALLBACK_MESSAGE
+        add_degradation_reason(execution_state, "search_summary_timeout")
+        yield "已取得联网搜索结果，但模型整理时间不足，请稍后重试。"
         return
 
     search_results = json.dumps(
@@ -366,13 +606,19 @@ def stream_search_result(
     emitted = False
     collected_chunks = []
     try:
+        if not claim_post_timeout_final_attempt(execution_state):
+            add_degradation_reason(execution_state, "search_summary_timeout")
+            yield "已取得联网搜索结果，但模型服务本轮已超时，未继续整理。"
+            return
         stream = _llm_chat(
             message=original_question,
             search_results=search_results,
             original_question=original_question,
             stream=True,
             tier=tier,
-            timeout=remaining
+            timeout=remaining,
+            _execution_state=execution_state,
+            _timeout_reason_code="search_summary_timeout",
         )
         for chunk in stream:
             emitted = True
@@ -385,6 +631,14 @@ def stream_search_result(
             execution_state,
         )
     except Exception as e:
+        if llm_provider.is_timeout_error(e):
+            open_deepseek_circuit(
+                execution_state,
+                "search_summary_timeout",
+                final_attempt_consumed=True,
+            )
+        else:
+            add_degradation_reason(execution_state, "search_summary_failed")
         logger.warning(
             "流式搜索结果整理失败：query_len=%s emitted=%s error_type=%s",
             len(optimized_query or ""),
@@ -394,7 +648,11 @@ def stream_search_result(
         if emitted:
             return
         observability.record_search_fallback()
-        yield SEARCH_SUMMARY_FALLBACK_MESSAGE
+        yield (
+            "已取得联网搜索结果，但模型整理超时，请稍后重试。"
+            if llm_provider.is_timeout_error(e)
+            else SEARCH_SUMMARY_FALLBACK_MESSAGE
+        )
 
 
 def _search_documents(
@@ -404,24 +662,36 @@ def _search_documents(
     rerank_enabled: bool = True,
     context: list[str] = None,
     timeout: Optional[float] = None,
+    _execution_state: Optional[dict] = None,
 ) -> ToolResult:
     """检索已上传的本地文档并整理为自然语言。"""
     verified_doc_ids = auth.get_verified_doc_ids()
+    diagnostics = memory.SearchDiagnostics()
+    effective_rerank_enabled = rerank_enabled and not deepseek_circuit_open(_execution_state)
     results = memory.search_documents(
         query,
         top_k=5,
         verified_doc_ids=verified_doc_ids,
         tier=tier,
-        enable_rerank=rerank_enabled,
+        enable_rerank=effective_rerank_enabled,
         timeout=timeout,
+        diagnostics=diagnostics,
     )
+    if diagnostics.rerank_timed_out:
+        open_deepseek_circuit(_execution_state, "document_rerank_timeout")
     # 命中埋点：只要chunk进入召回候选就算，与下面的阈值筛选无关。这里只写
     # 进程内缓存、不落库，由请求出口统一入库并按文档级去重。
     document_usage.record_hit_candidates(
         str(item.get("doc_id", "")) for item in results
     )
     if not results and context and generate_answer:
-        return _answer_from_supplied_context(query, context, tier, timeout=timeout)
+        return _answer_from_supplied_context(
+            query,
+            context,
+            tier,
+            timeout=timeout,
+            _execution_state=_execution_state,
+        )
     if not results:
         return ToolResult(
             tool="search_documents",
@@ -443,7 +713,13 @@ def _search_documents(
             config.RAG_SCORE_THRESHOLD
         )
         if context and generate_answer:
-            return _answer_from_supplied_context(query, context, tier, timeout=timeout)
+            return _answer_from_supplied_context(
+                query,
+                context,
+                tier,
+                timeout=timeout,
+                _execution_state=_execution_state,
+            )
         return ToolResult(
             tool="search_documents",
             status="success",
@@ -460,28 +736,55 @@ def _search_documents(
         )
         for item in trusted_results
     ]
-    if generate_answer and context:
-        context_result = _answer_from_supplied_context(query, context, tier, timeout=timeout)
-        answer = context_result.data
-    elif generate_answer:
-        answer = _answer_from_documents(query, trusted_results, tier=tier, timeout=timeout)
-    else:
-        answer = _format_document_tool_context(trusted_results)
     title_source_match = any(
         item.get("title_source_match") and float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
         for item in trusted_results
     )
+    metadata = {
+        "title_source_match": title_source_match,
+        "candidate_count": len(results),
+        "trusted_count": len(trusted_results),
+        "unique_document_count": len({str(item.get("doc_id", "")) for item in trusted_results}),
+        "best_score": best_score,
+        "best_rerank_score": max(
+            (float(item.get("rerank_score", 0.0) or 0.0) for item in trusted_results),
+            default=0.0,
+        ),
+        "rerank_succeeded": diagnostics.rerank_succeeded,
+        "rerank_timed_out": diagnostics.rerank_timed_out,
+        "supplied_context_answer": bool(context and generate_answer),
+    }
+    defer_answer_for_web = bool(
+        generate_answer
+        and not context
+        and deepseek_circuit_open(_execution_state)
+        and not local_evidence_is_strong(metadata)
+    )
+    if generate_answer and context:
+        context_result = _answer_from_supplied_context(
+            query,
+            context,
+            tier,
+            timeout=timeout,
+            _execution_state=_execution_state,
+        )
+        answer = context_result.data
+    elif generate_answer and not defer_answer_for_web:
+        answer = _answer_from_documents(
+            query,
+            trusted_results,
+            tier=tier,
+            timeout=timeout,
+            _execution_state=_execution_state,
+        )
+    else:
+        answer = _format_document_tool_context(trusted_results)
     return ToolResult(
         tool="search_documents",
         status="success",
         data=answer,
         citations=citations,
-        metadata={
-            "title_source_match": title_source_match,
-            "candidate_count": len(results),
-            "trusted_count": len(trusted_results),
-            "supplied_context_answer": bool(context and generate_answer),
-        }
+        metadata=metadata,
     )
 
 
@@ -490,20 +793,34 @@ def _answer_from_supplied_context(
     context: list[str],
     tier: str,
     timeout: Optional[float] = None,
+    _execution_state: Optional[dict] = None,
 ) -> ToolResult:
     system_prompt = (
         "请只根据本轮提供的附件或上下文回答用户问题。不得编造上下文中没有的信息；"
         "如果无法回答，明确说明依据不足。"
         "\n\n本轮附件或上下文：\n" + "\n\n".join(context)
     )
-    answer = str(
-        _llm_chat(
-            message=query,
-            system_prompt=system_prompt,
-            tier=tier,
-            timeout=timeout,
-        )
-    ).strip()
+    if not claim_post_timeout_final_attempt(_execution_state):
+        answer = "模型服务本轮已超时，无法继续整理附件或上下文。"
+    else:
+        try:
+            answer = str(
+                _llm_chat(
+                    message=query,
+                    system_prompt=system_prompt,
+                    tier=tier,
+                    timeout=timeout,
+                    _execution_state=_execution_state,
+                )
+            ).strip()
+        except Exception as exc:
+            if llm_provider.is_timeout_error(exc):
+                open_deepseek_circuit(
+                    _execution_state,
+                    "final_answer_timeout",
+                    final_attempt_consumed=True,
+                )
+            raise
     return ToolResult(
         tool="search_documents",
         status="success",
@@ -1080,6 +1397,7 @@ def _answer_from_documents(
     results: list[dict],
     tier: str = "fast",
     timeout: Optional[float] = None,
+    _execution_state: Optional[dict] = None,
 ) -> str:
     """基于可信文档chunk生成回答，来源信息只通过citations返回。"""
     snippets = []
@@ -1118,6 +1436,10 @@ def _answer_from_documents(
         "文档片段：\n"
         + "\n\n".join(snippets)
     )
+    contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]
+    conservative_summary = "\n\n".join(contents)
+    if not claim_post_timeout_final_attempt(_execution_state):
+        return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
     try:
         if tier == "expert":
             response = llm_provider.chat_completion(
@@ -1133,10 +1455,14 @@ def _answer_from_documents(
         prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
         return str(_llm_chat(message=prompt, tier=tier, timeout=timeout)).strip()
     except Exception as e:
+        if llm_provider.is_timeout_error(e):
+            open_deepseek_circuit(
+                _execution_state,
+                "final_answer_timeout",
+                final_attempt_consumed=True,
+            )
         logger.warning("文档回答生成失败，返回保守摘要：query_len=%s error_type=%s", len(query or ""), type(e).__name__)
-        contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]
-        summary = "\n\n".join(contents)
-        return summary[:800] if summary else "未找到可靠依据，无法确认答案"
+        return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
 
 
 def _fallback_llm_answer(
@@ -1145,18 +1471,22 @@ def _fallback_llm_answer(
     context: list[str] = None,
     prefix: str = "",
     timeout: Optional[float] = None,
-    tier: str = "fast"
+    tier: str = "fast",
+    _execution_state: Optional[dict] = None,
 ) -> str:
     """搜索质量不足或不可用时降级为模型知识回答"""
     if timeout is not None and timeout <= 0:
         return prefix or "搜索链路已达到时间预算，请稍后重试"
+    if not claim_post_timeout_final_attempt(_execution_state):
+        return prefix or "模型服务本轮已超时，未继续生成回答。"
     system_prompt = _build_context_system_prompt(context)
     answer = _llm_chat(
         message=message,
         session_id=session_id or "",
         system_prompt=system_prompt,
         tier=tier,
-        timeout=timeout
+        timeout=timeout,
+        _execution_state=_execution_state,
     )
     return f"{prefix}\n{answer}" if prefix else str(answer)
 
@@ -1184,6 +1514,8 @@ def _llm_chat(
     tier: str = "fast",
     timeout: Optional[float] = None,
     excluded_history_message_types: Optional[list[str]] = None,
+    _execution_state: Optional[dict] = None,
+    _timeout_reason_code: str = "final_answer_timeout",
 ) -> Union[str, Iterator[str]]:
     """通过统一适配层调用指定tier，每次只发送一次模型请求。"""
 
@@ -1201,17 +1533,26 @@ def _llm_chat(
             excluded_history_message_types=excluded_history_message_types,
         )
 
-    if stream:
-        response = llm_provider.chat_completion(
-            messages,
-            tier=tier,
-            timeout=timeout,
-            stream=True
-        )
-        return llm_provider.iter_text(response)
+    try:
+        if stream:
+            response = llm_provider.chat_completion(
+                messages,
+                tier=tier,
+                timeout=timeout,
+                stream=True
+            )
+            return llm_provider.iter_text(response)
 
-    response = llm_provider.chat_completion(messages, tier=tier, timeout=timeout)
-    return llm_provider.extract_text(response)
+        response = llm_provider.chat_completion(messages, tier=tier, timeout=timeout)
+        return llm_provider.extract_text(response)
+    except Exception as exc:
+        if llm_provider.is_timeout_error(exc):
+            open_deepseek_circuit(
+                _execution_state,
+                _timeout_reason_code,
+                final_attempt_consumed=True,
+            )
+        raise
 
 
 def _build_model_messages(
@@ -1283,6 +1624,7 @@ def _observe_external_search_output(
         or not execution_state
         or not execution_state.get("external_content_tainted")
         or not str(final_response or "").strip()
+        or deepseek_circuit_open(execution_state)
     ):
         return
 
@@ -1297,6 +1639,13 @@ def _observe_external_search_output(
         original_question,
         final_response,
     )
+    timeout = remaining_request_budget(
+        execution_state,
+        config.OUTPUT_ANOMALY_CHECK_TIMEOUT,
+    )
+    if timeout <= 0:
+        add_degradation_reason(execution_state, "output_observation_timeout")
+        return
     try:
         response = llm_provider.chat_completion(
             cache_friendly_messages(
@@ -1306,7 +1655,7 @@ def _observe_external_search_output(
             ),
             tier=tier,
             response_format={"type": "json_object"},
-            timeout=config.OUTPUT_ANOMALY_CHECK_TIMEOUT,
+            timeout=timeout,
         )
         raw = llm_provider.extract_text(response)
         parsed = json.loads(raw)
@@ -1320,6 +1669,8 @@ def _observe_external_search_output(
         if flagged:
             logger.warning("搜索输出观察校验标记异常：concern_reason=%s", reason)
     except Exception as exc:
+        if llm_provider.is_timeout_error(exc):
+            open_deepseek_circuit(execution_state, "output_observation_timeout")
         observability.record_output_anomaly_check_failed(tier)
         logger.warning("搜索输出观察校验失败：error_type=%s", type(exc).__name__)
 
@@ -1328,9 +1679,12 @@ def _rewrite_search_query(
     message: str,
     context: list[str] = None,
     timeout: Optional[float] = None,
-    tier: str = "fast"
+    tier: str = "fast",
+    _execution_state: Optional[dict] = None,
 ) -> str:
     """调用所选模型将用户原话改写成更适合搜索引擎的query。"""
+    if deepseek_circuit_open(_execution_state):
+        return message
     context_text = "\n".join(context or [])
     fixed_prompt = (
         "你是搜索引擎query优化专家。"
@@ -1354,16 +1708,25 @@ def _rewrite_search_query(
     else:
         messages = [{"role": "user", "content": current_date_prompt() + "\n" + fixed_prompt + dynamic_prompt}]
 
-    if timeout is not None and timeout <= 0:
+    configured_timeout = (
+        float(timeout)
+        if timeout is not None
+        else float(config.SEARCH_QUERY_REWRITE_TIMEOUT)
+    )
+    effective_timeout = remaining_request_budget(_execution_state, configured_timeout)
+    if effective_timeout <= 0:
+        add_degradation_reason(_execution_state, "query_rewrite_timeout")
         return message
     try:
         response = llm_provider.chat_completion(
             messages,
             tier=tier,
-            timeout=timeout or config.SEARCH_QUERY_REWRITE_TIMEOUT
+            timeout=effective_timeout,
         )
         rewritten = llm_provider.extract_text(response)
     except Exception as exc:
+        if llm_provider.is_timeout_error(exc):
+            open_deepseek_circuit(_execution_state, "query_rewrite_timeout")
         logger.warning("搜索query改写失败，使用原始query：error_type=%s", type(exc).__name__)
         return message
 

@@ -15,6 +15,7 @@ from typing import List, Optional, Tuple
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import chromadb
+from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 import config
 from layers import chroma_sync, db_schema_version, embedding, llm_provider
@@ -23,6 +24,14 @@ from utils import observability
 from utils.time_context import cache_friendly_messages
 
 logger = get_logger("memory")
+
+
+class SearchDiagnostics(BaseModel):
+    """文档检索的结构化诊断信息，供上层传播降级状态。"""
+
+    rerank_attempted: bool = False
+    rerank_timed_out: bool = False
+    rerank_succeeded: bool = False
 
 
 COLLECTION_NAME = "zhitian_memory"
@@ -626,6 +635,7 @@ def search_documents(
     tier: str = "fast",
     enable_rerank: bool = True,
     timeout: Optional[float] = None,
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，合并BM25与向量两个独立候选源。"""
     if not query:
@@ -672,7 +682,13 @@ def search_documents(
     results.sort(key=_document_result_sort_key, reverse=True)
     stage_started_at = time.perf_counter()
     if enable_rerank:
-        results = _apply_document_rerank(query, results, tier=tier, timeout=timeout)
+        results = _apply_document_rerank(
+            query,
+            results,
+            tier=tier,
+            timeout=timeout,
+            diagnostics=diagnostics,
+        )
     observability.log_stage("documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     final_results = results[:safe_top_k]
@@ -1010,6 +1026,7 @@ def _apply_document_rerank(
     candidates: list[dict],
     tier: str = "fast",
     timeout: Optional[float] = None,
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> list[dict]:
     if not config.RERANK_ENABLED:
         return candidates
@@ -1025,7 +1042,15 @@ def _apply_document_rerank(
     rerank_count = max(1, int(config.RERANK_CANDIDATE_COUNT))
     head = candidates[:rerank_count]
     tail = candidates[rerank_count:]
-    return _rerank_candidates(query, head, tier=tier, timeout=timeout) + tail
+    if diagnostics is not None:
+        diagnostics.rerank_attempted = True
+    return _rerank_candidates(
+        query,
+        head,
+        tier=tier,
+        timeout=timeout,
+        diagnostics=diagnostics,
+    ) + tail
 
 
 def _has_title_source_match(candidates: list[dict]) -> bool:
@@ -1037,6 +1062,7 @@ def _rerank_candidates(
     candidates: list[dict],
     tier: str = "fast",
     timeout: Optional[float] = None,
+    diagnostics: Optional[SearchDiagnostics] = None,
 ) -> list[dict]:
     """用expert tier一次性批量重排候选chunk，失败时返回原顺序。"""
     if not candidates:
@@ -1077,9 +1103,14 @@ def _rerank_candidates(
             timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
         )
         score_map = _parse_rerank_scores(llm_provider.extract_text(response), len(candidates))
+        scored_candidates = []
+        for index, candidate in enumerate(candidates):
+            scored = dict(candidate)
+            scored["rerank_score"] = float(score_map.get(index, 0.0))
+            scored_candidates.append(scored)
         reranked = sorted(
-            enumerate(candidates),
-            key=lambda item: (score_map.get(item[0], 0.0), float(item[1].get("score", 0.0))),
+            scored_candidates,
+            key=lambda item: (float(item.get("rerank_score", 0.0)), float(item.get("score", 0.0))),
             reverse=True
         )
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1088,7 +1119,9 @@ def _rerank_candidates(
             len(candidates),
             elapsed_ms
         )
-        return [item for _index, item in reranked]
+        if diagnostics is not None:
+            diagnostics.rerank_succeeded = True
+        return reranked
     except Exception as e:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logger.warning(
@@ -1097,6 +1130,8 @@ def _rerank_candidates(
             elapsed_ms,
             type(e).__name__
         )
+        if diagnostics is not None and llm_provider.is_timeout_error(e):
+            diagnostics.rerank_timed_out = True
         return candidates
 
 

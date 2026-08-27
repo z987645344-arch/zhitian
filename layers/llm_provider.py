@@ -20,6 +20,11 @@ _request_api_key: ContextVar[Optional[str]] = ContextVar(
 )
 
 
+def is_timeout_error(exc: BaseException) -> bool:
+    """统一识别DeepSeek适配层报告的超时，不依赖具体SDK异常类型。"""
+    return observability.classify_provider_error(exc) == "timeout"
+
+
 @contextmanager
 def use_request_api_key(api_key: str) -> Iterator[None]:
     """在当前执行上下文绑定用户选择的Key，退出时可靠清理。"""

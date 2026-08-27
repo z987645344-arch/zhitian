@@ -154,7 +154,7 @@ def test_full_replan_check_is_skipped_after_it_was_used(monkeypatch):
     assert state["complex_action"] == "execute"
 
 
-def test_checkpoint_model_failure_keeps_remaining_plan(monkeypatch):
+def test_checkpoint_model_timeout_opens_circuit_and_stops_optional_plan(monkeypatch):
     state = _state()
     state["complex_task_list"] = [_task(0)]
     state["complex_task_created_count"] = 1
@@ -171,8 +171,10 @@ def test_checkpoint_model_failure_keeps_remaining_plan(monkeypatch):
 
     planning.checkpoint_node(state)
 
-    assert state["complex_action"] == "execute"
+    assert state["complex_action"] == "respond"
     assert state["error"] == ""
+    assert state["deepseek_circuit_open"] is True
+    assert state["degradation_reasons"] == ["planning_timeout"]
 
 
 def test_complex_graph_executes_all_tasks_and_summarizes(monkeypatch):
