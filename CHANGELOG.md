@@ -1657,3 +1657,10 @@
 - **⚠️ 本轮无执行者在现场。** `claude_skill.md` 的这份改动由统筹师直接编辑，当时没有执行 agent 参与，因此**不存在**手册一.5「实施方写实测证据」那道记录。本条目由存档方按 diff 如实转述改了哪几条分工，**没有本轮的实测数字或验证过程可写**——缺就是缺，不代写。
 - 存档方实际核对到的：diff 范围恰为 `docs/claude_skill.md` 一个文件；存档前例行核对 IPv4 字面量 0 处、密钥凭据形态 0 处、服务器绝对路径 0 处、主机名 0 处、未跟踪文件 0 个、二进制改动 0 处；权威回归 `run_tests.bat -q` 得 **485 passed, 5 deselected**。diff 中出现的 `D:\zhiliao\与统筹师的对话\记录\指挥师手册.md` 是本机路径且原文早已存在（仅目录改名），不属服务器绝对路径。
 - **本轮不打标**：依据 8.1「什么时候才打标签」，纯文档／流程整理应累积若干轮后合并打一个三段式补丁号，不逐轮打；`v4.3` 就在 HEAD 上。`VERSION` 保持 `4.3.0` 不动。
+
+## 2026-08-28 补全并发闸门环境变量模板
+
+- `.env.example` 的「文档与工具限制」小节补入 `MAX_CONCURRENT_HEAVY_TASKS=4`、`MAX_USER_INFLIGHT_HEAVY_TASKS=2`、`MAX_CONCURRENT_INGEST_TASKS=2`、`MAX_INGEST_QUEUE_DEPTH=8`，逐项与 `config.py` 当前默认值一致；未修改代码默认值或校验逻辑。
+- 模板明确标注启动陷阱：单账号重型任务在途上限必须严格小于全局并发上限；调低全局值时必须同步调低单账号值，否则 `config.py` 在模块导入时抛出 `RuntimeError`，容器拒绝启动。入库队列深度也注明运行时会被钳到不小于入库并发上限。
+- 正向隔离验证以模板值导入成功，实际输出为 `IMPORT_OK`、`4 2 2 8`、退出码 `0`；反向将单账号在途上限改为 `4` 后，实际抛出 `RuntimeError: MAX_USER_INFLIGHT_HEAVY_TASKS must be smaller than MAX_CONCURRENT_HEAVY_TASKS`，退出码 `1`。
+- 两次验证仅使用子进程临时环境变量，执行后已清理，没有创建或修改任何 `.env` 文件。
