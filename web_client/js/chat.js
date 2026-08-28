@@ -49,6 +49,8 @@
     planning_timeout: '任务规划超时',
     reflection_timeout: '补充判断超时',
     output_observation_timeout: '结果校验超时',
+    deepseek_rate_limit: '模型服务当前请求繁忙，建议稍后重试',
+    deepseek_upstream_unavailable: '暂时无法连接模型服务，建议稍后重试',
   };
 
   const logInner = document.querySelector('#chatLogInner');

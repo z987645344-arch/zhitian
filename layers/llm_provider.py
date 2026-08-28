@@ -25,6 +25,15 @@ def is_timeout_error(exc: BaseException) -> bool:
     return observability.classify_provider_error(exc) == "timeout"
 
 
+def is_upstream_unavailable_error(exc: BaseException) -> bool:
+    """判断供应商是否暂时不可用；参数、鉴权与内容拒绝等业务错误不在此列。"""
+    return observability.classify_provider_error(exc) in {
+        "timeout",
+        "rate_limit",
+        "upstream_unavailable",
+    }
+
+
 @contextmanager
 def use_request_api_key(api_key: str) -> Iterator[None]:
     """在当前执行上下文绑定用户选择的Key，退出时可靠清理。"""

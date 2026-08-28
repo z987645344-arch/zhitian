@@ -3,10 +3,12 @@
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import Mock
 
 import config
 import main
+import pytest
 from layers import execution, planning
 from layers.web_search_provider import SearchCandidate
 
@@ -47,11 +49,23 @@ def _prepare_provider(monkeypatch, provider):
     )
 
 
-def test_first_rewrite_timeout_opens_request_circuit_and_skips_optional_calls(monkeypatch):
+@pytest.mark.parametrize(
+    ("provider_error", "expected_reason"),
+    [
+        (TimeoutError("rewrite timeout"), "query_rewrite_timeout"),
+        (type("RateLimitError", (Exception,), {"status_code": 429})(), "deepseek_rate_limit"),
+        (type("APIConnectionError", (Exception,), {})(), "deepseek_upstream_unavailable"),
+    ],
+)
+def test_first_upstream_failure_opens_request_circuit_and_skips_optional_calls(
+    monkeypatch,
+    provider_error,
+    expected_reason,
+):
     state = _state()
     provider = _Provider()
     _prepare_provider(monkeypatch, provider)
-    rewrite_model = Mock(side_effect=TimeoutError("rewrite timeout"))
+    rewrite_model = Mock(side_effect=provider_error)
     final_model = Mock(return_value="降级但可用的最终回答")
     monkeypatch.setattr(execution.llm_provider, "chat_completion", rewrite_model)
     monkeypatch.setattr(execution, "_llm_chat", final_model)
@@ -65,13 +79,33 @@ def test_first_rewrite_timeout_opens_request_circuit_and_skips_optional_calls(mo
     assert elapsed < config.EXPERT_COMPLEX_TIMEOUT / 10
     assert provider.queries == ["原始问题"]
     assert state["deepseek_circuit_open"] is True
-    assert state["post_timeout_final_attempted"] is True
-    assert state["degradation_reasons"] == ["query_rewrite_timeout"]
+    assert state["post_circuit_final_attempted"] is True
+    assert state["degradation_reasons"] == [expected_reason]
     rewrite_model.assert_called_once()
     final_model.assert_called_once()
 
 
+def test_parameter_error_does_not_open_upstream_circuit(monkeypatch):
+    state = _state()
+    bad_request = type("BadRequestError", (Exception,), {"status_code": 400})()
+    completion = Mock(side_effect=bad_request)
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", completion)
+
+    rewritten = execution._rewrite_search_query(
+        "原始问题",
+        tier="expert",
+        _execution_state=state,
+    )
+
+    assert rewritten == "原始问题"
+    assert state["deepseek_circuit_open"] is False
+    assert state["degradation_reasons"] == []
+    assert execution.llm_provider.is_upstream_unavailable_error(bad_request) is False
+    completion.assert_called_once()
+
+
 def test_degradation_reason_codes_are_stage_specific(monkeypatch):
+    monkeypatch.setattr(execution, "_observe_external_search_output", lambda *_args: None)
     failing_state = _state()
     _prepare_provider(monkeypatch, _Provider(error=RuntimeError("provider unavailable")))
     monkeypatch.setattr(execution, "_rewrite_search_query", lambda message, *args, **kwargs: message)
@@ -91,7 +125,48 @@ def test_degradation_reason_codes_are_stage_specific(monkeypatch):
         "已取得联网搜索结果，但模型整理超时"
     )
     assert summary_state["degradation_reasons"] == ["search_summary_timeout"]
-    assert summary_state["post_timeout_final_attempted"] is True
+    assert summary_state["post_circuit_final_attempted"] is True
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected_reason", "expected_message"),
+    [
+        (
+            type("RateLimitError", (Exception,), {"status_code": 429})(),
+            "deepseek_rate_limit",
+            "模型服务当前请求繁忙",
+        ),
+        (
+            type("APIConnectionError", (Exception,), {})(),
+            "deepseek_upstream_unavailable",
+            "暂时无法连接模型服务",
+        ),
+    ],
+)
+def test_search_summary_upstream_failures_have_distinct_user_messages(
+    monkeypatch,
+    provider_error,
+    expected_reason,
+    expected_message,
+):
+    state = _state()
+    _prepare_provider(monkeypatch, _Provider())
+    monkeypatch.setattr(execution, "_rewrite_search_query", lambda message, *args, **kwargs: message)
+    monkeypatch.setattr(execution, "_llm_chat", Mock(side_effect=provider_error))
+
+    answer = execution._search_web("问题", tier="expert", _execution_state=state)
+
+    assert expected_message in answer
+    assert state["degradation_reasons"] == [expected_reason]
+
+
+def test_web_client_maps_new_provider_reason_codes():
+    chat_js = (
+        Path(__file__).resolve().parents[1] / "web_client" / "js" / "chat.js"
+    ).read_text(encoding="utf-8")
+
+    assert "deepseek_rate_limit: '模型服务当前请求繁忙，建议稍后重试'" in chat_js
+    assert "deepseek_upstream_unavailable: '暂时无法连接模型服务，建议稍后重试'" in chat_js
 
 
 def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypatch):
@@ -123,7 +198,7 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
     )
     assert result.status == "success"
     assert rerank_state["degradation_reasons"] == ["document_rerank_timeout"]
-    assert rerank_state["post_timeout_final_attempted"] is False
+    assert rerank_state["post_circuit_final_attempted"] is False
 
     final_state = _state()
     monkeypatch.setattr(
@@ -136,7 +211,7 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
     except TimeoutError:
         pass
     assert final_state["degradation_reasons"] == ["final_answer_timeout"]
-    assert final_state["post_timeout_final_attempted"] is True
+    assert final_state["post_circuit_final_attempted"] is True
 
 
 def test_remaining_budget_caps_rewrite_and_output_observation(monkeypatch):

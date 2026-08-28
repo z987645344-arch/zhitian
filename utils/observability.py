@@ -25,7 +25,12 @@ _model_stats = {
     "expert": {"calls": 0, "elapsed_ms_total": 0},
 }
 _provider_errors = {
-    "deepseek": {"timeout": 0, "rate_limit": 0, "other": 0},
+    "deepseek": {
+        "timeout": 0,
+        "rate_limit": 0,
+        "upstream_unavailable": 0,
+        "other": 0,
+    },
 }
 _search_fallback_count = 0
 _output_anomaly_check_total = 0
@@ -241,10 +246,24 @@ def classify_provider_error(exc: Exception) -> str:
     status_code = getattr(exc, "status_code", None)
     response = getattr(exc, "response", None)
     response_status = getattr(response, "status_code", None)
-    if "timeout" in name or isinstance(exc, TimeoutError):
+    effective_status = status_code if status_code is not None else response_status
+    if "timeout" in name or isinstance(exc, TimeoutError) or effective_status == 408:
         return "timeout"
-    if "reachlimit" in name or "ratelimit" in name or status_code == 429 or response_status == 429:
+    if "reachlimit" in name or "ratelimit" in name or effective_status == 429:
         return "rate_limit"
+    if (
+        isinstance(exc, ConnectionError)
+        or "connectionerror" in name
+        or "connecterror" in name
+        or "networkerror" in name
+        or "serviceunavailable" in name
+        or "internalservererror" in name
+        or (
+            isinstance(effective_status, int)
+            and 500 <= effective_status <= 599
+        )
+    ):
+        return "upstream_unavailable"
     return "other"
 
 

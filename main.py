@@ -3312,12 +3312,12 @@ def _chat_stream_events(
                     reason_code=new_reasons[0] if new_reasons else None,
                 )
             except Exception as e:
-                if llm_provider.is_timeout_error(e):
-                    execution.open_deepseek_circuit(
-                        state,
-                        "search_summary_timeout",
-                        final_attempt_consumed=True,
-                    )
+                execution.open_deepseek_circuit_for_error(
+                    state,
+                    e,
+                    "search_summary_timeout",
+                    final_attempt_consumed=True,
+                )
                 execution.emit_tool_status(
                     state,
                     "search_web",
@@ -3347,8 +3347,8 @@ def _chat_stream_events(
             answer_started_at = time.perf_counter()
             execution.emit_tool_status(state, "llm_chat", "started")
             try:
-                if not execution.claim_post_timeout_final_attempt(state):
-                    answer = "模型服务本轮已超时，未继续生成回答。"
+                if not execution.claim_post_circuit_final_attempt(state):
+                    answer = execution.deepseek_circuit_user_message(state)
                     chunks.append(answer)
                     yield _sse_data({"chunk": answer})
                 else:
@@ -3375,12 +3375,12 @@ def _chat_stream_events(
                     reason_code=(state.get("degradation_reasons") or [None])[-1],
                 )
             except Exception as exc:
-                if llm_provider.is_timeout_error(exc):
-                    execution.open_deepseek_circuit(
-                        state,
-                        "final_answer_timeout",
-                        final_attempt_consumed=True,
-                    )
+                execution.open_deepseek_circuit_for_error(
+                    state,
+                    exc,
+                    "final_answer_timeout",
+                    final_attempt_consumed=True,
+                )
                 execution.emit_tool_status(
                     state,
                     "llm_chat",

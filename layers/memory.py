@@ -32,6 +32,7 @@ class SearchDiagnostics(BaseModel):
     rerank_attempted: bool = False
     rerank_timed_out: bool = False
     rerank_succeeded: bool = False
+    rerank_error_kind: Optional[str] = None
 
 
 COLLECTION_NAME = "zhitian_memory"
@@ -1130,8 +1131,11 @@ def _rerank_candidates(
             elapsed_ms,
             type(e).__name__
         )
-        if diagnostics is not None and llm_provider.is_timeout_error(e):
-            diagnostics.rerank_timed_out = True
+        if diagnostics is not None:
+            error_kind = observability.classify_provider_error(e)
+            if error_kind in {"timeout", "rate_limit", "upstream_unavailable"}:
+                diagnostics.rerank_error_kind = error_kind
+            diagnostics.rerank_timed_out = error_kind == "timeout"
         return candidates
 
 

@@ -73,6 +73,8 @@ DEGRADATION_REASON_CODES = {
     "document_rerank_timeout",
     "final_answer_timeout",
     "output_observation_timeout",
+    "deepseek_rate_limit",
+    "deepseek_upstream_unavailable",
 }
 
 TOOL_DISPLAY_CODES = {
@@ -160,13 +162,68 @@ def open_deepseek_circuit(
     reason_code: str,
     final_attempt_consumed: bool = False,
 ) -> None:
-    """标记本请求已发生DeepSeek超时，供后续可选模型阶段快速跳过。"""
+    """标记本请求内DeepSeek暂时不可用，供后续可选模型阶段快速跳过。"""
     if state is None:
         return
     add_degradation_reason(state, reason_code)
     state["deepseek_circuit_open"] = True
     if final_attempt_consumed:
-        state["post_timeout_final_attempted"] = True
+        state["post_circuit_final_attempted"] = True
+
+
+def provider_degradation_reason(
+    exc: BaseException,
+    timeout_reason_code: str,
+) -> Optional[str]:
+    """把供应商故障分类映射为安全、稳定且不含异常正文的降级原因码。"""
+    if not llm_provider.is_upstream_unavailable_error(exc):
+        return None
+    return provider_degradation_reason_for_kind(
+        observability.classify_provider_error(exc),
+        timeout_reason_code,
+    )
+
+
+def provider_degradation_reason_for_kind(
+    error_kind: str,
+    timeout_reason_code: str,
+) -> Optional[str]:
+    """把已分类的供应商故障映射为请求级原因码。"""
+    if error_kind == "timeout":
+        return timeout_reason_code
+    if error_kind == "rate_limit":
+        return "deepseek_rate_limit"
+    if error_kind == "upstream_unavailable":
+        return "deepseek_upstream_unavailable"
+    return None
+
+
+def open_deepseek_circuit_for_error(
+    state: Optional[dict],
+    exc: BaseException,
+    timeout_reason_code: str,
+    final_attempt_consumed: bool = False,
+) -> Optional[str]:
+    """仅对超时、限流、连接失败或HTTP 5xx开启本请求熔断。"""
+    reason_code = provider_degradation_reason(exc, timeout_reason_code)
+    if reason_code is None:
+        return None
+    open_deepseek_circuit(
+        state,
+        reason_code,
+        final_attempt_consumed=final_attempt_consumed,
+    )
+    return reason_code
+
+
+def deepseek_circuit_user_message(state: Optional[dict]) -> str:
+    """按真实供应商故障类型给出用户可理解的请求级降级说明。"""
+    reasons = set((state or {}).get("degradation_reasons") or [])
+    if "deepseek_rate_limit" in reasons:
+        return "模型服务当前请求繁忙，本轮已停止后续可选步骤，请稍后重试。"
+    if "deepseek_upstream_unavailable" in reasons:
+        return "暂时无法连接模型服务，本轮已停止后续可选步骤，请稍后重试。"
+    return "模型服务本轮已超时，未继续执行后续可选步骤。"
 
 
 def deepseek_circuit_open(state: Optional[dict]) -> bool:
@@ -181,13 +238,13 @@ def remaining_request_budget(state: Optional[dict], fallback: float) -> float:
     return max(0.0, min(float(fallback), deadline - time.perf_counter()))
 
 
-def claim_post_timeout_final_attempt(state: Optional[dict]) -> bool:
-    """熔断后全请求只允许一次必要的最终回答调用。"""
+def claim_post_circuit_final_attempt(state: Optional[dict]) -> bool:
+    """供应商熔断后，全请求只允许一次必要的最终回答调用。"""
     if not deepseek_circuit_open(state):
         return True
-    if state.get("post_timeout_final_attempted"):
+    if state.get("post_circuit_final_attempted"):
         return False
-    state["post_timeout_final_attempted"] = True
+    state["post_circuit_final_attempted"] = True
     return True
 
 
@@ -342,13 +399,13 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
             return tool_result
         except Exception as e:
             last_error = str(e)
-            if llm_provider.is_timeout_error(e):
+            if tool in {"llm_chat", "search_web"}:
                 reason_code = (
                     "final_answer_timeout"
                     if tool == "llm_chat"
                     else "search_summary_timeout"
                 )
-                open_deepseek_circuit(state, reason_code)
+                open_deepseek_circuit_for_error(state, e, reason_code)
             logger.warning("工具调用失败：tool=%s attempt=%s error_type=%s", tool, attempt + 1, type(e).__name__)
             if deepseek_circuit_open(state):
                 break
@@ -465,9 +522,10 @@ def _search_web(
         ensure_ascii=False,
     )
     try:
-        if not claim_post_timeout_final_attempt(_execution_state):
-            add_degradation_reason(_execution_state, "search_summary_timeout")
-            return "已取得联网搜索结果，但模型服务本轮已超时，未继续整理。"
+        if not claim_post_circuit_final_attempt(_execution_state):
+            return "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
+                _execution_state
+            )
         answer = _llm_chat(
             message=original_question,
             search_results=search_results,
@@ -485,13 +543,13 @@ def _search_web(
         )
         return answer
     except Exception as e:
-        if llm_provider.is_timeout_error(e):
-            open_deepseek_circuit(
-                _execution_state,
-                "search_summary_timeout",
-                final_attempt_consumed=True,
-            )
-        else:
+        reason_code = open_deepseek_circuit_for_error(
+            _execution_state,
+            e,
+            "search_summary_timeout",
+            final_attempt_consumed=True,
+        )
+        if reason_code is None:
             add_degradation_reason(_execution_state, "search_summary_failed")
         logger.warning(
             "搜索结果整理失败：query_len=%s error_type=%s",
@@ -499,11 +557,13 @@ def _search_web(
             type(e).__name__
         )
         observability.record_search_fallback()
-        return (
-            "已取得联网搜索结果，但模型整理超时，请稍后重试。"
-            if llm_provider.is_timeout_error(e)
-            else SEARCH_SUMMARY_FALLBACK_MESSAGE
-        )
+        if reason_code:
+            if reason_code == "search_summary_timeout":
+                return "已取得联网搜索结果，但模型整理超时，请稍后重试。"
+            return "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
+                _execution_state
+            )
+        return SEARCH_SUMMARY_FALLBACK_MESSAGE
 
 
 def stream_search_result(
@@ -606,9 +666,10 @@ def stream_search_result(
     emitted = False
     collected_chunks = []
     try:
-        if not claim_post_timeout_final_attempt(execution_state):
-            add_degradation_reason(execution_state, "search_summary_timeout")
-            yield "已取得联网搜索结果，但模型服务本轮已超时，未继续整理。"
+        if not claim_post_circuit_final_attempt(execution_state):
+            yield "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
+                execution_state
+            )
             return
         stream = _llm_chat(
             message=original_question,
@@ -631,13 +692,13 @@ def stream_search_result(
             execution_state,
         )
     except Exception as e:
-        if llm_provider.is_timeout_error(e):
-            open_deepseek_circuit(
-                execution_state,
-                "search_summary_timeout",
-                final_attempt_consumed=True,
-            )
-        else:
+        reason_code = open_deepseek_circuit_for_error(
+            execution_state,
+            e,
+            "search_summary_timeout",
+            final_attempt_consumed=True,
+        )
+        if reason_code is None:
             add_degradation_reason(execution_state, "search_summary_failed")
         logger.warning(
             "流式搜索结果整理失败：query_len=%s emitted=%s error_type=%s",
@@ -648,11 +709,15 @@ def stream_search_result(
         if emitted:
             return
         observability.record_search_fallback()
-        yield (
-            "已取得联网搜索结果，但模型整理超时，请稍后重试。"
-            if llm_provider.is_timeout_error(e)
-            else SEARCH_SUMMARY_FALLBACK_MESSAGE
-        )
+        if reason_code:
+            if reason_code == "search_summary_timeout":
+                yield "已取得联网搜索结果，但模型整理超时，请稍后重试。"
+            else:
+                yield "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
+                    execution_state
+                )
+        else:
+            yield SEARCH_SUMMARY_FALLBACK_MESSAGE
 
 
 def _search_documents(
@@ -677,8 +742,13 @@ def _search_documents(
         timeout=timeout,
         diagnostics=diagnostics,
     )
-    if diagnostics.rerank_timed_out:
-        open_deepseek_circuit(_execution_state, "document_rerank_timeout")
+    rerank_reason = provider_degradation_reason_for_kind(
+        diagnostics.rerank_error_kind
+        or ("timeout" if diagnostics.rerank_timed_out else ""),
+        "document_rerank_timeout",
+    )
+    if rerank_reason:
+        open_deepseek_circuit(_execution_state, rerank_reason)
     # 命中埋点：只要chunk进入召回候选就算，与下面的阈值筛选无关。这里只写
     # 进程内缓存、不落库，由请求出口统一入库并按文档级去重。
     document_usage.record_hit_candidates(
@@ -752,6 +822,7 @@ def _search_documents(
         ),
         "rerank_succeeded": diagnostics.rerank_succeeded,
         "rerank_timed_out": diagnostics.rerank_timed_out,
+        "rerank_error_kind": diagnostics.rerank_error_kind,
         "supplied_context_answer": bool(context and generate_answer),
     }
     defer_answer_for_web = bool(
@@ -800,8 +871,8 @@ def _answer_from_supplied_context(
         "如果无法回答，明确说明依据不足。"
         "\n\n本轮附件或上下文：\n" + "\n\n".join(context)
     )
-    if not claim_post_timeout_final_attempt(_execution_state):
-        answer = "模型服务本轮已超时，无法继续整理附件或上下文。"
+    if not claim_post_circuit_final_attempt(_execution_state):
+        answer = deepseek_circuit_user_message(_execution_state)
     else:
         try:
             answer = str(
@@ -814,12 +885,12 @@ def _answer_from_supplied_context(
                 )
             ).strip()
         except Exception as exc:
-            if llm_provider.is_timeout_error(exc):
-                open_deepseek_circuit(
-                    _execution_state,
-                    "final_answer_timeout",
-                    final_attempt_consumed=True,
-                )
+            open_deepseek_circuit_for_error(
+                _execution_state,
+                exc,
+                "final_answer_timeout",
+                final_attempt_consumed=True,
+            )
             raise
     return ToolResult(
         tool="search_documents",
@@ -1438,7 +1509,7 @@ def _answer_from_documents(
     )
     contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]
     conservative_summary = "\n\n".join(contents)
-    if not claim_post_timeout_final_attempt(_execution_state):
+    if not claim_post_circuit_final_attempt(_execution_state):
         return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
     try:
         if tier == "expert":
@@ -1455,12 +1526,12 @@ def _answer_from_documents(
         prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
         return str(_llm_chat(message=prompt, tier=tier, timeout=timeout)).strip()
     except Exception as e:
-        if llm_provider.is_timeout_error(e):
-            open_deepseek_circuit(
-                _execution_state,
-                "final_answer_timeout",
-                final_attempt_consumed=True,
-            )
+        open_deepseek_circuit_for_error(
+            _execution_state,
+            e,
+            "final_answer_timeout",
+            final_attempt_consumed=True,
+        )
         logger.warning("文档回答生成失败，返回保守摘要：query_len=%s error_type=%s", len(query or ""), type(e).__name__)
         return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
 
@@ -1477,8 +1548,8 @@ def _fallback_llm_answer(
     """搜索质量不足或不可用时降级为模型知识回答"""
     if timeout is not None and timeout <= 0:
         return prefix or "搜索链路已达到时间预算，请稍后重试"
-    if not claim_post_timeout_final_attempt(_execution_state):
-        return prefix or "模型服务本轮已超时，未继续生成回答。"
+    if not claim_post_circuit_final_attempt(_execution_state):
+        return prefix or deepseek_circuit_user_message(_execution_state)
     system_prompt = _build_context_system_prompt(context)
     answer = _llm_chat(
         message=message,
@@ -1546,12 +1617,12 @@ def _llm_chat(
         response = llm_provider.chat_completion(messages, tier=tier, timeout=timeout)
         return llm_provider.extract_text(response)
     except Exception as exc:
-        if llm_provider.is_timeout_error(exc):
-            open_deepseek_circuit(
-                _execution_state,
-                _timeout_reason_code,
-                final_attempt_consumed=True,
-            )
+        open_deepseek_circuit_for_error(
+            _execution_state,
+            exc,
+            _timeout_reason_code,
+            final_attempt_consumed=True,
+        )
         raise
 
 
@@ -1669,8 +1740,11 @@ def _observe_external_search_output(
         if flagged:
             logger.warning("搜索输出观察校验标记异常：concern_reason=%s", reason)
     except Exception as exc:
-        if llm_provider.is_timeout_error(exc):
-            open_deepseek_circuit(execution_state, "output_observation_timeout")
+        open_deepseek_circuit_for_error(
+            execution_state,
+            exc,
+            "output_observation_timeout",
+        )
         observability.record_output_anomaly_check_failed(tier)
         logger.warning("搜索输出观察校验失败：error_type=%s", type(exc).__name__)
 
@@ -1725,8 +1799,11 @@ def _rewrite_search_query(
         )
         rewritten = llm_provider.extract_text(response)
     except Exception as exc:
-        if llm_provider.is_timeout_error(exc):
-            open_deepseek_circuit(_execution_state, "query_rewrite_timeout")
+        open_deepseek_circuit_for_error(
+            _execution_state,
+            exc,
+            "query_rewrite_timeout",
+        )
         logger.warning("搜索query改写失败，使用原始query：error_type=%s", type(exc).__name__)
         return message
 

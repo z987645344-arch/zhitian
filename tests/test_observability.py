@@ -28,7 +28,14 @@ def _reset_metrics(monkeypatch):
     monkeypatch.setattr(
         observability,
         "_provider_errors",
-        {"deepseek": {"timeout": 0, "rate_limit": 0, "other": 0}},
+        {
+            "deepseek": {
+                "timeout": 0,
+                "rate_limit": 0,
+                "upstream_unavailable": 0,
+                "other": 0,
+            }
+        },
     )
     monkeypatch.setattr(observability, "_search_fallback_count", 0)
     monkeypatch.setattr(observability, "_recent_requests", deque(maxlen=100))
@@ -48,9 +55,15 @@ def test_trace_id_context_propagates_through_call_chain():
 
 def test_provider_error_classification():
     rate_limit = type("RateLimitError", (Exception,), {})
+    connection_error = type("APIConnectionError", (Exception,), {})
+    server_error = type("ServerError", (Exception,), {"status_code": 503})
+    bad_request = type("BadRequestError", (Exception,), {"status_code": 400})
 
     assert observability.classify_provider_error(TimeoutError()) == "timeout"
     assert observability.classify_provider_error(rate_limit()) == "rate_limit"
+    assert observability.classify_provider_error(connection_error()) == "upstream_unavailable"
+    assert observability.classify_provider_error(server_error()) == "upstream_unavailable"
+    assert observability.classify_provider_error(bad_request()) == "other"
     assert observability.classify_provider_error(ValueError()) == "other"
 
 
@@ -63,6 +76,7 @@ def test_counters_are_atomic_and_tiers_are_separate(monkeypatch):
         observability.record_model_call("expert", 30)
         observability.record_provider_error("deepseek", "timeout")
         observability.record_provider_error("deepseek", "rate_limit")
+        observability.record_provider_error("deepseek", "upstream_unavailable")
         observability.record_search_fallback()
 
     with ThreadPoolExecutor(max_workers=12) as executor:
@@ -74,6 +88,7 @@ def test_counters_are_atomic_and_tiers_are_separate(monkeypatch):
     assert snapshot["model_calls"]["expert"] == {"calls": 120, "average_elapsed_ms": 30.0}
     assert snapshot["provider_errors"]["deepseek"]["timeout"] == 120
     assert snapshot["provider_errors"]["deepseek"]["rate_limit"] == 120
+    assert snapshot["provider_errors"]["deepseek"]["upstream_unavailable"] == 120
     assert snapshot["search_fallback_count"] == 120
 
 
@@ -173,7 +188,12 @@ def test_reviewer_metrics_has_expected_structure(client, auth_headers, monkeypat
     assert data["scope"] == "process_memory_single_instance"
     assert data["requests"]["degraded"] == 1
     assert data["model_calls"]["fast"]["calls"] == 1
-    assert set(data["provider_errors"]["deepseek"]) == {"timeout", "rate_limit", "other"}
+    assert set(data["provider_errors"]["deepseek"]) == {
+        "timeout",
+        "rate_limit",
+        "upstream_unavailable",
+        "other",
+    }
     assert set(data["latency_percentiles_ms"]) == {"fast", "expert"}
 
 

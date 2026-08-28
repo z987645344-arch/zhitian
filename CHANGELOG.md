@@ -1630,3 +1630,22 @@
 - **验证证据**：新增7组熔断/原因码/剩余预算/事件隐私/F44测试；第一次搜索词改写超时的模拟路径在不足1秒内结束，远低于10秒测试预算且只消费一次最终回答机会。Python 3.10语法检查、四个网页JS的`node --check`、`git diff --check`均通过；权威入口为`479 passed, 5 deselected, 0 failed in 266.45s`。真实浏览器在桌面和390px视口均显示2条工具动态与结构化降级原因，390px实测`scrollWidth=clientWidth=390`、无横向溢出。
 - **部署可观察行为发生变化**：部署后，Expert首次DeepSeek超时会立即进入请求内熔断，用户等待时间将显著缩短，降级原因也不再统一误报为“联网搜索遇到问题”。本轮同时修改了`web_client`静态资源，部署时必须重建`zhitian-web`镜像，不能只重建`zhitian-api`。
 - **客户端边界与CI口径**：本轮写权限仅限`zhitian`，没有修改`zhitian_app`。Flutter现有解析器会安全忽略无正文的未知`tool_status/request_status`事件，因此聊天兼容性不受影响，但执行动态可视化尚未对等实现，应在Flutter独立任务中处理。本轮不打标，CI结论必须来自本次提交推送后触发的实际运行，不能用`v4.2`既有CI结果冒充。
+
+## 2026-08-28 Expert请求级熔断扩展至上游暂时不可用
+
+- **分类边界**：`classify_provider_error()`从`timeout/rate_limit/other`扩展出`upstream_unavailable`。连接异常、OpenAI兼容SDK的连接错误、HTTP 5xx归为上游暂时不可用；HTTP 408仍归超时，429归限流；400/401/403/422、参数错误、鉴权失败和内容审核拒绝继续留在`other`，不会误触发请求级熔断。观测计数同步预置新类别，避免新增分类被兜底或丢弃。
+- **熔断覆盖**：所有DeepSeek规划、重排、改写、整理、反思、输出观察和最终回答入口统一调用`is_upstream_unavailable_error()`判据。首次timeout、rate limit、连接失败或HTTP 5xx都会在既有请求state上熔断，跳过后续可选模型阶段并仅保留一次最终回答机会；没有引入进程级状态或冷却窗口，`EXPERT_COMPLEX_TIMEOUT`等数值完全未改。
+- **结构化归因与用户提示**：超时继续使用原有阶段级`*_timeout`原因码；限流新增`deepseek_rate_limit`，连接/5xx新增`deepseek_upstream_unavailable`。网页端分别提示“模型服务当前请求繁忙”和“暂时无法连接模型服务”，不再把429或连接故障误报成某个阶段超时；四个静态页缓存参数统一推进为`provider-circuit-1`。部署后需同时重建`zhitian-api`与`zhitian-web`镜像。
+- **故障注入与回归**：搜索词改写路径分别注入TimeoutError、HTTP 429和APIConnectionError，三种均在1秒内结束模拟路径、打开请求级熔断、跳过后续可选阶段且只消费一次最终回答机会，原因码两两不同；HTTP 400参数错误实证不熔断。搜索结果整理另行验证429与连接异常显示不同中文提示。Python 3.10分类/熔断专项`33 passed`，Windows权威入口`run_tests.bat -q`为`485 passed, 5 deselected, 0 failed in 246.21s`；`node --check`与`git diff --check`通过。当前尚未提交推送，因此没有可归属于本轮的新普通CI/容器CI运行。
+- **发布边界**：用户已明确后端本轮打标不必等待Flutter执行动态补齐；版本号与标签仍由指挥师决定。本轮不部署。
+
+### 我怎么证实的（验证存档方）
+
+- **`VERSION`补升4.2.0 → 4.3.0**：本轮改动未触及它，而它是仓库唯一版本文件——`main._read_application_version()`在缺失或格式不合法时`raise RuntimeError`导致容器拒绝启动，`/`与`/openapi.json`对外报的也是它。停在4.2.0会让v4.3上线后自称v4.2：不报错，但版本号从此对不上。
+- **熔断判据逐条核实，与声明一致**：`llm_provider.is_upstream_unavailable_error()`取`{timeout, rate_limit, upstream_unavailable}`三类；`observability.classify_provider_error()`对`ConnectionError`/`connecterror`/`networkerror`/`serviceunavailable`/`internalservererror`/HTTP 500–599返回`upstream_unavailable`，408归`timeout`、429归`rate_limit`。400、鉴权失败与内容审核拒绝没有任何分支接住，落到`other`；而`other`不在上述三元集合内，**因此确实不触发熔断**——这是「刻意不熔断」的实现依据。
+- **计数不会静默丢失**：`_provider_errors["deepseek"]`预置字典已含`upstream_unavailable: 0`；且`record_provider_error`在遇到未知类别时**回落到`other`**（`utils/observability.py:148-151`）而不是丢弃。两道都在，新增类别不会凭空蒸发。
+- **`config.py`超时数值确未被改**：该文件既不在工作区改动列表中，`v4.2..HEAD`范围内对它的改动也是0行。熔断改的是控制流，不是预算数值。
+- **存档前例行核对（手册九.1）**：对已推送提交与工作区合并检查——IPv4字面量0处、密钥凭据形态0处、服务器绝对路径0处、二进制0处、未跟踪文件0个；`zhitian-deploy`、`zhitian_admin`、`zhitian_app`均0处改动。
+- **未重复的部分**：权威回归`485 passed / 5 deselected / 0 failed`（指挥师用项目原`.venv`实跑），按指令不重复。
+- **⚠️ 一条必须随记录一起传下去的边界**：「三种故障路径均低于1秒」是**注入异常**测得的，它证明的是**控制流正确**（熔断确实跳过了后续阶段），**不构成真实供应商故障下的耗时结论**。真实429可能先经历重试、真实5xx可能返回更慢。谁要引用这个数字做容量或SLA判断，必须先补真实故障下的测量。
+- **部署提示**：本轮`web_client/`有5个文件改动，部署时**须同时重建`zhitian-api`与`zhitian-web`**，只重建其一会让前端拿不到新的执行动态展示。
