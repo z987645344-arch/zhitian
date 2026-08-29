@@ -7,7 +7,7 @@ import pytest
 
 import config
 import main
-from layers import planning
+from layers import execution, planning
 from layers.execution import ToolResult
 
 
@@ -267,6 +267,85 @@ def test_chat_stream_sends_reasoning_before_body_and_preserves_done(
 
     assert events[0] == {"chunk": "", "reasoning": "适合直接结合上下文回答"}
     assert events[1]["chunk"] == "answer"
+    assert events[-1] == {"chunk": "[DONE]"}
+
+
+def test_expert_document_stream_sends_chunks_then_independent_citations(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    prepared_state = _state("document")
+    prepared_state["decision_reasoning"] = "需要检索企业知识库"
+    citation = execution.Citation(
+        source="资料.pdf",
+        doc_id="doc-stream",
+        chunk_index=2,
+        score=0.91,
+    )
+    document_context = execution.DocumentAnswerContext(
+        query="文档问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="可信片段",
+            source="资料.pdf",
+            score=0.91,
+            doc_id="doc-stream",
+            chunk_index=2,
+        )],
+    )
+
+    def fake_run(*args, prepared_state=None, **kwargs):
+        prepared_state["results"] = [execution.ToolResult(
+            tool="search_documents",
+            status="success",
+            data="RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT",
+            citations=[citation],
+            document_answer_context=document_context,
+        )]
+        prepared_state["citations"] = [citation]
+        prepared_state["response"] = "RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT"
+        return prepared_state
+
+    monkeypatch.setattr(main, "_prepare_stream_state", lambda *args, **kwargs: prepared_state)
+    monkeypatch.setattr(main.planning, "run_graph_state", fake_run)
+    monkeypatch.setattr(
+        main.execution,
+        "_answer_from_documents",
+        lambda *args, **kwargs: iter(["第一段", "第二段"]),
+    )
+    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
+    monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
+
+    response = client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"session_id": "document-stream", "message": "文档问题", "mode": "expert"},
+    )
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    content_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("chunk") in {"第一段", "第二段"}
+    ]
+    citation_index = next(
+        index for index, event in enumerate(events) if event.get("type") == "citations"
+    )
+    assert [events[index]["chunk"] for index in content_indexes] == ["第一段", "第二段"]
+    assert citation_index > content_indexes[-1]
+    assert events[citation_index]["citations"] == [{
+        "source": "资料.pdf",
+        "doc_id": "doc-stream",
+        "chunk_index": 2,
+        "score": 0.91,
+    }]
+    assert "RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT" not in response.text
     assert events[-1] == {"chunk": "[DONE]"}
 
 

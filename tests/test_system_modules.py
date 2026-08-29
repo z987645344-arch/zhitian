@@ -164,14 +164,22 @@ def test_expert_document_metadata_stays_in_dynamic_message(monkeypatch):
 
     def fake_completion(messages, **kwargs):
         captured["messages"] = messages
-        return {"choices": [{"message": {"content": "answer"}}]}
+        return object()
 
     monkeypatch.setattr(execution.llm_provider, "chat_completion", fake_completion)
-    execution._answer_from_documents(
-        "DYNAMIC_QUERY",
-        [{"source": "DYNAMIC_SOURCE", "score": 0.8123, "content": "DYNAMIC_CHUNK"}],
+    monkeypatch.setattr(execution.llm_provider, "iter_text", lambda _response: iter(["answer"]))
+    list(execution._answer_from_documents(
+        execution.DocumentAnswerContext(
+            query="DYNAMIC_QUERY",
+            tier="expert",
+            candidates=[execution.DocumentAnswerCandidate(
+                source="DYNAMIC_SOURCE",
+                score=0.8123,
+                content="DYNAMIC_CHUNK",
+            )],
+        ),
         tier="expert",
-    )
+    ))
 
     messages = captured["messages"]
     fixed = messages[0]["content"]

@@ -97,6 +97,7 @@ class AgentState(TypedDict):
     complex_action: str
     complex_deadline: float
     stream_prepared: bool
+    stream_document_answer: bool
     external_content_tainted: bool
     deepseek_circuit_open: bool
     post_circuit_final_attempted: bool
@@ -931,6 +932,7 @@ def _new_agent_state(
         complex_action="",
         complex_deadline=0.0,
         stream_prepared=False,
+        stream_document_answer=False,
         external_content_tainted=False,
         deepseek_circuit_open=False,
         post_circuit_final_attempted=False,
@@ -1644,6 +1646,7 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
                 "query": state["message"],
                 "tier": state["mode"],
                 "context": state["attachment_context"],
+                "generate_answer": not state.get("stream_document_answer", False),
             },
             order=order
         )

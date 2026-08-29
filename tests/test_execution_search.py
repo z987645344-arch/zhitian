@@ -51,18 +51,26 @@ def test_expert_document_answer_prompt_is_evidence_and_jurisdiction_bound(monkey
         return object()
 
     monkeypatch.setattr(execution.llm_provider, "chat_completion", fake_completion)
-    monkeypatch.setattr(execution.llm_provider, "extract_text", lambda response: "基于片段的回答")
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "iter_text",
+        lambda response: iter(["基于片段", "的回答"]),
+    )
 
-    answer = execution._answer_from_documents(
-        "测试问题",
-        [{
-            "content": "《中华人民共和国测试法》规定的片段。",
-            "source": "大陆法律资料.docx",
-            "score": 0.91,
-        }],
+    context = execution.DocumentAnswerContext(
+        query="测试问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="《中华人民共和国测试法》规定的片段。",
+            source="大陆法律资料.docx",
+            score=0.91,
+        )],
+    )
+    answer = "".join(execution._answer_from_documents(
+        context,
         tier="expert",
         timeout=5,
-    )
+    ))
 
     assert answer == "基于片段的回答"
     system_text = captured["messages"][0]["content"]
@@ -72,6 +80,118 @@ def test_expert_document_answer_prompt_is_evidence_and_jurisdiction_bound(monkey
     assert "未找到可靠依据，无法确认答案" in system_text
     assert "source=大陆法律资料.docx score=0.910000" in user_text
     assert captured["kwargs"]["tier"] == "expert"
+    assert captured["kwargs"]["stream"] is True
+
+
+def test_document_answer_failure_before_first_chunk_never_returns_raw_evidence(monkeypatch):
+    state = planning._new_agent_state("document-empty-failure", "问题", "expert")
+    context = execution.DocumentAnswerContext(
+        query="问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="RAW_EVIDENCE_MUST_NOT_LEAK",
+            source="资料.pdf",
+            score=0.9,
+        )],
+    )
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "chat_completion",
+        Mock(side_effect=TimeoutError("timeout")),
+    )
+
+    chunks = list(execution._answer_from_documents(
+        context,
+        tier="expert",
+        timeout=5,
+        _execution_state=state,
+    ))
+
+    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
+    assert state["degradation_reasons"] == ["final_answer_timeout"]
+
+
+def test_document_answer_failure_after_partial_output_keeps_partial_and_appends_notice(monkeypatch):
+    state = planning._new_agent_state("document-partial-failure", "问题", "expert")
+    context = execution.DocumentAnswerContext(
+        query="问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="RAW_EVIDENCE_MUST_NOT_LEAK",
+            source="资料.pdf",
+            score=0.9,
+        )],
+    )
+
+    def interrupted_stream(_response):
+        yield "已生成的正常回答"
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", Mock(return_value=object()))
+    monkeypatch.setattr(execution.llm_provider, "iter_text", interrupted_stream)
+
+    chunks = list(execution._answer_from_documents(
+        context,
+        tier="expert",
+        timeout=5,
+        _execution_state=state,
+    ))
+
+    assert chunks[0] == "已生成的正常回答"
+    assert chunks[1].startswith("\n\n（已取得知识库文档依据，但模型整理超时")
+    assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
+    assert state["degradation_reasons"] == ["final_answer_timeout"]
+
+
+def test_document_answer_empty_stream_returns_explicit_failure(monkeypatch):
+    state = planning._new_agent_state("document-empty-stream", "问题", "expert")
+    context = execution.DocumentAnswerContext(
+        query="问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="RAW_EVIDENCE_MUST_NOT_LEAK",
+            source="资料.pdf",
+            score=0.9,
+        )],
+    )
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", Mock(return_value=object()))
+    monkeypatch.setattr(execution.llm_provider, "iter_text", lambda _response: iter([]))
+
+    chunks = list(execution._answer_from_documents(
+        context,
+        tier="expert",
+        timeout=5,
+        _execution_state=state,
+    ))
+
+    assert chunks == ["已取得知识库文档依据，但模型未能完成整理，请稍后重试。"]
+    assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
+    assert state["degradation_reasons"] == ["final_answer_failed"]
+
+
+def test_search_documents_collects_stream_for_non_streaming_chat_contract(monkeypatch):
+    monkeypatch.setattr(execution.auth, "get_verified_doc_ids", lambda: ["doc-1"])
+    monkeypatch.setattr(execution.memory, "search_documents", lambda *args, **kwargs: [{
+        "doc_id": "doc-1",
+        "chunk_index": 0,
+        "source": "资料.pdf",
+        "content": "可信片段",
+        "score": 0.9,
+    }])
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", Mock(return_value=object()))
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "iter_text",
+        lambda _response: iter(["非流式", "接口回答"]),
+    )
+
+    result = execution._search_documents("问题", tier="expert", generate_answer=True)
+
+    assert result.status == "success"
+    assert result.data == "非流式接口回答"
+    assert isinstance(result.data, str)
+    assert result.citations[0].doc_id == "doc-1"
 
 
 def _prepare_search(monkeypatch, provider=None):

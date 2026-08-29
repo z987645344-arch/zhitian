@@ -3272,6 +3272,10 @@ def _chat_stream_events(
             bool(reasoning),
             len(reasoning or ""),
         )
+        state["stream_document_answer"] = bool(
+            state.get("intent") == "document"
+            and not state.get("attachment_context")
+        )
 
         if state["intent"] == "clarify":
             clarification = state.get("clarification") or state.get("response") or "请补充关键信息。"
@@ -3405,8 +3409,43 @@ def _chat_stream_events(
             citations = _serialize_citations(final_state.get("citations", []))
             generated_file_events = _serialize_generated_file_events(final_state)
             assistant_message_type = _assistant_history_message_type(final_state)
-            chunks.append(final_data)
-            yield _sse_data({"chunk": final_data})
+            document_context = _streamable_document_answer_context(final_state)
+            if document_context is not None:
+                answer_started_at = time.perf_counter()
+                reasons_before = list(final_state.get("degradation_reasons", []))
+                execution.emit_tool_status(final_state, "llm_chat", "started")
+                if final_state.get("react_limit_reached"):
+                    notice = "基于目前检索到的信息回答，可能不够全面。\n\n"
+                    chunks.append(notice)
+                    yield _sse_data({"chunk": notice})
+                for chunk in execution._answer_from_documents(
+                    document_context,
+                    tier=perception_output.mode,
+                    timeout=execution.remaining_request_budget(
+                        final_state,
+                        config.EXPERT_LLM_TIMEOUT,
+                    ),
+                    _execution_state=final_state,
+                ):
+                    chunks.append(chunk)
+                    yield _sse_data({"chunk": chunk})
+                final_data = "".join(chunks)
+                final_state["response"] = final_data
+                new_reasons = [
+                    code
+                    for code in final_state.get("degradation_reasons", [])
+                    if code not in reasons_before
+                ]
+                execution.emit_tool_status(
+                    final_state,
+                    "llm_chat",
+                    "degraded" if new_reasons else "succeeded",
+                    elapsed_ms=int((time.perf_counter() - answer_started_at) * 1000),
+                    reason_code=new_reasons[0] if new_reasons else None,
+                )
+            else:
+                chunks.append(final_data)
+                yield _sse_data({"chunk": final_data})
             if final_state.get("error"):
                 has_error = True
                 request_status = "degraded"
@@ -3643,6 +3682,23 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
             )
         )
     return events
+
+
+def _streamable_document_answer_context(
+    state: dict,
+) -> Optional[execution.DocumentAnswerContext]:
+    """只接管SSE专门准备的最终文档结果，不改变其他工具或非流式接口。"""
+    if not state.get("stream_document_answer") or state.get("error"):
+        return None
+    results = state.get("results") or []
+    if not results:
+        return None
+    latest_result = results[-1]
+    if not isinstance(latest_result, execution.ToolResult):
+        return None
+    if latest_result.tool != "search_documents" or latest_result.status != "success":
+        return None
+    return latest_result.document_answer_context
 
 
 def _assistant_history_message_type(state: dict) -> str:

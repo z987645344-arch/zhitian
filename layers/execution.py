@@ -39,6 +39,24 @@ class Citation(BaseModel):
     score: float
 
 
+class DocumentAnswerCandidate(BaseModel):
+    """用于回答生成的可信文档片段，不参与对外事件序列化。"""
+
+    content: str
+    source: str
+    score: float
+    doc_id: str = ""
+    chunk_index: int = 0
+
+
+class DocumentAnswerContext(BaseModel):
+    """文档检索与回答生成之间的结构化层间数据。"""
+
+    query: str
+    tier: str
+    candidates: list[DocumentAnswerCandidate] = Field(default_factory=list)
+
+
 class ToolResult(BaseModel):
     tool: str
     status: str
@@ -47,6 +65,10 @@ class ToolResult(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     blocked_by_content_taint: bool = False
+    document_answer_context: Optional[DocumentAnswerContext] = Field(
+        default=None,
+        exclude=True,
+    )
 
 
 class ToolStatusEvent(BaseModel):
@@ -72,6 +94,7 @@ DEGRADATION_REASON_CODES = {
     "search_summary_failed",
     "document_rerank_timeout",
     "final_answer_timeout",
+    "final_answer_failed",
     "output_observation_timeout",
     "deepseek_rate_limit",
     "deepseek_upstream_unavailable",
@@ -832,6 +855,21 @@ def _search_documents(
         and deepseek_circuit_open(_execution_state)
         and not local_evidence_is_strong(metadata)
     )
+    document_answer_context = DocumentAnswerContext(
+        query=query,
+        tier=tier,
+        candidates=[
+            DocumentAnswerCandidate(
+                content=str(item.get("content", "")),
+                source=str(item.get("source", "")),
+                score=float(item.get("score", 0.0) or 0.0),
+                doc_id=str(item.get("doc_id", "")),
+                chunk_index=int(item.get("chunk_index", 0) or 0),
+            )
+            for item in trusted_results
+            if str(item.get("content", "")).strip()
+        ],
+    )
     if generate_answer and context:
         context_result = _answer_from_supplied_context(
             query,
@@ -842,13 +880,12 @@ def _search_documents(
         )
         answer = context_result.data
     elif generate_answer and not defer_answer_for_web:
-        answer = _answer_from_documents(
-            query,
-            trusted_results,
+        answer = "".join(_answer_from_documents(
+            document_answer_context,
             tier=tier,
             timeout=timeout,
             _execution_state=_execution_state,
-        )
+        ))
     else:
         answer = _format_document_tool_context(trusted_results)
     return ToolResult(
@@ -857,6 +894,7 @@ def _search_documents(
         data=answer,
         citations=citations,
         metadata=metadata,
+        document_answer_context=document_answer_context,
     )
 
 
@@ -1465,27 +1503,33 @@ def _remove_generated_temp_file(path: str) -> None:
 
 
 def _answer_from_documents(
-    query: str,
-    results: list[dict],
+    answer_context: DocumentAnswerContext,
     tier: str = "fast",
     timeout: Optional[float] = None,
     _execution_state: Optional[dict] = None,
-) -> str:
-    """基于可信文档chunk生成回答，来源信息只通过citations返回。"""
+) -> Iterator[str]:
+    """流式生成可信文档回答；来源信息仍只通过独立citations事件返回。
+
+    供应商timeout在流式请求中约束连接和单次网络读取等待，不再把完整回答的
+    最后一字节当作同一非流式截止点。expert请求已有的complex_deadline会在
+    消费每个chunk时继续检查；若供应商读取本身阻塞，实际墙钟仍可能像SDK原有
+    timeout一样略有越界，因此这里不把它描述为精确计时器。
+    """
     snippets = []
-    for index, item in enumerate(results, start=1):
-        content = str(item.get("content", "")).strip()
+    for index, item in enumerate(answer_context.candidates, start=1):
+        content = item.content.strip()
         if content:
             snippets.append(
                 "[%s] source=%s score=%.6f\n%s" % (
                     index,
-                    str(item.get("source", "")),
-                    float(item.get("score", 0.0) or 0.0),
+                    item.source,
+                    item.score,
                     content,
                 )
             )
     if not snippets:
-        return "未找到可靠依据，无法确认答案"
+        yield "未找到可靠依据，无法确认答案"
+        return
 
     if tier == "expert":
         fixed_prompt = (
@@ -1504,14 +1548,17 @@ def _answer_from_documents(
         )
     fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
     dynamic_prompt = (
-        f"用户问题：{query}\n\n"
+        f"用户问题：{answer_context.query}\n\n"
         "文档片段：\n"
         + "\n\n".join(snippets)
     )
-    contents = [str(item.get("content", "")).strip() for item in results if item.get("content")]
-    conservative_summary = "\n\n".join(contents)
     if not claim_post_circuit_final_attempt(_execution_state):
-        return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
+        yield "已取得知识库文档依据，但%s" % deepseek_circuit_user_message(
+            _execution_state
+        )
+        return
+
+    emitted = False
     try:
         if tier == "expert":
             response = llm_provider.chat_completion(
@@ -1522,19 +1569,68 @@ def _answer_from_documents(
                 ),
                 tier=tier,
                 timeout=timeout,
+                stream=True,
             )
-            return llm_provider.extract_text(response).strip()
-        prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
-        return str(_llm_chat(message=prompt, tier=tier, timeout=timeout)).strip()
+            stream = llm_provider.iter_text(response)
+        else:
+            prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
+            stream = _llm_chat(
+                message=prompt,
+                stream=True,
+                tier=tier,
+                timeout=timeout,
+                _execution_state=_execution_state,
+            )
+        for chunk in stream:
+            if (
+                _execution_state
+                and float(_execution_state.get("complex_deadline") or 0.0) > 0
+                and remaining_request_budget(_execution_state, 1.0) <= 0
+            ):
+                raise TimeoutError("expert request budget exhausted while streaming document answer")
+            emitted = True
+            yield chunk
+        if not emitted:
+            add_degradation_reason(_execution_state, "final_answer_failed")
+            yield _empty_document_answer_failure_message("final_answer_failed")
     except Exception as e:
-        open_deepseek_circuit_for_error(
+        reason_code = open_deepseek_circuit_for_error(
             _execution_state,
             e,
             "final_answer_timeout",
             final_attempt_consumed=True,
         )
-        logger.warning("文档回答生成失败，返回保守摘要：query_len=%s error_type=%s", len(query or ""), type(e).__name__)
-        return conservative_summary[:800] if conservative_summary else "未找到可靠依据，无法确认答案"
+        if reason_code is None:
+            reason_code = "final_answer_failed"
+            add_degradation_reason(_execution_state, reason_code)
+        logger.warning(
+            "文档回答流式生成失败：query_len=%s emitted=%s error_type=%s",
+            len(answer_context.query or ""),
+            emitted,
+            type(e).__name__,
+        )
+        if emitted:
+            yield _partial_document_answer_failure_message(reason_code)
+        else:
+            yield _empty_document_answer_failure_message(reason_code)
+
+
+def _empty_document_answer_failure_message(reason_code: str) -> str:
+    if reason_code == "final_answer_timeout":
+        return "已取得知识库文档依据，但模型整理超时，请稍后重试。"
+    if reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
+        return "已取得知识库文档依据，但模型服务暂时不可用，请稍后重试。"
+    return "已取得知识库文档依据，但模型未能完成整理，请稍后重试。"
+
+
+def _partial_document_answer_failure_message(reason_code: str) -> str:
+    if reason_code == "final_answer_timeout":
+        detail = "模型整理超时"
+    elif reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
+        detail = "模型服务暂时不可用"
+    else:
+        detail = "模型未能完成整理"
+    return "\n\n（已取得知识库文档依据，但%s；以上为已生成的部分内容，建议稍后重试。）" % detail
 
 
 def _fallback_llm_answer(
