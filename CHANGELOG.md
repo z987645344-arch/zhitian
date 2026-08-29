@@ -1752,3 +1752,21 @@
 - 全仓模型调用点清点中，本轮前低于10秒的固定预算共三项：搜索词改写`4 s/fast/回退原query/曾开熔断`、输出观察`5 s/expert/保留已交付回答/不开熔断`、长期记忆重要性`3 s/fast/保守不写记忆/不开熔断`；本轮后仅后两项仍低于10秒，均未修改。
 - Python语法检查与搜索降级针对性`41 passed`，权威入口`run_tests.bat -q`为`501 passed, 5 deselected, 0 failed in 383.14s`；故障注入覆盖超时、429与连接失败，明确断言原始query返回、原因码保留、熔断关闭，并验证后续fast整理及expert输出观察没有被跳过。
 - 本轮未做真实付费测量；输出观察5秒预算至今仍未被真正测到，长期记忆重要性3秒也没有独立实测依据，`15.0`仍是本机数据推导的暂定值，三项均不得视为已完成生产验证。
+
+### 我怎么证实的（验证存档方）
+
+- **档位映射表用真函数跑过，不是读代码推断**：`import config` 后遍历 `LLMStage`，得成员 **16 个**、`EXPERT_STAGE_MODEL_TIERS` **16 条**，缺失与多余键均为 0。逐个阶段调用 `resolve_model_tier("fast", stage)`，**16 个阶段全部返回 `fast`**——因为 `config.py:90-91` 的 fast 分支位于 `:94` 查表**之前**，fast 结构性地不可能被升档。未知阶段得 `ValueError: unknown LLM stage: no_such_stage`，未知 tier 得 `ValueError: unsupported request tier: turbo`，均为抛错而非静默默认；查表用 `[]` 而非 `.get()`，缺阶段会 KeyError 而不是悄悄回落。
+- **两条流式路径确实共用同一个守护器**：`execution.py:717`（`WEB_SEARCH_SUMMARY_STREAM`）与 `:1696`（`DOCUMENT_ANSWER`）调用的是同一个 `_open_llm_stream_with_first_content_timeout`。**它不依赖正文循环体**：`:1600` 起守护线程去消费首个 `iter_text` 正文，调用线程在 `:1602` 走 `result.result(timeout=wait_seconds)` 独立等待；超时即 `cancelled.set()`、关闭上游流并抛 `FirstContentTimeoutError`。因此即使供应商只吐 reasoning、永不产出正文，墙钟仍会到期——这正是把截止检查放在循环体内所无法保证的。
+- **三处熔断隔离逐个看过失败分支**：精排在 `memory.py:1126` 的 `except` 中只记日志、把 `error_kind` 写进 `diagnostics`、`return candidates` 回退 hybrid 顺序，且 **`open_deepseek_circuit` 在 `memory.py` 中出现 0 次**；输出观察与搜索词改写的 `except` 均为 `provider_degradation_reason` + `add_degradation_reason` + 日志，同样不调用 `open_deepseek_circuit_for_error`。
+- **记录中的数字自己重算了一遍**：`40 − 44.697 = −4.697`、`40 − 18.677 = 21.323`、四条 hybrid best score 中达 0.65 的确为 `1/4`、5 候选 rerank_score 达 8.5 的确为 `3` 条、fast 档四条最慢确为 `8.832 s`（记录写作约 8.83）、`9.956 + 5 ≈ 15`、`45 + 16 = 61 < 90`。八项全部自洽。
+- **config 现值与记录声称逐项一致**：`FIRST_CONTENT_TIMEOUT=45.0`、`SEARCH_QUERY_REWRITE_TIMEOUT=15.0`、`RERANK_TIMEOUT=12.0`，以及记录声明「未修改」的 `OUTPUT_ANOMALY_CHECK_TIMEOUT=5.0` 与 `MEMORY_IMPORTANCE_TIMEOUT=3.0` 确实仍是原值。
+- **本批不含前台文件**：`v4.3.1..HEAD` 改动的 13 个文件中 `web_client/` 命中 **0 个**，因此部署时无需重建前端镜像。
+- **未做的**：未重跑任何付费测量（本批实测数据已在上列条目中，重跑既费钱又对静态复核无增益）；未起 compose、未碰卷、未改代码或配置。`docs/claude_memory.md` 只提交、未编辑一字。
+
+## 2026-08-30 存档：v4.4 覆盖 v4.3.1 之后的七条提交
+
+- **本条为存档条目**。标签 `v4.4` 打在本条目所在的提交上，覆盖 `v4.3.1..v4.4` 共**七条**：`9962997` 修正Expert文档精排档位与失败隔离、`7730cf1` 文档回答改为流式并移除原文倒灌兜底、`01d20bd` 为Expert文档回答增加首正文超时上界、`ffa05cb` 按Expert执行阶段集中分配模型档位、`8b50b94` 补齐流式搜索首正文上界并隔离输出观察失败、`62d8dd7` 隔离搜索词改写失败并调整暂定预算，以及本轮这条。
+- **两段式依据**：本批含真实的用户可见行为变化——模型档位按阶段重新分配、文档回答由非流式改为流式、新增首正文墙钟上界、三处熔断隔离、多处预算调整，并移除了两处 `conservative_summary[:800]` 原文倒灌。按 8.1 第 3 条「混合改动按代码变化处理」，不能用文档补丁号掩盖。
+- **`VERSION` 同步升至 `4.4.0`**。它是本仓库唯一版本文件，`/` 与 `/openapi.json` 对外报的就是它，格式不合法会让容器拒绝启动。该文件近几轮被漏升过两次，本轮按要求补上。
+- **打标前门禁**：权威回归 `run_tests.bat -q` 得 **501 passed, 5 deselected**（239.3 秒），与基线 501 相符。存档前例行核对——IPv4 字面量 0 处、密钥/凭据形态 0 处、服务器绝对路径 0 处、主机名 0 处、未跟踪文件 0 个、二进制改动 0 处、跨仓库误改 0 处。
+- **本轮未覆盖什么（逐条如实列出）**：①**输出观察至今三次未被真正测到**——它在唯一一次真实 Expert 联网测量中因熔断守卫未发起模型请求，其 5 秒预算是否够用没有任何实测数据；②`OUTPUT_ANOMALY_CHECK_TIMEOUT=5.0` 与 `MEMORY_IMPORTANCE_TIMEOUT=3.0` 本批未动，且两者都没有独立实测依据；③**fast 档存在 1 次重试**（`FAST_LLM_TIMEOUT_RETRIES=1`），未传总预算的调用实际墙钟上界约为设定值的**两倍**（另加 `FAST_LLM_RETRY_DELAY=0.75` 的间隔），因此若干"设定值"并不等于真实上界；④全部数值均来自本机，未经任何生产复核，本机网络延迟不等于生产延迟；⑤**复杂任务链耗时完全未测**——意图分类、复杂任务分解、checkpoint、ReAct 反思、复杂汇总这条 expert 档链路一次都没有端到端计过时。上述五项均不得由本批结果推断为已完成。
