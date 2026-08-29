@@ -390,8 +390,8 @@ def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
     fallback_counter = Mock()
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
     monkeypatch.setattr(
-        execution,
-        "_llm_chat",
+        execution.llm_provider,
+        "chat_completion",
         Mock(side_effect=TimeoutError("timeout")),
     )
     monkeypatch.setattr(execution.observability, "record_search_fallback", fallback_counter)
@@ -402,6 +402,95 @@ def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
     assert "测试结果" not in chunks[0]
     assert "https://" not in chunks[0]
     fallback_counter.assert_called_once()
+
+
+def test_stream_search_summary_uses_shared_first_content_guard(monkeypatch):
+    _prepare_search(monkeypatch)
+    state = planning._new_agent_state("search-stream-success", "原始问题", "expert")
+    state["complex_deadline"] = time.perf_counter() + 1.0
+    captured = {}
+    observation = Mock()
+
+    def fake_completion(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", fake_completion)
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "iter_text",
+        lambda _response: iter(["整理", "结果"]),
+    )
+    monkeypatch.setattr(execution, "_observe_external_search_output", observation)
+
+    chunks = list(execution.stream_search_result(
+        "原始问题",
+        tier="expert",
+        execution_state=state,
+    ))
+
+    assert chunks == ["整理", "结果"]
+    assert captured["kwargs"]["tier"] == "fast"
+    assert captured["kwargs"]["stream"] is True
+    assert "原始问题" in captured["messages"][-1]["content"]
+    observation.assert_called_once_with("原始问题", "整理结果", "expert", state)
+
+
+def test_stream_search_first_content_timeout_ignores_non_content_activity(monkeypatch):
+    _prepare_search(monkeypatch)
+    state = planning._new_agent_state("search-no-content", "原始问题", "expert")
+    state["complex_deadline"] = time.perf_counter() + 1.0
+    response = ReasoningOnlyStream()
+    monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
+    monkeypatch.setattr(execution.config, "FIRST_CONTENT_TIMEOUT", 0.05)
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "chat_completion",
+        Mock(return_value=response),
+    )
+
+    started_at = time.perf_counter()
+    chunks = list(execution.stream_search_result(
+        "原始问题",
+        tier="expert",
+        execution_state=state,
+    ))
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.5
+    assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]
+    assert "可用于验证的原始搜索摘要" not in "".join(chunks)
+    assert state["degradation_reasons"] == ["search_summary_timeout"]
+    assert response.closed.wait(0.5)
+
+
+def test_stream_search_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
+    _prepare_search(monkeypatch)
+    state = planning._new_agent_state("search-budget-clamp", "原始问题", "expert")
+    state["complex_deadline"] = time.perf_counter() + 0.04
+    response = ReasoningOnlyStream()
+    monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
+    monkeypatch.setattr(execution.config, "FIRST_CONTENT_TIMEOUT", 5.0)
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "chat_completion",
+        Mock(return_value=response),
+    )
+
+    started_at = time.perf_counter()
+    chunks = list(execution.stream_search_result(
+        "原始问题",
+        tier="expert",
+        execution_state=state,
+    ))
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.5
+    assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]
+    assert state["degradation_reasons"] == ["search_summary_timeout"]
+    assert response.closed.wait(0.5)
 
 
 def test_web_search_provider_can_be_replaced_and_taints_state(monkeypatch):
@@ -599,6 +688,8 @@ def test_output_anomaly_failure_does_not_change_search_answer(monkeypatch):
     snapshot = execution.observability.metrics_snapshot()
     assert result == "正常整理结果"
     assert provider.queries == ["查询"]
+    assert state["degradation_reasons"] == ["output_observation_timeout"]
+    assert state["deepseek_circuit_open"] is False
     assert snapshot["output_anomaly_check_failed_total"] == baseline["output_anomaly_check_failed_total"] + 1
 
 

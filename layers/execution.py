@@ -99,6 +99,7 @@ DEGRADATION_REASON_CODES = {
     "final_answer_timeout",
     "final_answer_failed",
     "output_observation_timeout",
+    "output_observation_failed",
     "deepseek_rate_limit",
     "deepseek_upstream_unavailable",
 }
@@ -146,8 +147,8 @@ class OutputAnomalyCheck(BaseModel):
     concern_reason: Optional[str] = None
 
 
-class DocumentFirstContentTimeoutError(TimeoutError):
-    """文档回答未在独立墙钟上界内产生首个可见正文。"""
+class FirstContentTimeoutError(TimeoutError):
+    """LLM流未在独立墙钟上界内产生首个可见正文。"""
 
 
 # 执行层错误处理规则
@@ -705,20 +706,36 @@ def stream_search_result(
                 execution_state
             )
             return
-        stream = _llm_chat(
-            message=original_question,
-            search_results=search_results,
-            original_question=original_question,
-            stream=True,
-            tier=config.resolve_model_tier(
-                tier,
-                config.LLMStage.WEB_SEARCH_SUMMARY_STREAM,
-            ),
-            timeout=remaining,
-            _execution_state=execution_state,
-            _timeout_reason_code="search_summary_timeout",
+        summary_tier = config.resolve_model_tier(
+            tier,
+            config.LLMStage.WEB_SEARCH_SUMMARY_STREAM,
         )
+        first_content_timeout = remaining_request_budget(
+            execution_state,
+            config.FIRST_CONTENT_TIMEOUT,
+        )
+        stream, first_chunk = _open_llm_stream_with_first_content_timeout(
+            _build_search_answer_messages(
+                original_question,
+                search_results,
+                tier=summary_tier,
+            ),
+            summary_tier,
+            remaining,
+            first_content_timeout,
+            "联网搜索整理",
+        )
+        if first_chunk:
+            emitted = True
+            collected_chunks.append(first_chunk)
+            yield first_chunk
         for chunk in stream:
+            if (
+                execution_state
+                and float(execution_state.get("complex_deadline") or 0.0) > 0
+                and remaining_request_budget(execution_state, 1.0) <= 0
+            ):
+                raise TimeoutError("expert request budget exhausted while streaming search summary")
             emitted = True
             collected_chunks.append(chunk)
             yield chunk
@@ -1519,13 +1536,14 @@ def _remove_generated_temp_file(path: str) -> None:
         logger.warning("生成文件临时产物清理失败：error_type=%s", type(exc).__name__)
 
 
-def _open_document_answer_stream(
+def _open_llm_stream_with_first_content_timeout(
     messages: list[dict],
     tier: str,
     timeout: Optional[float],
     first_content_timeout: float,
+    stage_name: str,
 ) -> tuple[Iterator[str], Optional[str]]:
-    """在独立墙钟上界内创建供应商流并取得首个可见正文chunk。
+    """在独立墙钟上界内创建LLM流并取得首个可见正文chunk。
 
     SDK流可能持续返回reasoning等非正文事件，使单次网络读取timeout不断重置；
     因此不能把截止检查放在正文生成器的循环体内。这里让守护线程消费到首个
@@ -1535,8 +1553,8 @@ def _open_document_answer_stream(
     """
     wait_seconds = max(0.0, float(first_content_timeout))
     if wait_seconds <= 0:
-        raise DocumentFirstContentTimeoutError(
-            "document answer first content budget exhausted"
+        raise FirstContentTimeoutError(
+            "llm first content budget exhausted"
         )
 
     result: Future = Future()
@@ -1576,7 +1594,7 @@ def _open_document_answer_stream(
     worker = threading.Thread(
         target=request_context.run,
         args=(open_and_read_first_content,),
-        name="document-first-content",
+        name="llm-first-content",
         daemon=True,
     )
     worker.start()
@@ -1592,11 +1610,12 @@ def _open_document_answer_stream(
                 close_stream()
             except Exception as close_exc:
                 logger.warning(
-                    "文档回答首正文超时后关闭供应商流失败：error_type=%s",
+                    "%s首正文超时后关闭供应商流失败：error_type=%s",
+                    stage_name,
                     type(close_exc).__name__,
                 )
-        raise DocumentFirstContentTimeoutError(
-            "document answer first content timeout"
+        raise FirstContentTimeoutError(
+            "llm first content timeout"
         ) from exc
 
 
@@ -1674,11 +1693,12 @@ def _answer_from_documents(
             _execution_state,
             config.FIRST_CONTENT_TIMEOUT,
         )
-        stream, first_chunk = _open_document_answer_stream(
+        stream, first_chunk = _open_llm_stream_with_first_content_timeout(
             messages,
             config.resolve_model_tier(tier, config.LLMStage.DOCUMENT_ANSWER),
             timeout,
             first_content_timeout,
+            "文档回答",
         )
         if first_chunk:
             emitted = True
@@ -1698,7 +1718,7 @@ def _answer_from_documents(
     except Exception as e:
         timeout_reason_code = (
             "document_first_content_timeout"
-            if isinstance(e, DocumentFirstContentTimeoutError)
+            if isinstance(e, FirstContentTimeoutError)
             else "final_answer_timeout"
         )
         reason_code = open_deepseek_circuit_for_error(
@@ -1945,10 +1965,13 @@ def _observe_external_search_output(
         if flagged:
             logger.warning("搜索输出观察校验标记异常：concern_reason=%s", reason)
     except Exception as exc:
-        open_deepseek_circuit_for_error(
-            execution_state,
+        reason_code = provider_degradation_reason(
             exc,
             "output_observation_timeout",
+        )
+        add_degradation_reason(
+            execution_state,
+            reason_code or "output_observation_failed",
         )
         observability.record_output_anomaly_check_failed(tier)
         logger.warning("搜索输出观察校验失败：error_type=%s", type(exc).__name__)
