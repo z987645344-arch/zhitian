@@ -105,7 +105,9 @@ FAST_LLM_TIMEOUT_RETRIES = int(os.getenv("FAST_LLM_TIMEOUT_RETRIES", "1"))
 FAST_LLM_RETRY_DELAY = float(os.getenv("FAST_LLM_RETRY_DELAY", "0.75"))
 FAST_REQUEST_TIMEOUT = float(os.getenv("FAST_REQUEST_TIMEOUT", "25.0"))
 SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
-SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "4.0"))
+# 本机fast档搜索词改写实测需9.956秒，且供应商timeout可能比设定墙钟再多约5秒；
+# 暂以15秒留出松弛，仍需生产网络实测复核，不能视为已经定型的容量参数。
+SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "15.0"))
 OUTPUT_ANOMALY_CHECK_TIMEOUT = float(
     os.getenv("OUTPUT_ANOMALY_CHECK_TIMEOUT", "5.0")
 )

@@ -2027,11 +2027,12 @@ def _rewrite_search_query(
         )
         rewritten = llm_provider.extract_text(response)
     except Exception as exc:
-        open_deepseek_circuit_for_error(
-            _execution_state,
+        reason_code = provider_degradation_reason(
             exc,
             "query_rewrite_timeout",
         )
+        if reason_code:
+            add_degradation_reason(_execution_state, reason_code)
         logger.warning("搜索query改写失败，使用原始query：error_type=%s", type(exc).__name__)
         return message
 
