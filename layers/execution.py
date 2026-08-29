@@ -561,7 +561,10 @@ def _search_web(
             message=original_question,
             search_results=search_results,
             original_question=original_question,
-            tier=tier,
+            tier=config.resolve_model_tier(
+                tier,
+                config.LLMStage.WEB_SEARCH_SUMMARY_NONSTREAM,
+            ),
             timeout=remaining,
             _execution_state=_execution_state,
             _timeout_reason_code="search_summary_timeout",
@@ -707,7 +710,10 @@ def stream_search_result(
             search_results=search_results,
             original_question=original_question,
             stream=True,
-            tier=tier,
+            tier=config.resolve_model_tier(
+                tier,
+                config.LLMStage.WEB_SEARCH_SUMMARY_STREAM,
+            ),
             timeout=remaining,
             _execution_state=execution_state,
             _timeout_reason_code="search_summary_timeout",
@@ -926,7 +932,10 @@ def _answer_from_supplied_context(
                 _llm_chat(
                     message=query,
                     system_prompt=system_prompt,
-                    tier=tier,
+                    tier=config.resolve_model_tier(
+                        tier,
+                        config.LLMStage.SUPPLIED_CONTEXT_ANSWER,
+                    ),
                     timeout=timeout,
                     _execution_state=_execution_state,
                 )
@@ -1667,7 +1676,7 @@ def _answer_from_documents(
         )
         stream, first_chunk = _open_document_answer_stream(
             messages,
-            tier,
+            config.resolve_model_tier(tier, config.LLMStage.DOCUMENT_ANSWER),
             timeout,
             first_content_timeout,
         )
@@ -1799,17 +1808,18 @@ def _llm_chat(
             excluded_history_message_types=excluded_history_message_types,
         )
 
+    model_tier = config.resolve_model_tier(tier, config.LLMStage.DIRECT_CHAT_REASONING)
     try:
         if stream:
             response = llm_provider.chat_completion(
                 messages,
-                tier=tier,
+                tier=model_tier,
                 timeout=timeout,
                 stream=True
             )
             return llm_provider.iter_text(response)
 
-        response = llm_provider.chat_completion(messages, tier=tier, timeout=timeout)
+        response = llm_provider.chat_completion(messages, tier=model_tier, timeout=timeout)
         return llm_provider.extract_text(response)
     except Exception as exc:
         open_deepseek_circuit_for_error(
@@ -1919,7 +1929,7 @@ def _observe_external_search_output(
                 [{"role": "user", "content": dynamic_prompt}],
                 include_date=True,
             ),
-            tier=tier,
+            tier=config.resolve_model_tier(tier, config.LLMStage.OUTPUT_OBSERVATION),
             response_format={"type": "json_object"},
             timeout=timeout,
         )
@@ -1989,7 +1999,7 @@ def _rewrite_search_query(
     try:
         response = llm_provider.chat_completion(
             messages,
-            tier=tier,
+            tier=config.resolve_model_tier(tier, config.LLMStage.SEARCH_QUERY_REWRITE),
             timeout=effective_timeout,
         )
         rewritten = llm_provider.extract_text(response)

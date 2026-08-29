@@ -4,6 +4,7 @@
 import base64
 import binascii
 import os
+from enum import Enum
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,6 +34,66 @@ del _personal_key_encryption_bytes
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_FAST_MODEL = os.getenv("DEEPSEEK_FAST_MODEL", "deepseek-v4-flash")
 DEEPSEEK_EXPERT_MODEL = os.getenv("DEEPSEEK_EXPERT_MODEL", "deepseek-v4-pro")
+
+
+class LLMStage(str, Enum):
+    """可审计的模型调用阶段；新增调用点时必须先在此处声明。"""
+
+    DOCUMENT_RERANK = "document_rerank"
+    DOCUMENT_ANSWER = "document_answer"
+    WEB_SEARCH_SUMMARY_STREAM = "web_search_summary_stream"
+    WEB_SEARCH_SUMMARY_NONSTREAM = "web_search_summary_nonstream"
+    SUPPLIED_CONTEXT_ANSWER = "supplied_context_answer"
+    HISTORY_CONTEXT_POLISH = "history_context_polish"
+    SEARCH_QUERY_REWRITE = "search_query_rewrite"
+    MEMORY_IMPORTANCE = "memory_importance"
+    COMPLEX_TASK_DECOMPOSITION = "complex_task_decomposition"
+    CHECKPOINT_ROUTE = "checkpoint_route"
+    CHECKPOINT_ADJUSTMENT = "checkpoint_adjustment"
+    REACT_REFLECTION = "react_reflection"
+    DIRECT_CHAT_REASONING = "direct_chat_reasoning"
+    INTENT_CLASSIFICATION = "intent_classification"
+    COMPLEX_FINAL_SUMMARY = "complex_final_summary"
+    OUTPUT_OBSERVATION = "output_observation"
+
+
+# 该表只定义expert请求的阶段分配；fast请求由resolve_model_tier()强制保持fast，
+# 绝不会因表内某阶段标为expert而升档。涉及安全判断或多步推理的阶段继续使用expert，
+# 已有材料的整理、短分类与重排使用fast。
+EXPERT_STAGE_MODEL_TIERS = {
+    LLMStage.DOCUMENT_RERANK: "fast",
+    LLMStage.DOCUMENT_ANSWER: "fast",
+    LLMStage.WEB_SEARCH_SUMMARY_STREAM: "fast",
+    LLMStage.WEB_SEARCH_SUMMARY_NONSTREAM: "fast",
+    LLMStage.SUPPLIED_CONTEXT_ANSWER: "fast",
+    LLMStage.HISTORY_CONTEXT_POLISH: "fast",
+    LLMStage.SEARCH_QUERY_REWRITE: "fast",
+    LLMStage.MEMORY_IMPORTANCE: "fast",
+    LLMStage.COMPLEX_TASK_DECOMPOSITION: "expert",
+    LLMStage.CHECKPOINT_ROUTE: "expert",
+    LLMStage.CHECKPOINT_ADJUSTMENT: "expert",
+    LLMStage.REACT_REFLECTION: "expert",
+    LLMStage.DIRECT_CHAT_REASONING: "expert",
+    LLMStage.INTENT_CLASSIFICATION: "expert",
+    LLMStage.COMPLEX_FINAL_SUMMARY: "expert",
+    LLMStage.OUTPUT_OBSERVATION: "expert",
+}
+
+
+def resolve_model_tier(request_tier: str, stage: LLMStage) -> str:
+    """按请求模式和阶段返回实际模型档位；fast请求永不升档。"""
+    try:
+        normalized_stage = LLMStage(stage)
+    except ValueError as exc:
+        raise ValueError("unknown LLM stage: %s" % stage) from exc
+    normalized_tier = str(request_tier or "").strip().lower()
+    if normalized_tier == "fast":
+        return "fast"
+    if normalized_tier != "expert":
+        raise ValueError("unsupported request tier: %s" % request_tier)
+    return EXPERT_STAGE_MODEL_TIERS[normalized_stage]
+
+
 FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))
 EXPERT_LLM_TIMEOUT = float(os.getenv("EXPERT_LLM_TIMEOUT", "25.0"))
 EXPERT_COMPLEX_TIMEOUT = float(os.getenv("EXPERT_COMPLEX_TIMEOUT", "120.0"))

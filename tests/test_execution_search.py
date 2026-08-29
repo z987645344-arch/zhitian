@@ -107,7 +107,7 @@ def test_expert_document_answer_prompt_is_evidence_and_jurisdiction_bound(monkey
     assert "不得替换为其他法域" in system_text
     assert "未找到可靠依据，无法确认答案" in system_text
     assert "source=大陆法律资料.docx score=0.910000" in user_text
-    assert captured["kwargs"]["tier"] == "expert"
+    assert captured["kwargs"]["tier"] == "fast"
     assert captured["kwargs"]["stream"] is True
 
 
@@ -334,7 +334,7 @@ def test_search_web_returns_llm_summary_when_tavily_succeeds(monkeypatch):
     assert result == "正常整理结果"
     assert search_provider.queries == ["改写查询"]
     assert answer.call_count == 1
-    assert answer.call_args.kwargs["tier"] == "expert"
+    assert answer.call_args.kwargs["tier"] == "fast"
 
 
 def test_search_summary_failure_returns_friendly_message_and_counts_fallback(monkeypatch):
@@ -565,6 +565,7 @@ def test_output_anomaly_check_requires_expert_tainted_state(monkeypatch):
     )
     snapshot = execution.observability.metrics_snapshot()
     assert calls.call_count == 1
+    assert calls.call_args.kwargs["tier"] == "expert"
     assert snapshot["output_anomaly_check_total"] == baseline["output_anomaly_check_total"] + 1
     assert snapshot["output_anomaly_by_tier"]["expert"]["total"] >= 1
 

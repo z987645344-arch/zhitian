@@ -708,7 +708,10 @@ def complex_respond_node(state: AgentState) -> AgentState:
                 }],
                 include_date=True,
             ),
-            tier="expert",
+            tier=config.resolve_model_tier(
+                state["mode"],
+                config.LLMStage.COMPLEX_FINAL_SUMMARY,
+            ),
             timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
             total_budget=_remaining_complex_budget(state),
         )
@@ -1233,7 +1236,10 @@ def _generate_complex_tasks(
             }],
             include_date=True,
         ),
-        tier="expert",
+        tier=config.resolve_model_tier(
+            state["mode"],
+            config.LLMStage.COMPLEX_TASK_DECOMPOSITION,
+        ),
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1277,7 +1283,10 @@ def _check_complex_route_with_model(state: AgentState) -> str:
                 ),
             }],
         ),
-        tier="expert",
+        tier=config.resolve_model_tier(
+            state["mode"],
+            config.LLMStage.CHECKPOINT_ROUTE,
+        ),
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1307,7 +1316,10 @@ def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[T
                 ),
             }],
         ),
-        tier="expert",
+        tier=config.resolve_model_tier(
+            state["mode"],
+            config.LLMStage.CHECKPOINT_ADJUSTMENT,
+        ),
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1543,7 +1555,10 @@ def _reflect_with_model(state: AgentState) -> dict:
     try:
         response = llm_provider.chat_completion(
             messages,
-            tier=state["mode"],
+            tier=config.resolve_model_tier(
+                state["mode"],
+                config.LLMStage.REACT_REFLECTION,
+            ),
             timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         )
         raw = llm_provider.extract_text(response)
@@ -1943,7 +1958,7 @@ def _classify_with_model(
             }],
             include_date=True,
         ),
-        tier=tier,
+        tier=config.resolve_model_tier(tier, config.LLMStage.INTENT_CLASSIFICATION),
         tools=INTENT_TOOLS,
         tool_choice="auto",
         timeout=(
@@ -1989,7 +2004,10 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         response = llm_provider.extract_text(
             llm_provider.chat_completion(
                 messages,
-                tier=state["mode"],
+                tier=config.resolve_model_tier(
+                    state["mode"],
+                    config.LLMStage.HISTORY_CONTEXT_POLISH,
+                ),
                 timeout=execution.remaining_request_budget(
                     state,
                     config.EXPERT_LLM_TIMEOUT,

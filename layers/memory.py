@@ -477,7 +477,7 @@ def _classify_importance_boundary(content: str, tier: str = "fast") -> bool:
                     "content": content
                 }
             ],
-            tier=tier,
+            tier=config.resolve_model_tier(tier, config.LLMStage.MEMORY_IMPORTANCE),
             timeout=config.MEMORY_IMPORTANCE_TIMEOUT
         )
         result = llm_provider.extract_text(response).strip().lower()
@@ -1099,8 +1099,7 @@ def _rerank_candidates(
                     )
                 }],
             ),
-            # 相关性打分不需要expert慢档；处理器选择由服务端固定裁决。
-            tier="fast",
+            tier=config.resolve_model_tier(tier, config.LLMStage.DOCUMENT_RERANK),
             response_format={"type": "json_object"},
             timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
         )
