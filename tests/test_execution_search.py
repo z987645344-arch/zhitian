@@ -2,6 +2,9 @@
 """Offline tests for the bounded Tavily search path."""
 
 import json
+import threading
+import time
+from types import SimpleNamespace
 
 from unittest.mock import Mock
 
@@ -27,6 +30,31 @@ SEARCH_CANDIDATES = [
         score=0.9,
     )
 ]
+
+
+class ReasoningOnlyStream:
+    """持续保持连接并产出非正文事件，直到调用方主动关闭。"""
+
+    def __init__(self):
+        self.closed = threading.Event()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.closed.wait(0.002):
+            raise StopIteration
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content="non-content-event",
+                )
+            )]
+        )
+
+    def close(self):
+        self.closed.set()
 
 
 class FakeProvider(WebSearchProvider):
@@ -168,6 +196,81 @@ def test_document_answer_empty_stream_returns_explicit_failure(monkeypatch):
     assert chunks == ["已取得知识库文档依据，但模型未能完成整理，请稍后重试。"]
     assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
     assert state["degradation_reasons"] == ["final_answer_failed"]
+
+
+def test_document_answer_first_content_timeout_ignores_non_content_activity(monkeypatch):
+    state = planning._new_agent_state("document-no-content", "问题", "expert")
+    state["complex_deadline"] = time.perf_counter() + 1.0
+    context = execution.DocumentAnswerContext(
+        query="问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="RAW_EVIDENCE_MUST_NOT_LEAK",
+            source="资料.pdf",
+            score=0.9,
+        )],
+    )
+    response = ReasoningOnlyStream()
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["request_key"] = execution.llm_provider._request_api_key.get()
+        return response
+
+    monkeypatch.setattr(execution.config, "FIRST_CONTENT_TIMEOUT", 0.05)
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", fake_completion)
+
+    started_at = time.perf_counter()
+    with execution.llm_provider.use_request_api_key("test-personal-key"):
+        chunks = list(execution._answer_from_documents(
+            context,
+            tier="expert",
+            timeout=5,
+            _execution_state=state,
+        ))
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.5
+    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
+    assert state["degradation_reasons"] == ["document_first_content_timeout"]
+    assert captured["request_key"] == "test-personal-key"
+    assert response.closed.wait(0.5)
+
+
+def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
+    state = planning._new_agent_state("document-budget-clamp", "问题", "expert")
+    state["complex_deadline"] = time.perf_counter() + 0.04
+    context = execution.DocumentAnswerContext(
+        query="问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="可信片段",
+            source="资料.pdf",
+            score=0.9,
+        )],
+    )
+    response = ReasoningOnlyStream()
+    monkeypatch.setattr(execution.config, "FIRST_CONTENT_TIMEOUT", 5.0)
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "chat_completion",
+        Mock(return_value=response),
+    )
+
+    started_at = time.perf_counter()
+    chunks = list(execution._answer_from_documents(
+        context,
+        tier="expert",
+        timeout=5,
+        _execution_state=state,
+    ))
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.5
+    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert state["degradation_reasons"] == ["document_first_content_timeout"]
+    assert response.closed.wait(0.5)
 
 
 def test_search_documents_collects_stream_for_non_streaming_chat_contract(monkeypatch):

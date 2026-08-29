@@ -36,6 +36,10 @@ DEEPSEEK_EXPERT_MODEL = os.getenv("DEEPSEEK_EXPERT_MODEL", "deepseek-v4-pro")
 FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))
 EXPERT_LLM_TIMEOUT = float(os.getenv("EXPERT_LLM_TIMEOUT", "25.0"))
 EXPERT_COMPLEX_TIMEOUT = float(os.getenv("EXPERT_COMPLEX_TIMEOUT", "120.0"))
+# 文档回答首个正文chunk的独立墙钟上界。45秒是依据Cloudflare首字节100秒、
+# 生产请求总预算90秒，以及本机实测首块后仍约需16秒才能流完正文倒推的暂定值；
+# 它仍需生产实测复核，不能视为已经定型的容量参数。
+FIRST_CONTENT_TIMEOUT = float(os.getenv("FIRST_CONTENT_TIMEOUT", "45.0"))
 FAST_LLM_TIMEOUT_RETRIES = int(os.getenv("FAST_LLM_TIMEOUT_RETRIES", "1"))
 FAST_LLM_RETRY_DELAY = float(os.getenv("FAST_LLM_RETRY_DELAY", "0.75"))
 FAST_REQUEST_TIMEOUT = float(os.getenv("FAST_REQUEST_TIMEOUT", "25.0"))

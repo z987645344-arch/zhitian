@@ -6,10 +6,12 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextvars import copy_context
 from typing import Callable, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -93,6 +95,7 @@ DEGRADATION_REASON_CODES = {
     "search_summary_timeout",
     "search_summary_failed",
     "document_rerank_timeout",
+    "document_first_content_timeout",
     "final_answer_timeout",
     "final_answer_failed",
     "output_observation_timeout",
@@ -141,6 +144,11 @@ class ConvertDocumentResult(BaseModel):
 class OutputAnomalyCheck(BaseModel):
     answered_user_question: bool = True
     concern_reason: Optional[str] = None
+
+
+class DocumentFirstContentTimeoutError(TimeoutError):
+    """文档回答未在独立墙钟上界内产生首个可见正文。"""
+
 
 # 执行层错误处理规则
 MAX_RETRIES = 1
@@ -1502,6 +1510,87 @@ def _remove_generated_temp_file(path: str) -> None:
         logger.warning("生成文件临时产物清理失败：error_type=%s", type(exc).__name__)
 
 
+def _open_document_answer_stream(
+    messages: list[dict],
+    tier: str,
+    timeout: Optional[float],
+    first_content_timeout: float,
+) -> tuple[Iterator[str], Optional[str]]:
+    """在独立墙钟上界内创建供应商流并取得首个可见正文chunk。
+
+    SDK流可能持续返回reasoning等非正文事件，使单次网络读取timeout不断重置；
+    因此不能把截止检查放在正文生成器的循环体内。这里让守护线程消费到首个
+    ``iter_text`` 正文，调用线程则独立等待Future。即使始终没有正文，调用线程
+    也会按墙钟返回，并尽力关闭底层流。``copy_context``确保用户选择的个人Key
+    仍在工作线程内生效，不会意外退回企业全局Key。
+    """
+    wait_seconds = max(0.0, float(first_content_timeout))
+    if wait_seconds <= 0:
+        raise DocumentFirstContentTimeoutError(
+            "document answer first content budget exhausted"
+        )
+
+    result: Future = Future()
+    cancelled = threading.Event()
+    holder_lock = threading.Lock()
+    response_holder = {"response": None}
+
+    def open_and_read_first_content() -> None:
+        response = None
+        try:
+            response = llm_provider.chat_completion(
+                messages,
+                tier=tier,
+                timeout=timeout,
+                stream=True,
+            )
+            with holder_lock:
+                response_holder["response"] = response
+            if cancelled.is_set():
+                close_stream = getattr(response, "close", None)
+                if callable(close_stream):
+                    close_stream()
+                return
+            text_stream = llm_provider.iter_text(response)
+            first_chunk = next(text_stream, None)
+            if cancelled.is_set():
+                close_stream = getattr(response, "close", None)
+                if callable(close_stream):
+                    close_stream()
+                return
+            result.set_result((text_stream, first_chunk))
+        except BaseException as exc:
+            if not cancelled.is_set():
+                result.set_exception(exc)
+
+    request_context = copy_context()
+    worker = threading.Thread(
+        target=request_context.run,
+        args=(open_and_read_first_content,),
+        name="document-first-content",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        return result.result(timeout=wait_seconds)
+    except FutureTimeoutError as exc:
+        cancelled.set()
+        with holder_lock:
+            response = response_holder["response"]
+        close_stream = getattr(response, "close", None)
+        if callable(close_stream):
+            try:
+                close_stream()
+            except Exception as close_exc:
+                logger.warning(
+                    "文档回答首正文超时后关闭供应商流失败：error_type=%s",
+                    type(close_exc).__name__,
+                )
+        raise DocumentFirstContentTimeoutError(
+            "document answer first content timeout"
+        ) from exc
+
+
 def _answer_from_documents(
     answer_context: DocumentAnswerContext,
     tier: str = "fast",
@@ -1511,9 +1600,9 @@ def _answer_from_documents(
     """流式生成可信文档回答；来源信息仍只通过独立citations事件返回。
 
     供应商timeout在流式请求中约束连接和单次网络读取等待，不再把完整回答的
-    最后一字节当作同一非流式截止点。expert请求已有的complex_deadline会在
-    消费每个chunk时继续检查；若供应商读取本身阻塞，实际墙钟仍可能像SDK原有
-    timeout一样略有越界，因此这里不把它描述为精确计时器。
+    最后一字节当作同一非流式截止点。首个可见正文另受FIRST_CONTENT_TIMEOUT
+    独立墙钟约束，且被请求剩余预算钳制；首块之后仍在消费每个正文chunk时检查
+    expert请求已有的complex_deadline。
     """
     snippets = []
     for index, item in enumerate(answer_context.candidates, start=1):
@@ -1561,26 +1650,30 @@ def _answer_from_documents(
     emitted = False
     try:
         if tier == "expert":
-            response = llm_provider.chat_completion(
-                cache_friendly_messages(
-                    fixed_prompt,
-                    [{"role": "user", "content": dynamic_prompt}],
-                    include_date=True,
-                ),
-                tier=tier,
-                timeout=timeout,
-                stream=True,
+            messages = cache_friendly_messages(
+                fixed_prompt,
+                [{"role": "user", "content": dynamic_prompt}],
+                include_date=True,
             )
-            stream = llm_provider.iter_text(response)
         else:
             prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
-            stream = _llm_chat(
-                message=prompt,
-                stream=True,
-                tier=tier,
-                timeout=timeout,
-                _execution_state=_execution_state,
+            messages = _build_model_messages(
+                "",
+                prompt,
             )
+        first_content_timeout = remaining_request_budget(
+            _execution_state,
+            config.FIRST_CONTENT_TIMEOUT,
+        )
+        stream, first_chunk = _open_document_answer_stream(
+            messages,
+            tier,
+            timeout,
+            first_content_timeout,
+        )
+        if first_chunk:
+            emitted = True
+            yield first_chunk
         for chunk in stream:
             if (
                 _execution_state
@@ -1594,10 +1687,15 @@ def _answer_from_documents(
             add_degradation_reason(_execution_state, "final_answer_failed")
             yield _empty_document_answer_failure_message("final_answer_failed")
     except Exception as e:
+        timeout_reason_code = (
+            "document_first_content_timeout"
+            if isinstance(e, DocumentFirstContentTimeoutError)
+            else "final_answer_timeout"
+        )
         reason_code = open_deepseek_circuit_for_error(
             _execution_state,
             e,
-            "final_answer_timeout",
+            timeout_reason_code,
             final_attempt_consumed=True,
         )
         if reason_code is None:
@@ -1616,7 +1714,7 @@ def _answer_from_documents(
 
 
 def _empty_document_answer_failure_message(reason_code: str) -> str:
-    if reason_code == "final_answer_timeout":
+    if reason_code in {"document_first_content_timeout", "final_answer_timeout"}:
         return "已取得知识库文档依据，但模型整理超时，请稍后重试。"
     if reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
         return "已取得知识库文档依据，但模型服务暂时不可用，请稍后重试。"
@@ -1624,7 +1722,7 @@ def _empty_document_answer_failure_message(reason_code: str) -> str:
 
 
 def _partial_document_answer_failure_message(reason_code: str) -> str:
-    if reason_code == "final_answer_timeout":
+    if reason_code in {"document_first_content_timeout", "final_answer_timeout"}:
         detail = "模型整理超时"
     elif reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
         detail = "模型服务暂时不可用"

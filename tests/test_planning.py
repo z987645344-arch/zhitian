@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import json
+import threading
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -346,6 +348,109 @@ def test_expert_document_stream_sends_chunks_then_independent_citations(
         "score": 0.91,
     }]
     assert "RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT" not in response.text
+    assert events[-1] == {"chunk": "[DONE]"}
+
+
+def test_expert_document_first_content_timeout_still_sends_citations(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    prepared_state = _state("document")
+    prepared_state["decision_reasoning"] = "需要检索企业知识库"
+    citation = execution.Citation(
+        source="资料.pdf",
+        doc_id="doc-timeout",
+        chunk_index=3,
+        score=0.9,
+    )
+    document_context = execution.DocumentAnswerContext(
+        query="文档问题",
+        tier="expert",
+        candidates=[execution.DocumentAnswerCandidate(
+            content="RAW_EVIDENCE_MUST_NOT_BE_SENT",
+            source="资料.pdf",
+            score=0.9,
+            doc_id="doc-timeout",
+            chunk_index=3,
+        )],
+    )
+
+    class NeverContentStream:
+        def __init__(self):
+            self.closed = threading.Event()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.closed.wait(0.002):
+                raise StopIteration
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=None, reasoning_content="hidden")
+                )]
+            )
+
+        def close(self):
+            self.closed.set()
+
+    def fake_run(*args, prepared_state=None, **kwargs):
+        prepared_state["results"] = [execution.ToolResult(
+            tool="search_documents",
+            status="success",
+            data="RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT",
+            citations=[citation],
+            document_answer_context=document_context,
+        )]
+        prepared_state["citations"] = [citation]
+        prepared_state["response"] = "RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT"
+        return prepared_state
+
+    response_stream = NeverContentStream()
+    monkeypatch.setattr(main, "_prepare_stream_state", lambda *args, **kwargs: prepared_state)
+    monkeypatch.setattr(main.planning, "run_graph_state", fake_run)
+    monkeypatch.setattr(main.execution.config, "FIRST_CONTENT_TIMEOUT", 0.04)
+    monkeypatch.setattr(
+        main.execution.llm_provider,
+        "chat_completion",
+        Mock(return_value=response_stream),
+    )
+    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
+    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
+    monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
+
+    response = client.post(
+        "/chat/stream",
+        headers=headers,
+        json={"session_id": "document-timeout", "message": "文档问题", "mode": "expert"},
+    )
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    failure_index = next(
+        index for index, event in enumerate(events)
+        if "模型整理超时" in event.get("chunk", "")
+    )
+    citation_index = next(
+        index for index, event in enumerate(events) if event.get("type") == "citations"
+    )
+    status_event = next(
+        event for event in events if event.get("type") == "request_status"
+    )
+    assert citation_index > failure_index
+    assert events[citation_index]["citations"][0]["doc_id"] == "doc-timeout"
+    assert status_event == {
+        "type": "request_status",
+        "status": "degraded",
+        "reason_codes": ["document_first_content_timeout"],
+    }
+    assert "RAW_EVIDENCE_MUST_NOT_BE_SENT" not in response.text
+    assert "RAW_TOOL_CONTEXT_MUST_NOT_BE_SENT" not in response.text
+    assert response_stream.closed.wait(0.5)
     assert events[-1] == {"chunk": "[DONE]"}
 
 
