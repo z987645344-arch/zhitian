@@ -185,11 +185,8 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
 
     monkeypatch.setattr(execution.auth, "get_verified_doc_ids", lambda: ["doc-1"])
     monkeypatch.setattr(execution.memory, "search_documents", fake_search)
-    monkeypatch.setattr(
-        execution,
-        "_answer_from_documents",
-        Mock(side_effect=AssertionError("weak evidence must preserve final attempt for web summary")),
-    )
+    answer_from_documents = Mock(return_value="hybrid兜底后的文档回答")
+    monkeypatch.setattr(execution, "_answer_from_documents", answer_from_documents)
     result = execution._search_documents(
         "问题",
         tier="expert",
@@ -197,8 +194,11 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
         _execution_state=rerank_state,
     )
     assert result.status == "success"
+    assert result.data == "hybrid兜底后的文档回答"
     assert rerank_state["degradation_reasons"] == ["document_rerank_timeout"]
+    assert rerank_state["deepseek_circuit_open"] is False
     assert rerank_state["post_circuit_final_attempted"] is False
+    answer_from_documents.assert_called_once()
 
     final_state = _state()
     monkeypatch.setattr(

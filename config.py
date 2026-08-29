@@ -212,7 +212,8 @@ BM25_SCORE_SCALE = float(os.getenv("BM25_SCORE_SCALE", "20.0"))
 TITLE_BOOST_MAX_QUERY_LENGTH = int(os.getenv("TITLE_BOOST_MAX_QUERY_LENGTH", "12"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_CANDIDATE_COUNT = int(os.getenv("RERANK_CANDIDATE_COUNT", "10"))
-RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "5.0"))
+# 本机真实精排测量中fast档最慢为8.83秒；暂以12秒留出松弛，仍需生产实测复核。
+RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "12.0"))
 MEMORY_MIN_LENGTH = int(os.getenv("MEMORY_MIN_LENGTH", "6"))
 MEMORY_IMPORTANCE_TIMEOUT = float(os.getenv("MEMORY_IMPORTANCE_TIMEOUT", "3.0"))
 MEMORY_DECAY_HALFLIFE_HIGH_DAYS = int(os.getenv("MEMORY_DECAY_HALFLIFE_HIGH_DAYS", "90"))

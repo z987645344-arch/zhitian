@@ -748,7 +748,8 @@ def _search_documents(
         "document_rerank_timeout",
     )
     if rerank_reason:
-        open_deepseek_circuit(_execution_state, rerank_reason)
+        # 精排是可选增强，失败后已有hybrid顺序兜底；保留原因码但不升级为请求级熔断。
+        add_degradation_reason(_execution_state, rerank_reason)
     # 命中埋点：只要chunk进入召回候选就算，与下面的阈值筛选无关。这里只写
     # 进程内缓存、不落库，由请求出口统一入库并按文档级去重。
     document_usage.record_hit_candidates(

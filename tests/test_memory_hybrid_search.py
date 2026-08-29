@@ -130,16 +130,24 @@ def test_model_rerank_reorders_candidates(monkeypatch):
         {"doc_id": "doc-a", "chunk_index": 0, "content": "弱相关", "score": 0.9},
         {"doc_id": "doc-b", "chunk_index": 0, "content": "强相关", "score": 0.5},
     ]
-    monkeypatch.setattr(memory.llm_provider, "chat_completion", Mock(return_value=object()))
+    completion = Mock(return_value=object())
+    monkeypatch.setattr(memory.llm_provider, "chat_completion", completion)
+    monkeypatch.setattr(memory.config, "RERANK_TIMEOUT", 12.0)
     monkeypatch.setattr(
         memory.llm_provider,
         "extract_text",
         lambda response: '{"scores":[{"index":0,"score":2},{"index":1,"score":9}]}'
     )
 
-    reranked = memory._rerank_candidates("query", candidates)
+    reranked = memory._rerank_candidates(
+        "query", candidates, tier="expert", timeout=20.0
+    )
 
     assert [item["doc_id"] for item in reranked] == ["doc-b", "doc-a"]
+    call_kwargs = completion.call_args.kwargs
+    assert call_kwargs["tier"] == "fast"
+    assert call_kwargs["response_format"] == {"type": "json_object"}
+    assert call_kwargs["timeout"] == 12.0
 
 
 def test_rerank_disabled_does_not_call_model(monkeypatch):

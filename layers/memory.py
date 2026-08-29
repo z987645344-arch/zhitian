@@ -1065,7 +1065,7 @@ def _rerank_candidates(
     timeout: Optional[float] = None,
     diagnostics: Optional[SearchDiagnostics] = None,
 ) -> list[dict]:
-    """用expert tier一次性批量重排候选chunk，失败时返回原顺序。"""
+    """用fast tier一次性批量重排候选chunk，失败时返回原顺序。"""
     if not candidates:
         return candidates
 
@@ -1099,8 +1099,9 @@ def _rerank_candidates(
                     )
                 }],
             ),
-            tier=tier,
-            response_format={"type": "json_object"} if tier == "expert" else None,
+            # 相关性打分不需要expert慢档；处理器选择由服务端固定裁决。
+            tier="fast",
+            response_format={"type": "json_object"},
             timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
         )
         score_map = _parse_rerank_scores(llm_provider.extract_text(response), len(candidates))
