@@ -1777,3 +1777,10 @@
 - `.env.example`明确要求按实际一跳/多跳拓扑填写全部可信代理IP或CIDR，并禁止填写`*`或客户端网段；**本轮只是使分桶配置可被修正，默认行为没有改变，实际修复仍须部署时设置该变量。**
 - 新增真实`ProxyHeadersMiddleware`分桶回归：可信代理链得到`anonymous:198.51.100.23`；不可信对端伪造同一`X-Forwarded-For`时仍得到`anonymous:203.0.113.50`，确认客户端不能借伪造头自选限流桶。
 - Python语法检查与针对性`3 passed`通过；权威入口`run_tests.bat -q`为`504 passed, 5 deselected, 0 failed in 240.73s`。本轮未改五个认证端点的`10/hour`阈值，也未修改已认证用户按`role:user_id`分桶的策略。
+
+## 2026-09-02 默认关闭FastAPI接口文档端点
+
+- 新增`API_DOCS_ENABLED`统一控制`/docs`、`/redoc`与`/openapi.json`，默认及`.env.example`均为`false`；代码没有可靠的生产环境判据，因此让遗漏配置时倒向安全，本机开发如需交互文档必须显式设为`true`。
+- TestClient真实访问确认关闭时三条路径均为`404`、开启时均为`200`；显式开启后的OpenAPI仍报告`VERSION`对应版本，原有`GET /`版本输出保持不变。
+- 将原先断言默认OpenAPI公开的观测测试更新为“根路径继续报告版本且默认OpenAPI隐藏”，并新增开关两态测试；这是默认安全行为的精确契约更新，没有放宽断言。Python语法检查、针对性`17 passed`及权威入口`506 passed, 5 deselected, 0 failed in 246.12s`均通过。
+- 本轮未改变`/health`、`/ready`、认证、限流或超时，也未在nginx层增加遮挡、未操作生产；因此生产是否已通过新镜像生效不属于本轮完成范围。

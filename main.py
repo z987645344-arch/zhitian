@@ -214,7 +214,14 @@ async def lifespan(app: FastAPI):
             logger.warning("关闭Chroma资源失败：error_type=%s", type(e).__name__)
 
 
-app = FastAPI(title="知天 Agent API", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(
+    title="知天 Agent API",
+    version=APP_VERSION,
+    lifespan=lifespan,
+    docs_url="/docs" if config.API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if config.API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if config.API_DOCS_ENABLED else None,
+)
 
 
 @app.middleware("http")

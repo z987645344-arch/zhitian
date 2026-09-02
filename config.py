@@ -125,6 +125,10 @@ HOST = "0.0.0.0"
 FORWARDED_ALLOW_IPS = (
     os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1").strip() or "127.0.0.1"
 )
+# FastAPI文档默认关闭：代码没有可靠的生产环境判据，且.env由部署现场创建。
+# 忘记配置时让本机文档不可见会立即暴露且无安全后果；反向默认开启则会让生产
+# 静默公开完整接口契约，因此这里刻意让配置遗漏倒向安全。
+API_DOCS_ENABLED = os.getenv("API_DOCS_ENABLED", "false").strip().lower() == "true"
 # CORS_ORIGINS中的"null"用于兼容file://协议或桌面壳本地调试来源；生产环境按实际前端域名收窄。
 CORS_ORIGINS = [
     origin.strip()

@@ -205,7 +205,7 @@ def test_reviewer_metrics_rejects_non_reviewer(client, auth_headers):
     assert response.status_code == 403
 
 
-def test_root_and_openapi_report_release_version(client):
+def test_root_reports_release_version_and_default_openapi_is_hidden(client):
     expected_version = (
         Path(__file__).resolve().parents[1] / "VERSION"
     ).read_text(encoding="utf-8").strip()
@@ -214,8 +214,7 @@ def test_root_and_openapi_report_release_version(client):
 
     assert root_response.status_code == 200
     assert root_response.json()["version"] == expected_version
-    assert openapi_response.status_code == 200
-    assert openapi_response.json()["info"]["version"] == expected_version
+    assert openapi_response.status_code == 404
 
 
 def test_version_reader_rejects_missing_version_file(tmp_path, monkeypatch):
