@@ -3859,5 +3859,6 @@ if __name__ == "__main__":
         host=config.HOST,
         port=config.PORT,
         reload=False,
+        forwarded_allow_ips=config.FORWARDED_ALLOW_IPS,
         timeout_graceful_shutdown=config.SHUTDOWN_GRACE_PERIOD_SECONDS,
     )

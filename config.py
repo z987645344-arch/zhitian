@@ -120,6 +120,11 @@ TASK_PROGRESS_POLL_SECONDS = float(os.getenv("TASK_PROGRESS_POLL_SECONDS", "0.5"
 # 服务
 PORT = int(os.getenv("PORT", 8000))
 HOST = "0.0.0.0"
+# Uvicorn只应信任能直接连到应用的反向代理及转发链中已知的代理跳。
+# 默认保持Uvicorn原有的回环信任边界；生产值由实际拓扑决定，不得默认信任全部来源。
+FORWARDED_ALLOW_IPS = (
+    os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1").strip() or "127.0.0.1"
+)
 # CORS_ORIGINS中的"null"用于兼容file://协议或桌面壳本地调试来源；生产环境按实际前端域名收窄。
 CORS_ORIGINS = [
     origin.strip()
