@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """知天加密备份的人工恢复命令。
 
-恢复会先用同一个BACKUP_ENCRYPTION_KEY自动备份当前数据，再验证目标包的
-AES-GCM认证、manifest文件哈希、SQLite完整性和Chroma数量。独立脚本无法
-跨进程暂停后端写入，因此必须先停止后端并显式传入
---confirm-service-stopped。
+恢复会在当前三个SQLite主库完整时，先用同一个BACKUP_ENCRYPTION_KEY自动
+备份当前数据；三个主库全缺失时自动按灾难恢复继续；仅缺部分主库时则在
+写入前拒绝操作，避免生成看似完整的残缺安全包。随后验证目标包的AES-GCM
+认证、manifest文件哈希、SQLite完整性和Chroma数量。独立脚本无法跨进程
+暂停后端写入，因此必须先停止后端并显式传入--confirm-service-stopped。
 
 激活方式为"在data目录内部就地替换条目"：暂存区和回滚区都建在data目录
 内部，切换时只对users.db/history.db/files.db（含-wal/-shm）、vectordb/
@@ -66,7 +67,7 @@ class PostRestoreValidationError(RestoreError):
     def __init__(
         self,
         differences: List[str],
-        safety_backup: Path,
+        safety_backup: Optional[Path],
         rollback_dir: Optional[Path],
     ) -> None:
         super().__init__(
@@ -81,8 +82,16 @@ class PostRestoreValidationError(RestoreError):
 @dataclass
 class RestoreResult:
     restored_archive: Path
-    safety_backup: Path
+    safety_backup: Optional[Path]
     manifest: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ExistingSQLiteState:
+    """恢复前SQLite主库的存在情况，用于区分回滚、灾难和残缺现场。"""
+
+    present: Tuple[str, ...]
+    missing: Tuple[str, ...]
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -353,6 +362,52 @@ def _require_no_interrupted_restore(data_dir: Path) -> None:
     )
 
 
+def _inspect_existing_sqlite_state(data_dir: Path) -> ExistingSQLiteState:
+    present = tuple(
+        filename
+        for filename in backup_data.SQLITE_FILENAMES
+        if (data_dir / filename).is_file()
+    )
+    missing = tuple(
+        filename
+        for filename in backup_data.SQLITE_FILENAMES
+        if filename not in present
+    )
+    return ExistingSQLiteState(present=present, missing=missing)
+
+
+def _create_pre_restore_backup_if_possible(
+    data_dir: Path,
+    backup_dir: Path,
+    retention: int,
+    source_archive: Path,
+    encryption_key: Optional[str],
+) -> Optional[backup_data.BackupResult]:
+    """完整现场保留预备份；全缺失现场自动跳过；部分缺失则拒绝恢复。"""
+    state = _inspect_existing_sqlite_state(data_dir)
+    if not state.present:
+        # 灾难恢复不要求操作者了解或传入内部跳过参数。vectordb、user_files
+        # 与SQLite旁文件即使残留，也会由既有事务切换移入回滚区；恢复失败时
+        # 自动复位，恢复成功后才随回滚区清理。
+        return None
+    if state.missing:
+        raise RestoreError(
+            "当前数据处于部分缺失状态，拒绝恢复且未创建恢复前安全备份；"
+            "已存在SQLite文件: %s；缺失SQLite文件: %s。请先在仓库外保存"
+            "现场并核实缺失原因，避免把残缺状态误当成完整备份"
+            % (", ".join(state.present), ", ".join(state.missing))
+        )
+    return backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        retention=retention,
+        confirm_service_stopped=True,
+        encryption_key=encryption_key,
+        protected_paths=[source_archive],
+        archive_prefix=PRE_RESTORE_ARCHIVE_PREFIX,
+    )
+
+
 def _build_staging_data(data_dir: Path, payload_data: Path) -> Path:
     """在data目录内部准备待激活条目。
 
@@ -477,7 +532,7 @@ def restore_backup(
     confirm_service_stopped: bool = False,
     encryption_key: Optional[str] = None,
 ) -> RestoreResult:
-    """先备份当前数据，再验证、切换并复查目标备份。"""
+    """按当前数据完整性决定是否预备份，再验证、切换并复查目标备份。"""
     backup_data._require_service_stopped(confirm_service_stopped)
     source_archive = Path(archive_path).resolve()
     if not source_archive.is_file():
@@ -488,14 +543,12 @@ def restore_backup(
     # 状态一并固化下来。
     _require_no_interrupted_restore(resolved_data)
 
-    safety = backup_data.create_backup(
+    safety = _create_pre_restore_backup_if_possible(
         data_dir=resolved_data,
         backup_dir=resolved_backup,
         retention=retention,
-        confirm_service_stopped=True,
+        source_archive=source_archive,
         encryption_key=encryption_key,
-        protected_paths=[source_archive],
-        archive_prefix=PRE_RESTORE_ARCHIVE_PREFIX,
     )
 
     with tempfile.TemporaryDirectory(
@@ -530,14 +583,16 @@ def restore_backup(
     if post_differences:
         raise PostRestoreValidationError(
             post_differences,
-            safety.archive_path,
+            safety.archive_path if safety is not None else None,
             rollback,
         )
     if rollback is not None and rollback.exists():
         _remove_path(rollback)
     return RestoreResult(
         restored_archive=source_archive,
-        safety_backup=safety.archive_path,
+        safety_backup=(
+            safety.archive_path if safety is not None else None
+        ),
         manifest=manifest,
     )
 
@@ -576,7 +631,8 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     print(
-        "恢复要求：后端服务必须已停止；当前数据会先生成一份加密安全备份。"
+        "恢复要求：后端服务必须已停止；完整的当前数据会先生成一份加密"
+        "安全备份，三个SQLite主库全缺失时自动按灾难恢复继续。"
     )
     try:
         result = restore_backup(
@@ -590,7 +646,13 @@ def main() -> int:
         print("恢复后检查失败: %s" % exc, file=sys.stderr)
         for difference in exc.differences:
             print("- %s" % difference, file=sys.stderr)
-        print("安全备份: %s" % exc.safety_backup, file=sys.stderr)
+        if exc.safety_backup is not None:
+            print("安全备份: %s" % exc.safety_backup, file=sys.stderr)
+        else:
+            print(
+                "安全备份: 未生成（三个SQLite主库在恢复前均不存在）",
+                file=sys.stderr,
+            )
         if exc.rollback_dir is not None:
             print(
                 "原数据临时回退目录: %s" % exc.rollback_dir,
@@ -602,7 +664,10 @@ def main() -> int:
         return 1
 
     print("恢复完成: %s" % result.restored_archive)
-    print("恢复前安全备份: %s" % result.safety_backup)
+    if result.safety_backup is not None:
+        print("恢复前安全备份: %s" % result.safety_backup)
+    else:
+        print("恢复前安全备份: 未生成（三个SQLite主库在恢复前均不存在）")
     print(
         "SQLite与Chroma完整性检查通过，schema versions: %s"
         % json.dumps(

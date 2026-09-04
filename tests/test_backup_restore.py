@@ -189,6 +189,81 @@ def test_backup_restore_round_trip_and_manifest(backup_environment):
     assert _summary(data_dir) == expected
 
 
+def test_disaster_restore_recovers_missing_databases_and_stale_sidecars(
+    backup_environment,
+):
+    data_dir, backup_dir = backup_environment
+    expected = _summary(data_dir)
+    backup = backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        confirm_service_stopped=True,
+    )
+    for filename in backup_data.SQLITE_FILENAMES:
+        (data_dir / filename).unlink()
+
+    stale_sidecars = []
+    for suffix in restore_data.SQLITE_SIDECAR_SUFFIXES:
+        sidecar = data_dir / ("users.db" + suffix)
+        sidecar.write_bytes(b"stale-sidecar")
+        stale_sidecars.append(sidecar)
+
+    result = restore_data.restore_backup(
+        backup.archive_path,
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        retention=10,
+        confirm_service_stopped=True,
+    )
+
+    assert result.safety_backup is None
+    assert not list(
+        backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB)
+    )
+    assert _summary(data_dir) == expected
+    assert not any(sidecar.exists() for sidecar in stale_sidecars)
+    with sqlite3.connect(data_dir / "users.db") as conn:
+        assert conn.execute(
+            "SELECT user_id, username FROM users"
+        ).fetchall() == [("u1", "user@example.test")]
+        assert conn.execute(
+            "SELECT doc_id, organization_id FROM documents"
+        ).fetchall() == [("d1", 1)]
+
+
+def test_partial_database_state_is_rejected_without_safety_archive(
+    backup_environment,
+):
+    data_dir, backup_dir = backup_environment
+    backup = backup_data.create_backup(
+        data_dir=data_dir,
+        backup_dir=backup_dir,
+        confirm_service_stopped=True,
+    )
+    (data_dir / "users.db").unlink()
+    history_before = (data_dir / "history.db").read_bytes()
+    files_before = (data_dir / "files.db").read_bytes()
+
+    with pytest.raises(
+        restore_data.RestoreError,
+        match="部分缺失状态.*缺失SQLite文件: users.db",
+    ):
+        restore_data.restore_backup(
+            backup.archive_path,
+            data_dir=data_dir,
+            backup_dir=backup_dir,
+            retention=10,
+            confirm_service_stopped=True,
+        )
+
+    assert not list(
+        backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB)
+    )
+    assert not (data_dir / "users.db").exists()
+    assert (data_dir / "history.db").read_bytes() == history_before
+    assert (data_dir / "files.db").read_bytes() == files_before
+
+
 def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
     backup_environment,
 ):
