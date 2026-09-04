@@ -1837,3 +1837,20 @@
 - 仅缺部分主库时在任何写入前明确拒绝恢复，错误同时列出已存在与缺失的库，且不生成恢复前归档，避免把残缺现场包装成看似完整的安全备份；原有`--confirm-service-stopped`强制门禁、归档格式、AES-GCM加密与保留策略均未改变。
 - 新增真实灾难场景回归：先删除`users.db`、`history.db`、`files.db`，并残留伪造的`users.db-wal/-shm`，随后执行恢复；实测恢复后的用户、文档、三库快照、Chroma计数与实体文件均和备份时一致，旧旁文件未与新库混用。另以部分缺库用例断言恢复被拒绝、未产出安全归档且剩余库字节不变；针对性`7 passed`，权威回归`508 passed, 5 deselected, 0 failed`。
 - 本轮代码与本机自动化测试通过不等于生产可恢复；生产侧仍必须在独立安全副本保护下另做一次真实破坏恢复演练，完成三库内容、Chroma检索与实体文件三层核对后才可视为生产恢复能力已验证。
+
+### 我怎么证实的（验证存档方）
+
+- **三种现场逻辑是跑出来的，不是读出来的**：直接加载 `scripts/restore_data.py` 调用 `_create_pre_restore_backup_if_possible()`，用合成目录覆盖四种组合——三库全缺（`present=0/missing=3`）返回 `None` 跳过预备份；缺 1 与缺 2 两种部分缺失都抛 `RestoreError` 并在错误里同时列出已存在与缺失的库；三库齐全则确实进入 `create_backup` 分支。**全缺分支不需要操作者传任何参数**（`if not state.present: return None`），分支顺序也正确——先判全缺再判部分缺，因此灾难现场不会被误落进"拒绝"分支。三库齐全时仍以原样参数（`archive_prefix=PRE_RESTORE_ARCHIVE_PREFIX`、`protected_paths`、`confirm_service_stopped=True`）生成预备份，回滚保护未被削弱。
+- **未改动边界逐项核过**：`backup_data.py`、`Dockerfile`、`config.py` 在 `v4.5..HEAD` 均为 **0 行改动**。`restore_data.py` 中命中「AES/GCM/归档格式/保留策略」关键词的仅 3 行，逐行看过是两行 docstring 改写加一行 `retention=retention` 参数透传，无实质变化；`PRE_RESTORE_ARCHIVE_PREFIX` 与 `DEFAULT_PRE_RESTORE_RETENTION=3` 与 v4.5 相同。`--confirm-service-stopped` 一度显示 4 行差异，查实为 docstring 重新折行，其 `add_argument` 本体 **md5 逐字节相同**（`27ccdf9ee771be76`）。
+- **两条新测试断言的是实际状态，无一只断退出码或异常类型**：灾难测试真的 `unlink()` 三个库、写入内容为 `b"stale-sidecar"` 的伪造旁文件后断言 `not any(sidecar.exists())`，并以 `_summary(data_dir) == expected` 比对三库 `sqlite_snapshot` 加 Chroma 计数加物理文件正文，还额外断言了 `users` 与 `documents` 的真实行内容；部分缺失测试在 `pytest.raises` 之后跟了四条状态断言——无 `pre-restore` 归档产生、`users.db` 仍不存在、`history.db` 与 `files.db` **逐字节 `read_bytes()` 未变**。
+- **顺带补上了我上一轮标注的未测边界**：演练那轮我刻意保留了残留的 `-wal`/`-shm` 旁文件，但恢复未走到相关阶段，当时记为未验证。本批的 `SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")` 清理正好覆盖它，且有断言。
+- **数字自查**：`tests/test_backup_restore.py` 实有 **7 个** `def test_`，与条目声称的针对性 `7 passed` 相符；权威回归以 `run_tests.bat -q`（项目 `.venv`，未换运行时）实跑得 **508 passed, 5 deselected**（252.4 秒），与指挥师数字一致。
+- **一条按静态依据陈述、未做镜像内实证的**：`Dockerfile:76` 为 `COPY --chown=appuser:appuser . .` 且 `WORKDIR /app`，`.dockerignore` 对 `scripts` **0 命中**，故 `scripts/` 随镜像发布、部署必须重建 API 镜像。该结论来自静态核对；本轮 Docker daemon 不可用，**未在镜像内实测该文件存在**。
+
+## 2026-09-05 存档：v4.6 覆盖 v4.5 之后的五条提交
+
+- **本条为存档条目**。标签 `v4.6` 打在本条目所在的提交上，覆盖 `v4.5..v4.6` 共**五条**：`35fa430` 校准VPC端口绑定与TLS部署现状、`8f8afdc` 将部署指南改为可重复验收流程、`9e10dfa` 记录本机备份恢复演练、`5086268` 修复三库缺失时灾难恢复被预备份阻断，以及本轮这条。
+- **两段式依据**：五条中四条为文档与记录，但 `5086268` 是实质行为变化——恢复流程在三库全缺的灾难场景下**由不可用变为可用**，按 8.1 第 3 条「混合改动按代码变化处理」不能用文档补丁号掩盖。
+- **`VERSION` 同步升至 `4.6.0`**。它是本仓库唯一版本文件，`/` 端点对外报的就是它，格式不合法会让容器拒绝启动；该文件近几轮曾被漏升两次，本轮按要求补上。
+- **打标前门禁**：权威回归 **508 passed, 5 deselected**；存档前例行核对——IPv4 字面量 0 处、密钥/凭据形态 0 处、服务器绝对路径 0 处、主机名 0 处、未跟踪文件 0 个、二进制改动 0 处、跨仓库误改 0 处；`web_client/` 命中 0 个。
+- **⚠️ 本批未覆盖什么**：①**本机通过不等于生产可恢复**——生产侧真实破坏恢复演练**至今未做**，那是本批修复唯一未被验证的部分；②**部分缺库时的报错只给了第一步而没给下一步**——它提示「先在仓库外保存现场并核实缺失原因」，但没有告诉操作者接下来该把幸存库也移走、使之成为完整的灾难场景才能继续恢复，操作者仍需自行想到这一层；③输出观察至今仍未被真正测到，复杂任务链耗时也完全未测。
