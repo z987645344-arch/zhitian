@@ -1820,3 +1820,13 @@
 - 将真实域名、DNS、HTTPS、HTTP跳转与证书续期从“尚未完成/Phase B待办”改写为每次上线、迁移或配置变更均须重新验证的流程，不新增当前线上状态断言。
 - 同步校准部署仓库`.env`职责、HTTP/HTTPS参数化发布端口、CORS与首次管理员接管表述，把克隆示例中的固定旧标签换成部署单批准的三个独立标签占位符，并将健康验收拆为本地HTTP与对外HTTPS两种真实路径。
 - 本轮仅修改文档，不改代码、配置或运行环境；未运行权威回归，不能据此推断任何生产实例已经完成现场验收。
+
+## 2026-09-04 本机备份恢复演练：恢复链路在「数据已丢失」场景下无法执行
+
+- **演练前先做了不依赖被测对象的退路**：用一次性 alpine 容器把 `zhitian-mvp-data` 与 `zhitian-mvp-backups` 两个具名卷整体打成 tar 存到仓库外，`data` 副本 2529699 字节 SHA-256 `8416e7ef…`、`backups` 副本 6737763 字节 SHA-256 `33e49de3…`，并以 `tar -tzf` 实际列出 28 / 4 个条目确认可读——存在但损坏的副本等于没有退路。演练全程四个容器均为 Exited。
+- **基线（第0步）**：`users.db` 17 张表含 `users=5`/`documents=6`/`organizations=2`，`history.db` `conversations=32`/`sessions=7`，`files.db` `user_files=0`；Chroma `zhitian_documents=382`、`zhitian_memory=5`；并以 `enable_rerank=False`（零模型调用）跑真实检索取得 8 条 `(doc_id, chunk_index, score)` 作为最关键基线。
+- **备份成功且确为加密体**：产出 `zhitian-backup-20260904T121327011239Z.ztbackup`，18 个源文件 9983432 字节 → 3788656 字节，清单中的 Chroma 计数 `382/5` 与基线一致；实测不能被 gzip 解开、不能被 tar 列出、非 ZIP，前 4KB 可打印字符仅 216/4096，符合加密特征。**销毁也确认生效**：删除五项覆盖对象后重跑检索得 `[]`（基线为 8 条）、三库 `__missing__`、Chroma 归 0——不验证这一步，「恢复成功」无从区分于「根本没毁掉」。
+- **🔴 恢复失败，且失败点正是灾难恢复本身**：`restore_data.py:491` 在做任何恢复动作之前**无条件**调用 `backup_data.create_backup()` 生成恢复前安全备份，而后者在 `backup_data.py:434-437` 硬性要求 `users.db`/`history.db`/`files.db` 三个文件全部存在，缺一即抛 `BackupError` 并中止。实测报 `恢复失败: 缺少必须备份的SQLite文件: /app/data/users.db`，退出码 1。脚本**没有任何可跳过该预备份的开关**（`skip/no-pre-backup/force` 三类关键词零命中）。即：**数据还在时可以恢复（回滚场景），数据真丢了反而不能恢复（灾难场景）**——而后者正是备份存在的理由。已确认 `backups/` 中未生成任何 `zhitian-pre-restore-*` 包，恢复确实止步于预备份、未触碰数据。
+- **三层判据结论：① 通过（备份包存在且加密）；②③ 未达到**——恢复未能执行，因此「恢复后行数与基线一致」与「检索结果逐项一致」两层本轮都没有得到验证。按停止条件未尝试第二种恢复方式，以免掩盖真实故障。
+- **本机数据已用仓库外的独立 tar 副本完整复原，并以同一套三层判据验收通过**：三库全部表逐项一致（`users=5`/`documents=6`/`organizations=2`/`upload_tasks=6`/`user_organizations=6`/`conversations=32`/`sessions=7`/`user_files=0`）、Chroma 回到 `382`/`5`、同一 query 的 8 条 `(doc_id, chunk_index, score)` 与基线**逐项相同**。这同时反证了故障定位：备份产物与数据本身都没问题，失败纯粹出在 `restore` 的前置条件上。演练产生的 `.ztbackup` 与仓库外安全副本均已删除，三份既有定时归档保留，`backups/` 中 `zhitian-pre-restore-*` 仍为 0 份。
+- ⚠️ **哪些不得视为完成**：本轮只验了本机的脚本与流程本身，**未验证生产配置**，生产侧必须另做一次，两者不可互相替代；**项目自带的恢复链路至今仍未被证明可用**——本次复原走的是演练前另存的 tar，不是 `restore_data.py`；缺陷修复归另一轮、另一个执行者。
