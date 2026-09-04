@@ -8,6 +8,7 @@
 - 备份和恢复：`docs/backup_restore_guide.md`
 - 升级和回滚：`docs/upgrade_rollback_guide.md`
 - 故障定位：`docs/troubleshooting.md`
+- Compose、Nginx、TLS挂载与证书配置：同级部署仓库`zhitian-deploy`的`README.md`与`.env.example`
 
 ## 1. 阶段边界
 
@@ -31,7 +32,7 @@
 - 64 位 Linux 服务器，或用于 Phase A 验证的 Windows 11 + WSL2。
 - Docker Engine/Client 与Docker Compose插件。**Compose最低版本为2.30.0**，因为API服务使用`env_file.format: raw`原样注入后端密钥配置；当前真实验证版本为Docker 29.6.2、Compose 5.3.1。生产安装优先使用当前稳定版，低于2.30.0不受支持。
 - Git，用于取得后端、管理后台和独立部署配置三个仓库。
-- 当前Phase B实例需在`zhitian-deploy/.env`填写`SERVER_PUBLIC_IP`；宿主机网卡必须真实拥有该地址，且该地址的TCP 80未被其他服务占用。其他网卡地址上的80可供同机其他独立项目使用。Phase B接入TLS后再为知天专属IP增加443；本轮不配置证书。
+- 当前Phase B实例需在`zhitian-deploy/.env`填写`SERVER_PUBLIC_IP`；该值表示Docker发布80/443端口时使用的宿主机绑定地址，应按实际网络拓扑选择，并确保对应端口未被其他服务占用。在公网地址直接配置于网卡的环境中可填写该地址；在公网地址由VPC网关DNAT到私网网卡的环境中，应填写宿主机实际可绑定、用于承接转发流量的地址，不假定公网地址存在于本机网卡。TLS证书与80到443跳转现已具备，具体挂载配置见同级`zhitian-deploy`仓库说明。
 
 版本核对：
 
@@ -213,7 +214,7 @@ docker compose down
 
 在当前服务器继续补充并实测：
 
-- 真实域名、DNS、HTTPS证书、80到443跳转及证书续期；
+- 已完成真实域名、DNS、HTTPS证书、80到443跳转及证书续期；后续仅在域名、证书或网关配置变更时重新验收；
 - 云防火墙、SSH和首个管理员初始化期间的内网/VPN访问范围；
 - 服务器私有Secret注入、正式CORS白名单和Windows客户端真实HTTPS地址；
 - 定时备份、异地副本、保留周期和真实服务器恢复演练；
