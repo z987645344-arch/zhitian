@@ -269,6 +269,17 @@ del _scheduled_backup_time_parts
 SCHEDULED_BACKUP_RETENTION = max(
     1, int(os.getenv("SCHEDULED_BACKUP_RETENTION", "3"))
 )
+# 运维聚合状态端点缺省关闭；未配置令牌时main.py根本不注册路由。
+OPS_STATUS_TOKEN = os.getenv("OPS_STATUS_TOKEN", "").strip()
+# 宽限期只吸收备份边界时容器因部署、重启或宿主抖动而不在线的时段，
+# 不是备份本身的耗时。默认2小时且强制小于一天，避免把真实备份失败吞掉。
+OPS_BACKUP_STALE_GRACE_SECONDS = float(
+    os.getenv("OPS_BACKUP_STALE_GRACE_SECONDS", "7200")
+)
+if not 0 <= OPS_BACKUP_STALE_GRACE_SECONDS < 24 * 60 * 60:
+    raise RuntimeError(
+        "OPS_BACKUP_STALE_GRACE_SECONDS must be between 0 and 86400 seconds"
+    )
 
 # 工具
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")

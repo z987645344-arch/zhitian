@@ -78,5 +78,6 @@ def test_container_entrypoint_exposes_safe_forwarded_allow_ips_default():
         '--forwarded-allow-ips \\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\\"'
         in dockerfile
     )
-    assert "FORWARDED_ALLOW_IPS=127.0.0.1" in env_example
+    assert "FORWARDED_ALLOW_IPS=172.19.0.0/16,127.0.0.1" in env_example
     assert "FORWARDED_ALLOW_IPS=*" not in env_example
+    assert "FORWARDED_ALLOW_IPS=172.21.0.0/16" not in env_example

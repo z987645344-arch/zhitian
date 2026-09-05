@@ -31,6 +31,7 @@ os.environ["ENTERPRISE_PASSWORD_SEED"] = (
 )
 os.environ["DEEPSEEK_API_KEY"] = "test-only-deepseek-key-not-for-production"
 os.environ["API_DOCS_ENABLED"] = "false"
+os.environ["OPS_STATUS_TOKEN"] = ""
 os.environ["PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY"] = base64.urlsafe_b64encode(
     b"test-only-personal-key-secret!!!"
 ).decode("ascii")

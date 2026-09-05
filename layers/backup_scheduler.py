@@ -28,45 +28,222 @@ BACKUP_TIMEZONE = timezone(timedelta(hours=8), name="UTC+08:00")
 
 
 def _latest_archive(backup_dir: Path) -> Optional[Path]:
-    if not backup_dir.is_dir():
+    if not backup_dir.exists():
         return None
+    if not backup_dir.is_dir():
+        raise NotADirectoryError("scheduled backup path is not a directory")
     archives = list(backup_dir.glob(SCHEDULED_BACKUP_GLOB))
     return max(archives, key=lambda item: item.stat().st_mtime_ns) if archives else None
 
 
-def _seconds_until_next_backup(
-    backup_dir: Path,
-    trigger_hour: int,
-    trigger_minute: int,
-    now: Optional[datetime] = None,
-) -> float:
-    """按UTC+8日历日判断是否已备份；空目录或错过当日时刻则立即到期。"""
-    latest = _latest_archive(backup_dir)
-    if latest is None:
-        return 0.0
-    current = now or datetime.now(BACKUP_TIMEZONE)
-    if current.tzinfo is None or current.utcoffset() is None:
-        raise ValueError("备份调度计算必须传入带时区的时间")
-    current_local = current.astimezone(BACKUP_TIMEZONE)
-    today_trigger = current_local.replace(
-        hour=trigger_hour,
-        minute=trigger_minute,
-        second=0,
-        microsecond=0,
-    )
-    if current_local < today_trigger:
-        active_boundary = today_trigger - timedelta(days=1)
-        next_trigger = today_trigger
+def _utc_iso(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _age_hint(latest_mtime: datetime, checked_at: datetime) -> str:
+    age_seconds = max(0, int((checked_at - latest_mtime).total_seconds()))
+    if age_seconds < 60:
+        age_text = "不到1分钟"
+    elif age_seconds < 60 * 60:
+        age_text = "%s分钟" % (age_seconds // 60)
+    elif age_seconds < 24 * 60 * 60:
+        age_text = "%s小时" % (age_seconds // (60 * 60))
     else:
-        active_boundary = today_trigger
-        next_trigger = today_trigger + timedelta(days=1)
-    latest_local = datetime.fromtimestamp(
-        latest.stat().st_mtime,
-        tz=BACKUP_TIMEZONE,
+        age_text = "%s天" % (age_seconds // (24 * 60 * 60))
+    return "最近一次调度备份在%s前" % age_text
+
+
+def _state_result(
+    *,
+    status: str,
+    reason: str,
+    hint: str,
+    checked_at: datetime,
+    active_boundary: Optional[datetime],
+    latest_mtime: Optional[datetime],
+    next_trigger: Optional[datetime],
+    current_window_archived: bool,
+) -> dict:
+    """统一构造内部判定与对外安全字段，不携带文件名或目录信息。"""
+    return {
+        "status": status,
+        "reason": reason,
+        "hint": hint,
+        "schedule": {
+            "local_time": config.SCHEDULED_BACKUP_LOCAL_TIME,
+            "timezone": "UTC+08:00",
+        },
+        "diagnostic": {
+            "last_scheduled_backup_at": _utc_iso(latest_mtime),
+            "active_boundary": _utc_iso(active_boundary),
+            "checked_at": _utc_iso(checked_at),
+        },
+        # 以下字段只供调度器复用同一判据；FastAPI响应模型不会暴露它们。
+        "active_boundary": active_boundary,
+        "latest_mtime": latest_mtime,
+        "next_trigger": next_trigger,
+        "checked_at": checked_at,
+        "current_window_archived": current_window_archived,
+    }
+
+
+def describe_scheduled_backup_state(now: Optional[datetime] = None) -> dict:
+    """返回当前调度窗口边界、最新归档mtime及两者的统一比较结果。"""
+    current = now or datetime.now(timezone.utc)
+    try:
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("备份状态计算必须传入带时区的时间")
+        checked_at = current.astimezone(timezone.utc)
+        current_local = current.astimezone(BACKUP_TIMEZONE)
+        today_trigger = current_local.replace(
+            hour=config.SCHEDULED_BACKUP_LOCAL_HOUR,
+            minute=config.SCHEDULED_BACKUP_LOCAL_MINUTE,
+            second=0,
+            microsecond=0,
+        )
+        if current_local < today_trigger:
+            active_boundary_local = today_trigger - timedelta(days=1)
+            next_trigger_local = today_trigger
+        else:
+            active_boundary_local = today_trigger
+            next_trigger_local = today_trigger + timedelta(days=1)
+        active_boundary = active_boundary_local.astimezone(timezone.utc)
+        next_trigger = next_trigger_local.astimezone(timezone.utc)
+    except Exception as exc:
+        logger.warning(
+            "计算调度备份状态边界失败：error_type=%s",
+            type(exc).__name__,
+        )
+        fallback_checked_at = datetime.now(timezone.utc)
+        return _state_result(
+            status="unknown",
+            reason="internal_error",
+            hint="无法判断调度备份状态",
+            checked_at=fallback_checked_at,
+            active_boundary=None,
+            latest_mtime=None,
+            next_trigger=None,
+            current_window_archived=False,
+        )
+
+    if not config.SCHEDULED_BACKUP_ENABLED:
+        return _state_result(
+            status="disabled",
+            reason="scheduler_disabled",
+            hint="进程内调度备份已关闭",
+            checked_at=checked_at,
+            active_boundary=active_boundary,
+            latest_mtime=None,
+            next_trigger=next_trigger,
+            current_window_archived=False,
+        )
+
+    try:
+        latest = _latest_archive(Path(config.SCHEDULED_BACKUP_PATH))
+        latest_mtime = (
+            datetime.fromtimestamp(latest.stat().st_mtime, tz=timezone.utc)
+            if latest is not None
+            else None
+        )
+    except OSError as exc:
+        logger.warning(
+            "读取调度备份状态失败：error_type=%s",
+            type(exc).__name__,
+        )
+        return _state_result(
+            status="unknown",
+            reason="backup_dir_unreadable",
+            hint="无法读取调度备份目录",
+            checked_at=checked_at,
+            active_boundary=active_boundary,
+            latest_mtime=None,
+            next_trigger=next_trigger,
+            current_window_archived=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "判断调度备份状态失败：error_type=%s",
+            type(exc).__name__,
+        )
+        return _state_result(
+            status="unknown",
+            reason="internal_error",
+            hint="无法判断调度备份状态",
+            checked_at=checked_at,
+            active_boundary=active_boundary,
+            latest_mtime=None,
+            next_trigger=next_trigger,
+            current_window_archived=False,
+        )
+
+    current_window_archived = (
+        latest_mtime is not None and latest_mtime >= active_boundary
     )
-    if latest_local < active_boundary:
+    if current_window_archived:
+        return _state_result(
+            status="ok",
+            reason="current_window_archived",
+            hint=_age_hint(latest_mtime, checked_at),
+            checked_at=checked_at,
+            active_boundary=active_boundary,
+            latest_mtime=latest_mtime,
+            next_trigger=next_trigger,
+            current_window_archived=True,
+        )
+
+    # G吸收的是容器在边界时刻不在（部署窗口、重启、宿主抖动），不是备份耗时；
+    # 归档实测只需1~3秒。调度器启动时会补做当前窗口缺失的备份，但备份失败后
+    # 当天不会重试，因此G必须显著小于24小时，不能把真正的备份失败吞进宽限期。
+    elapsed_since_boundary = (checked_at - active_boundary).total_seconds()
+    if (
+        latest_mtime is not None
+        and elapsed_since_boundary < config.OPS_BACKUP_STALE_GRACE_SECONDS
+    ):
+        remaining = max(
+            0,
+            int(config.OPS_BACKUP_STALE_GRACE_SECONDS - elapsed_since_boundary),
+        )
+        return _state_result(
+            status="ok",
+            reason="within_grace",
+            hint="当前窗口尚无调度备份，仍在宽限期内（约剩%s分钟）"
+            % max(1, (remaining + 59) // 60),
+            checked_at=checked_at,
+            active_boundary=active_boundary,
+            latest_mtime=latest_mtime,
+            next_trigger=next_trigger,
+            current_window_archived=False,
+        )
+
+    reason = "no_archive_at_all" if latest_mtime is None else "no_archive_in_window"
+    hint = (
+        "尚未发现调度备份归档"
+        if latest_mtime is None
+        else "当前窗口尚无调度备份归档"
+    )
+    return _state_result(
+        status="stale",
+        reason=reason,
+        hint=hint,
+        checked_at=checked_at,
+        active_boundary=active_boundary,
+        latest_mtime=latest_mtime,
+        next_trigger=next_trigger,
+        current_window_archived=False,
+    )
+
+
+def _seconds_until_next_backup(now: Optional[datetime] = None) -> float:
+    """复用公开状态判据；当前窗口无归档或状态未知时立即尝试备份。"""
+    state = describe_scheduled_backup_state(now=now)
+    if not state["current_window_archived"]:
         return 0.0
-    return max(0.0, (next_trigger - current_local).total_seconds())
+    return max(
+        0.0,
+        (state["next_trigger"] - state["checked_at"]).total_seconds(),
+    )
 
 
 def _seconds_until_next_trigger(
@@ -158,11 +335,7 @@ class BackupScheduler:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                delay = _seconds_until_next_backup(
-                    Path(config.SCHEDULED_BACKUP_PATH),
-                    self._trigger_hour,
-                    self._trigger_minute,
-                )
+                delay = _seconds_until_next_backup()
             except Exception as exc:
                 logger.warning(
                     "读取最近备份时间失败，本轮立即尝试：error_type=%s",

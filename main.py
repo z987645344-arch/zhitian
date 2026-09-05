@@ -3,6 +3,7 @@
 
 import asyncio
 import codecs
+import hmac
 import json
 import os
 import re
@@ -620,6 +621,59 @@ class PersonnelFlagRequest(BaseModel):
 
 class PersonnelNotesRequest(BaseModel):
     notes: Optional[str] = None
+
+
+class OpsBackupSchedule(BaseModel):
+    local_time: str
+    timezone: str
+
+
+class OpsBackupDiagnostic(BaseModel):
+    last_scheduled_backup_at: Optional[str] = None
+    active_boundary: Optional[str] = None
+    checked_at: str
+
+
+class OpsBackupStatusResponse(BaseModel):
+    status: Literal["disabled", "unknown", "ok", "stale"]
+    reason: Literal[
+        "current_window_archived",
+        "within_grace",
+        "no_archive_in_window",
+        "no_archive_at_all",
+        "scheduler_disabled",
+        "backup_dir_unreadable",
+        "internal_error",
+    ]
+    hint: str
+    schedule: OpsBackupSchedule
+    diagnostic: OpsBackupDiagnostic
+
+
+def _register_ops_backup_status_route(application: FastAPI) -> None:
+    """仅在启动时配置了令牌的应用上注册运维备份状态路由。"""
+    expected_token = config.OPS_STATUS_TOKEN
+    if not expected_token:
+        return
+
+    @application.get("/ops/backup-status", response_model=OpsBackupStatusResponse)
+    async def ops_backup_status(
+        x_ops_token: Optional[str] = Header(default=None, alias="X-Ops-Token"),
+    ):
+        supplied = (x_ops_token or "").encode("utf-8")
+        if not hmac.compare_digest(supplied, expected_token.encode("utf-8")):
+            raise HTTPException(status_code=401, detail="运维状态令牌无效")
+        state = backup_scheduler.describe_scheduled_backup_state()
+        return {
+            "status": state["status"],
+            "reason": state["reason"],
+            "hint": state["hint"],
+            "schedule": state["schedule"],
+            "diagnostic": state["diagnostic"],
+        }
+
+
+_register_ops_backup_status_route(app)
 
 
 def get_current_user(authorization: str = Header(default="", alias="Authorization")) -> dict:
