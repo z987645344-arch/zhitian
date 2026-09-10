@@ -66,7 +66,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip uninstall --yes setuptools wheel pip
 
 RUN groupadd --system appuser \
     && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser \

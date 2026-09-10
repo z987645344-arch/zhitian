@@ -1862,3 +1862,10 @@
 - 新增`OPS_BACKUP_STALE_GRACE_SECONDS=7200`；该宽限只吸收边界时容器因部署、重启或宿主抖动不在线的时段，不吸收实际备份失败。同步将模板可信代理设为`172.19.0.0/16,127.0.0.1`，明确不信任运维专网且禁止`*`，并将应用版本升至`4.7.0`。
 - 七种原因、边界前后与宽限穿越、反漂移、归档前缀隔离、令牌三态及安全响应均有自动化覆盖；本机定向测试`15 passed`，权威入口`run_tests.bat -q`实跑为`513 passed, 5 deselected, 0 failed in 269.10s`。
 - 本轮只交付知天侧契约与本机验证，未对外承诺反代不可达、未配置生产令牌、未部署、未推送、未查CI；需待聚合端对齐后再统一打标与部署。
+
+## 2026-09-11 从运行时镜像移除Python构建工具
+
+- 将依赖安装与卸载合并在Dockerfile同一个`RUN`中：应用依赖安装完成后移除`setuptools`、`wheel`与`pip`，避免无人依赖的构建工具及其分发元数据留在最终运行时文件系统。
+- 删除前扫描`pkg_resources`引用：前20项均为pip/setuptools自身；扩大范围后只有ONNX Runtime可选诊断/benchmark函数存在局部导入，Click、NumPy、Pytest与Pluggy命中均为说明或兼容代码，未命中应用实际启动链上的Chroma、调度器或阿里云SDK入口。
+- 本机构建`zhitian-api:probe`成功；镜像内三件套的site-packages目录和`pip`/`pip3`/`wheel`命令入口均不存在，`pkg_resources`模块探测为`None`，`import main`成功，容器达到`healthy`且`/ready`返回`200`，SQLite、Chroma与LibreOffice均就绪。
+- 权威入口`run_tests.bat -q`实跑为`513 passed, 5 deselected, 0 failed in 424.84s`；本轮未修改漏洞扫描门禁、忽略规则或依赖约束，依赖层是否只剩三条Chroma漏洞须在推送后的容器CI中核对，本轮未推送、未打标、未部署。
