@@ -314,11 +314,11 @@
     const existing = bubble.querySelector('.citations');
     if (existing) existing.remove();
     if (!citations || !citations.length) return;
-    const box = document.createElement('div');
+    const box = document.createElement('details');
     box.className = 'citations';
-    const title = document.createElement('div');
+    const title = document.createElement('summary');
     title.className = 'citations-title';
-    title.textContent = `引用来源（${citations.length}）`;
+    title.textContent = `这段回答参考了 ${citations.length} 处资料 · 查看来源`;
     box.appendChild(title);
     citations.forEach((item) => {
       const row = document.createElement('div');
@@ -345,12 +345,12 @@
   function renderToolStatus(bubble, event) {
     let timeline = bubble.querySelector('.execution-timeline');
     if (!timeline) {
-      timeline = document.createElement('section');
+      timeline = document.createElement('details');
       timeline.className = 'execution-timeline';
       timeline.setAttribute('aria-live', 'polite');
-      const heading = document.createElement('div');
+      const heading = document.createElement('summary');
       heading.className = 'execution-title';
-      heading.textContent = '执行动态';
+      heading.textContent = '正在处理这次问题 · 查看步骤';
       timeline.appendChild(heading);
       bubble.appendChild(timeline);
     }
@@ -369,6 +369,9 @@
       timeline.appendChild(row);
     }
     row.dataset.phase = event.phase || '';
+    timeline.querySelector('.execution-title').textContent = event.phase === 'started'
+      ? '正在处理这次问题 · 查看步骤'
+      : '处理进展已更新 · 查看步骤';
     row.querySelector('.execution-name').textContent = TOOL_LABELS[event.display_code] || '工具执行';
     const parts = [TOOL_PHASE_LABELS[event.phase] || '状态更新'];
     if (Number.isFinite(event.result_count)) parts.push(`${event.result_count} 项结果`);
@@ -383,20 +386,24 @@
     if (event.status !== 'degraded') return;
     let notice = bubble.querySelector('.request-status-notice');
     if (!notice) {
-      notice = document.createElement('div');
+      notice = document.createElement('details');
       notice.className = 'request-status-notice';
       bubble.appendChild(notice);
     }
     const labels = (event.reason_codes || []).map((code) => REASON_LABELS[code]).filter(Boolean);
-    notice.textContent = labels.length
-      ? `本次回答已降级：${labels.join('；')}`
-      : '本次回答未能完整完成，请留意正文说明。';
+    const summary = document.createElement('summary');
+    summary.textContent = '部分步骤未能完成，请结合正文核对回答。';
+    const detail = document.createElement('p');
+    detail.textContent = labels.length
+      ? `具体原因：${labels.join('；')}`
+      : '本次回答未能完整完成，暂时没有更多原因说明。';
+    notice.replaceChildren(summary, detail);
   }
 
   function renderSessions() {
     sessionList.replaceChildren();
     if (!sessions.length) {
-      sessionStatus.textContent = '暂无历史会话';
+      sessionStatus.textContent = '还没有对话。从下方输入一个问题，之后可在这里继续。';
       return;
     }
     sessionStatus.textContent = `共 ${sessions.length} 个会话`;

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>提问 · 知天</title>
-    <link rel="stylesheet" href="./css/style.css?v=provider-circuit-1" />
+    <link rel="stylesheet" href="./css/style.css?v=archive-ui-20260912" />
   </head>
   <body class="chat-page">
     <div class="workspace-shell">
@@ -29,7 +29,7 @@
 
         <section class="history-panel" aria-labelledby="historyHeading">
           <div class="history-heading">
-            <h2 id="historyHeading">历史会话</h2>
+            <h2 id="historyHeading">01 / 对话档案</h2>
             <button id="refreshSessionsButton" class="text-button" type="button">刷新</button>
           </div>
           <p id="sessionStatus" class="session-status" aria-live="polite">正在加载会话…</p>
@@ -37,7 +37,7 @@
         </section>
 
         <a class="sidebar-settings-link" href="./settings.html">
-          <span>API 额度设置</span>
+          <span>02 / API 额度设置</span>
           <span aria-hidden="true">→</span>
         </a>
 
@@ -85,7 +85,7 @@
           <form id="composer" class="composer-inner">
             <div id="attachmentChips" class="attachment-chips"></div>
             <div class="composer-row">
-              <textarea id="messageInput" rows="1" placeholder="输入问题，Enter 发送，Shift+Enter 换行" required></textarea>
+              <textarea id="messageInput" rows="1" aria-label="你的问题" placeholder="把问题写在这里，Enter 发送，Shift+Enter 换行" required></textarea>
               <button id="attachButton" type="button" class="secondary">附加文件</button>
               <button id="sendButton" type="submit">发送</button>
             </div>
@@ -100,7 +100,7 @@
     </div>
 
     <script src="./config.js"></script>
-    <script src="./js/api.js?v=provider-circuit-1"></script>
-    <script src="./js/chat.js?v=provider-circuit-1"></script>
+    <script src="./js/api.js?v=archive-ui-20260912"></script>
+    <script src="./js/chat.js?v=archive-ui-20260912"></script>
   </body>
 </html>
