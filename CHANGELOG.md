@@ -1,7 +1,7 @@
 # 知天（zhitian）改动记录
 > 每轮完成改动后必须追加到此文件（新条目追加在**末尾**，本文件为旧在前的时间正序）。
 > 执行agent与指挥师同此要求；纯文档/流程整理的三段式补丁存档同样需要记录，不得省略。
-> **最后追加：2026-08-28**
+> **最后追加：2026-09-13**
 
 ## 2026-06-28 项目骨架、模型调用与两级记忆跑通
 - 初始化五层目录、FastAPI服务和三份`docs`文档；删除根目录重复Markdown。因Codex Python 3.12环境不匹配，改用本机Python 3.10.11重建`.venv`，修正可安装的zhipuai/langgraph版本并补充缺失的`sniffio`依赖。
@@ -1869,3 +1869,10 @@
 - 删除前扫描`pkg_resources`引用：前20项均为pip/setuptools自身；扩大范围后只有ONNX Runtime可选诊断/benchmark函数存在局部导入，Click、NumPy、Pytest与Pluggy命中均为说明或兼容代码，未命中应用实际启动链上的Chroma、调度器或阿里云SDK入口。
 - 本机构建`zhitian-api:probe`成功；镜像内三件套的site-packages目录和`pip`/`pip3`/`wheel`命令入口均不存在，`pkg_resources`模块探测为`None`，`import main`成功，容器达到`healthy`且`/ready`返回`200`，SQLite、Chroma与LibreOffice均就绪。
 - 权威入口`run_tests.bat -q`实跑为`513 passed, 5 deselected, 0 failed in 424.84s`；本轮未修改漏洞扫描门禁、忽略规则或依赖约束，依赖层是否只剩三条Chroma漏洞须在推送后的容器CI中核对，本轮未推送、未打标、未部署。
+
+## 2026-09-13 存档：v4.8 覆盖 v4.7 之后的客户端设计与本条存档
+
+- 覆盖 2 个提交：`dafb566` 优化客户端档案式层级与回答详情呈现（仅 `web_client/`，7 文件 +121/-39），以及本条存档提交（`VERSION` 升至 `4.8.0`）。含用户可见行为变化（四页文案与布局、引用/执行动态/降级提示改为默认折叠），按两段式。
+- 验证存档方独立核到的：`web_client/` 外零改动，Python 后端未动；`js/api.js` 与 v4.7 逐字节相同；`chat.js` 改动仅为 `div→details/summary` 与文案，事件处理、fetch、流式解析未变；JS 引用的 48 个 id 在新 HTML 中全部存在；CSS 纯新增；无外部资源、无主机名。`run_tests.bat` 未重跑：后端零改动，结果可证明与实施方实跑 `513 passed` 一致。
+- CI：静态 `CI` success（`dafb566`）；`Backend Container CI` 停在「Apply vulnerability policy after reports」，构建、扫描、报告上传均成功，成因与 v4.5–v4.7 相同（上游无修复），不影响部署判断。
+- 未验证：尚未部署；真实服务、权限链、真实模型与知识库由线上验收。
