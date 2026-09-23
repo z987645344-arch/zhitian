@@ -54,6 +54,10 @@ zhitian/
 │   ├── mcp_connector.py        外部stdio MCP连接基础设施
 │   └── system_modules.py       系统提示模块持久化
 ├── web_client/                 customer零构建静态网页与独立Nginx镜像
+│   └── DESIGN.md               三端（web_client/zhitian_admin/zhitian_app）公共组件规格：
+│                               按钮、输入框、卡片、状态标签、空态、错误提示、编号导航。
+│                               2026-09-14前端整轮优化时新增，是三端视觉一致性的依据；
+│                               改任一端的组件样式前先看它，否则三端会重新分头漂移
 ├── scripts/                    初始化、迁移、备份恢复和人工维护脚本
 ├── tests/                      默认隔离的pytest回归与显式integration测试
 ├── utils/                      日志、指标与时间上下文
