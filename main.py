@@ -31,7 +31,7 @@ from layers import api_quota, attachments, auth, backup_scheduler, converter, db
 from utils.logger import get_logger
 from utils import observability
 
-logger = get_logger("main")
+logger = get_logger("main", console_info_prefix="[graphrag] ")
 audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
 
 
@@ -191,12 +191,40 @@ def _run_ingest_task(
         heavy_task_limits.release_ingest_slot()
 
 
+def _log_graphrag_startup_state() -> None:
+    """仅报告开关及现有表；禁用时绝不探查或创建图谱表。"""
+    if not config.GRAPH_RAG_ENABLED:
+        logger.info("[graphrag] disabled")
+        return
+    table_names = ("graph_entities", "graph_relationships", "chunk_entities")
+    try:
+        with auth._connect() as conn:
+            existing = {
+                str(row[0]) for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' "
+                    "AND name IN (?, ?, ?)",
+                    table_names,
+                ).fetchall()
+            }
+    except Exception as exc:
+        logger.warning(
+            "[graphrag] enabled table_check_failed error_type=%s",
+            type(exc).__name__,
+        )
+        return
+    logger.info(
+        "[graphrag] enabled graph_entities=%s graph_relationships=%s chunk_entities=%s",
+        *("present" if name in existing else "absent" for name in table_names),
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _accepting_requests
     db_schema_version.initialize_and_validate_databases(
         auth.USERS_DB_PATH, config.HISTORY_DB_PATH
     )
+    _log_graphrag_startup_state()
     _recover_interrupted_tasks()
     with _request_gate_lock:
         _accepting_requests = True
