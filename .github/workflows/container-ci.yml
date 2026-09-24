@@ -161,18 +161,29 @@ jobs:
           cache: pip
 
       - name: Install pinned pip-audit
-        run: python -m pip install pip-audit==2.10.1
+        run: python -m pip install pip-audit==2.10.1 PyYAML==6.0.3
+
+      - name: Validate package-scoped vulnerability exceptions and expiry
+        run: python scripts/vulnerability_exceptions.py validate
 
       - name: Audit Python dependencies
         id: pip_audit
         continue-on-error: true
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
+          # The CVE/PYSEC mapping and expiry both come from .trivyignore.yaml.
+          python scripts/vulnerability_exceptions.py pip-ids > ci-reports/pip-exception-ids.txt
+          mapfile -t ignored_ids < ci-reports/pip-exception-ids.txt
+          ignore_args=()
+          for id in "${ignored_ids[@]}"; do
+            ignore_args+=(--ignore-vuln "$id")
+          done
           python -m pip_audit \
             --progress-spinner off \
             --format json \
             --output ci-reports/pip-audit.json \
+            "${ignore_args[@]}" \
             --requirement requirements.txt
 
       - name: Scan image and save full Trivy report
@@ -199,6 +210,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: false
           exit-code: "1"
+          trivyignores: .trivyignore.yaml
 
       - name: Upload build and security reports
         if: always()
@@ -213,17 +225,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          failed=0
-          if [ '${{ steps.pip_audit.outcome }}' = 'failure' ]; then
-            echo "pip-audit发现已知Python依赖漏洞；报告已上传。" >&2
-            failed=1
-          fi
-          if [ '${{ steps.trivy_report.outcome }}' = 'failure' ]; then
-            echo "Trivy完整报告生成失败；不能把扫描工具故障当作通过。" >&2
-            failed=1
-          fi
-          if [ '${{ steps.trivy_gate.outcome }}' = 'failure' ]; then
-            echo "Trivy发现HIGH或CRITICAL镜像漏洞；报告已上传。" >&2
-            failed=1
-          fi
-          exit "$failed"
+          python scripts/vulnerability_exceptions.py check-outcomes \
+            --pip-audit '${{ steps.pip_audit.outcome }}' \
+            --trivy-report '${{ steps.trivy_report.outcome }}' \
+            --trivy-gate '${{ steps.trivy_gate.outcome }}'

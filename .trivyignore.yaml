@@ -1,0 +1,311 @@
+# Sole source of vulnerability exceptions for Trivy and pip-audit.
+# Baseline: Backend Container CI run 35955469586, commit 228fb86, 2026-09-24.
+# Each ID is package-scoped; new packages/versions and new CVEs must fail the gate.
+reviewed_at: 2026-09-24
+vulnerabilities:
+  - id: CVE-2025-69720
+    purls:
+      - "pkg:deb/debian/libncursesw6@6.5%2B20250216-2?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libtinfo6@6.5%2B20250216-2?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/ncurses-base@6.5%2B20250216-2?arch=all&distro=debian-13.7"
+      - "pkg:deb/debian/ncurses-bin@6.5%2B20250216-2?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞在 infocmp 命令的 analyze_string；API/转换链不调用 infocmp，用户文档不会作为该命令输入。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-12064
+    purls:
+      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "API Python 进程导入 main/PDF 模块后未加载系统 libcurl；运行时 libcurl 客户端为 LibreOffice 及其库，阶段 C 的 layers/soffice_sandbox.py 对转换进程树禁止非 AF_UNIX socket。结论依赖该隔离；一旦撤掉便不成立。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-16742
+    purls:
+      - "pkg:deb/debian/libsystemd0@257.13-1~deb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libudev1@257.13-1~deb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞在 systemd-homed 的本地账户/组处理；容器不运行 systemd-homed，API 不管理本地 homed 用户。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-24882
+    purls:
+      - "pkg:deb/debian/dirmngr@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/gnupg-l10n@2.4.7-21%2Bdeb13u1?arch=all&distro=debian-13.7"
+      - "pkg:deb/debian/gnupg@2.4.7-21%2Bdeb13u1?arch=all&distro=debian-13.7"
+      - "pkg:deb/debian/gpg-agent@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/gpg@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/gpgconf@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/gpgsm@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞在 GnuPG tpm2daemon 的 PKDECRYPT 处理；API 与转换链不运行 tpm2daemon，也没有 TPM 私钥输入路径。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-36849
+    purls:
+      - "pkg:deb/debian/libtiff6@4.7.0-3%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libtiff.so.6；上传 Office 文件可嵌入攻击者控制的 TIFF，转换时可进入解码路径。soffice 非 root、串行且限制网络，但并未隔离 TIFF 解码。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-45830
+    purls:
+      - "pkg:pypi/chromadb@0.5.0"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "应用仅用 chromadb.PersistentClient 嵌入式数据库，不启动 Chroma HTTP 服务、不启用 SimpleRBAC 或服务端集合更新接口；漏洞需要经 Chroma HTTP/认证接口输入。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    pip_audit_id: PYSEC-2026-3813
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-45831
+    purls:
+      - "pkg:pypi/chromadb@0.5.0"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "应用仅用 chromadb.PersistentClient 嵌入式数据库，不启动 Chroma HTTP 服务、不启用 SimpleRBAC 或服务端集合更新接口；漏洞需要经 Chroma HTTP/认证接口输入。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    pip_audit_id: PYSEC-2026-3815
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-45833
+    purls:
+      - "pkg:pypi/chromadb@0.5.0"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "应用仅用 chromadb.PersistentClient 嵌入式数据库，不启动 Chroma HTTP 服务、不启用 SimpleRBAC 或服务端集合更新接口；漏洞需要经 Chroma HTTP/认证接口输入。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    pip_audit_id: PYSEC-2026-3814
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-52490
+    purls:
+      - "pkg:deb/debian/libtiff6@4.7.0-3%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞函数只在 tools/tiffcrop.c 的 process_command_opts()；镜像没有 tiffcrop 命令，应用不调用它，LibreOffice 加载 libtiff 解码库但不会调用该工具参数处理函数。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-54369
+    purls:
+      - "pkg:deb/debian/libacl1@2.3.2-2%2Bb1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需有特权进程调用 libacl 的路径 ACL 操作并接受攻击者可替换的路径组件；API/转换链无 ACL API 调用，容器非 root。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-66046
+    purls:
+      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "未能判定"
+    evidence: "Python pyexpat 静态集成 expat_2.7.4，不加载本报告的系统 libexpat1；LibreOffice libmergedlo.so 则加载 libexpat.so.1，但尚未证明上传 OOXML 是否能进入本 CVE 所需的具体解析分支/回调。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-6653
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-74860
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-76642
+    purls:
+      - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/liblastlog2-2@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libmount1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libsmartcols1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libuuid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/login@4.16.0-2%2Breally2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/mount@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/util-linux@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需调用 mount/nsenter 的特定特权选项、fstab 或可控本地操作者；API/转换链不调用这些命令，容器非特权且丢弃 capability。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-76956
+    purls:
+      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "未能判定"
+    evidence: "Python pyexpat 静态集成 expat_2.7.4，不加载本报告的系统 libexpat1；LibreOffice libmergedlo.so 则加载 libexpat.so.1，但尚未证明上传 OOXML 是否能进入本 CVE 所需的具体解析分支/回调。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-76957
+    purls:
+      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "未能判定"
+    evidence: "Python pyexpat 静态集成 expat_2.7.4，不加载本报告的系统 libexpat1；LibreOffice libmergedlo.so 则加载 libexpat.so.1，但尚未证明上传 OOXML 是否能进入本 CVE 所需的具体解析分支/回调。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-78408
+    purls:
+      - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/liblastlog2-2@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libmount1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libsmartcols1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libuuid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/login@4.16.0-2%2Breally2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/mount@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/util-linux@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需调用 mount/nsenter 的特定特权选项、fstab 或可控本地操作者；API/转换链不调用这些命令，容器非特权且丢弃 capability。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-78409
+    purls:
+      - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/liblastlog2-2@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libmount1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libsmartcols1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libuuid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/login@4.16.0-2%2Breally2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/mount@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/util-linux@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需调用 mount/nsenter 的特定特权选项、fstab 或可控本地操作者；API/转换链不调用这些命令，容器非特权且丢弃 capability。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-78410
+    purls:
+      - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/liblastlog2-2@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libmount1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libsmartcols1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libuuid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/login@4.16.0-2%2Breally2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
+      - "pkg:deb/debian/mount@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/util-linux@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需调用 mount/nsenter 的特定特权选项、fstab 或可控本地操作者；API/转换链不调用这些命令，容器非特权且丢弃 capability。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-8286
+    purls:
+      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "API Python 进程导入 main/PDF 模块后未加载系统 libcurl；运行时 libcurl 客户端为 LibreOffice 及其库，阶段 C 的 layers/soffice_sandbox.py 对转换进程树禁止非 AF_UNIX socket。结论依赖该隔离；一旦撤掉便不成立。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-8458
+    purls:
+      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "API Python 进程导入 main/PDF 模块后未加载系统 libcurl；运行时 libcurl 客户端为 LibreOffice 及其库，阶段 C 的 layers/soffice_sandbox.py 对转换进程树禁止非 AF_UNIX socket。结论依赖该隔离；一旦撤掉便不成立。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86138
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86139
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86140
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86142
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86143
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-86144
+    purls:
+      - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "可达"
+    evidence: "LibreOffice 的 libmergedlo.so 加载系统 libxml2；用户上传的 OOXML 含可控 XML，转换会解析。soffice 非 root，转换由进程级锁串行，并有阶段 C 网络 seccomp；这些是补偿措施，不等于不可达。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-88806
+    purls:
+      - "pkg:deb/debian/libx11-6@1.8.12-1?arch=amd64&distro=debian-13.7&epoch=2"
+      - "pkg:deb/debian/libx11-data@1.8.12-1?arch=all&distro=debian-13.7&epoch=2"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需要恶意 X server 对连接的客户端返回特制 X11 数据；容器 headless 转换无 DISPLAY/X server，用户上传文件不能充当 X server。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-88807
+    purls:
+      - "pkg:deb/debian/libxrender1@0.9.12-1?arch=amd64&distro=debian-13.7&epoch=1"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞需要恶意 X server 对连接的客户端返回特制 X11 数据；容器 headless 转换无 DISPLAY/X server，用户上传文件不能充当 X server。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-8927
+    purls:
+      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "API Python 进程导入 main/PDF 模块后未加载系统 libcurl；运行时 libcurl 客户端为 LibreOffice 及其库，阶段 C 的 layers/soffice_sandbox.py 对转换进程树禁止非 AF_UNIX socket。结论依赖该隔离；一旦撤掉便不成立。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-93990
+    purls:
+      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-10-24
+    reachability: "未能判定"
+    evidence: "Python pyexpat 静态集成 expat_2.7.4，不加载本报告的系统 libexpat1；LibreOffice libmergedlo.so 则加载 libexpat.so.1，但尚未证明上传 OOXML 是否能进入本 CVE 所需的具体解析分支/回调。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-9538
+    purls:
+      - "pkg:deb/debian/perl-base@5.40.1-6%2Bdeb13u1?arch=amd64&distro=debian-13.7"
+    expired_at: 2026-12-23
+    reachability: "不可达"
+    evidence: "漏洞在 Perl Archive::Tar::_read_tar()；API/转换链不用 Perl 处理上传或备份归档，也不执行 Archive::Tar。"
+    why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
