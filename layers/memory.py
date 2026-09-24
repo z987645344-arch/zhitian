@@ -15,6 +15,7 @@ from typing import List, Optional, Tuple
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import chromadb
+from chromadb.api.client import SharedSystemClient
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 import config
@@ -1654,13 +1655,18 @@ def _get_document_collection():
 
 
 def close_resources() -> None:
-    """Release process-local Chroma references during application shutdown."""
+    """Stop Chroma's system and release its shared cache before dropping references."""
     global _chroma_client, _chroma_collection, _document_collection
     with _chroma_lock:
         client = _chroma_client
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+        if client is not None:
+            # Chroma 0.5.0 has no client.close(). The backup/migration scripts
+            # stop the system first: clearing the cache alone leaves SQLite open.
+            system = getattr(client, "_system", None)
+            stop = getattr(system, "stop", None)
+            if callable(stop):
+                stop()
+            SharedSystemClient.clear_system_cache()
         _chroma_collection = None
         _document_collection = None
         _chroma_client = None
