@@ -6,6 +6,7 @@ scripts.backup_data负责；本模块只处理固定时刻触发、跨重启避�
 不重叠和故障隔离。
 """
 
+import json
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from scripts import backup_data
 from utils.logger import get_logger
 
 
-logger = get_logger("backup_scheduler")
+logger = get_logger("backup_scheduler", console_info_prefix="[backup] completed")
 _backup_run_lock = threading.Lock()
 SCHEDULED_ARCHIVE_PREFIX = "zhitian-scheduled-backup"
 SCHEDULED_BACKUP_GLOB = SCHEDULED_ARCHIVE_PREFIX + "-*.ztbackup"
@@ -270,7 +271,7 @@ def _seconds_until_next_trigger(
 def run_backup_once_safely() -> bool:
     """执行一轮加密备份；任何失败只记日志并返回False。"""
     if not _backup_run_lock.acquire(blocking=False):
-        logger.warning("进程内加密备份跳过：上一轮仍在执行")
+        logger.warning("[backup] failed reason=previous_run_in_progress")
         return False
     try:
         # create_backup内部已经在归档成功后调用enforce_retention；这里不重复轮转。
@@ -287,24 +288,28 @@ def run_backup_once_safely() -> bool:
                 archive_prefix=SCHEDULED_ARCHIVE_PREFIX,
             )
         logger.info(
-            "进程内加密备份完成：archive=%s deleted=%s",
+            "[backup] completed archive=%s files=%s total_bytes=%s "
+            "chroma_collections=%s deleted=%s",
             result.archive_path.name,
+            result.manifest["original_file_count"],
+            result.manifest["original_total_size_bytes"],
+            json.dumps(result.manifest["chroma_collections"], ensure_ascii=False, sort_keys=True),
             len(result.deleted_archives),
         )
         return True
     except backup_data.BackupError as exc:
         if not os.getenv("BACKUP_ENCRYPTION_KEY", "").strip():
             logger.warning(
-                "进程内加密备份跳过：缺少BACKUP_ENCRYPTION_KEY，主服务继续运行"
+                "[backup] failed reason=missing_BACKUP_ENCRYPTION_KEY"
             )
         else:
             logger.warning(
-                "进程内加密备份未完成：error_type=%s",
+                "[backup] failed reason=BackupError error_type=%s",
                 type(exc).__name__,
             )
         return False
     except Exception as exc:
-        logger.error("进程内加密备份失败：error_type=%s", type(exc).__name__)
+        logger.error("[backup] failed reason=unexpected_error error_type=%s", type(exc).__name__)
         return False
     finally:
         _backup_run_lock.release()

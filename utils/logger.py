@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from logging.handlers import TimedRotatingFileHandler
+from typing import Optional
 
 import config
 
@@ -13,10 +14,8 @@ LOG_DIR = os.path.join(config.BASE_DIR, "data", "logs")
 LOG_FILE = os.path.join(LOG_DIR, "zhitian.log")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-PROJECT_LOGGERS = {
-    "main", "execution", "planning", "memory", "llm_provider", "observability",
-    "mcp_client", "email_provider", "db_schema_version",
-}
+# 只登记通过项目入口创建的logger；第三方直接调用logging.getLogger不放行。
+PROJECT_LOGGERS = set()
 
 _configured = False
 
@@ -56,10 +55,26 @@ class SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.rolloverAt = next_rollover
 
 
-def get_logger(module_name: str) -> logging.Logger:
+def get_logger(
+    module_name: str, *, console_info_prefix: Optional[str] = None
+) -> logging.Logger:
     """获取模块logger，首次调用时初始化全局日志配置"""
     _configure_logging()
-    return logging.getLogger(module_name)
+    PROJECT_LOGGERS.add(module_name)
+    logger = logging.getLogger(module_name)
+    if console_info_prefix and not any(
+        isinstance(log_filter, _PrefixedInfoFilter)
+        and log_filter.prefix == console_info_prefix
+        for handler in logger.handlers
+        for log_filter in handler.filters
+    ):
+        # 仅为明确声明的完成事件另开INFO控制台通道；根控制台仍为WARNING。
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+        handler.addFilter(_PrefixedInfoFilter(console_info_prefix))
+        logger.addHandler(handler)
+    return logger
 
 
 def _configure_logging() -> None:
@@ -118,3 +133,16 @@ class _ProjectLogFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         return record.name in PROJECT_LOGGERS
+
+
+class _PrefixedInfoFilter(logging.Filter):
+    """只让指定模块的单类INFO事件额外写到控制台。"""
+
+    def __init__(self, prefix: str):
+        super().__init__()
+        self.prefix = prefix
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno == logging.INFO and record.getMessage().startswith(
+            self.prefix
+        )

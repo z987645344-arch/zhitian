@@ -1169,9 +1169,9 @@ def bind_session(session_id: str, user_id: str) -> None:
             )
     except Exception as e:
         logger.error(
-            "绑定用户会话失败：session_id=%s user_id=%s error_type=%s",
-            session_id,
-            user_id,
+            "绑定用户会话失败：session_id_len=%s user_id_len=%s error_type=%s",
+            len(session_id),
+            len(user_id),
             type(e).__name__
         )
         raise
@@ -1195,9 +1195,9 @@ def verify_session_owner(session_id: str, user_id: str) -> bool:
         return row is not None
     except Exception as e:
         logger.error(
-            "校验用户会话归属失败：session_id=%s user_id=%s error_type=%s",
-            session_id,
-            user_id,
+            "校验用户会话归属失败：session_id_len=%s user_id_len=%s error_type=%s",
+            len(session_id),
+            len(user_id),
             type(e).__name__
         )
         raise
@@ -1419,8 +1419,8 @@ def delete_session_binding(session_id: str) -> bool:
         return cursor.rowcount > 0
     except Exception as e:
         logger.error(
-            "删除用户会话归属失败：session_id=%s error_type=%s",
-            session_id,
+            "删除用户会话归属失败：session_id_len=%s error_type=%s",
+            len(session_id),
             type(e).__name__,
         )
         raise

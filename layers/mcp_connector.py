@@ -123,9 +123,9 @@ async def _stdio_handler(
         return MCPCallResult(success=False, error_type="command_not_found")
     except Exception as exc:
         logger.warning(
-            "MCP调用失败：server=%s tool=%s error_type=%s",
-            config.name,
-            tool_name or "list_tools",
+            "MCP调用失败：server_len=%s tool_len=%s error_type=%s",
+            len(config.name),
+            len(tool_name or "list_tools"),
             type(exc).__name__,
         )
         await anyio.sleep(0.05)
@@ -142,9 +142,9 @@ def _dispatch(
     started = time.perf_counter()
     result = anyio.run(_stdio_handler, config, operation, tool_name, arguments)
     logger.info(
-        "MCP调用完成：server=%s tool=%s elapsed_ms=%s success=%s",
-        config.name,
-        tool_name or "list_tools",
+        "MCP调用完成：server_len=%s tool_len=%s elapsed_ms=%s success=%s",
+        len(config.name),
+        len(tool_name or "list_tools"),
         int((time.perf_counter() - started) * 1000),
         result.success,
     )

@@ -88,7 +88,7 @@ def _write_archive(backup_dir: Path, name: str, mtime: datetime) -> Path:
     return archive
 
 
-def test_scheduler_creates_encrypted_archive_readable_by_restore(tmp_path, monkeypatch):
+def test_scheduler_creates_encrypted_archive_readable_by_restore(tmp_path, monkeypatch, caplog):
     data_dir = tmp_path / "data"
     backup_dir = tmp_path / "backups"
     _prepare_data_tree(data_dir)
@@ -97,7 +97,20 @@ def test_scheduler_creates_encrypted_archive_readable_by_restore(tmp_path, monke
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(backup_dir))
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_RETENTION", 3)
 
-    assert backup_scheduler.run_backup_once_safely() is True
+    with caplog.at_level(logging.INFO, logger="backup_scheduler"):
+        assert backup_scheduler.run_backup_once_safely() is True
+    completion_records = [
+        record for record in caplog.records
+        if record.name == "backup_scheduler" and record.getMessage().startswith("[backup]")
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0].levelno == logging.INFO
+    completion = completion_records[0].getMessage()
+    assert completion.startswith("[backup] completed archive=")
+    assert "files=" in completion
+    assert "total_bytes=" in completion
+    assert 'chroma_collections={"zhitian_documents": 1}' in completion
+    assert "deleted=" in completion
     archives = list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
     assert len(archives) == 1
     assert archives[0].read_bytes().startswith(backup_data.ARCHIVE_MAGIC)
@@ -435,7 +448,7 @@ def test_restarts_same_local_day_do_not_duplicate_and_next_day_runs(
     assert len(list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))) == 2
 
 
-def test_overlapping_backup_is_skipped(monkeypatch):
+def test_overlapping_backup_is_skipped(monkeypatch, caplog):
     entered = threading.Event()
     release = threading.Event()
 
@@ -444,7 +457,11 @@ def test_overlapping_backup_is_skipped(monkeypatch):
         release.wait(timeout=2.0)
         return backup_data.BackupResult(
             archive_path=Path("backup.ztbackup"),
-            manifest={},
+            manifest={
+                "original_file_count": 1,
+                "original_total_size_bytes": 10,
+                "chroma_collections": {},
+            },
             deleted_archives=[],
         )
 
@@ -455,10 +472,45 @@ def test_overlapping_backup_is_skipped(monkeypatch):
     )
     worker.start()
     assert entered.wait(timeout=1.0)
-    assert backup_scheduler.run_backup_once_safely() is False
+    with caplog.at_level(logging.WARNING, logger="backup_scheduler"):
+        assert backup_scheduler.run_backup_once_safely() is False
+    assert [
+        record.getMessage() for record in caplog.records
+        if record.name == "backup_scheduler" and record.getMessage().startswith("[backup]")
+    ] == ["[backup] failed reason=previous_run_in_progress"]
     release.set()
     worker.join(timeout=2.0)
     assert first_result == [True]
+
+
+def test_backup_error_and_unexpected_error_have_distinct_safe_log_reasons(
+    monkeypatch, caplog
+):
+    def fail_backup(**kwargs):
+        raise backup_data.BackupError("test-only failure")
+
+    monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", _key())
+    monkeypatch.setattr(backup_data, "create_backup", fail_backup)
+    with caplog.at_level(logging.WARNING, logger="backup_scheduler"):
+        assert backup_scheduler.run_backup_once_safely() is False
+    assert [
+        record.getMessage() for record in caplog.records
+        if record.name == "backup_scheduler" and record.getMessage().startswith("[backup]")
+    ] == ["[backup] failed reason=BackupError error_type=BackupError"]
+
+    caplog.clear()
+
+    def fail_unexpected(**kwargs):
+        raise RuntimeError("test-only sensitive detail")
+
+    monkeypatch.setattr(backup_data, "create_backup", fail_unexpected)
+    with caplog.at_level(logging.ERROR, logger="backup_scheduler"):
+        assert backup_scheduler.run_backup_once_safely() is False
+    assert [
+        record.getMessage() for record in caplog.records
+        if record.name == "backup_scheduler" and record.getMessage().startswith("[backup]")
+    ] == ["[backup] failed reason=unexpected_error error_type=RuntimeError"]
+    assert "sensitive detail" not in caplog.text
 
 
 def test_missing_key_does_not_block_lifespan_or_health(
@@ -481,7 +533,11 @@ def test_missing_key_does_not_block_lifespan_or_health(
         with TestClient(main.app) as client:
             response = client.get("/health")
             assert response.status_code == 200
-        assert "缺少BACKUP_ENCRYPTION_KEY" in caplog.text
+        failure_lines = [
+            record.getMessage() for record in caplog.records
+            if record.name == "backup_scheduler" and record.getMessage().startswith("[backup]")
+        ]
+        assert failure_lines == ["[backup] failed reason=missing_BACKUP_ENCRYPTION_KEY"]
 
     assert not list((tmp_path / "backups").glob("*.ztbackup"))
     assert backup_scheduler._scheduler is None

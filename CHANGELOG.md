@@ -1876,3 +1876,10 @@
 - 验证存档方独立核到的：`web_client/` 外零改动，Python 后端未动；`js/api.js` 与 v4.7 逐字节相同；`chat.js` 改动仅为 `div→details/summary` 与文案，事件处理、fetch、流式解析未变；JS 引用的 48 个 id 在新 HTML 中全部存在；CSS 纯新增；无外部资源、无主机名。`run_tests.bat` 未重跑：后端零改动，结果可证明与实施方实跑 `513 passed` 一致。
 - CI：静态 `CI` success（`dafb566`）；`Backend Container CI` 停在「Apply vulnerability policy after reports」，构建、扫描、报告上传均成功，成因与 v4.5–v4.7 相同（上游无修复），不影响部署判断。
 - 未验证：尚未部署；真实服务、权限链、真实模型与知识库由线上验收。
+
+## 2026-09-24 纯修 x.y.Z：日志放行与定时备份可观测性校准（用户操作方式不变）
+
+- `get_logger()` 自动登记项目 logger，第三方 logger 继续过滤；放行前审查七个此前被过滤的模块日志，对认证及连接器中的用户、会话和外部名称改为只记长度，避免敏感标识进入新放行的输出。
+- 定时备份完成记为 INFO，只有带 `[backup] completed` 前缀的这一类 INFO 额外送往控制台；全局控制台仍是 WARNING，其他模块 INFO 不会进入 `docker logs`。失败日志按缺密钥、任务重叠、`BackupError`、其他异常分别以 WARNING/ERROR 记录。
+- 完成日志包含归档名、文件数、总大小、Chroma collection 实际条数和轮转删除数；有数据 collection 的测试断言非空计数，隔离容器实测 `[backup] completed` 行包含 `chroma_collections={"audit_probe": 1}`。
+- 项目 `.venv` 执行 `run_tests.bat -q`：516 passed、5 deselected；本条只修日志门禁与可观测性，不改变备份归档、保留策略和用户操作方式。
