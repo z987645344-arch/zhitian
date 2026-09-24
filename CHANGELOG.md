@@ -1890,3 +1890,10 @@
 - 同一份公开中文 PDF 在升级前后均为 3 页、979 个提取字符；`extract_text()` 有两处排版差异：访问量 `68405`、`76392` 由独立行移至前一字段同行。差异已记录，是否可接受留待用户判断。
 - 新旧隔离镜像分别经真实 `/documents/upload` 上传该 PDF：产物质量检查均通过，上传均返回 `accepted`、后台任务均为 `done`，切片及实际入库片段均为 2；未使用生产卷或付费模型。
 - 项目 `.venv` 的 `run_tests.bat -q` 为 516 passed、5 deselected；PDF 定向用例为 23 passed，本地 LibreOffice 转换集成用例另有 2 passed。`pip-audit -r requirements.txt` 只报告 chromadb 3 条，pypdf 不再出现在结果中；本轮未改漏洞门禁、未推送、未查 CI、未打标。
+
+## 2026-09-24 纯修 x.y.Z（暂定 v4.8.1，存疑：新增转换安全约束）：禁止 LibreOffice 转换进程外连
+
+- 文档入库、`/tools/convert` 与 Agent 附件转换共用的 LibreOffice 启动点加入 Linux seccomp 隔离：只允许 Unix socket，拒绝网络 socket；每次转换使用独立配置目录，防止转交给既有的未隔离实例，隔离不可用时拒绝转换，不影响 API 进程访问模型供应商。
+- 隔离容器内同一份指向回环服务的外链 DOCX，未隔离转换触发 1 次 GET，隔离后的 `converter.convert_file()` 触发 0 次；普通 DOCX、XLSX、PPTX 的 PDF 提取文本和入库前切片数与原路径一致，各为 1 片。
+- 镜像构建期新增回环反证脚本，后续改动转换链路若恢复外连将导致构建失败；Windows 单测另锁定启动命令、独立配置目录和隔离不可用时的关闭式失败。
+- 本轮仅在本机隔离容器验证，没有触碰生产或外部目标，也没有修改漏洞门禁；生产路径及非 Linux 原生转换能力尚未验证，不能把本机结果视为已部署生效。

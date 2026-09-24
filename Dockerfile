@@ -59,6 +59,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fontconfig \
         fonts-noto-cjk \
+        libseccomp2 \
         libreoffice-calc-nogui \
         libreoffice-impress-nogui \
         libreoffice-writer-nogui \
@@ -85,6 +86,10 @@ COPY --chown=appuser:appuser . .
 COPY --from=model-fetch --chown=appuser:appuser /export /app/models/bge-small-zh-v1.5
 
 USER appuser
+
+# Windows 权威回归无法实际运行 Linux seccomp；镜像每次构建都执行容器内
+# 回环反证，确保改动转换链路后不会把外连悄悄放回来。
+RUN python tests/soffice_network_probe.py
 
 EXPOSE 8000
 

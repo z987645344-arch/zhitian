@@ -3,7 +3,9 @@
 
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
+from pathlib import Path
 
 import config
 from docx import Document
@@ -39,6 +41,34 @@ def test_convert_file_success(tmp_path, monkeypatch):
     assert result.error_type == ""
     assert result.output_path and os.path.isfile(result.output_path)
     converter.cleanup_conversion_output(result.output_path)
+    assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
+
+
+def test_soffice_runs_under_network_filter_with_private_profile(tmp_path, monkeypatch):
+    source = _source_file(tmp_path)
+    soffice = tmp_path / "soffice.exe"
+    soffice.write_bytes(b"stub")
+    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(soffice))
+    observed = {}
+
+    def run(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(returncode=126, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(converter.subprocess, "run", run)
+    result = converter.convert_file(str(source), "docx")
+
+    command = observed["command"]
+    assert command[0] == sys.executable
+    assert Path(command[1]).name == "soffice_sandbox.py"
+    assert command[2] == str(soffice)
+    profile_arg = next(part for part in command if part.startswith("-env:UserInstallation="))
+    assert profile_arg.startswith("-env:UserInstallation=file:")
+    assert "conversion_" in profile_arg
+    assert observed["kwargs"]["close_fds"] is True
+    assert result.success is False
+    assert result.error_type == "sandbox_unavailable"
     assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
 
 

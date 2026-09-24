@@ -4,10 +4,12 @@
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
@@ -73,8 +75,14 @@ def _convert_file_impl(source_path: str, target_format: str) -> ConversionResult
             "conversion_%s" % uuid.uuid4().hex,
         )
         os.makedirs(output_dir, exist_ok=False)
+        # 每次转换使用独立配置目录，禁止命令借现存、未经隔离的 soffice
+        # 进程执行。仅 soffice 子进程树禁网，API 进程仍可访问模型供应商。
+        profile_url = (Path(output_dir) / "lo-profile").resolve().as_uri()
         command = [
+            sys.executable,
+            str(Path(__file__).with_name("soffice_sandbox.py")),
             soffice_path,
+            "-env:UserInstallation=" + profile_url,
             "--headless",
             "--convert-to",
             target,
@@ -87,8 +95,13 @@ def _convert_file_impl(source_path: str, target_format: str) -> ConversionResult
                 command,
                 capture_output=True,
                 check=False,
+                close_fds=True,
                 timeout=max(1, config.CONVERSION_TIMEOUT_SECONDS),
             )
+        if completed.returncode == 126:
+            _cleanup_directory(output_dir)
+            logger.error("LibreOffice网络隔离不可用：source_ext=%s target=%s", source_ext, target)
+            return _failed("LibreOffice网络隔离不可用", source_ext, target, "sandbox_unavailable")
         if completed.returncode != 0:
             _cleanup_directory(output_dir)
             return _failed("LibreOffice转换失败", source_ext, target, "process_failed")
