@@ -89,7 +89,8 @@ USER appuser
 
 # Windows 权威回归无法实际运行 Linux seccomp；镜像每次构建都执行容器内
 # 回环反证，确保改动转换链路后不会把外连悄悄放回来。
-RUN python tests/soffice_network_probe.py
+RUN python tests/soffice_network_probe.py \
+    && test -z "$(find /app/data -mindepth 1 -print -quit)"
 
 EXPOSE 8000
 

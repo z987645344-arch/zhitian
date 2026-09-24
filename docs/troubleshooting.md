@@ -153,7 +153,7 @@ docker compose logs --tail 200 zhitian-api
 
 ## 6. LibreOffice转换失败
 
-可能原因：`LIBREOFFICE_PATH`错误、soffice不可执行、`appuser`无法写HOME/XDG配置或临时目录、tmpfs 256 MiB耗尽、输入格式损坏、30秒转换超时，或中文字体缺失。
+可能原因：`LIBREOFFICE_PATH`错误、soffice不可执行、`appuser`无法写HOME/XDG配置或临时目录、tmpfs 256 MiB耗尽、输入格式损坏、30秒转换超时、中文字体缺失，或进程级网络隔离不可用。
 
 定位：
 
@@ -166,7 +166,7 @@ curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 docker compose logs --tail 200 zhitian-api
 ```
 
-Compose应覆盖`LIBREOFFICE_PATH=/usr/bin/soffice`，容器用户应为`appuser`，配置目录和tmpfs可写。ready只验证可执行文件，不验证具体文档质量；修复后必须用一份包含已知中文句子的DOCX/XLSX/PPTX做真实转换并核对文字层，不以“命令能启动”代替中文无乱码验收。
+Compose应覆盖`LIBREOFFICE_PATH=/usr/bin/soffice`，容器用户应为`appuser`，配置目录和tmpfs可写。转换必须在Linux容器内经应用入口运行：隔离器会限制soffice进程创建网络socket；非Linux环境直接调用转换会以`sandbox_unavailable`拒绝，不支持在Windows宿主机上用`.venv`直接转换。若出现“LibreOffice网络隔离不可用”，检查镜像内`libseccomp2`和容器安全限制，不要改成直接运行soffice绕过隔离。ready只验证可执行文件，不验证隔离器或具体文档质量；修复后必须用一份包含已知中文句子的DOCX/XLSX/PPTX做真实转换并核对文字层，不以“命令能启动”代替中文无乱码验收。
 
 已解决标准：`/api/ready`中`libreoffice=true`，真实中文文档转换成功且文本正确，日志没有权限、超时或临时目录错误。
 
@@ -204,7 +204,7 @@ docker version
 & ".\zhitian\.venv\Scripts\python.exe" --version
 ```
 
-如果本机用户环境正常而Codex沙盒失败，应改用获准的本机用户上下文或绝对路径复验，不要临时下载另一个Python并据此改项目依赖。容器部署本身应优先使用Docker镜像，不依赖宿主机`.venv`。
+如果本机用户环境正常而Codex沙盒失败，应改用获准的本机用户上下文或绝对路径复验，不要临时下载另一个Python并据此改项目依赖。宿主机`.venv`可运行权威回归，但不能代替Linux容器里的真实LibreOffice转换验证；在Windows上直接调用转换会被隔离器拒绝。容器部署本身应使用Docker镜像，不依赖宿主机`.venv`。
 
 已解决标准：同一用户上下文能稳定执行Docker/Compose和项目Python版本检查，后续验证记录明确命令身份与路径。
 

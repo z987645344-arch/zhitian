@@ -28,6 +28,12 @@ from openpyxl import Workbook  # noqa: E402
 from PIL import Image  # noqa: E402
 from pptx import Presentation  # noqa: E402
 
+# 构建期没有业务数据卷，不能让探针初始化项目文件日志并写入 /app/data。
+# 仅关闭此探针进程的日志初始化；转换链路、网络隔离和探针断言不变。
+from utils import logger as project_logger  # noqa: E402
+
+project_logger._configured = True
+
 from layers import converter, document_loader  # noqa: E402
 
 
