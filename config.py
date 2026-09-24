@@ -103,6 +103,13 @@ EXPERT_COMPLEX_TIMEOUT = float(os.getenv("EXPERT_COMPLEX_TIMEOUT", "120.0"))
 FIRST_CONTENT_TIMEOUT = float(os.getenv("FIRST_CONTENT_TIMEOUT", "45.0"))
 FAST_LLM_TIMEOUT_RETRIES = int(os.getenv("FAST_LLM_TIMEOUT_RETRIES", "1"))
 FAST_LLM_RETRY_DELAY = float(os.getenv("FAST_LLM_RETRY_DELAY", "0.75"))
+# 四个重任务并发槽之外仍要容纳普通聊天和流式回答；连接池不以用户Key分组。
+LLM_MAX_CONNECTIONS = max(1, int(os.getenv("LLM_MAX_CONNECTIONS", "16")))
+LLM_MAX_KEEPALIVE_CONNECTIONS = max(
+    0, min(int(os.getenv("LLM_MAX_KEEPALIVE_CONNECTIONS", "8")), LLM_MAX_CONNECTIONS)
+)
+# DeepSeek未公开HTTP空闲连接关闭时限，保守仅保留1秒；活跃流不受此值影响。
+LLM_KEEPALIVE_EXPIRY_SECONDS = 1.0
 FAST_REQUEST_TIMEOUT = float(os.getenv("FAST_REQUEST_TIMEOUT", "25.0"))
 SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
 # 本机fast档搜索词改写实测需9.956秒，且供应商timeout可能比设定墙钟再多约5秒；

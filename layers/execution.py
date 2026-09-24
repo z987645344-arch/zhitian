@@ -700,6 +700,7 @@ def stream_search_result(
     )
     emitted = False
     collected_chunks = []
+    stream = None
     try:
         if not claim_post_circuit_final_attempt(execution_state):
             yield "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
@@ -772,6 +773,8 @@ def stream_search_result(
                 )
         else:
             yield SEARCH_SUMMARY_FALLBACK_MESSAGE
+    finally:
+        llm_provider.close_stream(stream)
 
 
 def _search_documents(
@@ -1564,6 +1567,8 @@ def _open_llm_stream_with_first_content_timeout(
 
     def open_and_read_first_content() -> None:
         response = None
+        text_stream = None
+        handed_off = False
         try:
             response = llm_provider.chat_completion(
                 messages,
@@ -1574,21 +1579,20 @@ def _open_llm_stream_with_first_content_timeout(
             with holder_lock:
                 response_holder["response"] = response
             if cancelled.is_set():
-                close_stream = getattr(response, "close", None)
-                if callable(close_stream):
-                    close_stream()
                 return
             text_stream = llm_provider.iter_text(response)
             first_chunk = next(text_stream, None)
             if cancelled.is_set():
-                close_stream = getattr(response, "close", None)
-                if callable(close_stream):
-                    close_stream()
                 return
             result.set_result((text_stream, first_chunk))
+            handed_off = True
         except BaseException as exc:
             if not cancelled.is_set():
                 result.set_exception(exc)
+        finally:
+            if not handed_off:
+                llm_provider.close_stream(text_stream)
+                llm_provider.close_stream(response)
 
     request_context = copy_context()
     worker = threading.Thread(
@@ -1604,16 +1608,7 @@ def _open_llm_stream_with_first_content_timeout(
         cancelled.set()
         with holder_lock:
             response = response_holder["response"]
-        close_stream = getattr(response, "close", None)
-        if callable(close_stream):
-            try:
-                close_stream()
-            except Exception as close_exc:
-                logger.warning(
-                    "%s首正文超时后关闭供应商流失败：error_type=%s",
-                    stage_name,
-                    type(close_exc).__name__,
-                )
+        llm_provider.close_stream(response)
         raise FirstContentTimeoutError(
             "llm first content timeout"
         ) from exc
@@ -1676,6 +1671,7 @@ def _answer_from_documents(
         return
 
     emitted = False
+    stream = None
     try:
         if tier == "expert":
             messages = cache_friendly_messages(
@@ -1740,6 +1736,8 @@ def _answer_from_documents(
             yield _partial_document_answer_failure_message(reason_code)
         else:
             yield _empty_document_answer_failure_message(reason_code)
+    finally:
+        llm_provider.close_stream(stream)
 
 
 def _empty_document_answer_failure_message(reason_code: str) -> str:

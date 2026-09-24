@@ -224,6 +224,10 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("停止进程内备份调度失败：error_type=%s", type(exc).__name__)
         try:
+            llm_provider.close_resources()
+        except Exception as exc:
+            logger.warning("关闭模型HTTP连接池失败：error_type=%s", type(exc).__name__)
+        try:
             memory.close_resources()
         except Exception as e:
             logger.warning("关闭Chroma资源失败：error_type=%s", type(e).__name__)
@@ -3394,10 +3398,13 @@ def _chat_stream_events(
                         config.SEARCH_TOTAL_TIMEOUT,
                     ),
                 )
-                for chunk in stream:
-                    emitted = True
-                    chunks.append(chunk)
-                    yield _sse_data({"chunk": chunk})
+                try:
+                    for chunk in stream:
+                        emitted = True
+                        chunks.append(chunk)
+                        yield _sse_data({"chunk": chunk})
+                finally:
+                    llm_provider.close_stream(stream)
                 new_reasons = [
                     code for code in state.get("degradation_reasons", [])
                     if code not in reasons_before
@@ -3462,9 +3469,12 @@ def _chat_stream_events(
                         ),
                         _execution_state=state,
                     )
-                    for chunk in stream:
-                        chunks.append(chunk)
-                        yield _sse_data({"chunk": chunk})
+                    try:
+                        for chunk in stream:
+                            chunks.append(chunk)
+                            yield _sse_data({"chunk": chunk})
+                    finally:
+                        llm_provider.close_stream(stream)
                 execution.emit_tool_status(
                     state,
                     "llm_chat",
@@ -3512,7 +3522,7 @@ def _chat_stream_events(
                     notice = "基于目前检索到的信息回答，可能不够全面。\n\n"
                     chunks.append(notice)
                     yield _sse_data({"chunk": notice})
-                for chunk in execution._answer_from_documents(
+                document_stream = execution._answer_from_documents(
                     document_context,
                     tier=perception_output.mode,
                     timeout=execution.remaining_request_budget(
@@ -3520,9 +3530,13 @@ def _chat_stream_events(
                         config.EXPERT_LLM_TIMEOUT,
                     ),
                     _execution_state=final_state,
-                ):
-                    chunks.append(chunk)
-                    yield _sse_data({"chunk": chunk})
+                )
+                try:
+                    for chunk in document_stream:
+                        chunks.append(chunk)
+                        yield _sse_data({"chunk": chunk})
+                finally:
+                    llm_provider.close_stream(document_stream)
                 final_data = "".join(chunks)
                 final_state["response"] = final_data
                 new_reasons = [
@@ -3627,6 +3641,8 @@ async def _chat_stream_events_with_heartbeat(
     """Run blocking stream work separately so long stages can emit SSE heartbeats."""
     loop = asyncio.get_running_loop()
     event_queue = asyncio.Queue()
+    disconnected = threading.Event()
+    stream_registry = llm_provider.StreamRegistry()
 
     def produce() -> None:
         api_key_token = llm_provider.bind_request_api_key(api_key)
@@ -3636,7 +3652,7 @@ async def _chat_stream_events_with_heartbeat(
                 ("event", _sse_data(event.model_dump())),
             )
         try:
-            for event in _chat_stream_events(
+            event_stream = _chat_stream_events(
                 request,
                 current_user,
                 background_tasks,
@@ -3645,8 +3661,15 @@ async def _chat_stream_events_with_heartbeat(
                 attachment_ids,
                 api_key,
                 tool_event_sink=emit_tool_event,
-            ):
-                loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
+            )
+            try:
+                with llm_provider.use_stream_registry(stream_registry):
+                    for event in event_stream:
+                        if disconnected.is_set():
+                            break
+                        loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
+            finally:
+                llm_provider.close_stream(event_stream)
         except BaseException as exc:
             loop.call_soon_threadsafe(event_queue.put_nowait, ("error", exc))
         finally:
@@ -3673,6 +3696,8 @@ async def _chat_stream_events_with_heartbeat(
             else:
                 break
     finally:
+        disconnected.set()
+        stream_registry.close_all()
         await producer_task
 
 
