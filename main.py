@@ -124,22 +124,34 @@ def _run_ingest_task(
     任务状态保持pending，拿到槽位后才转processing——前端本就在轮询，能看到
     「排队中」。队列位在端点返回accepted之前就已预留（reserve_ingest_slot）。
     """
+    write_chunks = [chunk for chunk in chunks if chunk]
+    total_chunks = len(write_chunks)
+
+    def _record_written_batch(processed: int, total: int) -> None:
+        task_store.update_task(
+            task_id, processed_chunks=processed, progress=processed * 100 // total
+        )
+
     # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
     heavy_task_limits.acquire_ingest_slot()
     try:
         task_store.update_task(
-            task_id, status="processing", total_chunks=len(chunks), progress=0
+            task_id, status="processing", total_chunks=total_chunks, progress=0,
+            processed_chunks=0, result_doc_id=doc_id,
         )
         last_error = None
         for attempt in (1, 2):
             try:
                 count = memory.save_document(
                     source,
-                    chunks,
+                    write_chunks,
                     doc_id=doc_id,
                     converted_from=converted_from,
                     organization_id=organization_id,
+                    on_batch_written=_record_written_batch,
                 )
+                if count != total_chunks:
+                    raise RuntimeError("入库切片数与预期不一致")
                 auth.register_document(
                     doc_id,
                     source,
@@ -164,6 +176,7 @@ def _run_ingest_task(
                 )
                 # 重试前先清掉可能写了一半的切片，避免第二次写入产生重复
                 _purge_partial_document(doc_id)
+                task_store.update_task(task_id, processed_chunks=0, progress=0)
         task_store.update_task(
             task_id,
             status="failed",

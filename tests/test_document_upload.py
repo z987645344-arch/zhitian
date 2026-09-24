@@ -71,7 +71,8 @@ def _pdf_bytes() -> bytes:
 def _stub_document_persistence(monkeypatch):
     monkeypatch.setattr(
         "main.memory.save_document",
-        lambda source, chunks, doc_id, converted_from="", organization_id=None: len(chunks),
+        lambda source, chunks, doc_id, converted_from="", organization_id=None,
+        on_batch_written=None: len(chunks),
     )
     monkeypatch.setattr("main.auth.register_document", lambda *args, **kwargs: None)
 
@@ -329,7 +330,8 @@ def test_convertible_upload_converts_and_cleans_temp_files(
     monkeypatch.setattr("main.document_loader.load_document", lambda path: "converted text")
     monkeypatch.setattr(
         "main.memory.save_document",
-        lambda source, chunks, doc_id, converted_from="", organization_id=None: saved.update(
+        lambda source, chunks, doc_id, converted_from="", organization_id=None,
+        on_batch_written=None: saved.update(
             source=source,
             converted_from=converted_from,
         ) or len(chunks),

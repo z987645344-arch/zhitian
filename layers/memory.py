@@ -10,7 +10,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
@@ -560,6 +560,7 @@ def save_document(
     doc_id: str,
     converted_from: str = "",
     organization_id: Optional[int] = None,
+    on_batch_written: Optional[Callable[[int, int], None]] = None,
 ) -> int:
     """将文档切片写入独立Chroma Collection。
 
@@ -581,27 +582,43 @@ def save_document(
     uploaded_at = datetime.now().isoformat()
     with _chroma_lock:
         collection = _get_document_collection()
-        collection.add(
-            documents=clean_chunks,
-            metadatas=[
-                {
-                    "source": source,
-                    "doc_id": doc_id,
-                    "converted_from": converted_from,
-                    "chunk_index": i,
-                    "total_chunks": total_chunks,
-                    "uploaded_at": uploaded_at,
-                    "organization_id": organization_id if organization_id else 0,
-                }
-                for i in range(total_chunks)
-            ],
-            ids=[str(uuid.uuid4()) for _ in clean_chunks]
-        )
+        for start in range(0, total_chunks, config.INGEST_CHUNK_BATCH_SIZE):
+            end = min(start + config.INGEST_CHUNK_BATCH_SIZE, total_chunks)
+            collection.add(
+                documents=clean_chunks[start:end],
+                metadatas=[
+                    {
+                        "source": source,
+                        "doc_id": doc_id,
+                        "converted_from": converted_from,
+                        "chunk_index": i,
+                        "total_chunks": total_chunks,
+                        "uploaded_at": uploaded_at,
+                        "organization_id": organization_id if organization_id else 0,
+                    }
+                    for i in range(start, end)
+                ],
+                ids=[str(uuid.uuid4()) for _ in range(start, end)],
+            )
+            # 只在Chroma确认一批写入完成后更新计数；最终100%由调用方在
+            # 全量计数校验通过后写入，不能仅靠最后一次add()推断完成。
+            if on_batch_written and end < total_chunks:
+                on_batch_written(end, total_chunks)
+        actual_count = count_document_chunks(doc_id)
+        if actual_count != total_chunks:
+            raise RuntimeError("Chroma文档切片数与预期不一致")
     # GraphRAG 建图：默认关闭；开启时逐 chunk 抽取实体关系，任何失败都只跳过
     # 图谱增强，不影响文档本身已完成的保存与后续 BM25/向量检索。
     if config.GRAPH_RAG_ENABLED:
         _build_document_graph(doc_id, clean_chunks)
     return total_chunks
+
+
+def count_document_chunks(doc_id: str) -> int:
+    """从Chroma按doc_id实读已落库切片数，不依赖提交调用的返回值。"""
+    with _chroma_lock:
+        collection = _get_document_collection()
+        return len(collection.get(where={"doc_id": doc_id}, include=[])["ids"])
 
 
 def _cleanup_document_graph(doc_ids) -> None:

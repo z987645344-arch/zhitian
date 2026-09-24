@@ -156,6 +156,9 @@ MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "5"))
 # 却能挡住体积达标但切片畸多的极端文档（实测最坏密度6.09切片/KB，1MB可达6,236切片）。
 # 取2000：按实测21.2切片/秒约94秒，落在F36设定的"1–2分钟"预期内。
 MAX_DOCUMENT_CHUNKS = int(os.getenv("MAX_DOCUMENT_CHUNKS", "2000"))
+# 每批32片让常见中型文档有可见的真实进度，同时避免2000片文档
+# 产生过多SQLite/Chroma提交；必须为正整数，不因显示需求伪造百分比。
+INGEST_CHUNK_BATCH_SIZE = max(1, int(os.getenv("INGEST_CHUNK_BATCH_SIZE", "32")))
 PREVIEW_MAX_CHARS = int(os.getenv("PREVIEW_MAX_CHARS", "20000"))
 PDF_MERGE_MAX_FILES = int(os.getenv("PDF_MERGE_MAX_FILES", "10"))
 PDF_SPLIT_MAX_PAGES = int(os.getenv("PDF_SPLIT_MAX_PAGES", "200"))
