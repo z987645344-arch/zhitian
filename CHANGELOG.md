@@ -1883,3 +1883,10 @@
 - 定时备份完成记为 INFO，只有带 `[backup] completed` 前缀的这一类 INFO 额外送往控制台；全局控制台仍是 WARNING，其他模块 INFO 不会进入 `docker logs`。失败日志按缺密钥、任务重叠、`BackupError`、其他异常分别以 WARNING/ERROR 记录。
 - 完成日志包含归档名、文件数、总大小、Chroma collection 实际条数和轮转删除数；有数据 collection 的测试断言非空计数，隔离容器实测 `[backup] completed` 行包含 `chroma_collections={"audit_probe": 1}`。
 - 项目 `.venv` 执行 `run_tests.bat -q`：516 passed、5 deselected；本条只修日志门禁与可观测性，不改变备份归档、保留策略和用户操作方式。
+
+## 2026-09-24 纯修 x.y.Z（暂定 v4.8.1）：升级 pypdf 安全依赖，用户操作方式不变
+
+- 将 `pypdf` 从 `6.15.0` 升至 `6.19.0`，并把 `VERSION` 设为 `4.8.1`；校正依赖注释：PDF 合并/拆分及产物质量检查都使用 pypdf，后者确实会调用 `extract_text()`。
+- 同一份公开中文 PDF 在升级前后均为 3 页、979 个提取字符；`extract_text()` 有两处排版差异：访问量 `68405`、`76392` 由独立行移至前一字段同行。差异已记录，是否可接受留待用户判断。
+- 新旧隔离镜像分别经真实 `/documents/upload` 上传该 PDF：产物质量检查均通过，上传均返回 `accepted`、后台任务均为 `done`，切片及实际入库片段均为 2；未使用生产卷或付费模型。
+- 项目 `.venv` 的 `run_tests.bat -q` 为 516 passed、5 deselected；PDF 定向用例为 23 passed，本地 LibreOffice 转换集成用例另有 2 passed。`pip-audit -r requirements.txt` 只报告 chromadb 3 条，pypdf 不再出现在结果中；本轮未改漏洞门禁、未推送、未查 CI、未打标。
