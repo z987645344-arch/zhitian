@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # 用户认证层：独立SQLite用户库 + bcrypt密码哈希 + JWT认证
 
+import hashlib
+import hmac
 import os
 import secrets
 import sqlite3
@@ -782,6 +784,18 @@ def login_user(username: str, password: str, role: str) -> str:
         "exp": expire_at
     }
     return jwt.encode(payload, config.JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def login_audit_account_digest(username: str) -> str:
+    """稳定但不可逆的账号标识，不把登录失败的用户名写进日志。"""
+    # 企业密码种子在启动时已强制配置，且与备份及个人Key密钥完全分离。
+    # HMAC消息加专用域前缀，避免与企业流动密码的派生消息混用。
+    normalized = (username or "").strip().lower().encode("utf-8")
+    return hmac.new(
+        config.ENTERPRISE_PASSWORD_SEED.encode("utf-8"),
+        b"login-audit-v1\x00" + normalized,
+        hashlib.sha256,
+    ).hexdigest()[:16]
 
 
 def verify_token(token: str) -> dict:

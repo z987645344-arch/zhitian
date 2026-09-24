@@ -32,6 +32,7 @@ from utils.logger import get_logger
 from utils import observability
 
 logger = get_logger("main")
+audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
 
 
 def _read_application_version() -> str:
@@ -968,26 +969,45 @@ async def register(request: Request, payload: RegisterRequest):
 @app.post("/auth/login")
 @limiter.limit("10/hour")
 async def login(request: Request, payload: LoginRequest):
+    # request.client 已由Uvicorn按 FORWARDED_ALLOW_IPS 可信代理边界解析；
+    # 不直接读取可伪造的X-Forwarded-For。JSON转义防止角色或地址注入日志换行。
+    audit_role = json.dumps(payload.role, ensure_ascii=True)
+    source_ip = json.dumps(request.client.host if request.client else "unknown")
     try:
         token = auth.login_user(payload.username, payload.password, payload.role)
         user = auth.verify_token(token)
+        audit_logger.info(
+            "[audit] login_success user_id=%s role=%s source_ip=%s",
+            user["user_id"], audit_role, source_ip,
+        )
         return {
             "token": token,
             "role": user["role"]
         }
     except PermissionError as e:
-        logger.warning("/auth/login认证失败：username_len=%s error_type=%s", len(payload.username or ""), type(e).__name__)
+        reason = "account_disabled" if str(e) == "账号已被禁用" else "invalid_credentials"
+        audit_logger.info(
+            "[audit] login_failure reason=%s account=%s role=%s source_ip=%s",
+            reason, auth.login_audit_account_digest(payload.username), audit_role, source_ip,
+        )
         if str(e) == "账号已被禁用":
             raise HTTPException(status_code=401, detail="账号已被禁用")
         raise HTTPException(status_code=401, detail="用户名、密码或账号类型不正确")
     except RuntimeError as e:
         logger.error("/auth/login配置错误：error_type=%s", type(e).__name__)
+        audit_logger.info(
+            "[audit] login_failure reason=config_error account=%s role=%s source_ip=%s",
+            auth.login_audit_account_digest(payload.username), audit_role, source_ip,
+        )
         raise HTTPException(status_code=500, detail="认证配置错误")
     except Exception as e:
         logger.error(
-            "/auth/login未捕获异常：username_len=%s error_type=%s",
-            len(payload.username or ""),
+            "/auth/login未捕获异常：error_type=%s",
             type(e).__name__
+        )
+        audit_logger.info(
+            "[audit] login_failure reason=other_error account=%s role=%s source_ip=%s",
+            auth.login_audit_account_digest(payload.username), audit_role, source_ip,
         )
         raise HTTPException(status_code=500, detail="登录失败")
 
