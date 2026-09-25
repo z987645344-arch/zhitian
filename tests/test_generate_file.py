@@ -11,7 +11,7 @@ import pytest
 import pdfplumber
 
 import config
-from layers import converter, execution, files_store, memory, planning
+from layers import converter, execution, files_store, memory, planning, resource_admission
 from layers.converter import ConversionResult, ConversionStatus
 from layers.execution import ToolResult
 
@@ -366,6 +366,25 @@ def test_generate_file_conversion_failure_preserves_markdown_fallback(tmp_path, 
     assert result.conversion_error_type == "timeout"
     assert result.download_filename.endswith(".md")
     assert open(output_path, encoding="utf-8").read() == "# Fallback report"
+
+
+def test_generate_file_memory_rejection_does_not_fall_back_to_markdown(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(resource_admission, "try_reserve", lambda amount: False)
+    result = execution.generate_file(
+        "# Report",
+        "memory-rejected-session",
+        "report",
+        "pdf",
+        owner_user_id=OWNER_ID,
+    )
+
+    assert result.success is False
+    assert result.error_type == "heavy_task_busy"
+    assert result.requested_format == "pdf"
+    assert files_store.list_files(OWNER_ID) == []
 
 
 def test_generate_file_intent_executes_content_then_file(monkeypatch):

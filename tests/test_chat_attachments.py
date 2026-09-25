@@ -9,7 +9,7 @@ from docx import Document
 
 import config
 import main
-from layers import attachments, auth, converter, execution, files_store
+from layers import attachments, auth, converter, execution, files_store, resource_admission
 from layers.converter import ConversionResult, ConversionStatus
 
 
@@ -125,6 +125,30 @@ def test_convertible_attachment_is_converted_parsed_and_cleaned(
         os.scandir(os.path.dirname(observed["source_path"]))
     )
     attachments.clear_session("attachment-converted")
+
+
+def test_convertible_attachment_is_rejected_when_memory_is_low(
+    client, auth_headers, monkeypatch
+):
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr(resource_admission, "try_reserve", lambda amount: False)
+    monkeypatch.setattr(
+        converter,
+        "convert_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("conversion started")),
+    )
+
+    response = client.post(
+        "/chat/attachments",
+        headers=headers,
+        data={"session_id": "attachment-memory-rejected"},
+        files={"file": ("legacy.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1content")},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["success"] is False
+    assert response.json()["error_type"] == "heavy_task_busy"
+    assert response.json()["detail"] == "服务器繁忙，请稍后重试"
 
 
 def test_attachment_rejects_unsupported_format(client, auth_headers):

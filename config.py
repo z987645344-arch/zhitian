@@ -191,6 +191,17 @@ LIBREOFFICE_PATH = os.getenv(
 # 等待中烧完自己的响应预算，最终一个用户的洪水会变成所有人的超时。
 # 拒绝是立刻可重试的，排队不是。
 MAX_CONCURRENT_HEAVY_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_HEAVY_TASKS", "4")))
+# 第5a轮：大DOCX单次转换净峰值约240MiB，故同步任务预留320MiB；
+# 普通150页PDF渲染仅8.5MiB，不能当图片密集PDF上界，故也走保守同步预留。
+HEAVY_TASK_MEMORY_RESERVE_MIB = max(1, int(os.getenv("HEAVY_TASK_MEMORY_RESERVE_MIB", "320")))
+# 4片/批且关闭ONNX CPU arena后，1000片入库净峰值135MiB；预留192MiB。
+INGEST_TASK_MEMORY_RESERVE_MIB = max(1, int(os.getenv("INGEST_TASK_MEMORY_RESERVE_MIB", "192")))
+# 额外留256MiB给请求、Python分配器与采样间隔外的突增；不计入swap。
+MEMORY_ADMISSION_SAFETY_MARGIN_MIB = max(
+    0, int(os.getenv("MEMORY_ADMISSION_SAFETY_MARGIN_MIB", "256"))
+)
+# accepted后的入库只有限时等待内存恢复；超时明确标failed，不长期挂pending。
+INGEST_MEMORY_WAIT_SECONDS = max(0.0, float(os.getenv("INGEST_MEMORY_WAIT_SECONDS", "30")))
 # 单账号在途（pending/processing）任务上限。必须严格小于全局槽位，
 # 否则一个账号占满后其他人将完全无法提交——这正是本限制存在的理由。
 MAX_USER_INFLIGHT_HEAVY_TASKS = max(

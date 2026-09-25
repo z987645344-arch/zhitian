@@ -7,7 +7,7 @@ import time
 import pytest
 
 import config
-from layers import attachments, converter, execution, files_store, planning
+from layers import attachments, converter, execution, files_store, planning, resource_admission
 from layers.converter import ConversionResult, ConversionStatus
 
 
@@ -211,6 +211,30 @@ def test_convert_document_retries_converter_once(tmp_path, monkeypatch):
     assert result.success is True
     assert calls == ["pdf", "pdf"]
     attachments.clear_session("session-retry")
+
+
+def test_convert_document_does_not_retry_when_memory_admission_rejects(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(execution, "RETRY_DELAY", 0)
+    monkeypatch.setattr(resource_admission, "try_reserve", lambda amount: False)
+    record = _store_attachment(tmp_path, "session-low-memory", OWNER_A)
+    calls = []
+
+    def fake_convert(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("conversion must not start")
+
+    monkeypatch.setattr(converter, "convert_file", fake_convert)
+    result = execution._convert_document(
+        record.attachment_id, "pdf", "session-low-memory", OWNER_A
+    )
+
+    assert result.success is False
+    assert result.error_type == "heavy_task_busy"
+    assert calls == []
+    attachments.clear_session("session-low-memory")
 
 
 def test_convert_document_agent_budget_returns_timeout_and_cleans_late_output(

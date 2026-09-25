@@ -27,7 +27,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits
+from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
 from utils import observability
 
@@ -134,7 +134,15 @@ def _run_ingest_task(
         )
 
     # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
-    heavy_task_limits.acquire_ingest_slot()
+    try:
+        heavy_task_limits.acquire_ingest_slot()
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        try:
+            task_store.update_task(task_id, status="failed", error_message=exc.message)
+        finally:
+            heavy_task_limits.release_reserved_ingest_slot()
+        logger.warning("入库内存准入超时：task_id=%s code=%s", task_id[:8], exc.code)
+        return
     try:
         task_store.update_task(
             task_id, status="processing", total_chunks=total_chunks, progress=0,
@@ -225,6 +233,7 @@ async def lifespan(app: FastAPI):
         auth.USERS_DB_PATH, config.HISTORY_DB_PATH
     )
     _log_graphrag_startup_state()
+    resource_admission.log_startup_state()
     _recover_interrupted_tasks()
     with _request_gate_lock:
         _accepting_requests = True
@@ -1904,28 +1913,36 @@ async def upload_chat_attachment(
     converted_path = ""
     try:
         temp_path = _save_temp_upload(file, upload_id, filename)
-        parse_path = temp_path
-        if suffix in config.CONVERTIBLE_EXTENSIONS:
-            target_format = "docx" if suffix == ".doc" else "pdf"
-            conversion = await asyncio.to_thread(
-                converter.convert_file,
-                temp_path,
-                target_format,
-            )
-            if not conversion.success or not conversion.output_path:
-                return JSONResponse(
-                    status_code=422,
-                    content=ChatAttachmentResponse(
-                        success=False,
-                        original_filename=filename,
-                        error_type=conversion.error_type or "conversion_failed",
-                    ).model_dump(),
-                )
-            converted_path = conversion.output_path
-            parse_path = converted_path
+        def _convert_and_load_attachment():
+            parse_path = temp_path
+            conversion = None
+            if suffix in config.CONVERTIBLE_EXTENSIONS:
+                target_format = "docx" if suffix == ".doc" else "pdf"
+                conversion = converter.convert_file(temp_path, target_format)
+                if not conversion.success or not conversion.output_path:
+                    return conversion, ""
+                parse_path = conversion.output_path
+            # F35：解析同样下放线程池，与转换保持一致，不占用事件循环。
+            return conversion, document_loader.load_document(parse_path)
 
-        # F35：解析同样下放线程池，与上面的转换保持一致，不占用事件循环
-        text = await asyncio.to_thread(document_loader.load_document, parse_path)
+        def _run_attachment_work():
+            if suffix in config.CONVERTIBLE_EXTENSIONS or suffix == ".pdf":
+                with heavy_task_limits.occupy_slot():
+                    return _convert_and_load_attachment()
+            return _convert_and_load_attachment()
+
+        conversion, text = await asyncio.to_thread(_run_attachment_work)
+        if conversion is not None and (not conversion.success or not conversion.output_path):
+            return JSONResponse(
+                status_code=422,
+                content=ChatAttachmentResponse(
+                    success=False,
+                    original_filename=filename,
+                    error_type=conversion.error_type or "conversion_failed",
+                ).model_dump(),
+            )
+        if conversion is not None:
+            converted_path = conversion.output_path or ""
         if text.startswith("错误："):
             return JSONResponse(
                 status_code=422,
@@ -1982,6 +1999,16 @@ async def upload_chat_attachment(
             attachment_id=record.attachment_id,
             original_filename=filename,
             char_count=record.char_count,
+        )
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        return JSONResponse(
+            status_code=429,
+            content=ChatAttachmentResponse(
+                success=False,
+                original_filename=filename,
+                error_type=exc.code,
+                detail=exc.message,
+            ).model_dump(),
         )
     except HTTPException as exc:
         error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
@@ -2042,7 +2069,11 @@ async def convert_tool_file(
             if suffix == ".pdf"
             else converter.convert_file
         )
-        conversion = await asyncio.to_thread(conversion_fn, temp_path, target_format)
+        def _convert_with_admission():
+            with heavy_task_limits.occupy_slot():
+                return conversion_fn(temp_path, target_format)
+
+        conversion = await asyncio.to_thread(_convert_with_admission)
         if not conversion.success or not conversion.output_path:
             status_code = 422
             return JSONResponse(
@@ -2084,6 +2115,17 @@ async def convert_tool_file(
             converted_from_format=source_format,
             converted_to_format=target_format,
             download_url="/files/%s" % file_id,
+        )
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        return JSONResponse(
+            status_code=429,
+            content=ToolConversionResponse(
+                success=False,
+                converted_from_format=source_format,
+                converted_to_format=target_format,
+                error_type=exc.code,
+                detail=exc.message,
+            ).model_dump(),
         )
     except HTTPException as exc:
         error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
@@ -2137,10 +2179,16 @@ async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
     )
     for attempt in range(2):
         try:
+            def _run_with_admission():
+                with heavy_task_limits.occupy_slot():
+                    return operation(*args)
+
             result = await asyncio.wait_for(
-                asyncio.to_thread(operation, *args),
+                asyncio.to_thread(_run_with_admission),
                 timeout=timeout_seconds,
             )
+        except heavy_task_limits.HeavyTaskRejected:
+            raise
         except asyncio.TimeoutError:
             result = pdf_tools.PdfOperationResult(
                 success=False,
@@ -2228,6 +2276,8 @@ async def merge_pdf_tool_files(
             download_url="/files/%s" % file_id,
             page_count=result.page_count,
         )
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        raise HTTPException(status_code=429, detail=exc.message) from None
     except HTTPException:
         raise
     except Exception as exc:
@@ -2308,6 +2358,8 @@ async def split_pdf_tool_file(
             files=response_files,
             page_count=result.page_count,
         )
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        raise HTTPException(status_code=429, detail=exc.message) from None
     except HTTPException:
         raise
     except Exception as exc:

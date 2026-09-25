@@ -13,11 +13,12 @@
 """
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import Iterator
 
 import config
-from layers import task_store
+from layers import resource_admission, task_store
 
 
 class HeavyTaskRejected(Exception):
@@ -36,6 +37,7 @@ class HeavyTaskRejected(Exception):
 _conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS)
 _slot_state_lock = threading.Lock()
 _slots_in_use = 0
+_slot_reservations = []
 
 
 def slots_in_use() -> int:
@@ -59,8 +61,22 @@ def acquire_slot() -> None:
             "heavy_task_busy",
             "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
         )
-    with _slot_state_lock:
-        _slots_in_use += 1
+    amount = config.HEAVY_TASK_MEMORY_RESERVE_MIB
+    committed = False
+    reserved = False
+    try:
+        reserved = resource_admission.try_reserve(amount)
+        if not reserved:
+            raise HeavyTaskRejected("heavy_task_busy", "服务器繁忙，请稍后重试")
+        with _slot_state_lock:
+            _slots_in_use += 1
+            _slot_reservations.append(amount)
+        committed = True
+    finally:
+        if not committed:
+            if reserved:
+                resource_admission.release(amount)
+            _conversion_slots.release()
 
 
 def release_slot() -> None:
@@ -69,6 +85,8 @@ def release_slot() -> None:
         if _slots_in_use <= 0:
             return
         _slots_in_use -= 1
+        amount = _slot_reservations.pop()
+    resource_admission.release(amount)
     _conversion_slots.release()
 
 
@@ -96,6 +114,7 @@ _ingest_slots = threading.Semaphore(config.MAX_CONCURRENT_INGEST_TASKS)
 _ingest_state_lock = threading.Lock()
 _ingest_depth = 0        # 已受理但尚未跑完的入库任务数（排队中 + 执行中）
 _ingest_running = 0      # 已拿到槽位、正在跑的入库任务数
+_ingest_reservations = []
 
 
 def ingest_depth() -> int:
@@ -141,8 +160,31 @@ def acquire_ingest_slot() -> None:
     """
     global _ingest_running
     _ingest_slots.acquire()
-    with _ingest_state_lock:
-        _ingest_running += 1
+    amount = config.INGEST_TASK_MEMORY_RESERVE_MIB
+    deadline = time.monotonic() + config.INGEST_MEMORY_WAIT_SECONDS
+    committed = False
+    reserved = False
+    try:
+        while True:
+            reserved = resource_admission.try_reserve(amount)
+            if reserved:
+                with _ingest_state_lock:
+                    _ingest_running += 1
+                    _ingest_reservations.append(amount)
+                committed = True
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HeavyTaskRejected(
+                    "ingest_memory_timeout",
+                    "服务器内存持续不足，入库未开始，请稍后重试",
+                )
+            resource_admission.wait_for_change(min(0.1, remaining))
+    finally:
+        if not committed:
+            if reserved:
+                resource_admission.release(amount)
+            _ingest_slots.release()
 
 
 def release_ingest_slot() -> None:
@@ -155,9 +197,14 @@ def release_ingest_slot() -> None:
     with _ingest_state_lock:
         if _ingest_running > 0:
             _ingest_running -= 1
+            amount = _ingest_reservations.pop()
+        else:
+            amount = None
         if _ingest_depth > 0:
             _ingest_depth -= 1
-    _ingest_slots.release()
+    if amount is not None:
+        resource_admission.release(amount)
+        _ingest_slots.release()
 
 
 def ensure_user_quota(user_id: str) -> None:

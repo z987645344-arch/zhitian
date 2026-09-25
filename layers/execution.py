@@ -16,7 +16,7 @@ from typing import Callable, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 import config
-from layers import attachments, auth, converter, document_usage, files_store, llm_provider, memory, system_modules, web_search_provider
+from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider
 from layers.file_processing.models import (
     FileOwnershipContext,
     FileProcessingRequest,
@@ -1105,6 +1105,8 @@ def _convert_document(
             and time.perf_counter() >= deadline
         ):
             break
+        if conversion.error_type == "heavy_task_busy":
+            break
         if attempt == 0:
             time.sleep(RETRY_DELAY)
     if conversion is None or not conversion.success or not converted_path:
@@ -1164,9 +1166,22 @@ def _run_conversion_with_agent_budget(
 ) -> converter.ConversionResult:
     """限制Agent附件转换等待时间；超时后的临时产物由回调清理。"""
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-convert")
-    future = executor.submit(conversion_fn, source_path, target_format)
+    def _convert_with_admission():
+        with heavy_task_limits.occupy_slot():
+            return conversion_fn(source_path, target_format)
+
+    future = executor.submit(_convert_with_admission)
     try:
         return future.result(timeout=max(0.001, timeout_seconds))
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        return converter.ConversionResult(
+            success=False,
+            status=converter.ConversionStatus.FAILED,
+            converted_from_format=os.path.splitext(source_path or "")[1].lstrip("."),
+            converted_to_format=target_format,
+            error_type=exc.code,
+            error_msg=exc.message,
+        )
     except FutureTimeoutError:
         future.add_done_callback(_cleanup_late_conversion_result)
         logger.warning(
@@ -1321,7 +1336,8 @@ def generate_file(
     conversion_error = ""
     converted_path = ""
     try:
-        conversion = converter.convert_file(initial_path, requested_format)
+        with heavy_task_limits.occupy_slot():
+            conversion = converter.convert_file(initial_path, requested_format)
         converted_path = conversion.output_path or ""
         if not conversion.success or not converted_path:
             conversion_error = conversion.error_type or "conversion_failed"
@@ -1354,6 +1370,14 @@ def generate_file(
                 requested_format=requested_format,
                 delivered_format=requested_format,
             )
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        return GenerateFileResult(
+            success=False,
+            char_count=len(text),
+            error_type=exc.code,
+            requested_format=requested_format,
+        )
     except Exception as exc:
         conversion_error = type(exc).__name__
     finally:
