@@ -169,6 +169,10 @@ INGEST_CHUNK_BATCH_SIZE = max(1, int(os.getenv("INGEST_CHUNK_BATCH_SIZE", "32"))
 PREVIEW_MAX_CHARS = int(os.getenv("PREVIEW_MAX_CHARS", "20000"))
 PDF_MERGE_MAX_FILES = int(os.getenv("PDF_MERGE_MAX_FILES", "10"))
 PDF_SPLIT_MAX_PAGES = int(os.getenv("PDF_SPLIT_MAX_PAGES", "200"))
+# 所有PDF读取、转换、渲染和质量复核的总页数上限；沿用拆分工具已验证的200页边界。
+MAX_PDF_PROCESSING_PAGES = max(1, int(os.getenv("MAX_PDF_PROCESSING_PAGES", "200")))
+# 单张图片及PDF栅格化页面上限；20MP约为RGB 60MiB，可限制压缩图片的解码膨胀。
+MAX_IMAGE_PIXELS = max(1, int(os.getenv("MAX_IMAGE_PIXELS", "20000000")))
 CHAT_ATTACHMENT_MAX_CHARS = int(os.getenv("CHAT_ATTACHMENT_MAX_CHARS", "50000"))
 CHAT_ATTACHMENT_TTL_MINUTES = int(os.getenv("CHAT_ATTACHMENT_TTL_MINUTES", "30"))
 CONVERTIBLE_EXTENSIONS = {".doc", ".xls", ".xlsx", ".ppt", ".pptx"}

@@ -3,6 +3,7 @@
 
 import mimetypes
 import os
+import struct
 import zipfile
 from typing import List, Tuple
 
@@ -11,6 +12,7 @@ from openpyxl import load_workbook
 from pptx import Presentation
 from pypdf import PdfReader
 
+import config
 from layers.file_processing.models import (
     FileArtifact,
     QualityCheckResult,
@@ -122,15 +124,19 @@ class FileQualityChecker:
             elif profile == QualityProfile.PDF:
                 reader = PdfReader(artifact.output_path)
                 artifact.page_count = len(reader.pages)
+                if artifact.page_count > config.MAX_PDF_PROCESSING_PAGES:
+                    return [QualityIssue(code="too_many_pages", message="PDF页数超过处理上限")]
                 text_samples.extend((page.extract_text() or "") for page in reader.pages)
             elif profile == QualityProfile.PNG:
-                import fitz
-
-                image = fitz.open(artifact.output_path)
-                try:
-                    artifact.page_count = len(image)
-                finally:
-                    image.close()
+                # PNG IHDR中的宽高无需解码像素数据即可读取，避免先分配超大位图。
+                with open(artifact.output_path, "rb") as source:
+                    header = source.read(24)
+                if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
+                    return [QualityIssue(code="reopen_failed", message="PNG结构无效")]
+                width, height = struct.unpack(">II", header[16:24])
+                artifact.page_count = 1
+                if width * height > config.MAX_IMAGE_PIXELS:
+                    return [QualityIssue(code="too_many_pixels", message="图片像素超过处理上限")]
             elif profile == QualityProfile.DOCX:
                 document = Document(artifact.output_path)
                 artifact.paragraph_count = len(document.paragraphs)

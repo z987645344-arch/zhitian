@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """统一PDF处理器；保留pdfplumber、pypdf、fitz各自已验证的职责。"""
 
+import math
 import os
 import shutil
 import threading
@@ -166,8 +167,16 @@ class PdfProcessor(FileProcessor):
             return self._failed("unsupported_task", "不支持的PDF任务")
         except ValueError as exc:
             self._cleanup_failed_request(request)
-            error_type = str(exc) if str(exc) == "encrypted_pdf" else "invalid_pdf"
-            return self._failed(error_type, "PDF已加密" if error_type == "encrypted_pdf" else "PDF文件损坏")
+            error_type = str(exc) if str(exc) in {
+                "encrypted_pdf", "too_many_pages", "too_many_pixels"
+            } else "invalid_pdf"
+            messages = {
+                "encrypted_pdf": "PDF已加密",
+                "too_many_pages": "PDF页数超过处理上限",
+                "too_many_pixels": "PDF页面或图片像素超过处理上限",
+                "invalid_pdf": "PDF文件损坏",
+            }
+            return self._failed(error_type, messages[error_type])
         except Exception as exc:
             self._cleanup_failed_request(request)
             if request.task_type == FileTaskType.CONVERT:
@@ -264,7 +273,49 @@ class PdfProcessor(FileProcessor):
             for path in request.source_paths
         ):
             return self._failed("file_too_large", "文件超过转换大小限制")
+        total_pages = 0
+        try:
+            for path in request.source_paths:
+                with fitz.open(path) as document:
+                    if document.needs_pass:
+                        return self._failed("encrypted_pdf", "PDF已加密")
+                    total_pages += document.page_count
+                    if total_pages > config.MAX_PDF_PROCESSING_PAGES:
+                        return self._failed(
+                            "too_many_pages", "PDF页数超过处理上限", total_pages
+                        )
+                    if request.task_type in {
+                        FileTaskType.RENDER_PAGES, FileTaskType.CONVERT
+                    } and request.target_format in {"png", "pptx"}:
+                        scale = 1.5
+                        for page in document:
+                            self._validate_page_pixels(page, scale)
+        except ValueError as exc:
+            if str(exc) in {"too_many_pixels", "encrypted_pdf"}:
+                message = (
+                    "PDF页面或图片像素超过处理上限"
+                    if str(exc) == "too_many_pixels"
+                    else "PDF已加密"
+                )
+                return self._failed(str(exc), message, total_pages)
+            return self._failed("invalid_pdf", "PDF文件损坏或无法解析")
+        except Exception:
+            return self._failed("invalid_pdf", "PDF文件损坏或无法解析")
         return None
+
+    @staticmethod
+    def _validate_page_pixels(page, scale: float = 1.0) -> None:
+        """在分配渲染缓冲区前检查页面输出尺寸及内嵌图片的解码尺寸。"""
+        rect = page.rect
+        rendered_pixels = (
+            math.ceil(rect.width * scale) * math.ceil(rect.height * scale)
+        )
+        if rendered_pixels > config.MAX_IMAGE_PIXELS:
+            raise ValueError("too_many_pixels")
+        for image in page.get_images(full=True):
+            width, height = int(image[2]), int(image[3])
+            if width > 0 and height > 0 and width * height > config.MAX_IMAGE_PIXELS:
+                raise ValueError("too_many_pixels")
 
     def _extract_text(self, source_path: str) -> FileProcessingResult:
         texts = []
@@ -294,6 +345,7 @@ class PdfProcessor(FileProcessor):
         document = fitz.open(source_path)
         try:
             for page_index, page in enumerate(document, start=1):
+                self._validate_page_pixels(page, 1.5)
                 output_path = os.path.join(output_dir, "page_%s.png" % page_index)
                 page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(output_path)
                 artifacts.append(self._artifact(output_path, "png"))
@@ -420,6 +472,7 @@ class PdfProcessor(FileProcessor):
         document = fitz.open(source_path)
         try:
             for page_index, page in enumerate(document, start=1):
+                PdfProcessor._validate_page_pixels(page, 1.5)
                 image_path = os.path.join(
                     os.path.dirname(output_path),
                     "page_%s.png" % page_index,
