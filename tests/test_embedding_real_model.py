@@ -8,6 +8,7 @@ skip会在CI输出里留下可见记录，不会伪装成通过。
 """
 import os
 
+import numpy as np
 import pytest
 
 import config
@@ -64,3 +65,27 @@ def test_missing_model_dir_raises_clear_error(tmp_path):
     with pytest.raises(FileNotFoundError) as excinfo:
         func(["任意文本"])
     assert "嵌入模型文件缺失" in str(excinfo.value)
+
+
+def test_default_session_disables_cpu_memory_arena():
+    assert embedding.BATCH_SIZE == config.EMBEDDING_BATCH_SIZE == 4
+    assert config.EMBEDDING_CPU_MEM_ARENA_ENABLED is False
+    func = embedding.BgeSmallZhEmbeddingFunction(_MODEL_DIR)
+    func(["检查ONNX运行时真实选项"])
+    assert func._session.get_session_options().enable_cpu_mem_arena is False
+
+
+def test_old_and_new_embedding_vectors_are_bitwise_identical(monkeypatch):
+    texts = ["同一段中文用于验证嵌入批次不改变向量。" * 30 + str(index) for index in range(5)]
+    monkeypatch.setattr(config, "EMBEDDING_CPU_MEM_ARENA_ENABLED", True)
+    monkeypatch.setattr(embedding, "BATCH_SIZE", 16)
+    previous = embedding.BgeSmallZhEmbeddingFunction(_MODEL_DIR)
+    before = np.asarray(previous(texts), dtype=np.float32)
+    assert previous._session.get_session_options().enable_cpu_mem_arena is True
+
+    monkeypatch.setattr(config, "EMBEDDING_CPU_MEM_ARENA_ENABLED", False)
+    monkeypatch.setattr(embedding, "BATCH_SIZE", 4)
+    current = embedding.BgeSmallZhEmbeddingFunction(_MODEL_DIR)
+    after = np.asarray(current(texts), dtype=np.float32)
+    assert current._session.get_session_options().enable_cpu_mem_arena is False
+    assert np.array_equal(before, after)

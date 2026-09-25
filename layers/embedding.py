@@ -25,9 +25,10 @@ logger = logging.getLogger(__name__)
 
 # 模型自身的上限，也是选型时确认"500字符切片不被截断"的依据
 MAX_SEQ_LENGTH = 512
-# 单次前向的最大条数。本机实测16/32/64分别为22.4/21.6/21.1切片每秒，
-# 差异很小且16略优；批越大内存峰值越高，故取16。
-BATCH_SIZE = 16
+# 单次前向的最大条数。第5a轮1000片/512-token实测从16降到4、
+# 同时关闭CPU arena后，60秒常驻增量974→45MiB，耗时仅增加8.3%；
+# 六组向量SHA-256完全一致。生产可通过配置回调，不在此写死运行参数。
+BATCH_SIZE = config.EMBEDDING_BATCH_SIZE
 
 
 class BgeSmallZhEmbeddingFunction:
@@ -58,6 +59,7 @@ class BgeSmallZhEmbeddingFunction:
             tokenizer.enable_truncation(max_length=MAX_SEQ_LENGTH)
             tokenizer.enable_padding()
             options = onnxruntime.SessionOptions()
+            options.enable_cpu_mem_arena = config.EMBEDDING_CPU_MEM_ARENA_ENABLED
             # 与既有部署一致按单进程CPU推理，不额外抢占核数
             options.graph_optimization_level = (
                 onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL

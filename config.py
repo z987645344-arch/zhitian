@@ -304,6 +304,13 @@ MAX_HISTORY_LENGTH = 20
 EMBEDDING_MODEL_DIR = os.getenv(
     "EMBEDDING_MODEL_DIR", os.path.join(BASE_DIR, "models", "bge-small-zh-v1.5")
 )
+# 第5a轮同一1000片/512-token文档实测：batch=4且关闭CPU arena时，
+# 入库结束60秒后的常驻增量由974MiB降至45MiB，耗时增加8.3%，
+# 全部向量的SHA-256逐位相同。生产仍需复测，故保留环境变量调节能力。
+EMBEDDING_BATCH_SIZE = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "4")))
+EMBEDDING_CPU_MEM_ARENA_ENABLED = (
+    os.getenv("EMBEDDING_CPU_MEM_ARENA_ENABLED", "false").strip().lower() == "true"
+)
 RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.55"))
 BM25_SCORE_SCALE = float(os.getenv("BM25_SCORE_SCALE", "20.0"))
 TITLE_BOOST_MAX_QUERY_LENGTH = int(os.getenv("TITLE_BOOST_MAX_QUERY_LENGTH", "12"))
