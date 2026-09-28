@@ -1966,3 +1966,14 @@
 - `f9c71c9`：将嵌入批大小默认设为 4，关闭 ONNX CPU 内存池以降低常驻占用。
 - `e9093a4`：加入 cgroup 物理内存准入与两类重任务共用的预留账本。
 - `fe53a16`：为 PDF 页数及单张图像像素设置处理上限，并在超限时明确失败。
+
+## 2026-09-28 候选（frontend/round-2）—— customer 网页端视觉改版「Lamp & Node」，与知了hub 对齐；未合并、未打标、未部署
+
+- 范围仅 `web_client/`：`css/style.css`、四个页面的资源版本号、`DESIGN.md`，新增 `css/fonts/`（本地字体与 OFL 许可证）和 `css/grain.svg`。`api.js`、`config.js`、全部页面脚本、Dockerfile、nginx.conf 未改。
+- 配色由灰绿水泥灰改为中性黑灰 + 琥珀暖灯，仍只改 `:root` 令牌；`:root` 外 hex / rgb / rgba 仍为 **0**。按钮形状、文案、禁用逻辑与所有 id / name / data-* 钩子不变。
+- 新增显示层：发光节点（标签、当前会话、执行动态）、暖灯径向光、对话区点阵画布、磨砂玻璃卡片、胶片颗粒与暗角；`prefers-reduced-motion` 规则沿用。
+- 字体与颗粒放在 `css/` 下：Dockerfile 只复制 `css/`、`js/`、`config.js` 与 HTML，而本轮不改部署文件；颗粒用独立 SVG 是因为 CSP `img-src 'self'` 不允许 `data:`。
+- 四页资源版本由 `archive-ui-20260912` 统一改为 `lamp-node-20260928`。
+- **证据**：本地静态服务 + 模拟接口，在 1440×900 与 390×844 下渲染登录、注册、对话、设置四页，页面级横向溢出 0、页面错误 0。本执行环境未装 Python 测试依赖，`run_tests.bat -q` 交由 CI；唯一读取前端文件的测试只读 `chat.js`，本轮未改。
+- **部署影响**：仅静态文件（web_client 容器重建即可），不涉及后端、数据库与配置。
+- **未验证 / 不得视为完成**：真实后端下的流式对话、密码管理器填充、移动软键盘、屏幕阅读器、Safari/Firefox 的毛玻璃表现；用户视觉验收；线上生效。
