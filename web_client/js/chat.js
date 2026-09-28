@@ -175,7 +175,10 @@
     box.className = 'chat-welcome';
     const mark = document.createElement('div');
     mark.className = 'welcome-mark';
-    mark.textContent = '知';
+    const markImage = document.createElement('img');
+    markImage.src = './css/brand/avatar-128.webp';
+    markImage.alt = '';
+    mark.append(markImage);
     const title = document.createElement('h2');
     title.textContent = '今天想了解什么？';
     const copy = document.createElement('p');

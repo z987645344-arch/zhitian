@@ -887,6 +887,11 @@ button.mode-option.active { box-shadow: var(--primary-active-shadow); }
 .execution-item[data-phase="started"]::before { border-color: var(--amber-hot); background: var(--primary); box-shadow: 0 0 10px var(--amber-glow); }
 .execution-item[data-phase="failed"]::before { border-color: var(--warning); }
 
+.brand-mark,
+.welcome-mark { overflow: hidden; border-radius: 12px; }
+.brand-mark img,
+.welcome-mark img { display: block; width: 92%; height: auto; margin-top: 14%; }
+
 @media (max-width: 860px) {
   .auth-intro { background: transparent; }
 }
