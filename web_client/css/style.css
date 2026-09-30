@@ -887,10 +887,12 @@ button.mode-option.active { box-shadow: var(--primary-active-shadow); }
 .execution-item[data-phase="started"]::before { border-color: var(--amber-hot); background: var(--primary); box-shadow: 0 0 10px var(--amber-glow); }
 .execution-item[data-phase="failed"]::before { border-color: var(--warning); }
 
+/* 头像图标自带外框与内圆：去掉底色与边框，只保留光晕 */
 .brand-mark,
-.welcome-mark { overflow: hidden; border-radius: 12px; }
+.welcome-mark,
+.brand-mark:hover { display: block; overflow: hidden; border: 0; border-radius: 22.5%; background: none; }
 .brand-mark img,
-.welcome-mark img { display: block; width: 92%; height: auto; margin-top: 14%; }
+.welcome-mark img { display: block; width: 100%; height: 100%; }
 
 @media (max-width: 860px) {
   .auth-intro { background: transparent; }

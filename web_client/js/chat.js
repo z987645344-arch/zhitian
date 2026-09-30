@@ -176,7 +176,7 @@
     const mark = document.createElement('div');
     mark.className = 'welcome-mark';
     const markImage = document.createElement('img');
-    markImage.src = './css/brand/avatar-128.webp';
+    markImage.src = './css/brand/avatar-128.webp?v=20260930';
     markImage.alt = '';
     mark.append(markImage);
     const title = document.createElement('h2');
