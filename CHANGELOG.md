@@ -1993,4 +1993,16 @@
   - `web_client/css/style.css` 末尾的品牌标记规则：`.brand-mark` / `.welcome-mark` 去掉底色、边框与图片偏移，图片铺满，圆角 22.5%，光晕保留；`:root` 外仍无 hex / rgb 字面量。
   - 四个页面与 `js/chat.js` 的头像、网页标签图标引用加 `?v=20260930`，样式/脚本版本号改为 `lamp-node-20260930`；`DESIGN.md` 同步说明。
 - **证据**：`node --check js/chat.js` 通过；本地渲染登录页，品牌标记 40px 显示完整、人物居中。
-- **部署影响**：仅静态文件，按标签重建 web_client 即可。`VERSION` 4.10.0 → 4.10.1。
+- **部署影响**：web_client 为静态文件；同版本还包含下方 PyJWT 安全补丁，**后端 API 镜像也必须按本标签重建**。`VERSION` 4.10.0 → 4.10.1。
+
+## 2026-09-30 v4.10.1（同版）安全补丁：PyJWT 升级 2.14.0，登记 libssl3 例外
+
+- **问题**：`Backend Container CI` 在 2026-09-30 起报红（master 2026-09-28 仍为绿，漏洞为之后公开）：
+  - `PyJWT 2.13.0`：CRITICAL CVE-2026-102268 与 HIGH CVE-2026-102266/102267/102271/102272/102273，均为认证绕过或令牌伪造类，2.14.0 修复；pip-audit 与 Trivy 门禁同时失败。
+  - `libssl3t64` / `openssl` / `openssl-provider-legacy` `3.5.7-1~deb13u2`：HIGH CVE-2026-84782（DTLS 重传逻辑），Debian 13 尚无修复版本。
+- **修复**：
+  - `requirements.txt`：`PyJWT==2.13.0` → `2.14.0`。`layers/auth.py` 只用 `jwt.encode` / `jwt.decode(..., algorithms=[JWT_ALGORITHM])` 与 `ExpiredSignatureError` / `InvalidTokenError`，接口不变，代码未改。
+  - `.trivyignore.yaml`：按仓库例外规则为 CVE-2026-84782 登记三个包的精确 purl，`reachability: 不可达`，`reviewed_at: 2026-09-30`，`expired_at: 2026-12-29`（不可达上限 90 天）。依据：DTLS 仅用于 UDP，API 出站只走 Python ssl（TLS over TCP，CPython 无 DTLS 接口），cryptography 用 wheel 自带 OpenSSL，全仓无 DTLS / SOCK_DGRAM / pyOpenSSL，也不调用 openssl 命令；LibreOffice 转换进程树由 `layers/soffice_sandbox.py` 禁止非 AF_UNIX socket。
+- **证据**：`scripts/vulnerability_exceptions.py validate` 通过（33 条）；按 CI 同款参数运行 pip-audit 2.10.1：`No known vulnerabilities found, 3 ignored`；Python 3.10 项目 `.venv` 下 `tests/test_auth.py`、`tests/test_login_audit.py` 17 passed；离线全量（`-m "not integration"`）555 passed / 2 failed，这 2 个（`test_llm_connection_pool::test_client_disconnect_closes_registered_stream`、`test_mcp_connector::test_timeout_terminates_stdio_process_tree`）在未改动的 master 上于同一 Linux 容器同样失败，属本地环境差异（CI 为 Windows），与本补丁无关。
+  - `tests/test_vulnerability_exceptions.py` 的快照断言按新增例外同步：条目数 32 → 33、校验基准日 2026-09-24 → 2026-09-30（新条目 `reviewed_at` 为 2026-09-30，早于该日会被判无效）。
+- **部署影响**：重建后端 API 镜像。签发与校验仍用同一 `JWT_SECRET_KEY` 与算法；2.14.0 会拒绝空 HMAC 密钥等不安全输入，生产环境须确认 `JWT_SECRET_KEY` 已设置为非空强密钥（本就是上线要求）。部署后建议实际登录一次确认。

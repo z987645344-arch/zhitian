@@ -219,6 +219,17 @@ vulnerabilities:
     evidence: "API Python 进程导入 main/PDF 模块后未加载系统 libcurl；运行时 libcurl 客户端为 LibreOffice 及其库，阶段 C 的 layers/soffice_sandbox.py 对转换进程树禁止非 AF_UNIX socket。结论依赖该隔离；一旦撤掉便不成立。"
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-84782
+    purls:
+      - "pkg:deb/debian/libssl3t64@3.5.7-1~deb13u2?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/openssl@3.5.7-1~deb13u2?arch=amd64&distro=debian-13.7"
+      - "pkg:deb/debian/openssl-provider-legacy@3.5.7-1~deb13u2?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-09-30
+    expired_at: 2026-12-29
+    reachability: "不可达"
+    evidence: "漏洞在 OpenSSL 的 DTLS 重传逻辑；DTLS 只用于 UDP 数据报。API 的出站 HTTPS 走 Python ssl 模块（仅 TLS over TCP，CPython 不提供 DTLS 接口），cryptography 使用 wheel 自带的 OpenSSL；全仓库无 DTLS / SOCK_DGRAM / pyOpenSSL 用法，也不调用 openssl 命令。LibreOffice 转换进程树由阶段 C 的 layers/soffice_sandbox.py 禁止非 AF_UNIX socket。"
+    why_not_fixed: "CI run 36659527939 的 Trivy FixedVersion 为空（Status=affected）；Debian 13 尚未发布修复版本，到期前必须复核。"
+    statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86138
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
