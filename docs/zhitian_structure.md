@@ -58,6 +58,10 @@ zhitian/
 │                               按钮、输入框、卡片、状态标签、空态、错误提示、编号导航。
 │                               2026-09-14前端整轮优化时新增，是三端视觉一致性的依据；
 │                               改任一端的组件样式前先看它，否则三端会重新分头漂移
+│   └── css/                    样式与静态资源（Dockerfile只复制css/、js/、config.js与HTML，
+│                               故新增静态资源必须放在css/下）：fonts/为本地字体及OFL许可证，
+│                               brand/为OC头像与浏览器标签图标，grain.svg为胶片颗粒
+│                               （CSP img-src 'self'不允许data:，故独立成文件）。v4.10起
 ├── scripts/                    初始化、迁移、备份恢复和人工维护脚本
 ├── tests/                      默认隔离的pytest回归与显式integration测试
 ├── utils/                      日志、指标与时间上下文
