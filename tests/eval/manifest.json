@@ -21,8 +21,8 @@
       "file": "03_shipping.docx",
       "chunks": 12,
       "stored": 12,
-      "chars": 3989,
-      "sha256": "26eb2f45051d520514e9720d98a602139f5e1f3f488f453a8a7682aab419c8db"
+      "chars": 4006,
+      "sha256": "e9b54cc1e9e0c4cb896abcedf67587d180029501da943a2923c294c3d3fdb564"
     },
     {
       "file": "04_repair.pdf",
@@ -69,19 +69,28 @@
     "paid_calls": 0,
     "question_answer_evaluation_run": false,
     "pdf_pages_visually_reviewed": 8,
-    "docx_visual_review": "not performed: bundled LibreOffice unavailable; user approved structure/ingestion-only submission"
+    "docx_visual_review": "not performed: bundled LibreOffice unavailable; prior user-approved structure/ingestion-only submission",
+    "default_data_comparison": [
+      "relative_path",
+      "size",
+      "mtime_ns",
+      "sha256"
+    ],
+    "write_guard": "Selfcheck process blocked filesystem writes outside repository-external temporary directory; Windows NUL discard device exempted",
+    "docx_table_extraction": "known missing: D03-T01 table-only facts absent from all extracted and stored chunks; document_loader unchanged"
   },
   "selfcheck": {
-    "questions": 50,
-    "turns_total": 62,
+    "questions": 57,
+    "turns_total": 69,
     "category_counts": {
-      "single_fact": 20,
+      "single_fact": 22,
       "multi_document": 10,
       "refuse": 10,
       "partial": 5,
-      "multi_turn": 5
+      "multi_turn": 5,
+      "public_with_note": 5
     },
-    "supporting_evidence_quotes": 68,
+    "supporting_evidence_quotes": 70,
     "single_chunk_checks": [
       {
         "id": "S01",
@@ -306,6 +315,122 @@
         }
       }
     ],
-    "model_calls": 0
-  }
+    "model_calls": 0,
+    "known_issue_checks": [
+      {
+        "id": "S21",
+        "known_issue": "docx_table_not_extracted",
+        "docx_table_evidence_present": true,
+        "supporting_chunk_indices": [],
+        "expected_baseline_extraction_failure": true
+      },
+      {
+        "id": "S22",
+        "known_issue": "docx_table_not_extracted",
+        "docx_table_evidence_present": true,
+        "supporting_chunk_indices": [],
+        "expected_baseline_extraction_failure": true
+      }
+    ],
+    "docx_table_checks": [
+      {
+        "marker": "PK-A",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "可循环护盒",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "17元",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "付款后6小时内且未发货",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "PK-B",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "杯盖防撞套",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "9元",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      },
+      {
+        "marker": "付款后3小时内且未发货",
+        "docx_table_present": true,
+        "paragraph_present": false,
+        "extracted_chunk_hits": 0,
+        "stored_chunk_hits": 0
+      }
+    ],
+    "public_with_note_checks": [
+      {
+        "id": "U01",
+        "keyword_hits": {
+          "沸点": [],
+          "标准大气压": []
+        },
+        "expected_sources_empty": true
+      },
+      {
+        "id": "U02",
+        "keyword_hits": {
+          "法国": [],
+          "巴黎": []
+        },
+        "expected_sources_empty": true
+      },
+      {
+        "id": "U03",
+        "keyword_hits": {
+          "光速": [],
+          "真空": []
+        },
+        "expected_sources_empty": true
+      },
+      {
+        "id": "U04",
+        "keyword_hits": {
+          "千米": []
+        },
+        "expected_sources_empty": true
+      },
+      {
+        "id": "U05",
+        "keyword_hits": {
+          "欧几里得": [],
+          "内角和": []
+        },
+        "expected_sources_empty": true
+      }
+    ]
+  },
+  "revision": 2
 }

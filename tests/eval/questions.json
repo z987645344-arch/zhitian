@@ -1588,6 +1588,155 @@
         }
       ],
       "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    },
+    {
+      "id": "S21",
+      "category": "single_fact",
+      "question": "舟灯L2的可循环护盒服务编号和费用是多少，最迟什么时候申请？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "服务编号PK-A",
+        "费用17元",
+        "付款后6小时内且未发货才可申请"
+      ],
+      "forbidden": [
+        "把费用说成9元",
+        "已发货后仍可申请",
+        "把申请时限说成自然日"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-T01 PK-A行",
+          "quote": "PK-A | 可循环护盒 | 舟灯L2 | 17元 | 付款后6小时内且未发货",
+          "source_location": "docx_table"
+        }
+      ],
+      "known_issue": "docx_table_not_extracted",
+      "grounding_note": "答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
+    },
+    {
+      "id": "S22",
+      "category": "single_fact",
+      "question": "栖温杯C1的杯盖防撞套服务编号和费用是多少，最迟什么时候申请？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "服务编号PK-B",
+        "费用9元",
+        "付款后3小时内且未发货才可申请"
+      ],
+      "forbidden": [
+        "把费用说成17元",
+        "已发货后仍可申请",
+        "把申请时限说成自然日"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-T01 PK-B行",
+          "quote": "PK-B | 杯盖防撞套 | 栖温杯C1 | 9元 | 付款后3小时内且未发货",
+          "source_location": "docx_table"
+        }
+      ],
+      "known_issue": "docx_table_not_extracted",
+      "grounding_note": "答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
+    },
+    {
+      "id": "U01",
+      "category": "public_with_note",
+      "question": "纯水在标准大气压下的沸点是多少摄氏度？",
+      "expected_behavior": "answer_with_note",
+      "expected_points": [
+        "纯水在标准大气压下沸点为100摄氏度",
+        "明确说明答案来自通用知识，不是本知识库或公司资料的内容"
+      ],
+      "forbidden": [
+        "声称答案来自公司资料",
+        "声称答案来自知识库",
+        "伪造公司文档引用"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "grounding_note": "问题没有限定知识库范围；固定语料没有所问事实，应使用无需联网的公开常识作答并加来源备注，与R06至R10的知识库限定拒答题不是同一种契约。"
+    },
+    {
+      "id": "U02",
+      "category": "public_with_note",
+      "question": "法国的首都是哪里？",
+      "expected_behavior": "answer_with_note",
+      "expected_points": [
+        "法国首都是巴黎",
+        "明确说明答案来自通用知识，不是本知识库或公司资料的内容"
+      ],
+      "forbidden": [
+        "声称答案来自公司资料",
+        "声称答案来自知识库",
+        "伪造公司文档引用"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "grounding_note": "问题没有限定知识库范围；固定语料没有所问事实，应使用无需联网的公开常识作答并加来源备注，与R06至R10的知识库限定拒答题不是同一种契约。"
+    },
+    {
+      "id": "U03",
+      "category": "public_with_note",
+      "question": "真空中光的传播速度是多少米每秒？",
+      "expected_behavior": "answer_with_note",
+      "expected_points": [
+        "真空光速为299792458米每秒",
+        "明确说明答案来自通用知识，不是本知识库或公司资料的内容"
+      ],
+      "forbidden": [
+        "声称答案来自公司资料",
+        "声称答案来自知识库",
+        "伪造公司文档引用"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "grounding_note": "问题没有限定知识库范围；固定语料没有所问事实，应使用无需联网的公开常识作答并加来源备注，与R06至R10的知识库限定拒答题不是同一种契约。"
+    },
+    {
+      "id": "U04",
+      "category": "public_with_note",
+      "question": "1千米等于多少米？",
+      "expected_behavior": "answer_with_note",
+      "expected_points": [
+        "1千米等于1000米",
+        "明确说明答案来自通用知识，不是本知识库或公司资料的内容"
+      ],
+      "forbidden": [
+        "声称答案来自公司资料",
+        "声称答案来自知识库",
+        "伪造公司文档引用"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "grounding_note": "问题没有限定知识库范围；固定语料没有所问事实，应使用无需联网的公开常识作答并加来源备注，与R06至R10的知识库限定拒答题不是同一种契约。"
+    },
+    {
+      "id": "U05",
+      "category": "public_with_note",
+      "question": "在欧几里得平面里，三角形三个内角的和是多少度？",
+      "expected_behavior": "answer_with_note",
+      "expected_points": [
+        "欧几里得平面内三角形内角和为180度",
+        "明确说明答案来自通用知识，不是本知识库或公司资料的内容"
+      ],
+      "forbidden": [
+        "声称答案来自公司资料",
+        "声称答案来自知识库",
+        "伪造公司文档引用"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "grounding_note": "问题没有限定知识库范围；固定语料没有所问事实，应使用无需联网的公开常识作答并加来源备注，与R06至R10的知识库限定拒答题不是同一种契约。"
     }
-  ]
+  ],
+  "revision": 2
 }
