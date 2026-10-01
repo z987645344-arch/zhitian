@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 
 from datetime import datetime, timedelta, timezone
+import json
+import sys
 import uuid
 
 import jwt
+import pytest
+from fastapi.testclient import TestClient
 
 import config
 import main
@@ -99,6 +103,26 @@ def test_invalid_token_is_rejected(client):
     )
 
     assert response.status_code == 401
+
+
+def test_deeply_nested_signed_payload_returns_401_not_500():
+    # 直接签署原始JSON，避免jwt.encode()在构造测试数据时先触发递归上限。
+    # 签名合法且JSON语法合法；应由解码器拒绝过深结构，而非变成服务端500。
+    depth = sys.getrecursionlimit() * 2
+    payload = ('{"nested":' + '[' * depth + '0' + ']' * depth + '}').encode("utf-8")
+    with pytest.raises(RecursionError):
+        json.loads(payload)
+    token = jwt.api_jws.encode(payload, config.JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    http_client = TestClient(main.app, raise_server_exceptions=False)
+    try:
+        response = http_client.get(
+            "/memory/test-session-deep-payload",
+            headers={"Authorization": "Bearer %s" % token},
+        )
+    finally:
+        http_client.close()
+    assert response.status_code == 401, response.text
+    assert response.json()["detail"] == "认证失败，请重试"
 
 
 def test_expired_token_is_rejected(client):

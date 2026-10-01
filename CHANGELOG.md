@@ -2014,3 +2014,11 @@
 - 网页会话显示/排序与配额锁定时间共用 `web_client/js/time.js`：有偏移按偏移解析，旧无偏移时间按 UTC 解析，再按设备本地时区显示。仅受影响页面的脚本缓存串更新；新增 Node 测试并接入普通 CI。
 - 项目 `.venv` PyJWT 实证为 2.14.0，未改环境；`run_tests.bat -q` 为 638 passed / 5 deselected / 0 failed。网页 Node 测试 3 passed，Asia/Shanghai 下新旧输入均显示 10:46；公开模型时间字段登记、真实会话、JSON/SSE/错误出口和 UTC 时钟均有断言。原企业密码测试改为先验证出口 UTC、再换回 UTC+8 验证 04:00，未放宽业务边界。
 - 本轮为普通工作条目，不改 VERSION、不打标、不部署；未做生产验证，推送与本次 CI 由指挥师后续执行。客户端兼容新旧响应，后端与客户端可独立部署；默认数据仍按既有生产 UTC 语义解释。
+
+## 2026-10-01 安全补丁：升级PyJWT并更新镜像已有系统包
+
+- `requirements.txt` 与本机项目 `.venv` 的 PyJWT 2.14.0 → 2.15.1；本地安装使用 `--no-deps`，未顺带升级其他依赖。`layers/auth.py` 的签发、算法白名单、异常处理与接口代码均未改，`pip check` 无冲突。
+- `Dockerfile` 在同一 apt RUN 层内、安装应用系统依赖之前执行 `apt-get upgrade -y --no-install-recommends`：更新当前Debian发行版内基础镜像已有包，而不维护容易漏项的固定包清单；不切换发行版，不新增漏洞例外，不修改扫描门禁。
+- 新增真实HTTP深嵌套签名JSON令牌测试：结构深度为Python递归上限的两倍，升级后返回401及既有「认证失败，请重试」。旧2.14.0在本项目也返回401，但将RecursionError误归为配置错误、提示「认证不可用」；不把旧行为误记为500。
+- `py_compile` 通过，认证与登录审计18 passed；项目 `.venv` 的 `run_tests.bat -q` 为639 passed / 5 deselected / 0 failed，原有Starlette TestClient弃用警告1条。Docker Linux Engine 29.7.2可达，但`--pull`构建在Docker Hub超时；使用缓存基础镜像的构建实际完成系统升级，随后因`fonts-noto-cjk`下载连接失败、apt退出100而中止，完整镜像未生成。四个目标包的最终镜像版本、启动与Trivy结论均未验证，不把下载/安装日志当作最终镜像证据。
+- 本轮为纯修普通工作条目，VERSION保持4.10.1，不打标、不部署；生产未验证，推送后的两条CI与Trivy门禁结论由指挥师核对，不能以本地测试替代。

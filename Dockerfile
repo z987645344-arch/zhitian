@@ -56,6 +56,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
+    # 同一发行版内更新基础镜像已有包；仅install不会升级未列出的安全依赖。
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         fontconfig \
         fonts-noto-cjk \
