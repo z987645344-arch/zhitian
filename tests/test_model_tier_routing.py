@@ -16,7 +16,7 @@ def test_fast_request_never_upgrades_for_expert_stages():
         assert config.resolve_model_tier("fast", stage) == "fast"
 
 
-def test_expert_reasoning_and_safety_stages_remain_expert():
+def test_expert_reasoning_stages_remain_expert():
     expected_expert_stages = {
         config.LLMStage.COMPLEX_TASK_DECOMPOSITION,
         config.LLMStage.CHECKPOINT_ROUTE,
@@ -25,7 +25,6 @@ def test_expert_reasoning_and_safety_stages_remain_expert():
         config.LLMStage.DIRECT_CHAT_REASONING,
         config.LLMStage.INTENT_CLASSIFICATION,
         config.LLMStage.COMPLEX_FINAL_SUMMARY,
-        config.LLMStage.OUTPUT_OBSERVATION,
     }
 
     assert {
@@ -45,6 +44,7 @@ def test_expert_material_processing_stages_use_fast():
         config.LLMStage.HISTORY_CONTEXT_POLISH,
         config.LLMStage.SEARCH_QUERY_REWRITE,
         config.LLMStage.MEMORY_IMPORTANCE,
+        config.LLMStage.OUTPUT_OBSERVATION,
     }
 
     assert {

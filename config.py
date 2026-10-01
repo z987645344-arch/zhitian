@@ -58,8 +58,8 @@ class LLMStage(str, Enum):
 
 
 # 该表只定义expert请求的阶段分配；fast请求由resolve_model_tier()强制保持fast，
-# 绝不会因表内某阶段标为expert而升档。涉及安全判断或多步推理的阶段继续使用expert，
-# 已有材料的整理、短分类与重排使用fast。
+# 绝不会因表内某阶段标为expert而升档。多步推理继续使用expert；
+# 已有材料的整理、短分类与重排使用fast。输出观察经双项判据实测后使用fast。
 EXPERT_STAGE_MODEL_TIERS = {
     LLMStage.DOCUMENT_RERANK: "fast",
     LLMStage.DOCUMENT_ANSWER: "fast",
@@ -76,7 +76,7 @@ EXPERT_STAGE_MODEL_TIERS = {
     LLMStage.DIRECT_CHAT_REASONING: "expert",
     LLMStage.INTENT_CLASSIFICATION: "expert",
     LLMStage.COMPLEX_FINAL_SUMMARY: "expert",
-    LLMStage.OUTPUT_OBSERVATION: "expert",
+    LLMStage.OUTPUT_OBSERVATION: "fast",
 }
 
 
@@ -115,8 +115,10 @@ SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
 # 本机fast档搜索词改写实测需9.956秒，且供应商timeout可能比设定墙钟再多约5秒；
 # 暂以15秒留出松弛，仍需生产网络实测复核，不能视为已经定型的容量参数。
 SEARCH_QUERY_REWRITE_TIMEOUT = float(os.getenv("SEARCH_QUERY_REWRITE_TIMEOUT", "15.0"))
+# 本机15样本两档对比：fast注入检出10/10、正常误报0/5，往返1.531–5.649秒。
+# 按实测选择fast与15秒预算，留网络松弛；仍需生产复核，且受请求剩余预算钳制。
 OUTPUT_ANOMALY_CHECK_TIMEOUT = float(
-    os.getenv("OUTPUT_ANOMALY_CHECK_TIMEOUT", "5.0")
+    os.getenv("OUTPUT_ANOMALY_CHECK_TIMEOUT", "15.0")
 )
 SHUTDOWN_GRACE_PERIOD_SECONDS = float(os.getenv("SHUTDOWN_GRACE_PERIOD_SECONDS", "30.0"))
 SSE_HEARTBEAT_INTERVAL_SECONDS = float(os.getenv("SSE_HEARTBEAT_INTERVAL_SECONDS", "15.0"))

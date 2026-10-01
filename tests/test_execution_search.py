@@ -425,11 +425,16 @@ def test_stream_search_summary_uses_shared_first_content_guard(monkeypatch):
     )
     monkeypatch.setattr(execution, "_observe_external_search_output", observation)
 
-    chunks = list(execution.stream_search_result(
+    stream = execution.stream_search_result(
         "原始问题",
         tier="expert",
         execution_state=state,
-    ))
+    )
+    chunks = [next(stream)]
+    observation.assert_not_called()
+    chunks.append(next(stream))
+    observation.assert_not_called()
+    assert list(stream) == []
 
     assert chunks == ["整理", "结果"]
     assert captured["kwargs"]["tier"] == "fast"
@@ -638,7 +643,7 @@ def test_output_anomaly_check_requires_expert_tainted_state(monkeypatch):
     monkeypatch.setattr(
         execution.llm_provider,
         "extract_text",
-        lambda response: '{"answered_user_question": true, "concern_reason": null}',
+        lambda response: '{"answered_user_question": true, "contains_unrelated_or_unsafe_instruction": false, "concern_reason": null}',
     )
 
     execution._observe_external_search_output(
@@ -654,14 +659,14 @@ def test_output_anomaly_check_requires_expert_tainted_state(monkeypatch):
     )
     snapshot = execution.observability.metrics_snapshot()
     assert calls.call_count == 1
-    assert calls.call_args.kwargs["tier"] == "expert"
+    assert calls.call_args.kwargs["tier"] == "fast"
     assert snapshot["output_anomaly_check_total"] == baseline["output_anomaly_check_total"] + 1
     assert snapshot["output_anomaly_by_tier"]["expert"]["total"] >= 1
 
     monkeypatch.setattr(
         execution.llm_provider,
         "extract_text",
-        lambda response: '{"answered_user_question": false, "concern_reason": "off_topic"}',
+        lambda response: '{"answered_user_question": false, "contains_unrelated_or_unsafe_instruction": false, "concern_reason": "off_topic"}',
     )
     execution._observe_external_search_output(
         "问题", "偏离回答", "expert", {"external_content_tainted": True}

@@ -70,7 +70,7 @@ def test_query_rewrite_upstream_failure_records_reason_without_opening_circuit(
     monkeypatch.setattr(
         execution.llm_provider,
         "extract_text",
-        lambda _response: '{"answered_user_question":true,"concern_reason":null}',
+        lambda _response: '{"answered_user_question":true,"contains_unrelated_or_unsafe_instruction":false,"concern_reason":null}',
     )
     monkeypatch.setattr(execution, "_llm_chat", final_model)
 
@@ -87,7 +87,7 @@ def test_query_rewrite_upstream_failure_records_reason_without_opening_circuit(
     assert state["degradation_reasons"] == [expected_reason]
     assert model_calls.call_count == 2
     assert model_calls.call_args_list[0].kwargs["tier"] == "fast"
-    assert model_calls.call_args_list[1].kwargs["tier"] == "expert"
+    assert model_calls.call_args_list[1].kwargs["tier"] == "fast"
     final_model.assert_called_once()
 
 
@@ -257,7 +257,7 @@ def test_remaining_budget_caps_rewrite_and_output_observation(monkeypatch):
     monkeypatch.setattr(
         execution.llm_provider,
         "extract_text",
-        lambda _response: '{"answered_user_question":true,"concern_reason":null}',
+        lambda _response: '{"answered_user_question":true,"contains_unrelated_or_unsafe_instruction":false,"concern_reason":null}',
     )
     execution._observe_external_search_output("问题", "回答", "expert", state)
     assert 0 < observed_timeouts[-1] <= 0.5
