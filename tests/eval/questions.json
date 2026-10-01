@@ -1,0 +1,1593 @@
+{
+  "schema_version": 1,
+  "dataset_id": "lanyu-q7-eval-1",
+  "company": "岚屿栖盒 EVAL-Q7",
+  "questions": [
+    {
+      "id": "S01",
+      "category": "single_fact",
+      "question": "签收后没有质量问题，最迟多少天可以提出退货？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "签收次日起7个自然日",
+        "未使用、包装及配件齐全"
+      ],
+      "forbidden": [
+        "7个工作日",
+        "30日无理由退货"
+      ],
+      "expected_sources": [
+        "01_returns.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-01",
+          "quote": "签收次日起7个自然日"
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "category": "single_fact",
+      "question": "收到第18天发现质量问题，确认后还可以申请同款换货吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "质量问题经确认后可申请同款换货",
+        "质量换货窗口为签收后30个自然日"
+      ],
+      "forbidden": [
+        "仅7天可换货",
+        "必须未开封"
+      ],
+      "expected_sources": [
+        "01_returns.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-02",
+          "quote": "签收后30个自然日内"
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "category": "single_fact",
+      "question": "无质量问题退货时，寄回运费和首次配送费怎么处理？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "寄回运费客户承担",
+        "首次配送费不退"
+      ],
+      "forbidden": [
+        "公司承担无质量退货运费",
+        "首次配送费必退"
+      ],
+      "expected_sources": [
+        "01_returns.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-03",
+          "quote": "无质量问题退货的寄回运费由客户承担，原订单的首次配送费不退"
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "category": "single_fact",
+      "question": "退款审核通过后，公司什么时候发起退款？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "审核完成后5个工作日内发起",
+        "按原支付路径",
+        "未承诺银行到账日"
+      ],
+      "forbidden": [
+        "5个自然日",
+        "银行必定5日到账"
+      ],
+      "expected_sources": [
+        "01_returns.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-04",
+          "quote": "按原支付路径在5个工作日内发起"
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "category": "single_fact",
+      "question": "成为星环会员需要多少实付商品金额，有效多久？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "累计1200元",
+        "达标订单完成次日生效",
+        "365个自然日",
+        "运费不计"
+      ],
+      "forbidden": [
+        "永久会员",
+        "运费计入1200元"
+      ],
+      "expected_sources": [
+        "02_membership.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "02_membership.txt",
+          "section": "D02-01",
+          "quote": "累计实付商品金额达到1200元"
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "category": "single_fact",
+      "question": "商品金额260元，3000积分最多可以抵扣多少？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "最多26元",
+        "使用2600积分",
+        "运费不抵扣"
+      ],
+      "forbidden": [
+        "抵扣30元",
+        "积分抵运费"
+      ],
+      "expected_sources": [
+        "02_membership.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "02_membership.txt",
+          "section": "D02-03",
+          "quote": "单笔积分抵扣最多为抵扣前商品金额的10%"
+        },
+        {
+          "source": "02_membership.txt",
+          "section": "D02-03",
+          "quote": "100积分可抵扣1元"
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "category": "single_fact",
+      "question": "积分一般有效多久，升级会员会延长吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "180个自然日",
+        "升级会员不延长"
+      ],
+      "forbidden": [
+        "365日积分有效",
+        "升级重置有效期"
+      ],
+      "expected_sources": [
+        "02_membership.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "02_membership.txt",
+          "section": "D02-04",
+          "quote": "有效180个自然日"
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "category": "single_fact",
+      "question": "普通区首重和续重分别多少钱？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "1千克首重12元",
+        "每开始1千克续重4元",
+        "不足1千克按1千克"
+      ],
+      "forbidden": [
+        "首重22元",
+        "续重8元"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-02",
+          "quote": "普通区标准配送首重1千克12元，续重每开始1千克4元"
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "category": "single_fact",
+      "question": "远程区标准配送预计多久，从哪个环节起算？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "发货后5至8个工作日",
+        "是预计时长，不保证具体到货日期"
+      ],
+      "forbidden": [
+        "普通区2至4日",
+        "从付款时起算",
+        "保证第5日到达"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-04",
+          "quote": "远程区预计5至8个工作日"
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "category": "single_fact",
+      "question": "普通区加急配送要多付多少钱，预计多久？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "标准运费外加18元",
+        "发货后1至2个工作日"
+      ],
+      "forbidden": [
+        "加急免费",
+        "从付款时起1至2日"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-06",
+          "quote": "加收18元"
+        }
+      ]
+    },
+    {
+      "id": "S11",
+      "category": "single_fact",
+      "question": "舟灯L1和L2标准保修分别多久？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "L1为12个月",
+        "L2为24个月",
+        "签收日起算"
+      ],
+      "forbidden": [
+        "两款都是12个月",
+        "L1为24个月"
+      ],
+      "expected_sources": [
+        "04_repair.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-02",
+          "quote": "舟灯L1标准保修12个月，舟灯L2标准保修24个月"
+        }
+      ]
+    },
+    {
+      "id": "S12",
+      "category": "single_fact",
+      "question": "付费维修能不能先修后报价？客户没有确认时可以开工吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "先初检后提供书面报价",
+        "客户确认后才修",
+        "未确认不得开工"
+      ],
+      "forbidden": [
+        "无需确认可开工",
+        "先修完再报价"
+      ],
+      "expected_sources": [
+        "04_repair.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-04",
+          "quote": "客户确认后才修"
+        }
+      ]
+    },
+    {
+      "id": "S13",
+      "category": "single_fact",
+      "question": "舟灯L1电源输入和额定功率是多少？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "USB-C",
+        "5伏2安",
+        "5瓦"
+      ],
+      "forbidden": [
+        "9伏2安",
+        "8瓦"
+      ],
+      "expected_sources": [
+        "05_lamps.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-01",
+          "quote": "要求5伏2安输入"
+        }
+      ]
+    },
+    {
+      "id": "S14",
+      "category": "single_fact",
+      "question": "舟灯L2电池容量和标准档续航分别是多少？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "4800毫安时",
+        "标准档10小时"
+      ],
+      "forbidden": [
+        "2400毫安时",
+        "标准档6小时",
+        "最大亮度保证10小时"
+      ],
+      "expected_sources": [
+        "05_lamps.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-02",
+          "quote": "电池容量4800毫安时，标准档标称续航10小时"
+        }
+      ]
+    },
+    {
+      "id": "S15",
+      "category": "single_fact",
+      "question": "舟灯L1随箱有电源适配器吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "不含适配器",
+        "灯体、USB-C线、说明卡"
+      ],
+      "forbidden": [
+        "随箱9伏2安适配器"
+      ],
+      "expected_sources": [
+        "05_lamps.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-05",
+          "quote": "L1随箱包括灯体、USB-C线与纸质说明卡，不含电源适配器"
+        }
+      ]
+    },
+    {
+      "id": "S16",
+      "category": "single_fact",
+      "question": "栖温杯C1容量是多少，能主动加热吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "450毫升",
+        "非电动",
+        "不能主动加热"
+      ],
+      "forbidden": [
+        "自动控温",
+        "充电接口"
+      ],
+      "expected_sources": [
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "06_cup.txt",
+          "section": "D06-01",
+          "quote": "容量450毫升"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-01",
+          "quote": "没有电池、充电接口或加热功能"
+        }
+      ]
+    },
+    {
+      "id": "S17",
+      "category": "single_fact",
+      "question": "栖温杯C1可以进微波炉或洗碗机吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "不可微波炉",
+        "不推荐洗碗机",
+        "手洗晾干"
+      ],
+      "forbidden": [
+        "微波炉安全",
+        "支持所有洗碗机"
+      ],
+      "expected_sources": [
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "06_cup.txt",
+          "section": "D06-05",
+          "quote": "不可以放入微波炉，不推荐用洗碗机"
+        }
+      ]
+    },
+    {
+      "id": "S18",
+      "category": "single_fact",
+      "question": "人工客服周六周日分别几点服务？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "周六北京时间10:00至16:00",
+        "周日无人工客服"
+      ],
+      "forbidden": [
+        "周日全天客服",
+        "周六09:00至18:00"
+      ],
+      "expected_sources": [
+        "07_support.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "07_support.docx",
+          "section": "D07-01",
+          "quote": "周六北京时间10:00至16:00服务，周日不提供人工客服"
+        }
+      ]
+    },
+    {
+      "id": "S19",
+      "category": "single_fact",
+      "question": "L2延保包多少钱，什么时候必须买？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "80元",
+        "签收后30个自然日内",
+        "只适用L2"
+      ],
+      "forbidden": [
+        "L1也可买",
+        "签收后60日"
+      ],
+      "expected_sources": [
+        "08_service_plan.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-01",
+          "quote": "单价80元，必须在签收后30个自然日内购买"
+        }
+      ]
+    },
+    {
+      "id": "S20",
+      "category": "single_fact",
+      "question": "购买延保后L2总保修多久，从什么时候算？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "标准24加12合计36个月",
+        "原签收日起算"
+      ],
+      "forbidden": [
+        "付款日起36个月",
+        "所有损坏免费"
+      ],
+      "expected_sources": [
+        "08_service_plan.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-02",
+          "quote": "合计36个月，起点仍为原签收日"
+        }
+      ]
+    },
+    {
+      "id": "X01",
+      "category": "multi_document",
+      "question": "远程区的订单在签收第18日确认质量问题要换货，首重内标准寄回费22元能由谁承担？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "30日内可申请同款换货",
+        "公司承担标准寄回费",
+        "远程区首重报销上限22元"
+      ],
+      "forbidden": [
+        "客户承担全部",
+        "仅报12元",
+        "未经确认就已批准"
+      ],
+      "expected_sources": [
+        "01_returns.md",
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-02",
+          "quote": "可以申请同款换货"
+        },
+        {
+          "source": "01_returns.md",
+          "section": "D01-03",
+          "quote": "质量问题退换货的标准寄回运费由公司承担"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-07",
+          "quote": "远程区22元"
+        }
+      ]
+    },
+    {
+      "id": "X02",
+      "category": "multi_document",
+      "question": "一台舟灯L2普通区配送，实付240元、没有免运资格，标准运费多少？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "包装重量1.4千克",
+        "首重12加续重4合计16元"
+      ],
+      "forbidden": [
+        "按净重680克仅12元",
+        "远程费30元"
+      ],
+      "expected_sources": [
+        "05_lamps.md",
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-07",
+          "quote": "L2整箱发货重量为1.4千克"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-02",
+          "quote": "续重每开始1千克4元"
+        }
+      ]
+    },
+    {
+      "id": "X03",
+      "category": "multi_document",
+      "question": "普通区商品额320元，用3000积分后，还能享受300元免运吗？没有会员免运资格。",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "3000积分抵30元",
+        "抵后实付290元",
+        "低于300元不能金额免运"
+      ],
+      "forbidden": [
+        "320元仍免运",
+        "抵32元",
+        "积分抵运费"
+      ],
+      "expected_sources": [
+        "02_membership.txt",
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "02_membership.txt",
+          "section": "D02-03",
+          "quote": "100积分可抵扣1元"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-03",
+          "quote": "积分抵扣后的商品实付金额用于判断300元门槛"
+        }
+      ]
+    },
+    {
+      "id": "X04",
+      "category": "multi_document",
+      "question": "星环会员远程区买一台C1，商品实付200元，能用月免运吗？标准运费多少？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "月免运不适用远程区",
+        "C1包装0.6千克",
+        "远程首重22元"
+      ],
+      "forbidden": [
+        "免运",
+        "12元",
+        "按L2重量"
+      ],
+      "expected_sources": [
+        "02_membership.txt",
+        "06_cup.txt",
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "02_membership.txt",
+          "section": "D02-06",
+          "quote": "不适用于远程区"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-01",
+          "quote": "整箱发货重量0.6千克"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-02",
+          "quote": "远程区首重1千克22元"
+        }
+      ]
+    },
+    {
+      "id": "X05",
+      "category": "multi_document",
+      "question": "舟灯L1签收第8个月，经检验制造缺陷，普通区寄回首重内运费12元，公司承担吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "L1保修12个月内",
+        "经确认可免费保修",
+        "公司承担两程标准运费",
+        "寄回标准上限12元"
+      ],
+      "forbidden": [
+        "已超过L1保修",
+        "仅承担回寄",
+        "保证全额加急"
+      ],
+      "expected_sources": [
+        "05_lamps.md",
+        "04_repair.pdf",
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-04",
+          "quote": "L1标准保修12个月"
+        },
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-05",
+          "quote": "公司承担标准寄回和回寄运费"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-07",
+          "quote": "普通区12元"
+        }
+      ]
+    },
+    {
+      "id": "X06",
+      "category": "multi_document",
+      "question": "L2签收第30个月，有已生效延保，进液故障能免费修吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "延保合计36个月",
+        "进液不在制造缺陷保修范围",
+        "走付费报价确认，不能承诺免费"
+      ],
+      "forbidden": [
+        "延保涵盖所有故障",
+        "24个月已到所以无延保"
+      ],
+      "expected_sources": [
+        "08_service_plan.pdf",
+        "04_repair.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-02",
+          "quote": "合计36个月"
+        },
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-03",
+          "quote": "不覆盖摔落、进液"
+        },
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-04",
+          "quote": "客户确认后才修"
+        }
+      ]
+    },
+    {
+      "id": "X07",
+      "category": "multi_document",
+      "question": "L2签收第40日发现质量问题且买了延保，还能按30日质量换货吗？该怎么处理？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "超30日换货窗口",
+        "延保不延长质量换货窗口",
+        "按保修资格核验及维修流程处理",
+        "维修依次提交工单、资格核验、寄回初检，付费时先报价确认再修"
+      ],
+      "forbidden": [
+        "36个月内都能换新"
+      ],
+      "expected_sources": [
+        "01_returns.md",
+        "08_service_plan.pdf",
+        "04_repair.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-02",
+          "quote": "超过30日按维修流程处理"
+        },
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-06",
+          "quote": "不改变产品的30日质量换货窗口"
+        },
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-01",
+          "quote": "提交工单、资格核验、寄回初检、报价确认、维修与回寄"
+        }
+      ]
+    },
+    {
+      "id": "X08",
+      "category": "multi_document",
+      "question": "L1未使用，签收第5日无质量退货，客服说缺适配器就不能退，合理吗？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "L1不随箱附适配器",
+        "无需补原本没有的适配器",
+        "仍须原配件包装齐全且在7日内"
+      ],
+      "forbidden": [
+        "L1随箱必须有9伏适配器",
+        "无条件忽略其他配件"
+      ],
+      "expected_sources": [
+        "05_lamps.md",
+        "01_returns.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-05",
+          "quote": "不能让L1客户补一只原本没随箱的适配器"
+        },
+        {
+          "source": "01_returns.md",
+          "section": "D01-01",
+          "quote": "未使用、包装与随箱配件齐全"
+        }
+      ]
+    },
+    {
+      "id": "X09",
+      "category": "multi_document",
+      "question": "整单退货成功，用了已到期批次的500积分且发货时已用星环本月免运：积分、免运次数如何处理，公司何时发起退款？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "500积分退回有效7日",
+        "赠送积分撤回",
+        "已用当月免运次数不返还",
+        "退款审核完成后5个工作日内按原支付路径发起"
+      ],
+      "forbidden": [
+        "积分重置180日",
+        "免运次数退回",
+        "积分变5元现金"
+      ],
+      "expected_sources": [
+        "01_returns.md",
+        "02_membership.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-04",
+          "quote": "按原支付路径在5个工作日内发起"
+        },
+        {
+          "source": "02_membership.txt",
+          "section": "D02-05",
+          "quote": "从退回日起延长7个自然日"
+        },
+        {
+          "source": "02_membership.txt",
+          "section": "D02-06",
+          "quote": "已发货后退货不返还当月次数"
+        }
+      ]
+    },
+    {
+      "id": "X10",
+      "category": "multi_document",
+      "question": "周日想为签收第5个月的C1提交维修工单：期限是否仍在标准保修内，需要哪些信息，人工何时处理？",
+      "expected_behavior": "answer",
+      "expected_points": [
+        "可服务时间外提交",
+        "下个服务时段处理",
+        "订单编号/完整型号/签收日期/故障描述及是否自行拆修",
+        "不得要求密码验证码",
+        "C1仍在6个月标准保修期限内，但是否免费须核验"
+      ],
+      "forbidden": [
+        "周日保证立即人工处理",
+        "仅写舟灯型号",
+        "需要验证码"
+      ],
+      "expected_sources": [
+        "07_support.docx",
+        "04_repair.pdf",
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "07_support.docx",
+          "section": "D07-03",
+          "quote": "服务时间外仍可提交工单"
+        },
+        {
+          "source": "07_support.docx",
+          "section": "D07-05",
+          "quote": "完整型号、签收日期、故障现象和曾否自行拆修"
+        },
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-08",
+          "quote": "型号、订单编号、现象和处理记录"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-03",
+          "quote": "C1标准保修6个月"
+        }
+      ]
+    },
+    {
+      "id": "R01",
+      "category": "refuse",
+      "question": "财务主管本月税前工资多少？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "12000元",
+        "任何确定的薪资金额"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公司内部事务",
+      "absence_keywords": [
+        "财务主管",
+        "税前工资"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R02",
+      "category": "refuse",
+      "question": "今年经营净利润是多少？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "净利润增长20%",
+        "任何确定净利润"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公司内部事务",
+      "absence_keywords": [
+        "经营净利润"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R03",
+      "category": "refuse",
+      "question": "公司收款的银行账号是多少？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "任何编造的银行卡号"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公司内部事务",
+      "absence_keywords": [
+        "收款银行账号"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R04",
+      "category": "refuse",
+      "question": "舟灯L2当前仓库还有多少台现货？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "100台现货",
+        "保证今天现货"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公司内部事务",
+      "absence_keywords": [
+        "当前库存",
+        "仓库现货"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R05",
+      "category": "refuse",
+      "question": "明年给员工的奖金计算公式是什么？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "三个月工资",
+        "利润的10%"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公司内部事务",
+      "absence_keywords": [
+        "员工奖金",
+        "奖金公式"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R06",
+      "category": "refuse",
+      "question": "请仅按知识库告诉我水在海平面标准气压下的沸点。",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "100摄氏度",
+        "212华氏度"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公开常识",
+      "absence_keywords": [
+        "海平面",
+        "标准气压",
+        "沸点"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R07",
+      "category": "refuse",
+      "question": "只根据资料，地球到太阳的平均距离多少？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "1.496亿千米",
+        "一个天文单位"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公开常识",
+      "absence_keywords": [
+        "地球",
+        "太阳",
+        "平均距离"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R08",
+      "category": "refuse",
+      "question": "只按这套资料回答法国首都是哪里。",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "巴黎"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公开常识",
+      "absence_keywords": [
+        "法国",
+        "首都"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R09",
+      "category": "refuse",
+      "question": "知识库里光在真空中的速度是多少？",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "299792458米每秒",
+        "30万千米每秒"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公开常识",
+      "absence_keywords": [
+        "真空",
+        "光速"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "R10",
+      "category": "refuse",
+      "question": "请依据企业知识库说出Python语言诞生年份。",
+      "expected_behavior": "refuse",
+      "expected_points": [
+        "明确说明无法确认",
+        "不能以模型自身知识冒充知识库依据"
+      ],
+      "forbidden": [
+        "1991年",
+        "1989年"
+      ],
+      "expected_sources": [],
+      "supporting_evidence": [],
+      "refusal_kind": "公开常识",
+      "absence_keywords": [
+        "Python",
+        "诞生年份"
+      ],
+      "absence_rationale": "全部语料全文没有提供所问事实；出现相关主题或明确资料缺失声明也不等于答案存在。"
+    },
+    {
+      "id": "P01",
+      "category": "partial",
+      "question": "L2输入电压是多少，它的电池循环寿命是多少次？",
+      "expected_behavior": "partial",
+      "expected_points": [
+        "输入9伏2安",
+        "明确说明无法确认电池循环寿命"
+      ],
+      "forbidden": [
+        "500次循环",
+        "套用L1的5伏"
+      ],
+      "expected_sources": [
+        "05_lamps.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "05_lamps.md",
+          "section": "D05-02",
+          "quote": "输入要求9伏2安"
+        },
+        {
+          "source": "05_lamps.md",
+          "section": "D05-08",
+          "quote": "没有电池循环寿命测试数据"
+        }
+      ],
+      "unanswerable_points": [
+        "电池循环寿命次数"
+      ]
+    },
+    {
+      "id": "P02",
+      "category": "partial",
+      "question": "C1保温测试六小时后水温多少？其食品杀菌率是多少？",
+      "expected_behavior": "partial",
+      "expected_points": [
+        "指定测试条件下6小时不低于55摄氏度",
+        "明确说明无法确认杀菌率"
+      ],
+      "forbidden": [
+        "杀菌率99.9%",
+        "全天所有条件55度"
+      ],
+      "expected_sources": [
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "06_cup.txt",
+          "section": "D06-04",
+          "quote": "6小时后水温不低于55摄氏度"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-07",
+          "quote": "不提供食品保鲜时长或杀菌效果"
+        }
+      ],
+      "unanswerable_points": [
+        "食品杀菌率"
+      ]
+    },
+    {
+      "id": "P03",
+      "category": "partial",
+      "question": "普通区加急加多少钱，今天我这单能到哪里？",
+      "expected_behavior": "partial",
+      "expected_points": [
+        "加急差额18元",
+        "明确说明无法确认订单实时物流位置"
+      ],
+      "forbidden": [
+        "编造已到某分拨中心",
+        "保证今日送到"
+      ],
+      "expected_sources": [
+        "03_shipping.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-06",
+          "quote": "加收18元"
+        },
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-04",
+          "quote": "没有具体承运商选择规则或订单实时物流位置"
+        }
+      ],
+      "unanswerable_points": [
+        "本单当前物流位置"
+      ]
+    },
+    {
+      "id": "P04",
+      "category": "partial",
+      "question": "周六人工几点在线，客服热线号码是多少？",
+      "expected_behavior": "partial",
+      "expected_points": [
+        "北京时间10:00至16:00",
+        "正式渠道为工单与在线入口",
+        "明确说明无法确认热线号码"
+      ],
+      "forbidden": [
+        "400开头编造电话",
+        "周日也10至16"
+      ],
+      "expected_sources": [
+        "07_support.docx"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "07_support.docx",
+          "section": "D07-01",
+          "quote": "周六北京时间10:00至16:00"
+        },
+        {
+          "source": "07_support.docx",
+          "section": "D07-02",
+          "quote": "不提供电话、邮箱、社交账号或外部网址"
+        }
+      ],
+      "unanswerable_points": [
+        "客服热线号码"
+      ]
+    },
+    {
+      "id": "P05",
+      "category": "partial",
+      "question": "L2签收18个月保修还在吗？换主板要多少钱？",
+      "expected_behavior": "partial",
+      "expected_points": [
+        "标准24个月期限内但质量与资格须核验",
+        "明确说明无法确认主板价格",
+        "付费维修须报价确认"
+      ],
+      "forbidden": [
+        "免费保修已获批准",
+        "主板80元"
+      ],
+      "expected_sources": [
+        "04_repair.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-02",
+          "quote": "舟灯L2标准保修24个月"
+        },
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-04",
+          "quote": "没有维修价目表"
+        }
+      ],
+      "unanswerable_points": [
+        "主板更换价格"
+      ]
+    },
+    {
+      "id": "M01",
+      "category": "multi_turn",
+      "question": [
+        "我的演练订单Q7-U101是舟灯L1，签收第3日，没有质量问题，我想退货。",
+        "先说一下C1的容量就好，其他订单事实不变。",
+        "回到我的订单：订单号、型号、诉求是什么，退货期限怎么算？"
+      ],
+      "expected_behavior": "answer",
+      "expected_points": [
+        "Q7-U101",
+        "舟灯L1",
+        "无质量问题退货",
+        "签收次日起7个自然日"
+      ],
+      "forbidden": [
+        "把型号改成C1",
+        "把诉求改成维修",
+        "声称订单已获退货批准"
+      ],
+      "expected_sources": [
+        "01_returns.md",
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "01_returns.md",
+          "section": "D01-01",
+          "quote": "签收次日起7个自然日"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-01",
+          "quote": "容量450毫升"
+        }
+      ],
+      "turn_checks": [
+        {
+          "turn": 1,
+          "expected_points": [
+            "保留Q7-U101/L1/无质量退货"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 2,
+          "expected_points": [
+            "C1容量450毫升"
+          ],
+          "expected_sources": [
+            "06_cup.txt"
+          ]
+        },
+        {
+          "turn": 3,
+          "expected_points": [
+            "Q7-U101",
+            "L1",
+            "退货",
+            "7个自然日"
+          ],
+          "expected_sources": [
+            "01_returns.md"
+          ]
+        }
+      ],
+      "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    },
+    {
+      "id": "M02",
+      "category": "multi_turn",
+      "question": [
+        "演练订单Q7-U202是L2，地区类别普通区，商品实付240元，无免运资格。",
+        "更正：地址页显示远程区，其他信息不变。",
+        "我想知道L1的保修期限，暂时别修改订单。",
+        "现在为我的原订单估算标准运费，并复述你采用的地区和重量。"
+      ],
+      "expected_behavior": "answer",
+      "expected_points": [
+        "Q7-U202",
+        "L2",
+        "远程区",
+        "包装1.4千克",
+        "22加8合计30元"
+      ],
+      "forbidden": [
+        "仍用普通区16元",
+        "变成L1",
+        "按净重680克22元"
+      ],
+      "expected_sources": [
+        "03_shipping.docx",
+        "05_lamps.md"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "03_shipping.docx",
+          "section": "D03-02",
+          "quote": "远程区首重1千克22元，续重每开始1千克8元"
+        },
+        {
+          "source": "05_lamps.md",
+          "section": "D05-07",
+          "quote": "L2整箱发货重量为1.4千克"
+        }
+      ],
+      "turn_checks": [
+        {
+          "turn": 1,
+          "expected_points": [
+            "记录Q7-U202/L2/普通区/240元"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 2,
+          "expected_points": [
+            "只将地区更正为远程区"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 3,
+          "expected_points": [
+            "L1保修12个月"
+          ],
+          "expected_sources": [
+            "05_lamps.md"
+          ]
+        },
+        {
+          "turn": 4,
+          "expected_points": [
+            "远程区",
+            "1.4千克",
+            "30元"
+          ],
+          "expected_sources": [
+            "03_shipping.docx",
+            "05_lamps.md"
+          ]
+        }
+      ],
+      "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    },
+    {
+      "id": "M03",
+      "category": "multi_turn",
+      "question": [
+        "订单Q7-U303是C1，签收第5个月，漏水，我想申请维修，还没有初检结论。",
+        "没有摔过，也没有自行拆修。先不要说已经批准。",
+        "请帮我复述订单和诉求，并说我需要走哪些步骤。"
+      ],
+      "expected_behavior": "answer",
+      "expected_points": [
+        "Q7-U303",
+        "C1",
+        "签收第5个月",
+        "漏水维修申请",
+        "6个月标准期限内",
+        "核验初检后才能判断免费"
+      ],
+      "forbidden": [
+        "L2",
+        "换货已批准",
+        "漏水一定制造缺陷",
+        "已获免费维修"
+      ],
+      "expected_sources": [
+        "04_repair.pdf",
+        "06_cup.txt"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "04_repair.pdf",
+          "section": "D04-01",
+          "quote": "提交工单、资格核验、寄回初检"
+        },
+        {
+          "source": "06_cup.txt",
+          "section": "D06-03",
+          "quote": "C1标准保修6个月"
+        }
+      ],
+      "turn_checks": [
+        {
+          "turn": 1,
+          "expected_points": [
+            "记录Q7-U303/C1/5个月/漏水/维修"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 2,
+          "expected_points": [
+            "保留未初检",
+            "不声称批准"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 3,
+          "expected_points": [
+            "复述原事实",
+            "资格核验与初检"
+          ],
+          "expected_sources": [
+            "04_repair.pdf",
+            "06_cup.txt"
+          ]
+        }
+      ],
+      "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    },
+    {
+      "id": "M04",
+      "category": "multi_turn",
+      "question": [
+        "我有两笔演练订单：Q7-U401是L1想无质量退货；Q7-U402是L2想买延保，都是签收第4日。",
+        "现在只处理Q7-U402，先说明延保价钱。",
+        "再切回Q7-U401，它的型号、诉求是什么，能买刚才那个延保包吗？"
+      ],
+      "expected_behavior": "answer",
+      "expected_points": [
+        "当前Q7-U401",
+        "L1",
+        "无质量退货",
+        "不能买仅L2适用的延保"
+      ],
+      "forbidden": [
+        "把U402延保诉求套到U401",
+        "L1可买80元延保",
+        "声称已购买"
+      ],
+      "expected_sources": [
+        "08_service_plan.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-01",
+          "quote": "舟灯L1与栖温杯C1不提供本服务包"
+        }
+      ],
+      "turn_checks": [
+        {
+          "turn": 1,
+          "expected_points": [
+            "分别记录两订单，不混合"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 2,
+          "expected_points": [
+            "Q7-U402/L2延保80元"
+          ],
+          "expected_sources": [
+            "08_service_plan.pdf"
+          ]
+        },
+        {
+          "turn": 3,
+          "expected_points": [
+            "Q7-U401/L1/退货",
+            "L1不能买延保"
+          ],
+          "expected_sources": [
+            "08_service_plan.pdf"
+          ]
+        }
+      ],
+      "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    },
+    {
+      "id": "M05",
+      "category": "multi_turn",
+      "question": [
+        "演练订单Q7-U505是L2，签收第20日，想买延保。",
+        "更正签收时间：已经第40日了，型号和订单号没变。",
+        "提醒一下：我没有说已经买了服务包。",
+        "按最后的信息复述订单、天数和诉求，现在还能申请购买这个服务包吗？"
+      ],
+      "expected_behavior": "answer",
+      "expected_points": [
+        "Q7-U505",
+        "L2",
+        "第40日",
+        "希望购买但尚未购买",
+        "超过签收后30日购买窗口"
+      ],
+      "forbidden": [
+        "仍用第20日",
+        "已买延保36个月",
+        "能直接购买"
+      ],
+      "expected_sources": [
+        "08_service_plan.pdf"
+      ],
+      "supporting_evidence": [
+        {
+          "source": "08_service_plan.pdf",
+          "section": "D08-01",
+          "quote": "必须在签收后30个自然日内购买"
+        }
+      ],
+      "turn_checks": [
+        {
+          "turn": 1,
+          "expected_points": [
+            "记录Q7-U505/L2/20日/希望购买"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 2,
+          "expected_points": [
+            "更新为40日，其他不变"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 3,
+          "expected_points": [
+            "保留尚未购买"
+          ],
+          "expected_sources": []
+        },
+        {
+          "turn": 4,
+          "expected_points": [
+            "复述40日",
+            "已超过购买窗口"
+          ],
+          "expected_sources": [
+            "08_service_plan.pdf"
+          ]
+        }
+      ],
+      "grounding_note": "订单号等对话事实来自本组用户陈述，不是语料或实时查询。制度要点才需要引用文档；不得声称已查到订单或审批结果。"
+    }
+  ]
+}

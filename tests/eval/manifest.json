@@ -1,0 +1,311 @@
+{
+  "dataset_id": "lanyu-q7-eval-1",
+  "company": "岚屿栖盒 EVAL-Q7",
+  "canonical_corpus_directory": "corpus",
+  "documents": [
+    {
+      "file": "01_returns.md",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 4034,
+      "sha256": "7840d66f3c6e745854567249f71643b7bce4234e2d575020f669fb36af397745"
+    },
+    {
+      "file": "02_membership.txt",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 3985,
+      "sha256": "a949fb07dc3a411a0f8377b682de36ec891d7501b6a9572f779bb16609ea0a76"
+    },
+    {
+      "file": "03_shipping.docx",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 3989,
+      "sha256": "26eb2f45051d520514e9720d98a602139f5e1f3f488f453a8a7682aab419c8db"
+    },
+    {
+      "file": "04_repair.pdf",
+      "chunks": 9,
+      "stored": 9,
+      "chars": 4109,
+      "sha256": "7f35afacbebd535836248dabd5670a7be696c6341acff834653ef179a4bfdcc6"
+    },
+    {
+      "file": "05_lamps.md",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 4092,
+      "sha256": "886795c285bde5dfe6c41cee3a4627cb5bd0b284acec7fdd12e03e0711b09b06"
+    },
+    {
+      "file": "06_cup.txt",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 3915,
+      "sha256": "7c68340d2c3d65c877944fd9ec8403c7c572a60fbf2287ecfba0e5904a2cee1e"
+    },
+    {
+      "file": "07_support.docx",
+      "chunks": 12,
+      "stored": 12,
+      "chars": 3973,
+      "sha256": "1606383908c88b48f945c5159e8508c98b19821e4807e1be0918533dcdddf0a5"
+    },
+    {
+      "file": "08_service_plan.pdf",
+      "chunks": 9,
+      "stored": 9,
+      "chars": 3962,
+      "sha256": "d07a8b8e773ceafba7846679bc6cf4caef654727cae5d8781f090e4d7f0e86fb"
+    }
+  ],
+  "total_chunks": 90,
+  "validation": {
+    "environment": "Windows native, project .venv, real local BGE-small-zh-v1.5 ONNX",
+    "method": "document_loader.load_document -> chunk_text(default 500) -> memory.save_document -> count_document_chunks",
+    "default_data_unchanged": true,
+    "default_data_files": 16,
+    "paid_calls": 0,
+    "question_answer_evaluation_run": false,
+    "pdf_pages_visually_reviewed": 8,
+    "docx_visual_review": "not performed: bundled LibreOffice unavailable; user approved structure/ingestion-only submission"
+  },
+  "selfcheck": {
+    "questions": 50,
+    "turns_total": 62,
+    "category_counts": {
+      "single_fact": 20,
+      "multi_document": 10,
+      "refuse": 10,
+      "partial": 5,
+      "multi_turn": 5
+    },
+    "supporting_evidence_quotes": 68,
+    "single_chunk_checks": [
+      {
+        "id": "S01",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S02",
+        "supporting_chunk_indices": [
+          0,
+          5
+        ]
+      },
+      {
+        "id": "S03",
+        "supporting_chunk_indices": [
+          0,
+          6
+        ]
+      },
+      {
+        "id": "S04",
+        "supporting_chunk_indices": [
+          0,
+          7
+        ]
+      },
+      {
+        "id": "S05",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S06",
+        "supporting_chunk_indices": [
+          0,
+          6
+        ]
+      },
+      {
+        "id": "S07",
+        "supporting_chunk_indices": [
+          0,
+          7
+        ]
+      },
+      {
+        "id": "S08",
+        "supporting_chunk_indices": [
+          0,
+          5
+        ]
+      },
+      {
+        "id": "S09",
+        "supporting_chunk_indices": [
+          0,
+          7
+        ]
+      },
+      {
+        "id": "S10",
+        "supporting_chunk_indices": [
+          1,
+          9
+        ]
+      },
+      {
+        "id": "S11",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S12",
+        "supporting_chunk_indices": [
+          0,
+          5
+        ]
+      },
+      {
+        "id": "S13",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S14",
+        "supporting_chunk_indices": [
+          0,
+          5
+        ]
+      },
+      {
+        "id": "S15",
+        "supporting_chunk_indices": [
+          1,
+          8
+        ]
+      },
+      {
+        "id": "S16",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S17",
+        "supporting_chunk_indices": [
+          1,
+          8
+        ]
+      },
+      {
+        "id": "S18",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      },
+      {
+        "id": "S19",
+        "supporting_chunk_indices": [
+          0,
+          3
+        ]
+      },
+      {
+        "id": "S20",
+        "supporting_chunk_indices": [
+          0,
+          4
+        ]
+      }
+    ],
+    "refusal_absence_checks": [
+      {
+        "id": "R01",
+        "kind": "公司内部事务",
+        "keyword_hits": {
+          "财务主管": [],
+          "税前工资": []
+        }
+      },
+      {
+        "id": "R02",
+        "kind": "公司内部事务",
+        "keyword_hits": {
+          "经营净利润": []
+        }
+      },
+      {
+        "id": "R03",
+        "kind": "公司内部事务",
+        "keyword_hits": {
+          "收款银行账号": []
+        }
+      },
+      {
+        "id": "R04",
+        "kind": "公司内部事务",
+        "keyword_hits": {
+          "当前库存": [],
+          "仓库现货": []
+        }
+      },
+      {
+        "id": "R05",
+        "kind": "公司内部事务",
+        "keyword_hits": {
+          "员工奖金": [],
+          "奖金公式": []
+        }
+      },
+      {
+        "id": "R06",
+        "kind": "公开常识",
+        "keyword_hits": {
+          "海平面": [],
+          "标准气压": [],
+          "沸点": []
+        }
+      },
+      {
+        "id": "R07",
+        "kind": "公开常识",
+        "keyword_hits": {
+          "地球": [],
+          "太阳": [],
+          "平均距离": []
+        }
+      },
+      {
+        "id": "R08",
+        "kind": "公开常识",
+        "keyword_hits": {
+          "法国": [],
+          "首都": []
+        }
+      },
+      {
+        "id": "R09",
+        "kind": "公开常识",
+        "keyword_hits": {
+          "真空": [],
+          "光速": []
+        }
+      },
+      {
+        "id": "R10",
+        "kind": "公开常识",
+        "keyword_hits": {
+          "Python": [],
+          "诞生年份": []
+        }
+      }
+    ],
+    "model_calls": 0
+  }
+}

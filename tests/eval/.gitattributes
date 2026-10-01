@@ -1,0 +1,6 @@
+# Keep fixed corpus bytes stable across Windows/Linux checkouts.
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.pdf binary
+*.docx binary
