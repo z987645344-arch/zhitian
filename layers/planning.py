@@ -7,7 +7,7 @@ import time
 from typing import Callable, Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 import config
 from layers import execution, llm_provider, memory, system_modules
 from layers.execution import Citation, ToolResult
@@ -37,8 +37,8 @@ class ComplexTaskResult(BaseModel):
 
 
 class FastEvidenceSelection(BaseModel):
-    evidence_sufficient: bool = False
-    used_candidate_ids: list[int] = Field(default_factory=list)
+    evidence_sufficient: StrictBool
+    used_candidate_ids: list[int]
     reason: str = ""
 
 
@@ -55,13 +55,13 @@ FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。
 {"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason": "一句话说明判断依据"}"""
 
 
-FAST_DOCUMENT_GENERATION_PROMPT = """你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题，以及已经过筛选、确认为真正相关的知识库片段（如果为空，说明上一环节判定证据不充分）。
+FAST_DOCUMENT_GENERATION_PROMPT = """你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
 
 生成原则：
 1. 如果提供了知识库片段，仅基于这些片段内容组织回答，不得引入片段之外的自身知识来补充、替换或"完善"片段内容；片段信息不完整时，如实说明"资料未详细说明"，不要编造。
 2. 如果没有提供任何知识库片段，直接回复"未找到可靠依据，无法确认答案"，可视情况建议咨询相关专业人士或查阅权威来源，不展开缺少片段支持的具体内容。
 3. 回答简洁准确，不堆砌免责声明。
-4. 不需要重新评估证据是否充分——这一步已在上一环节完成。"""
+4. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"未找到可靠依据，无法确认答案"，不得把仅有检索结果当作证据充分。"""
 
 
 class AgentState(TypedDict):
@@ -1005,12 +1005,29 @@ def _run_fast_state(state: AgentState) -> AgentState:
                     selection.used_candidate_ids if selection.evidence_sufficient else [],
                 )
             except Exception as exc:
-                selection = FastEvidenceSelection()
-                selected_citations = []
+                execution.add_degradation_reason(
+                    state,
+                    "fast_evidence_filter_timeout" if llm_provider.is_timeout_error(exc)
+                    else "fast_evidence_filter_failed",
+                )
+                # 筛选是可选步骤，不开熔断。只有能留出既有最终生成的一次预算
+                # 才继续；不给几乎耗尽的请求再启动一次必然失败的模型调用。
+                if deadline - time.perf_counter() >= config.FAST_LLM_TIMEOUT:
+                    selected_evidence = str(result.data or "")
+                    selected_citations = _dedupe_citations(result.citations or [])
+                    selection = FastEvidenceSelection(
+                        evidence_sufficient=True, used_candidate_ids=[],
+                    )
+                else:
+                    selected_citations = []
+                    selection = FastEvidenceSelection(
+                        evidence_sufficient=False, used_candidate_ids=[],
+                    )
                 logger.warning(
-                    "fast证据筛选失败并按证据不足处理：session_id=%s error_type=%s",
+                    "fast证据筛选降级：session_id=%s error_type=%s fallback_to_candidates=%s",
                     state["session_id"],
                     type(exc).__name__,
+                    selection.evidence_sufficient,
                 )
             observability.log_stage(
                 "fast_evidence_filter",
@@ -1143,13 +1160,9 @@ def _build_fast_result_messages(
 
 
 def _parse_fast_evidence_selection(response: object) -> FastEvidenceSelection:
-    """Parse evidence selection; malformed output is treated as insufficient evidence."""
-    try:
-        payload = _parse_json_object(llm_provider.extract_text(response))
-        return FastEvidenceSelection(**payload)
-    except Exception as exc:
-        logger.warning("fast文档证据选择解析失败：error_type=%s", type(exc).__name__)
-        return FastEvidenceSelection()
+    """Malformed/missing decisions are failures, not a successful evidence refusal."""
+    payload = _parse_json_object(llm_provider.extract_text(response))
+    return FastEvidenceSelection(**payload)
 
 
 def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple[str, list[Citation]]:

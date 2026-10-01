@@ -1015,11 +1015,12 @@ def test_fast_document_decline_has_no_citations(monkeypatch):
     assert len(model_calls) == 2
 
 
-def test_fast_document_evidence_parse_failure_declines_without_generation(monkeypatch):
+def test_fast_document_evidence_parse_failure_generates_from_candidates(monkeypatch):
     _prepare_fast_mocks(monkeypatch)
     responses = iter([
         _fast_response(tool_name="search_documents", arguments={"query": "topic"}),
         _fast_response(content="not-json"),
+        _fast_response(content="candidate-based answer"),
     ])
     model_calls = []
 
@@ -1041,6 +1042,73 @@ def test_fast_document_evidence_parse_failure_declines_without_generation(monkey
 
     state = planning.run_graph_state("fast-parse-failure", "topic", mode="fast")
 
-    assert state["response"] == "未找到可靠依据，无法确认答案"
-    assert state["citations"] == []
-    assert len(model_calls) == 2
+    assert state["response"] == "candidate-based answer"
+    assert [c.doc_id for c in state["citations"]] == ["a"]
+    assert len(model_calls) == 3
+    assert state["degradation_reasons"] == ["fast_evidence_filter_failed"]
+    assert state["deepseek_circuit_open"] is False
+
+
+@pytest.mark.parametrize("failure,reason", [
+    (TimeoutError("simulated"), "fast_evidence_filter_timeout"),
+    (RuntimeError("simulated"), "fast_evidence_filter_failed"),
+])
+@pytest.mark.parametrize("budget_sufficient", [True, False])
+def test_fast_evidence_failure_sse_degraded_and_budget_fallback(
+    monkeypatch, client, auth_headers, failure, reason, budget_sufficient,
+):
+    _prepare_fast_mocks(monkeypatch)
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *a, **kw: None)
+    clock = [0.0]
+    monkeypatch.setattr(planning.time, "perf_counter", lambda: clock[0])
+    calls = []
+    def chat(messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return _fast_response(tool_name="search_documents", arguments={"query": "topic"})
+        if len(calls) == 2:
+            if not budget_sufficient:
+                clock[0] = config.FAST_REQUEST_TIMEOUT - config.FAST_LLM_TIMEOUT + .1
+            raise failure
+        return _fast_response(content="只回答候选支持的内容，资料未详细说明其余部分")
+    monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
+    monkeypatch.setattr(planning.mcp_client, "call_tool", lambda *a, **kw: ToolResult(
+        tool="search_documents", status="success", data="[1] first\n\n[2] second",
+        citations=[planning.Citation(source="a", doc_id="a", chunk_index=0, score=.7),
+                   planning.Citation(source="b", doc_id="b", chunk_index=1, score=.6)],
+    ))
+    response = client.post("/chat/stream", headers=headers, json={
+        "session_id": "fast-evidence-failure", "message": "topic", "mode": "fast",
+    })
+    assert response.status_code == 200
+    events = [json.loads(line[5:].strip()) for line in response.text.splitlines() if line.startswith("data:")]
+    assert next(e for e in events if e.get("type") == "request_status") == {
+        "type": "request_status", "status": "degraded", "reason_codes": [reason],
+    }
+    assert events[-1] == {"chunk": "[DONE]"}
+    citations = next(e["citations"] for e in events if e.get("type") == "citations")
+    if budget_sufficient:
+        assert len(calls) == 3
+        assert "[1] first\n\n[2] second" in calls[-1][-1]["content"]
+        assert [c["doc_id"] for c in citations] == ["a", "b"]
+        assert "只回答候选支持的内容" in response.text
+    else:
+        assert len(calls) == 2
+        assert citations == []
+        assert "未找到可靠依据，无法确认答案" in response.text
+
+
+@pytest.mark.parametrize("raw", ["not-json", "{}", '{"used_candidate_ids": [1]}',
+    '{"evidence_sufficient": "false", "used_candidate_ids": []}'])
+def test_fast_evidence_invalid_decision_is_failure(raw):
+    with pytest.raises(ValueError):
+        planning._parse_fast_evidence_selection(_fast_response(content=raw))
+
+
+def test_fast_document_generation_keeps_evidence_boundaries():
+    prompt = planning.FAST_DOCUMENT_GENERATION_PROMPT
+    assert "未找到可靠依据，无法确认答案" in prompt
+    assert "不得引入片段之外的自身知识来补充、替换或\"完善\"片段内容" in prompt
+    assert "片段信息不完整时，如实说明\"资料未详细说明\"，不要编造" in prompt
+    assert "如果片段与问题无关或无法支持核心问题" in prompt
