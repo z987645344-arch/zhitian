@@ -190,7 +190,7 @@ def test_expert_document_metadata_stays_in_dynamic_message(monkeypatch):
     assert fixed.index("GUIDANCE_MARKER") < fixed.index("TONE_MARKER")
     assert fixed.index("TONE_MARKER") < fixed.index("FORBIDDEN_MARKER")
     assert fixed.index("FORBIDDEN_MARKER") < fixed.index("你是企业知识库问答助手")
-    assert "不得替换为其他法域" in fixed
+    assert "不得替换为片段之外的其他来源、地区或版本的信息" in fixed
     assert "DYNAMIC_QUERY" not in fixed
     assert "DYNAMIC_SOURCE" not in fixed
     assert "0.812300" not in fixed
