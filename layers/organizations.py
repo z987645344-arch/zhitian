@@ -495,20 +495,25 @@ def save_lobby_content(
 
 
 def generate_guidance_content() -> str:
-    """按全部非默认组织的名称与内容动态拼接guidance文案。
+    """每次读取时按有已核验文档的非默认组织动态拼接guidance文案。
 
-    纯字符串拼接，不做任何关键词/正则判断；组织列表为空时使用兜底文案。
+    组织存在不等于知识库收录了资料；用文档审核状态作依据，不缓存该查询。
+    核验通过、拒绝或删除文档后的下一次读取自然更新，不修改任何组织数据。
     """
     with auth._connect() as conn:
         rows = conn.execute(
             """
-            SELECT name, content FROM organizations
-            WHERE name != ? ORDER BY name ASC
+            SELECT o.name, o.content FROM organizations o
+            WHERE o.name != ? AND EXISTS (
+                SELECT 1 FROM documents d
+                WHERE d.organization_id = o.id AND d.trust_level = 'verified'
+            )
+            ORDER BY o.name ASC
             """,
             (DEFAULT_ORGANIZATION_NAME,),
         ).fetchall()
     if not rows:
-        return "当前企业知识库尚未配置知识领域。"
+        return "当前企业知识库暂无已核验的参考资料。"
     parts = []
     for row in rows:
         content = (row["content"] or "").strip()

@@ -103,6 +103,9 @@ def test_modules_precede_rules_date_and_dynamic_content(monkeypatch):
 
 
 def test_fast_prompt_inherits_retrieval_rule_from_generated_guidance():
+    legal = next(item for item in system_modules.organizations.list_organizations() if item["name"] == "法律")
+    auth.register_document("guidance-rule-doc", "测试.md", "test-uploader", organization_id=legal["id"])
+    assert auth.approve_document("guidance-rule-doc", "test-reviewer")
     state = planning._new_agent_state("module-fast-guidance", "测试问题", "fast")
     system_prompt = planning._build_fast_messages(state)[0]["content"]
     rule = system_modules.organizations.GUIDANCE_RETRIEVAL_RULE
