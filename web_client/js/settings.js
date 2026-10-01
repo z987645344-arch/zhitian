@@ -50,19 +50,6 @@
       : 'settings-message success';
   }
 
-  function formatLockTime(value) {
-    if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    return new Intl.DateTimeFormat('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
   function render(nextStatus) {
     status = nextStatus;
     const enterpriseSelected = status.source === 'enterprise';
@@ -87,7 +74,7 @@
     enterpriseForm.querySelector('label').hidden = status.enterprise_authorized;
     enterpriseSelect.hidden = !status.enterprise_authorized || enterpriseSelected;
 
-    const lockedUntil = formatLockTime(status.enterprise_password_locked_until);
+    const lockedUntil = ZhitianTime.formatLocalTime(status.enterprise_password_locked_until, {}, '');
     if (lockedUntil) {
       enterpriseHint.textContent = `当前账号已锁定，请在 ${lockedUntil} 后再试。`;
       enterprisePassword.disabled = true;

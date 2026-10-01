@@ -14,6 +14,7 @@
 import contextvars
 import sqlite3
 from datetime import datetime
+from utils.time_values import utc_now_naive
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from layers import auth
@@ -32,7 +33,7 @@ _request_hits: contextvars.ContextVar = contextvars.ContextVar(
 
 
 def current_month(now: Optional[datetime] = None) -> str:
-    return (now or datetime.now()).strftime("%Y-%m")
+    return (now or utc_now_naive()).strftime("%Y-%m")
 
 
 def begin_request() -> Any:

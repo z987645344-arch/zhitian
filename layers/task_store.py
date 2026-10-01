@@ -16,7 +16,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from utils.time_values import utc_now_naive
 from typing import List, Optional
 
 from pydantic import BaseModel
@@ -155,7 +155,7 @@ def create_task(
 ) -> UploadTask:
     if task_type not in TASK_TYPES:
         raise ValueError("未知任务类型：%s" % task_type)
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     task = UploadTask(
         task_id=str(uuid.uuid4()),
         task_type=task_type,
@@ -192,7 +192,7 @@ def update_task(
     error_message: Optional[str] = None,
     result_doc_id: Optional[str] = None,
 ) -> None:
-    sets, params = ["updated_at = ?"], [datetime.now().isoformat()]
+    sets, params = ["updated_at = ?"], [utc_now_naive().isoformat()]
     for column, value in (
         ("status", status), ("progress", progress),
         ("total_chunks", total_chunks), ("processed_chunks", processed_chunks),

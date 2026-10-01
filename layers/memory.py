@@ -10,6 +10,8 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime
+from utils.time_values import utc_now_naive
+from utils.time_values import as_utc_datetime
 from typing import Callable, List, Optional, Tuple
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
@@ -181,7 +183,7 @@ def save_message(
     """保存一条对话记录到SQLite"""
     _validate_message(session_id, role, content)
     normalized_message_type = _validate_message_type(message_type, role)
-    timestamp = datetime.now().isoformat()
+    timestamp = utc_now_naive().isoformat()
     try:
         with _connect() as conn:
             conn.execute(
@@ -414,7 +416,7 @@ def save_to_vector(
     if not content:
         return
 
-    timestamp = datetime.now().isoformat()
+    timestamp = utc_now_naive().isoformat()
     try:
         with _chroma_lock:
             collection = _get_chroma_collection()
@@ -579,7 +581,7 @@ def save_document(
         return 0
 
     total_chunks = len(clean_chunks)
-    uploaded_at = datetime.now().isoformat()
+    uploaded_at = utc_now_naive().isoformat()
     with _chroma_lock:
         collection = _get_document_collection()
         for start in range(0, total_chunks, config.INGEST_CHUNK_BATCH_SIZE):
@@ -1487,10 +1489,10 @@ def _memory_age_days(timestamp: Optional[str], now: datetime = None) -> float:
     if not timestamp:
         return 0.0
     try:
-        created_at = datetime.fromisoformat(str(timestamp))
+        created_at = as_utc_datetime(timestamp)
     except ValueError:
         return 0.0
-    current = now or datetime.now()
+    current = as_utc_datetime(now or utc_now_naive())
     age_seconds = (current - created_at).total_seconds()
     return max(0.0, age_seconds / 86400.0)
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Reviewer-managed system prompt modules stored in the existing users database."""
 
-from datetime import datetime
+from utils.time_values import utc_now_naive
 from threading import RLock
 from typing import Dict, Literal, Optional
 
@@ -71,7 +71,7 @@ def save_modules(contents: Dict[str, str], updated_by: str) -> Dict[str, SystemM
     invalid = set(contents) - set(MODULE_TYPES)
     if invalid:
         raise ValueError("不支持的系统模块类型")
-    updated_at = datetime.now().isoformat()
+    updated_at = utc_now_naive().isoformat()
     with auth._connect() as conn:
         for module_type in MODULE_TYPES:
             if module_type not in contents:

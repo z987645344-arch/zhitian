@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -164,7 +164,7 @@ def save_file(
         original_filename=_sanitize_filename(original_filename, normalized_format),
         format=normalized_format,
         size_bytes=0,
-        created_at=datetime.now().astimezone().isoformat(),
+        created_at=datetime.now(timezone.utc).isoformat(),
         session_id=session_id,
         organization_id=organization_id,
         source_task_id=source_task_id,

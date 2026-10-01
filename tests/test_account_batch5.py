@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """账号治理Batch 5：快照、人员详情、默认映射和自助重置。"""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import bcrypt
 
@@ -49,7 +49,9 @@ def test_enterprise_password_endpoints_are_role_isolated(client, auth_headers):
     assert developer_payload["password"].isdigit()
     assert len(developer_payload["password"]) == 8
     assert developer_payload["next_refresh_at"] == reviewer_payload["next_refresh_at"]
-    next_refresh = datetime.fromisoformat(developer_payload["next_refresh_at"])
+    next_refresh = datetime.fromisoformat(developer_payload["next_refresh_at"].replace("Z", "+00:00"))
+    assert next_refresh.utcoffset() == timezone.utc.utcoffset(None)
+    next_refresh = next_refresh.astimezone(enterprise_password.BUSINESS_TIMEZONE)
     assert next_refresh.hour == 4
     assert next_refresh.utcoffset() == (
         enterprise_password.BUSINESS_TIMEZONE.utcoffset(None)

@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from utils.time_values import utc_now_naive
 from typing import Any, Dict, List, Optional
 
 import bcrypt
@@ -223,7 +224,7 @@ def _seed_default_organizations(conn: sqlite3.Connection) -> None:
             INSERT INTO organizations (name, content, is_protected, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (name, content, is_protected, datetime.now().isoformat()),
+            (name, content, is_protected, utc_now_naive().isoformat()),
         )
 
 
@@ -773,7 +774,7 @@ def login_user(username: str, password: str, role: str) -> str:
     with _connect() as conn:
         conn.execute(
             "UPDATE users SET last_login_at = ? WHERE user_id = ?",
-            (datetime.now().isoformat(), user["user_id"]),
+            (utc_now_naive().isoformat(), user["user_id"]),
         )
 
     expire_at = datetime.now(timezone.utc) + timedelta(hours=config.JWT_EXPIRE_HOURS)
@@ -840,7 +841,7 @@ def create_registration_request(
         raise ValueError("用户名和密码不能为空")
     approver_role = get_registration_approver_role(role)
     password_hash = hash_registration_password(password)
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     try:
         with transaction(USERS_DB_PATH) as conn:
             if conn.execute(
@@ -907,7 +908,7 @@ def review_registration_request(
     approve: bool,
 ) -> dict:
     """原子审批申请；默认开发者首次批准developer后同步停用自身。"""
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     with transaction(USERS_DB_PATH) as conn:
         approver = conn.execute(
             """
@@ -1068,7 +1069,7 @@ def reset_password_by_username(
         )
         conn.execute(
             "INSERT INTO password_reset_log (username, created_at) VALUES (?, ?)",
-            (normalized, datetime.now().isoformat()),
+            (normalized, utc_now_naive().isoformat()),
         )
         if verification_purpose and not _mark_code_used_in_connection(
             conn, normalized, verification_purpose
@@ -1533,7 +1534,7 @@ def update_rate_limits(
                 "每分钟上限须在%s到%s之间"
                 % (RATE_LIMIT_MIN_PER_MINUTE, RATE_LIMIT_MAX_PER_MINUTE)
             )
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     with transaction(USERS_DB_PATH) as conn:
         for role, value in limits.items():
             conn.execute(
@@ -1660,7 +1661,7 @@ def _get_user_by_username_role(username: str, role: str) -> Optional[sqlite3.Row
 def _review_document(doc_id: str, reviewer_user_id: str, trust_level: str) -> bool:
     if not doc_id or not reviewer_user_id:
         return False
-    reviewed_at = datetime.now().isoformat()
+    reviewed_at = utc_now_naive().isoformat()
     try:
         with _connect() as conn:
             cursor = conn.execute(

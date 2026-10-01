@@ -6,7 +6,7 @@
 """
 
 import sqlite3
-from datetime import datetime
+from utils.time_values import utc_now_naive
 from typing import List, Optional
 
 from layers import auth
@@ -69,7 +69,7 @@ def create_organization(name: str, content: Optional[str]) -> dict:
         raise ValueError("组织名称不能为空")
     if normalized_name == DEFAULT_ORGANIZATION_NAME:
         raise ValueError("不能新建与默认组织同名的组织")
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     try:
         with auth._connect() as conn:
             cursor = conn.execute(
@@ -155,7 +155,7 @@ def attach_user_to_default_organization(user_id: str) -> None:
             INSERT OR IGNORE INTO user_organizations (user_id, organization_id, created_at)
             SELECT ?, id, ? FROM organizations WHERE name = ?
             """,
-            (user_id, datetime.now().isoformat(), DEFAULT_ORGANIZATION_NAME),
+            (user_id, utc_now_naive().isoformat(), DEFAULT_ORGANIZATION_NAME),
         )
 
 
@@ -257,7 +257,7 @@ def create_membership_request(user_id: str, organization_id: int, action: str) -
     normalized_action = (action or "").strip()
     if normalized_action not in MEMBERSHIP_ACTIONS:
         raise ValueError("申请类型无效")
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     with transaction(auth.USERS_DB_PATH) as conn:
         row = _get_organization_row(conn, organization_id)
         if not row:
@@ -363,7 +363,7 @@ def review_membership_request(
     路由规则：reviewer只能处理本人所属组织内employee的申请；组织无审核员时
     该申请归developer处理，reviewer一律拒绝受理。developer可处理全部申请。
     """
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     with transaction(auth.USERS_DB_PATH) as conn:
         row = conn.execute(
             """
@@ -488,7 +488,7 @@ def save_lobby_content(
                 payload["company_announcements"],
                 payload["industry_standards"],
                 updated_by,
-                datetime.now().isoformat(),
+                utc_now_naive().isoformat(),
             ),
         )
     return get_lobby_content()

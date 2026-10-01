@@ -3,6 +3,7 @@
 
 import hashlib
 from datetime import date, datetime, time, timedelta, timezone
+from utils.time_values import utc_now_naive
 from typing import Optional, Tuple
 
 import config
@@ -116,7 +117,7 @@ def trigger_manual_refresh(now: Optional[datetime] = None) -> str:
                 refresh_count = refresh_count + 1,
                 updated_at = excluded.updated_at
             """,
-            (business_day.isoformat(), datetime.now().isoformat()),
+            (business_day.isoformat(), utc_now_naive().isoformat()),
         )
     return get_current_enterprise_password(now)
 

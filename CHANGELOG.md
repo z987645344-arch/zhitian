@@ -2006,3 +2006,11 @@
 - **证据**：`scripts/vulnerability_exceptions.py validate` 通过（33 条）；按 CI 同款参数运行 pip-audit 2.10.1：`No known vulnerabilities found, 3 ignored`；Python 3.10 项目 `.venv` 下 `tests/test_auth.py`、`tests/test_login_audit.py` 17 passed；离线全量（`-m "not integration"`）555 passed / 2 failed，这 2 个（`test_llm_connection_pool::test_client_disconnect_closes_registered_stream`、`test_mcp_connector::test_timeout_terminates_stdio_process_tree`）在未改动的 master 上于同一 Linux 容器同样失败，属本地环境差异（CI 为 Windows），与本补丁无关。
   - `tests/test_vulnerability_exceptions.py` 的快照断言按新增例外同步：条目数 32 → 33、校验基准日 2026-09-24 → 2026-09-30（新条目 `reviewed_at` 为 2026-09-30，早于该日会被判无效）。
 - **部署影响**：重建后端 API 镜像。签发与校验仍用同一 `JWT_SECRET_KEY` 与算法；2.14.0 会拒绝空 HMAC 密钥等不安全输入，生产环境须确认 `JWT_SECRET_KEY` 已设置为非空强密钥（本就是上线要求）。部署后建议实际登录一次确认。
+
+## 2026-10-01 时间出口统一UTC、网页按设备本地时区显示
+
+- 新增 `utils/time_values.py`，普通/显式 JSON、HTTP 错误及 SSE 共用 `serialize_api_times()`，把已登记的瞬时时间字段转成 UTC ISO 8601（Z）；空值、业务日/快照日期/月份及用户正文不改写。
+- SQLite/Chroma、运行指标与迁移日志的隐式本地时钟改为显式 UTC；原有 naive/aware 存储格式不变、无需迁移。长期记忆衰减比较也按 UTC 对齐；定时备份 UTC+8 00:00、企业密码/邮件统计/人数快照的 UTC+8 04:00 业务日逻辑保持不变。
+- 网页会话显示/排序与配额锁定时间共用 `web_client/js/time.js`：有偏移按偏移解析，旧无偏移时间按 UTC 解析，再按设备本地时区显示。仅受影响页面的脚本缓存串更新；新增 Node 测试并接入普通 CI。
+- 项目 `.venv` PyJWT 实证为 2.14.0，未改环境；`run_tests.bat -q` 为 638 passed / 5 deselected / 0 failed。网页 Node 测试 3 passed，Asia/Shanghai 下新旧输入均显示 10:46；公开模型时间字段登记、真实会话、JSON/SSE/错误出口和 UTC 时钟均有断言。原企业密码测试改为先验证出口 UTC、再换回 UTC+8 验证 04:00，未放宽业务边界。
+- 本轮为普通工作条目，不改 VERSION、不打标、不部署；未做生产验证，推送与本次 CI 由指挥师后续执行。客户端兼容新旧响应，后端与客户端可独立部署；默认数据仍按既有生产 UTC 语义解释。

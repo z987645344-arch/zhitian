@@ -4,7 +4,7 @@
 import os
 import sqlite3
 from collections import Counter
-from datetime import datetime
+from utils.time_values import utc_now_naive
 from typing import Dict
 
 from utils.logger import get_logger
@@ -86,7 +86,7 @@ def initialize_schema_version(
                     INSERT INTO schema_version (id, version, updated_at)
                     VALUES (1, ?, ?)
                     """,
-                    (current_version, datetime.now().isoformat()),
+                    (current_version, utc_now_naive().isoformat()),
                 )
                 return current_version
             if len(rows) != 1 or int(rows[0]["id"]) != 1:

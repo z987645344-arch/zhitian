@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """真实账号每日角色人数快照；请求时按凌晨4点业务日懒惰创建。"""
 
-from datetime import datetime
+from datetime import datetime, timezone
+from utils.time_values import utc_now_naive
 from typing import Optional
 
 from layers import auth, enterprise_password
@@ -26,7 +27,11 @@ def init_db() -> None:
 def get_or_create_today_snapshot(now: Optional[datetime] = None) -> dict:
     init_db()
     snapshot_date = enterprise_password.get_business_day(now).isoformat()
-    current_time = now or datetime.now()
+    # 显式now沿用业务日的北京时间输入契约；存储仍统一UTC-naive。
+    current_time = (
+        enterprise_password._as_business_time(now).astimezone(timezone.utc).replace(tzinfo=None)
+        if now is not None else utc_now_naive()
+    )
     with auth._connect() as conn:
         row = conn.execute(
             "SELECT * FROM daily_role_headcount_snapshot WHERE snapshot_date = ?",

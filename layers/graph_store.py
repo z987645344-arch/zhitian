@@ -13,7 +13,7 @@
 import json
 import sqlite3
 import time
-from datetime import datetime
+from utils.time_values import utc_now_naive
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import config
@@ -217,7 +217,7 @@ def store_chunk_graph(chunk_id: str, payload: dict) -> Tuple[int, int]:
     relationships = (payload or {}).get("relationships") or []
     if not entities:
         return (0, 0)
-    now = datetime.now().isoformat()
+    now = utc_now_naive().isoformat()
     name_to_id = {}
     relationship_count = 0
     with transaction(auth.USERS_DB_PATH) as conn:

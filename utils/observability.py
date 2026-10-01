@@ -3,7 +3,7 @@
 
 from contextvars import ContextVar, Token
 from collections import deque
-from datetime import datetime
+from utils.time_values import utc_now_naive
 import math
 import threading
 import time
@@ -17,7 +17,7 @@ _trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 _request_mode: ContextVar[str] = ContextVar("request_mode", default="fast")
 _request_started_at: ContextVar[Optional[float]] = ContextVar("request_started_at", default=None)
 _stage_timings: ContextVar[Optional[dict[str, int]]] = ContextVar("stage_timings", default=None)
-_stats_since = datetime.now().isoformat()
+_stats_since = utc_now_naive().isoformat()
 _stats_lock = threading.Lock()
 _request_stats = {"total": 0, "success": 0, "degraded": 0, "error": 0}
 _model_stats = {
@@ -132,7 +132,7 @@ def record_request(
             "total_elapsed_ms": elapsed_ms,
             "status": status,
             "error_type": error_type or "",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_naive().isoformat(),
         })
 
 

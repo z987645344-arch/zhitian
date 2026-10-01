@@ -37,6 +37,7 @@ import chromadb
 import config
 from layers import embedding
 from scripts import backup_data
+from utils.time_values import utc_now_naive
 
 # 与layers/memory.py保持一致；改名会使迁移产物对不上生产读取路径
 COLLECTIONS = ("zhitian_documents", "zhitian_memory")
@@ -331,7 +332,7 @@ def _activate(data_dir: Path, new_path: Path) -> Path:
                 "rollback_dir": rollback.name,
                 "migrate_dir": new_path.name,
                 "vector_dir": vector_dir.name,
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "started_at": utc_now_naive().strftime("%Y-%m-%dT%H:%M:%S"),
             },
             ensure_ascii=False,
             indent=2,

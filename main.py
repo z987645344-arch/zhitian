@@ -15,12 +15,14 @@ import uuid
 import time
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from utils.time_values import utc_now_naive
 from typing import List, Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -30,6 +32,7 @@ import config
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
 from utils import observability
+from utils.time_values import UTCJSONResponse as JSONResponse, serialize_api_times
 
 logger = get_logger("main", console_info_prefix="[graphrag] ")
 audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
@@ -274,10 +277,21 @@ app = FastAPI(
     title="知天 Agent API",
     version=APP_VERSION,
     lifespan=lifespan,
+    default_response_class=JSONResponse,
     docs_url="/docs" if config.API_DOCS_ENABLED else None,
     redoc_url="/redoc" if config.API_DOCS_ENABLED else None,
     openapi_url="/openapi.json" if config.API_DOCS_ENABLED else None,
 )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def utc_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # 保留框架的状态码/头部及无正文处理，只统一JSON出口（含配额锁定时间）。
+    response = await http_exception_handler(request, exc)
+    if response.body:
+        response.body = JSONResponse(content=json.loads(response.body)).body
+        response.headers["content-length"] = str(len(response.body))
+    return response
 
 
 @app.middleware("http")
@@ -940,7 +954,7 @@ async def health():
     return {
         "status": _overall_health_status(layers),
         "layers": layers,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": utc_now_naive().isoformat()
     }
 
 
@@ -961,7 +975,7 @@ async def ready():
             "chroma": chroma_ok,
             "libreoffice": libreoffice_ok,
         },
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now_naive().isoformat(),
     }
     return JSONResponse(
         status_code=(
@@ -2564,7 +2578,7 @@ async def input_knowledge(
         )
 
     title = (knowledge_request.title or "").strip()
-    source = f"manual_input:{title}" if title else f"manual_input:{datetime.now().isoformat()}"
+    source = f"manual_input:{title}" if title else f"manual_input:{utc_now_naive().isoformat()}"
     # F35：与/documents/upload同因，切分与向量化一并下放线程池
     with heavy_task_limits.occupy_slot():
         chunks = await asyncio.to_thread(document_loader.chunk_text, content)
@@ -2620,17 +2634,11 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
     while True:
         task = await asyncio.to_thread(task_store.get_task, task_id)
         if task is None:
-            yield "data: %s\n\n" % json.dumps(
-                {"status": "failed", "error_message": "任务不存在"},
-                ensure_ascii=False,
-            )
+            yield _sse_data({"status": "failed", "error_message": "任务不存在"})
             return
         if task.created_by != owner_user_id:
             # 与既有session归属校验同口径：只能看自己的任务
-            yield "data: %s\n\n" % json.dumps(
-                {"status": "failed", "error_message": "无权查看该任务"},
-                ensure_ascii=False,
-            )
+            yield _sse_data({"status": "failed", "error_message": "无权查看该任务"})
             return
 
         signature = (task.status, task.progress, task.processed_chunks)
@@ -2645,7 +2653,7 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
                 payload["error_message"] = task.error_message
             if task.status == "done" and task.result_doc_id:
                 payload["doc_id"] = task.result_doc_id
-            yield "data: %s\n\n" % json.dumps(payload, ensure_ascii=False)
+            yield _sse_data(payload)
             last_signature = signature
             idle_seconds = 0.0
 
@@ -3821,7 +3829,7 @@ def _validate_chat_mode(mode: Optional[str]) -> str:
 
 
 def _sse_data(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return f"data: {json.dumps(serialize_api_times(payload), ensure_ascii=False)}\n\n"
 
 
 def _serialize_citations(citations: list) -> list[dict]:

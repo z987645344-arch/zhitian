@@ -112,18 +112,6 @@
     return title || '未命名对话';
   }
 
-  function formatSessionTime(value) {
-    if (!value) return '时间未知';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
-    return new Intl.DateTimeFormat('zh-CN', {
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
   function setConversationTitle(title) {
     conversationTitle.textContent = title || '新对话';
   }
@@ -421,7 +409,7 @@
       const title = document.createElement('strong');
       title.textContent = visibleTitle(item);
       const meta = document.createElement('span');
-      meta.textContent = `${formatSessionTime(item.last_active)} · ${Number(item.message_count || 0)} 条消息`;
+      meta.textContent = `${ZhitianTime.formatLocalTime(item.last_active, { year: undefined, month: 'numeric', day: 'numeric' }, '时间未知')} · ${Number(item.message_count || 0)} 条消息`;
       open.append(title, meta);
       open.addEventListener('click', () => openSession(item.session_id));
 
@@ -442,8 +430,8 @@
     sessionStatus.textContent = '正在加载会话…';
     try {
       sessions = (await API.getSessions()).slice().sort((left, right) => {
-        const leftTime = Date.parse(left.last_active || left.created_at || '') || 0;
-        const rightTime = Date.parse(right.last_active || right.created_at || '') || 0;
+        const leftTime = ZhitianTime.parseTimestamp(left.last_active || left.created_at)?.getTime() || 0;
+        const rightTime = ZhitianTime.parseTimestamp(right.last_active || right.created_at)?.getTime() || 0;
         return rightTime - leftTime;
       });
       renderSessions();
