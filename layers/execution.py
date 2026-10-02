@@ -102,6 +102,7 @@ DEGRADATION_REASON_CODES = {
     "classification_timeout",
     "planning_timeout",
     "reflection_timeout",
+    "reflection_failed",
     "web_provider_failed",
     "web_no_results",
     "query_rewrite_timeout",
@@ -897,11 +898,8 @@ def _search_documents(
         )
         for item in trusted_results
     ]
-    if tier == "expert" or generate_answer:
-        source_policy.set_evidence(_execution_state, "hit")
     if _execution_state is not None:
         _execution_state["grounded_candidates"] = list(trusted_results)
-    source_policy.record_source(_execution_state, "knowledge", "knowledge_hit")
     title_source_match = any(
         item.get("title_source_match") and float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
         for item in trusted_results
@@ -921,13 +919,16 @@ def _search_documents(
         "rerank_error_kind": diagnostics.rerank_error_kind,
         "supplied_context_answer": bool(context and generate_answer),
     }
-    defer_answer_for_web = bool(
-        generate_answer
-        and not context
-        and deepseek_circuit_open(_execution_state)
-        and not local_evidence_is_strong(metadata)
-        and source_policy.source_gate(_execution_state, "web").allowed
+    evidence = "hit" if context or local_evidence_is_strong(metadata) else "weak"
+    if tier == "expert" or generate_answer:
+        source_policy.set_evidence(_execution_state, evidence)
+    source_policy.record_source(_execution_state, "knowledge", "knowledge_hit" if evidence == "hit" else "knowledge_weak")
+    # 过阈值不等于能支持答案。请求内的expert弱证据先反思，两种出口均在
+    # 反思之后生成正文；联网只在反思明确判定不足、弱转未命中之后检查许可。
+    defer_document_answer = bool(
+        tier == "expert" and _execution_state is not None and evidence == "weak" and not context
     )
+    metadata["document_answer_deferred"] = defer_document_answer
     document_answer_context = DocumentAnswerContext(
         query=query,
         tier=tier,
@@ -952,7 +953,7 @@ def _search_documents(
             _execution_state=_execution_state,
         )
         answer = context_result.data
-    elif generate_answer and not defer_answer_for_web:
+    elif generate_answer and not defer_document_answer:
         answer = "".join(_answer_from_documents(
             document_answer_context,
             tier=tier,

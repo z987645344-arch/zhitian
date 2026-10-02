@@ -48,6 +48,9 @@ test('实际详情渲染显示三轴、证据和原因，不使用HTML注入', (
     only_materials: false, classification_valid: true, evidence: 'miss', answer_source: 'general', reason: 'fast_general' });
   assert.equal(name.textContent, '来源与依据');
   assert.match(detail.textContent, /公开信息.*一般知识.*未命中.*通用知识.*快速模式未联网/);
+  render({ querySelectorAll: () => [row] }, { source: 'internal', time_sensitivity: 'general',
+    only_materials: false, classification_valid: true, evidence: 'weak', answer_source: 'knowledge', reason: 'knowledge_weak' });
+  assert.match(detail.textContent, /内部事务.*弱证据.*片段相关但尚未确认充分/);
   assert.ok(!chatSource.slice(start, end).includes('innerHTML'));
   assert.match(chatSource, /onSourcePolicy\(sourceEvent\)/);
 });

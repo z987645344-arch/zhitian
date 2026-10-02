@@ -815,6 +815,19 @@ def respond_node(state: AgentState) -> AgentState:
 
     latest_result = state["results"][-1]
     base_response = latest_result.data
+    if (
+        latest_result.tool == "search_documents"
+        and (latest_result.metadata or {}).get("document_answer_deferred")
+        and latest_result.document_answer_context is not None
+        and not state.get("stream_document_answer")
+    ):
+        # HTTP与SSE使用相同反思决策；仅正文交付方式不同，不返回原始检索片段。
+        base_response = "".join(execution._answer_from_documents(
+            latest_result.document_answer_context, tier=state["mode"],
+            timeout=execution.remaining_request_budget(state, config.EXPERT_LLM_TIMEOUT),
+            _execution_state=state,
+        ))
+        latest_result.data = base_response
     state["citations"] = _dedupe_citations(state["citations"])
     if latest_result.tool == "search_documents":
         state["response"] = _with_react_limit_notice(state, base_response)
@@ -1015,7 +1028,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
         primary = next((item for item in calls if item.get("name") in {"search_documents", "list_documents", "direct_answer"}), {})
         arguments = primary.get("arguments") or {}
         state["source_policy"] = source_policy.classify_policy(state["message"], arguments.get("source_classification"))
-        general_draft = str(arguments.get("general_answer") or llm_provider.extract_text(first_response) or "")
+        general_draft = str(arguments.get("general_answer") or "")
         tool_call = _select_fast_tool_call(calls)
         if primary.get("name") == "direct_answer" and source_policy.source_gate(state, "direct").allowed:
             observability.log_stage("fast_respond", selection_elapsed_ms)
@@ -1592,6 +1605,22 @@ def should_continue_react(state: AgentState) -> dict:
         return {"action": "respond"}
 
     reflection = _reflect_with_model(state)
+    if state.get("evidence_state") == "weak":
+        if reflection.get("failed"):
+            # 无效JSON、异常或超时不是未命中，不能据此扩大外部来源许可。
+            return {"action": "respond"}
+        insufficient = reflection.get("evidence_sufficient") is False or (
+            reflection.get("evidence_sufficient") is not True
+            and reflection.get("action") == "continue" and reflection.get("tool") in {"search_web", "llm_chat"}
+        )
+        if insufficient:
+            source_policy.set_evidence(state, "miss")
+            if source_policy.source_gate(state, "web").allowed and not _has_called_tool(state["tool_call_history"], "search_web"):
+                # 取代旧的defer_answer_for_web：不是因熔断或弱分数自动联网，
+                # 而是明确不足之后再通过同一个来源闸门。
+                reflection = {"action": "continue", "tool": "search_web", "query": state["message"]}
+            elif reflection.get("tool") != "search_documents":
+                return {"action": "respond"}
     if state["round_count"] >= max_total_rounds:
         return {
             "action": "respond",
@@ -1610,7 +1639,7 @@ def should_continue_react(state: AgentState) -> dict:
 
 
 def next_after_execute(state: AgentState) -> str:
-    if state.get("intent") == "document" and state.get("evidence_checked"):
+    if state.get("intent") == "document" and state.get("evidence_checked") and state.get("evidence_state") != "weak":
         # 资料已有答复（包括部分）、明确拒答或许可下的公开兜底已由执行层完成；
         # 反思不能再把已处理的证据状态重新解释成联网许可。
         return "respond"
@@ -1640,9 +1669,11 @@ def _reflect_with_model(state: AgentState) -> dict:
     """Ask the selected model whether current tool results are enough."""
     messages = cache_friendly_messages(
         "你是轻量ReAct反思调度器，只判断当前工具结果是否足够回答用户问题。"
-        "如果足够，返回JSON：{\"action\":\"respond\"}。"
+        "如果足够，返回JSON：{\"action\":\"respond\",\"evidence_sufficient\":true}。"
+        "能支持部分问题时也用evidence_sufficient=true并直接respond，只按资料部分作答，不用外部来源补全；"
+        "完全不足才用evidence_sufficient=false，是否继续检索由action独立说明。"
         "如果不够，且需要再调用一次工具，返回JSON："
-        "{\"action\":\"continue\",\"tool\":\"search_web|search_documents|llm_chat\",\"query\":\"下一轮查询或消息\"}。"
+        "{\"action\":\"continue\",\"evidence_sufficient\":false,\"tool\":\"search_web|search_documents|llm_chat\",\"query\":\"下一轮查询或消息\"}。"
         "只能选择search_web、search_documents、llm_chat三个工具。"
         "判断时可以参考：文档citations是否为空或分数不足、搜索结果是否与问题相关、是否需要用另一类信息交叉验证。"
         "不要重复调用历史里已经用过的同一工具和同一参数。只返回JSON，不要解释。",
@@ -1674,15 +1705,21 @@ def _reflect_with_model(state: AgentState) -> dict:
             timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         )
         raw = llm_provider.extract_text(response)
-        return _parse_reflection(raw)
+        reflection = _parse_reflection(raw)
+        if reflection.get("failed"):
+            execution.add_degradation_reason(state, "reflection_failed")
+            logger.warning("ReAct反思解析失败：session_id=%s", state["session_id"])
+        return reflection
     except Exception as e:
-        execution.open_deepseek_circuit_for_error(
+        reason_code = execution.open_deepseek_circuit_for_error(
             state,
             e,
             "reflection_timeout",
         )
+        if reason_code is None:
+            execution.add_degradation_reason(state, "reflection_failed")
         logger.error("ReAct反思判断失败：session_id=%s error_type=%s", state["session_id"], type(e).__name__)
-        return {"action": "respond"}
+        return {"action": "respond", "failed": True}
 
 
 def _parse_reflection(raw: str) -> dict:
@@ -1694,15 +1731,20 @@ def _parse_reflection(raw: str) -> dict:
     try:
         data = json.loads(text)
     except Exception:
-        return {"action": "respond"}
+        return {"action": "respond", "failed": True}
+    if not isinstance(data, dict) or data.get("action") not in {"respond", "continue"}:
+        return {"action": "respond", "failed": True}
+    if "evidence_sufficient" in data and not isinstance(data["evidence_sufficient"], bool):
+        return {"action": "respond", "failed": True}
+    evidence = {"evidence_sufficient": data["evidence_sufficient"]} if "evidence_sufficient" in data else {}
     action = data.get("action")
     if action != "continue":
-        return {"action": "respond"}
+        return {"action": "respond", **evidence}
     tool = str(data.get("tool", "")).strip()
     if tool not in {"search_web", "search_documents", "llm_chat"}:
-        return {"action": "respond"}
+        return {"action": "respond", "failed": True}
     query = str(data.get("query", "")).strip()
-    return {"action": "continue", "tool": tool, "query": query}
+    return {"action": "continue", "tool": tool, "query": query, **evidence}
 
 
 def _task_from_intent(state: AgentState, order: int) -> Task:
@@ -1923,6 +1965,7 @@ def _task_from_reflection(state: AgentState, reflection: dict) -> Optional[Task]
                 "query": query,
                 "tier": state["mode"],
                 "context": state["attachment_context"],
+                "generate_answer": not state.get("stream_document_answer", False),
             },
             order=order
         )

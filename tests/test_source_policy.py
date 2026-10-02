@@ -74,9 +74,12 @@ def test_every_bypass_is_blocked(source, only, path, monkeypatch, no_external):
         request["deepseek_circuit_open"] = True
         generated = Mock(return_value=iter(["资料回答"]))
         monkeypatch.setattr(execution, "_answer_from_documents", generated)
-        assert execution._search_documents("测试检索", tier="expert", _execution_state=request).data == "资料回答"
+        result = execution._search_documents("测试检索", tier="expert", _execution_state=request)
+        generated.assert_not_called()
+        request["results"] = [result]
+        assert planning.respond_node(request)["response"] == "资料回答"
         generated.assert_called_once()
-        assert request["evidence_state"] == "hit"
+        assert request["evidence_state"] == "weak"
     no_external[0].assert_not_called()
     no_external[1].assert_not_called()
 
@@ -382,3 +385,186 @@ def test_actual_checkpoint_adjustment_cannot_expand_sources(only, tool, monkeypa
     assert planned["complex_task_list"][0].tool == "search_documents"
     no_external[0].assert_not_called()
     no_external[1].assert_not_called()
+
+
+def prepare_weak_evidence(monkeypatch, no_external, source="public", only=False, strong=False, reflection=None, error=None):
+    """真实执行/图节点，只替换检索、反思供应商与正文生成等外部边界。"""
+    classified_policy = policy.classify_policy("测试请求", classified(source=source, only=only))
+    monkeypatch.setattr(planning, "_load_classify_context", lambda *_: [])
+    monkeypatch.setattr(planning, "_classify_with_model", lambda *_a, **_kw: {
+        "intent": "document", "source_policy": classified_policy})
+    monkeypatch.setattr(planning.memory, "search_memory", lambda *_a, **_kw: [])
+    monkeypatch.setattr(planning.memory, "get_history", lambda *_a, **_kw: [])
+    monkeypatch.setattr(execution.auth, "get_verified_doc_ids", lambda: ["fixture-doc"])
+    searched = Mock(return_value=[{"content": "只支持部分事实的测试片段", "doc_id": "fixture-doc",
+        "chunk_index": 0, "source": "测试材料", "score": .8, "title_source_match": strong}])
+    monkeypatch.setattr(execution.memory, "search_documents", searched)
+    generated = Mock(side_effect=lambda *_a, **_kw: iter(["资料限定回答，缺失信息无法确认。"]))
+    monkeypatch.setattr(execution, "_answer_from_documents", generated)
+    no_external[1].side_effect = error if error else lambda *_a, **_kw: {
+        "choices": [{"message": {"content": json.dumps(reflection or {"action": "respond"})}}]}
+    no_external[0].side_effect = None
+    provider = Mock(search=Mock(return_value=[SearchCandidate(title="公开测试依据",
+        url="https://fixture.invalid/item", summary="联网资料", source="fixture", score=.9)]))
+    no_external[0].return_value = provider
+    monkeypatch.setattr(execution, "_has_valid_key", lambda *_: True)
+    monkeypatch.setattr(execution, "_rewrite_search_query", lambda q, *_a, **_kw: q)
+    monkeypatch.setattr(execution, "_observe_external_search_output", lambda *_: None)
+    monkeypatch.setattr(execution, "_llm_chat", Mock(return_value="联网资料回答"))
+    return searched, generated, provider
+
+
+@pytest.mark.parametrize("source,only,expected_web", [("public", False, 1), ("internal", False, 0), ("public", True, 0)])
+@pytest.mark.parametrize("stream", [False, True])
+def test_weak_evidence_insufficient_routes_through_gate(source, only, expected_web, stream, monkeypatch, no_external):
+    searched, generated, provider = prepare_weak_evidence(monkeypatch, no_external, source, only,
+        reflection={"action": "respond", "evidence_sufficient": False})
+    request = state(source=source, only=only, evidence="weak")
+    request.update(intent="document", stream_document_answer=stream)
+    result = planning.run_graph_state(request["session_id"], request["message"], mode="expert", prepared_state=request)
+    assert result["evidence_state"] == "miss"
+    assert provider.search.call_count == expected_web
+    searched.assert_called_once()
+    no_external[1].assert_called_once()
+    if expected_web:
+        assert result["answer_source"] == "web"
+        assert result["response"] == "联网资料回答"
+        generated.assert_not_called()
+    else:
+        no_external[0].assert_not_called()
+        assert result["answer_source"] == "knowledge"
+        if stream:
+            assert main._streamable_document_answer_context(result) is not None
+        else:
+            assert result["response"] == "资料限定回答，缺失信息无法确认。"
+            generated.assert_called_once()
+
+
+@pytest.mark.parametrize("context", [[], ["本轮附件里的测试事实"]])
+def test_strong_or_attachment_evidence_skips_reflection(context, monkeypatch, no_external):
+    _, generated, provider = prepare_weak_evidence(monkeypatch, no_external, strong=True)
+    monkeypatch.setattr(execution, "_answer_from_supplied_context", lambda *_a, **_kw: execution.ToolResult(
+        tool="search_documents", status="success", data="附件资料回答"))
+    request = state(evidence="failed")
+    request.update(intent="document", attachment_context=context)
+    result = planning.run_graph_state(request["session_id"], request["message"], mode="expert", prepared_state=request)
+    assert result["evidence_state"] == "hit"
+    no_external[1].assert_not_called()
+    no_external[0].assert_not_called()
+    provider.search.assert_not_called()
+    assert result["response"] == ("附件资料回答" if context else "资料限定回答，缺失信息无法确认。")
+
+
+def test_internal_weak_evidence_can_search_again(monkeypatch, no_external):
+    searched, generated, _ = prepare_weak_evidence(monkeypatch, no_external, source="internal")
+    responses = iter([{"action": "continue", "tool": "search_documents", "query": "另一种测试检索"},
+                      {"action": "respond", "evidence_sufficient": True}])
+    no_external[1].side_effect = lambda *_a, **_kw: {"choices": [{"message": {"content": json.dumps(next(responses))}}]}
+    request = state(source="internal", evidence="failed")
+    request["intent"] = "document"
+    result = planning.run_graph_state(request["session_id"], request["message"], mode="expert", prepared_state=request)
+    assert searched.call_count == 2
+    assert searched.call_args_list[1].args[0] == "另一种测试检索"
+    assert result["evidence_state"] == "weak"
+    assert result["response"] == "资料限定回答，缺失信息无法确认。"
+    generated.assert_called_once()
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("error,reason", [(TimeoutError(), "reflection_timeout"), (ValueError(), "reflection_failed")])
+@pytest.mark.parametrize("stream", [False, True])
+def test_weak_reflection_failure_keeps_materials_only(error, reason, stream, monkeypatch, no_external):
+    _, generated, provider = prepare_weak_evidence(monkeypatch, no_external, error=error)
+    request = state(evidence="failed")
+    request.update(intent="document", stream_document_answer=stream)
+    result = planning.run_graph_state(request["session_id"], request["message"], mode="expert", prepared_state=request)
+    assert result["evidence_state"] == "weak"
+    assert reason in result["degradation_reasons"]
+    assert not policy.source_gate(result, "web").allowed
+    assert not policy.source_gate(result, "general").allowed
+    no_external[0].assert_not_called()
+    provider.search.assert_not_called()
+    if not stream:
+        assert result["response"] == "资料限定回答，缺失信息无法确认。"
+        generated.assert_called_once()
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"action":"continue","tool":"unknown"}',
+                                '{"action":"respond","evidence_sufficient":"false"}'])
+def test_invalid_reflection_is_not_evidence_miss(raw, monkeypatch, no_external):
+    prepare_weak_evidence(monkeypatch, no_external)
+    no_external[1].side_effect = lambda *_a, **_kw: {"choices": [{"message": {"content": raw}}]}
+    request = state(evidence="weak")
+    request.update(intent="document", results=[execution.ToolResult(tool="search_documents", status="success", data="测试片段")])
+    assert planning.should_continue_react(request) == {"action": "respond"}
+    assert request["evidence_state"] == "weak"
+    assert request["degradation_reasons"] == ["reflection_failed"]
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("draft", [None, "", "   "])
+def test_fast_general_answer_never_uses_tool_selection_prose(draft, monkeypatch, no_external):
+    request = state(mode="fast")
+    first = response(draft=draft, content="我先查一下知识库")
+    args = json.loads(first["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    if draft is None:
+        args.pop("general_answer")
+    first["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = json.dumps(args)
+    replies = iter([first, {"choices": [{"message": {"content":
+        '{"evidence_sufficient":false,"used_candidate_ids":[],"reason":"miss:没有相关资料"}'}}]}])
+    no_external[1].side_effect = lambda *_a, **_kw: next(replies)
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    monkeypatch.setattr(planning.mcp_client, "call_tool", lambda *_a, **_kw: execution.ToolResult(
+        tool="search_documents", status="success", data=policy.REFUSAL))
+    result = planning._run_fast_state(request)
+    assert result["response"] == policy.REFUSAL
+    assert "我先查一下知识库" not in result["response"]
+    assert result["degradation_reasons"] == ["fast_general_answer_failed"]
+    assert no_external[1].call_count == 2
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize("source,only", [("public", False), ("internal", False), ("public", True)])
+def test_weak_evidence_http_and_sse_have_same_route(path, source, only, client, auth_headers, monkeypatch, no_external):
+    import uuid
+    from layers import memory
+    headers, _ = auth_headers("customer")
+    _, generated, provider = prepare_weak_evidence(monkeypatch, no_external, source, only,
+        reflection={"action": "respond", "evidence_sufficient": False})
+    monkeypatch.setattr(memory, "maybe_save_to_vector", lambda *_a: None)
+    # 历史出口保留真实数据库；仅避免从既有记忆触发模型调用。
+    session = uuid.uuid4().hex
+    received = client.post(path, headers=headers, json={"session_id": session, "message": "测试请求", "mode": "expert"})
+    assert received.status_code == 200
+    if path.endswith("stream"):
+        events = [json.loads(line[6:]) for line in received.text.splitlines() if line.startswith("data: ")]
+        answer = "".join(e.get("chunk", "") for e in events if e.get("chunk") != "[DONE]")
+        details = [e for e in events if e.get("type") == "source_policy"][-1]
+        assert events[-1]["chunk"] == "[DONE]"
+    else:
+        answer = received.json()["data"]
+        details = received.json()["source_policy"]
+    public = source == "public" and not only
+    assert provider.search.call_count == int(public)
+    assert details["evidence"] == "miss"
+    assert details["answer_source"] == ("web" if public else "knowledge")
+    assert answer == ("联网资料回答" if public else "资料限定回答，缺失信息无法确认。")
+    assert generated.call_count == int(not public)
+    no_external[1].assert_called_once()
+
+
+@pytest.mark.parametrize("old", ["hit", "partial"])
+def test_confirmed_evidence_cannot_be_downgraded_to_weak(old):
+    request = state(evidence=old)
+    policy.set_evidence(request, "weak")
+    assert request["evidence_state"] == old
+    policy.set_evidence(request, "miss")
+    assert request["evidence_state"] == old
+
+
+def test_weak_evidence_can_become_miss_only_after_explicit_decision():
+    request = state(evidence="weak")
+    assert not policy.source_gate(request, "web").allowed
+    policy.set_evidence(request, "miss")
+    assert policy.source_gate(request, "web").allowed

@@ -74,11 +74,11 @@ def get_policy(state: Optional[dict]) -> SourcePolicy:
     return policy if isinstance(policy, SourcePolicy) else classify_policy((state or {}).get("message", ""))
 
 
-def set_evidence(state: Optional[dict], evidence: Literal["hit", "partial", "miss", "failed"]) -> None:
+def set_evidence(state: Optional[dict], evidence: Literal["hit", "partial", "weak", "miss", "failed"]) -> None:
     if state is None:
         return
     # 已有可信片段不能因下一次检索为空而丢弃，进而启用外部补全。
-    if state.get("evidence_state") in {"hit", "partial"} and evidence == "miss":
+    if state.get("evidence_state") in {"hit", "partial"} and evidence in {"weak", "miss"}:
         return
     state["evidence_state"] = evidence
     state["evidence_checked"] = True
@@ -88,7 +88,7 @@ def source_gate(state: Optional[dict], target: Literal["web", "general", "direct
     policy = get_policy(state)
     if target == "grounded":
         supplied = bool((state or {}).get("attachment_context"))
-        retrieved = bool((state or {}).get("grounded_candidates")) and (state or {}).get("evidence_state") in {"hit", "partial"}
+        retrieved = bool((state or {}).get("grounded_candidates")) and (state or {}).get("evidence_state") in {"hit", "partial", "weak"}
         return SourcePermission(allowed=supplied or retrieved, reason="supplied_or_retrieved_materials")
     if target == "direct":
         return SourcePermission(allowed=policy.classification_valid and policy.non_factual and not policy.only_materials,

@@ -50,6 +50,7 @@
     classification_timeout: '请求分类超时',
     planning_timeout: '任务规划超时',
     reflection_timeout: '补充判断超时',
+    reflection_failed: '补充判断失败',
     output_observation_timeout: '结果校验超时',
     deepseek_rate_limit: '模型服务当前请求繁忙，建议稍后重试',
     deepseek_upstream_unavailable: '暂时无法连接模型服务，建议稍后重试',
@@ -380,10 +381,11 @@
       .find((item) => item.dataset.executionKey === 'source_policy-source_policy');
     if (!row) return;
     const sources = { internal: '内部事务', public: '公开信息', uncertain: '吃不准，按内部处理' };
-    const evidence = { hit: '命中', partial: '部分命中', miss: '未命中', failed: '判定失败' };
+    const evidence = { hit: '命中', partial: '部分命中', weak: '弱证据', miss: '未命中', failed: '判定失败' };
     const answers = { knowledge: '资料', general: '通用知识', web: '联网资料', conversation: '对话', refusal: '无法确认' };
     const reasons = {
       knowledge_first: '先检索知识库', knowledge_hit: '已有资料依据', knowledge_miss: '未找到资料依据',
+      knowledge_weak: '片段相关但尚未确认充分',
       public_knowledge_miss: '公开问题未命中，允许联网', fast_general: '快速模式未联网',
       web_failed_general: '联网未能核实，使用通用知识', latest_unverified: '最新信息无法核实',
       materials_only: '遵守仅用资料要求', source_not_public: '按内部事务处理',

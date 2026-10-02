@@ -226,7 +226,12 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
         _execution_state=rerank_state,
     )
     assert result.status == "success"
-    assert result.data == "hybrid兜底后的文档回答"
+    assert result.data == "[1] 片段"
+    assert rerank_state["evidence_state"] == "weak"
+    assert result.metadata["document_answer_deferred"] is True
+    answer_from_documents.assert_not_called()
+    rerank_state.update(intent="document", results=[result])
+    assert planning.respond_node(rerank_state)["response"] == "hybrid兜底后的文档回答"
     assert rerank_state["degradation_reasons"] == ["document_rerank_timeout"]
     assert rerank_state["deepseek_circuit_open"] is False
     assert rerank_state["post_circuit_final_attempted"] is False
