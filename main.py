@@ -1540,7 +1540,7 @@ async def chat(
 
         _save_user_history_turn(chat_request, current_user)
         user_turn_saved = True
-        if status == "success" and not final_state.get("degradation_reasons"):
+        if _should_save_assistant_answer(final_data, has_error, final_state):
             _save_assistant_history_message(
                 perception_output.session_id,
                 final_data,
@@ -3402,7 +3402,7 @@ def _chat_stream_events(
             )
             _save_user_history_turn(request, current_user)
             user_turn_saved = True
-            if request_status == "success":
+            if _should_save_assistant_answer(final_data, has_error, final_state):
                 _save_assistant_history_message(
                     perception_output.session_id, final_data, assistant_message_type,
                 )
@@ -3658,7 +3658,7 @@ def _chat_stream_events(
         request_status = status
         _save_user_history_turn(request, current_user)
         user_turn_saved = True
-        if status == "success":
+        if _should_save_assistant_answer(final_data, has_error, state):
             _save_assistant_history_message(
                 perception_output.session_id,
                 final_data,
@@ -3916,6 +3916,41 @@ def _save_user_history_turn(request: ChatRequest, current_user: dict) -> None:
     """
     auth.bind_session(request.session_id, current_user["user_id"])
     memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
+
+
+def _should_save_assistant_answer(content: str, has_error: bool, state: dict) -> bool:
+    """用户看到的降级回答仍是对话；仅排除错误轮次和系统的纯失败通知。
+
+    对固定通知作整条匹配，不按“抱歉”等前缀猜测模型回答的语义。
+    已生成正文后附加的失败说明不会被排除。长期记忆另保留成功条件。
+    """
+    if has_error or not content or not content.strip():
+        return False
+    notices = {
+        planning._structured_degraded_response({"degradation_reasons": [code]})
+        for code in ("final_answer_timeout", "search_summary_timeout", "web_provider_failed", "web_no_results", "")
+    }
+    notices.update(
+        execution._empty_document_answer_failure_message(code)
+        for code in ("final_answer_timeout", "deepseek_upstream_unavailable", "final_answer_failed")
+    )
+    circuit_notice = execution.deepseek_circuit_user_message(state)
+    notices.update({
+        circuit_notice,
+        "已取得联网搜索结果，但" + circuit_notice,
+        execution.SEARCH_SUMMARY_FALLBACK_MESSAGE,
+        "已取得联网搜索结果，但模型整理时间不足，请稍后重试。",
+        "搜索链路已达到时间预算，请稍后重试",
+        "抱歉，搜索结果处理失败，请稍后重试",
+        "抱歉，知识库处理失败，请稍后重试",
+        "抱歉，快速模式暂时不可用，请稍后重试",
+    })
+    # ReAct的固定提示前缀不是已作答正文；复用它的生成函数而不另抄文案。
+    notices.update(
+        planning._with_react_limit_notice({"react_limit_reached": True}, text)
+        for text in tuple(notices) + ("",)
+    )
+    return content.strip() not in notices
 
 
 def _save_assistant_history_message(

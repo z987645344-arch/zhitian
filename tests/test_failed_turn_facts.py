@@ -110,7 +110,8 @@ def test_all_failure_exits_bind_and_save_only_user(client, auth_headers, monkeyp
         state = planning._new_agent_state(session, "请记住 TEST-KEEP", "fast")
         state.update(response="ERROR_TEXT_NEVER_IN_HISTORY", error="injected" if failure == "state_error" else "")
         if failure == "degraded":
-            state["degradation_reasons"] = ["fast_evidence_filter_timeout"]
+            state["response"] = execution._empty_document_answer_failure_message("final_answer_timeout")
+            state["degradation_reasons"] = ["final_answer_timeout"]
         return state
 
     monkeypatch.setattr(planning, "run_graph_state", run)
