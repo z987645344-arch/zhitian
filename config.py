@@ -95,13 +95,25 @@ def resolve_model_tier(request_tier: str, stage: LLMStage) -> str:
 
 
 # 输出观察固定输入实测两设置均注入检出20/20、正常误报0/10，中位2.8→1.4秒，默认关闭。
-# 其他19阶段保持供应商既有推理行为：开启时不添加thinking字段，请求体与旧版一致。
-# 开关只决定thinking，不改变档位、提示词、JSON格式、timeout或重试预算。
+# 其他19阶段默认high，不添加字段，请求体与旧版一致。
+# 官方Chat Completions API：reasoning_effort是顶层none/low/high/max参数，默认high。
+# 保留已有LLM_THINKING_*环境变量名并兼容布尔值；不改变档位、提示词、JSON或预算。
 # fast三个阶段及GraphRAG也须独立登记，不能借用expert的阶段开关。
-STAGE_THINKING_ENABLED = {
-    name: os.getenv("LLM_THINKING_%s" % name.upper(),
-                    "false" if name == LLMStage.OUTPUT_OBSERVATION.value else "true").strip().lower()
-    not in {"false", "0", "no", "off"}
+
+
+def _parse_reasoning_effort(value: str) -> str:
+    """兼容上一版开关；拼写错误必须大声失败，不能静默换回供应商默认值。"""
+    normalized = str(value).strip().lower()
+    normalized = {"true": "high", "1": "high", "yes": "high", "on": "high",
+                  "false": "none", "0": "none", "no": "none", "off": "none"}.get(normalized, normalized)
+    if normalized not in {"none", "low", "high", "max"}:
+        raise ValueError("unsupported reasoning effort: %s" % value)
+    return normalized
+
+
+STAGE_REASONING_EFFORT = {
+    name: _parse_reasoning_effort(os.getenv("LLM_THINKING_%s" % name.upper(),
+                    "none" if name == LLMStage.OUTPUT_OBSERVATION.value else "high"))
     for name in [stage.value for stage in LLMStage] + [
         "fast_tool_selection", "fast_evidence_filter", "fast_result_generation", "graph_extraction",
     ]
@@ -109,13 +121,16 @@ STAGE_THINKING_ENABLED = {
 
 
 def stage_thinking_kwargs(stage: str) -> dict:
-    """关闭使用DeepSeek官方extra_body写法；开启不新增字段，保持默认请求体。"""
+    """none沿用官方thinking disabled写法；high不增字段，low/max走顶层参数。"""
     name = stage.value if isinstance(stage, LLMStage) else str(stage)
-    if name not in STAGE_THINKING_ENABLED:
+    if name not in STAGE_REASONING_EFFORT:
         raise ValueError("unknown thinking stage: %s" % stage)
-    if STAGE_THINKING_ENABLED[name]:
+    effort = _parse_reasoning_effort(STAGE_REASONING_EFFORT[name])
+    if effort == "high":
         return {}
-    return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if effort == "none":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {"reasoning_effort": effort}
 
 
 FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))

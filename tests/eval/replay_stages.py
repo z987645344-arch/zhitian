@@ -39,7 +39,7 @@ def validate_plan(plan):
         raise EvalStopped("Incorrect replay matrix")
     for sample in samples:
         kwargs = sample["kwargs"]
-        if "extra_body" in kwargs or "thinking" in kwargs or kwargs.get("stream"):
+        if "extra_body" in kwargs or "thinking" in kwargs or "reasoning_effort" in kwargs or kwargs.get("stream"):
             raise EvalStopped("Fixed judgment inputs cannot override thinking or use streaming")
         if not sample.get("source_record") or input_hash(sample) != sample["input_sha256"]:
             raise EvalStopped("Missing provenance or changed fixed input")
@@ -135,7 +135,22 @@ def build_plan(repo):
     return plan
 
 
-def run(plan_path, output):
+def replay_matrix(plan, comparison):
+    """C2-b原样复用C2-a的56份输入，每份low/high/low交错，不重新检索。"""
+    if comparison == "low-high":
+        for sample in plan["samples"]:
+            if sample["stage"] == "output_observation":
+                continue
+            for effort, repetition in (("low", 1), ("high", 1), ("low", 2)):
+                yield sample, effort, repetition
+    else:
+        for sample in plan["samples"]:
+            for repetition in (1, 2):
+                for effort in (("high", "none") if repetition == 1 else ("none", "high")):
+                    yield sample, effort, repetition
+
+
+def run(plan_path, output, comparison="on-off"):
     repo = Path(__file__).resolve().parents[2]
     if Path(sys.executable).resolve() != (repo / ".venv/Scripts/python.exe").resolve():
         raise EvalStopped("Use project .venv")
@@ -169,48 +184,47 @@ def run(plan_path, output):
             raise EvalStopped("Write outside isolated runtime/results blocked")
     sys.addaudithook(guard)
     from layers import llm_provider
-    recorder = CallRecorder(llm_provider, output, hard_limit=300, stop_margin=0)
+    limit = 180 if comparison == "low-high" else 300
+    matrix = list(replay_matrix(plan, comparison))
+    recorder = CallRecorder(llm_provider, output, hard_limit=limit, stop_margin=0)
     llm_provider.chat_completion = recorder.call
     recorder.install_http_hooks()
     revision = source_revision(repo)
     metadata = {"source_revision": revision, "plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
-                "planned_logical_calls": 284, "http_attempt_limit": 300,
+                "comparison": comparison, "planned_logical_calls": len(matrix), "http_attempt_limit": limit,
                 "timing_semantics": "fixed nonstream judgment calls; no SSE/background, fields N/A",
                 "sse_done_ms": None, "background_finished_ms": None, "results": []}
     write_json(output / "plan.json", plan)
     try:
-        for sample in plan["samples"]:
-            # 两遍交错设置顺序，降低缓存/时段对某一设置的系统性偏向。
-            for repetition in (1, 2):
-                for enabled in ((True, False) if repetition == 1 else (False, True)):
-                    if recorder.count >= 300:
-                        raise EvalStopped("model_call_budget_limit")
-                    recorder.current = "%s/%s/%s" % (sample["id"], enabled, repetition)
-                    token = recorder.stream_stage.set(sample["stage"])
-                    start = time.perf_counter()
-                    result = {"sample_id": sample["id"], "group": sample["group"], "stage": sample["stage"],
-                              "thinking_enabled": enabled, "repetition": repetition,
-                              "input_sha256": input_hash(sample), "raw": None, "error_type": None}
-                    try:
-                        options = dict(sample["kwargs"])
-                        config.STAGE_THINKING_ENABLED[sample["stage"]] = enabled
-                        response = llm_provider.chat_completion(sample["messages"], tier=sample["tier"],
-                                                                stage=sample["stage"], **options)
-                        result["raw"] = response.model_dump() if hasattr(response, "model_dump") else response
-                    except Exception as exc:
-                        result["error_type"] = type(exc).__name__
-                    finally:
-                        recorder.stream_stage.reset(token)
-                        result["elapsed_ms"] = (time.perf_counter() - start) * 1000
-                        metadata["results"].append(result)
-                        metadata["http_attempts"] = recorder.count
-                        write_json(output / "results.json", metadata["results"])
-                        write_json(output / "model_calls.json", recorder.records)
-                        write_json(output / "metadata.json", metadata)
-                    print("REPLAY %s error=%s ms=%.1f HTTP=%s" % (
-                        recorder.current, result["error_type"], result["elapsed_ms"], recorder.count), flush=True)
-                    if recorder.stop_reason:
-                        raise EvalStopped(recorder.stop_reason)
+        for sample, effort, repetition in matrix:
+            if recorder.count >= limit:
+                raise EvalStopped("model_call_budget_limit")
+            recorder.current = "%s/%s/%s" % (sample["id"], effort, repetition)
+            token = recorder.stream_stage.set(sample["stage"])
+            start = time.perf_counter()
+            result = {"sample_id": sample["id"], "group": sample["group"], "stage": sample["stage"],
+                      "reasoning_effort": effort, "thinking_enabled": effort != "none", "repetition": repetition,
+                      "input_sha256": input_hash(sample), "raw": None, "error_type": None}
+            try:
+                options = dict(sample["kwargs"])
+                config.STAGE_REASONING_EFFORT[sample["stage"]] = effort
+                response = llm_provider.chat_completion(sample["messages"], tier=sample["tier"],
+                                                        stage=sample["stage"], **options)
+                result["raw"] = response.model_dump() if hasattr(response, "model_dump") else response
+            except Exception as exc:
+                result["error_type"] = type(exc).__name__
+            finally:
+                recorder.stream_stage.reset(token)
+                result["elapsed_ms"] = (time.perf_counter() - start) * 1000
+                metadata["results"].append(result)
+                metadata["http_attempts"] = recorder.count
+                write_json(output / "results.json", metadata["results"])
+                write_json(output / "model_calls.json", recorder.records)
+                write_json(output / "metadata.json", metadata)
+            print("REPLAY %s error=%s ms=%.1f HTTP=%s" % (
+                recorder.current, result["error_type"], result["elapsed_ms"], recorder.count), flush=True)
+            if recorder.stop_reason:
+                raise EvalStopped(recorder.stop_reason)
         if source_revision(repo) != revision:
             raise EvalStopped("Source changed during replay")
     finally:
@@ -232,6 +246,7 @@ def main():
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--build-plan", action="store_true")
+    parser.add_argument("--comparison", choices=("on-off", "low-high"), default="on-off")
     args = parser.parse_args()
     if args.build_plan:
         plan = build_plan(_REPO)
@@ -246,7 +261,7 @@ def main():
         return 0
     if args.output is None:
         parser.error("--output is required for paid replay")
-    run(args.plan.resolve(), args.output.resolve())
+    run(args.plan.resolve(), args.output.resolve(), args.comparison)
     return 0
 
 

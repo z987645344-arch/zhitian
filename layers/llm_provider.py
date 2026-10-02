@@ -192,9 +192,10 @@ def chat_completion(
     request_timeout = float(timeout or _default_timeout(tier))
     if stage is not None:
         thinking_options = config.stage_thinking_kwargs(stage)
-        if thinking_options:
+        if "extra_body" in thinking_options:
             kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}),
                                     **thinking_options["extra_body"]}
+        kwargs.update({key: value for key, value in thinking_options.items() if key != "extra_body"})
     total_budget = kwargs.pop("total_budget", None)
     request_kwargs = {
         "messages": messages,

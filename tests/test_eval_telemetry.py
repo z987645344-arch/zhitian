@@ -119,3 +119,34 @@ def test_effective_budget_matches_existing_provider_defaults(monkeypatch):
     assert recorder.effective_budget("fast", {"timeout": 12.0}) == (12.0, 24.75)
     assert recorder.effective_budget("expert", {"timeout": 25.0}) == (25.0, 25.0)
     assert recorder.effective_budget("fast", {"timeout": 12.0, "total_budget": 15.0}) == (12.0, 15.0)
+
+
+def test_http_records_low_effort_at_top_level():
+    recorder = ev.CallRecorder(SimpleNamespace(chat_completion=None), None, 180, 0)
+    item = {"attempts": 0}
+    token = recorder.current_call.set(item)
+    try:
+        recorder.before_request(httpx.Request("POST", "https://example.invalid/chat/completions",
+            json={"model": "test", "messages": [], "reasoning_effort": "low"}))
+    finally:
+        recorder.current_call.reset(token)
+    assert item["reasoning_effort"] == item["reasoning_effort_effective"] == "low"
+    assert item["thinking_effective"] == {"type": "enabled"}
+    assert item["attempt_details"][0]["reasoning_effort_effective"] == "low"
+
+
+def test_low_high_replay_uses_same_inputs_and_interleaves():
+    from tests.eval.replay_stages import replay_matrix, input_hash
+    samples = [{"id": str(i), "stage": stage, "messages": [{"role": "user", "content": str(i)}],
+                "tier": "fast", "kwargs": {"timeout": 12}} for i, stage in enumerate(
+                    ["document_rerank"] * 12 + ["fast_evidence_filter"] * 20 +
+                    ["intent_classification"] * 12 + ["react_reflection"] * 12 + ["output_observation"] * 15)]
+    matrix = list(replay_matrix({"samples": samples}, "low-high"))
+    assert len(matrix) == 168
+    assert sum(effort == "low" for _, effort, _ in matrix) == 112
+    assert sum(effort == "high" for _, effort, _ in matrix) == 56
+    for index in range(0, 168, 3):
+        block = matrix[index:index+3]
+        assert [(effort, repetition) for _, effort, repetition in block] == [("low", 1), ("high", 1), ("low", 2)]
+        assert len({input_hash(sample) for sample, _, _ in block}) == 1
+        assert all(sample["stage"] != "output_observation" for sample, _, _ in block)

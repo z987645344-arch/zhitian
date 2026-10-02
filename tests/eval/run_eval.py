@@ -274,10 +274,16 @@ class CallRecorder:
                 item["actual_request"] = body
                 item["model"] = body.get("model")
                 item["thinking"] = body.get("thinking")
-                item["thinking_effective"] = body.get("thinking", {"type": "enabled"})
+                effective_thinking = body.get("thinking", {"type": (
+                    "disabled" if body.get("reasoning_effort") == "none" else "enabled")})
+                effective_effort = "none" if effective_thinking.get("type") == "disabled" else body.get("reasoning_effort", "high")
+                item["thinking_effective"] = effective_thinking
+                item["reasoning_effort"] = body.get("reasoning_effort")
+                item["reasoning_effort_effective"] = effective_effort
                 attempt = item["attempt_details"][-1]
                 attempt["model"] = body.get("model")
-                attempt["thinking_effective"] = body.get("thinking", {"type": "enabled"})
+                attempt["thinking_effective"] = effective_thinking
+                attempt["reasoning_effort_effective"] = effective_effort
                 original_trace = request.extensions.get("trace")
 
                 def trace(name, info):
