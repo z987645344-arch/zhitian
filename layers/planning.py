@@ -404,6 +404,7 @@ def classify_node(state: AgentState) -> AgentState:
                 state,
                 config.EXPERT_LLM_TIMEOUT if state["mode"] == "expert" else config.FAST_LLM_TIMEOUT,
             ),
+            session_id=state["session_id"],
         )
     except Exception as exc:
         execution.open_deepseek_circuit_for_error(
@@ -695,7 +696,7 @@ def complex_respond_node(state: AgentState) -> AgentState:
                     "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
                     "明确说明失败或证据不足的部分，不得编造未提供的信息。"
                 ),
-                [
+                execution.conversation_history_messages(state["session_id"]) + [
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -1906,6 +1907,7 @@ def _classify_with_model(
     tier: str = "fast",
     attachment_ids: Optional[list[str]] = None,
     timeout: Optional[float] = None,
+    session_id: str = "",
 ) -> dict:
     """使用所选模型的 Function Call 选择搜索或直接回答。"""
     context_text = "\n".join(context or [])
@@ -1965,7 +1967,7 @@ def _classify_with_model(
                     ensure_ascii=False,
                 ),
             },
-            {
+            ] + execution.conversation_history_messages(session_id) + [{
                 "role": "user",
                 "content": message
             }],
@@ -1995,7 +1997,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         system_modules.prompt_prefix(
             "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。"
         ),
-        [
+        execution.conversation_history_messages(state["session_id"]) + [
         {
             "role": "system",
             "content": f"以下是与当前问题相关的历史记录，供参考：\n{context_text}",

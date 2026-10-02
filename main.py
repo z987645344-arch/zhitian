@@ -1501,6 +1501,7 @@ async def chat(
     usage_token = document_usage.begin_request()
     api_key_token = llm_provider.bind_request_api_key(api_key)
     cited_doc_ids: List[str] = []
+    user_turn_saved = False
     try:
         layer_trace = ["perception", "planning", "execution", "output"]
         logger.info(
@@ -1537,19 +1538,15 @@ async def chat(
         has_error = bool(final_state.get("error"))
         status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
 
-        if not has_error:
-            memory.save_message(
-                perception_output.session_id,
-                "user",
-                perception_output.message,
-                chat_request.attachment_ids,
-            )
+        _save_user_history_turn(chat_request, current_user)
+        user_turn_saved = True
+        if status == "success" and not final_state.get("degradation_reasons"):
             _save_assistant_history_message(
                 perception_output.session_id,
                 final_data,
                 assistant_message_type,
             )
-        if not has_error and status == "success" and final_data:
+        if not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data:
             background_tasks.add_task(
                 llm_provider.run_with_api_key,
                 api_key,
@@ -1569,9 +1566,6 @@ async def chat(
                     final_data,
                     mode
                 )
-        if status == "success":
-            auth.bind_session(perception_output.session_id, current_user["user_id"])
-
         response_data = output.format_response(
             session_id=perception_output.session_id,
             data=final_data,
@@ -1604,6 +1598,8 @@ async def chat(
         observability.record_request("error", error_type=type(e).__name__, trace_id=trace_id, mode=mode)
         return ChatResponse(**response_data)
     finally:
+        if not user_turn_saved:
+            _save_user_history_turn(chat_request, current_user)
         # 命中与引用在此一次性落库：检索路径不写库，同一请求内多次调用检索也
         # 不会重复计数
         document_usage.flush_request(cited_doc_ids)
@@ -3377,6 +3373,7 @@ def _chat_stream_events(
     request_status = "error"
     request_error_type = ""
     assistant_message_type = memory.MESSAGE_TYPE_CHAT
+    user_turn_saved = False
     try:
         perception_input = perception.PerceptionInput(
             session_id=request.session_id,
@@ -3398,24 +3395,23 @@ def _chat_stream_events(
             citations = _serialize_citations(final_state.get("citations", []))
             assistant_message_type = _assistant_history_message_type(final_state)
             has_error = bool(final_state.get("error"))
+            request_status = (
+                "degraded"
+                if has_error or final_state.get("degradation_reasons") or _is_degraded_response(final_data)
+                else "success"
+            )
+            _save_user_history_turn(request, current_user)
+            user_turn_saved = True
+            if request_status == "success":
+                _save_assistant_history_message(
+                    perception_output.session_id, final_data, assistant_message_type,
+                )
             yield _sse_data({"chunk": final_data})
             yield _sse_data({"type": "citations", "citations": citations})
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                memory.save_message(
-                    perception_output.session_id,
-                    "user",
-                    perception_output.message,
-                    attachment_ids,
-                )
-                _save_assistant_history_message(
-                    perception_output.session_id,
-                    final_data,
-                    assistant_message_type,
-                )
-                auth.bind_session(perception_output.session_id, current_user["user_id"])
-                if final_data:
+                if request_status == "success" and final_data:
                     background_tasks.add_task(
                         llm_provider.run_with_api_key,
                         api_key,
@@ -3660,20 +3656,14 @@ def _chat_stream_events(
             else "success"
         )
         request_status = status
-        if not has_error:
-            memory.save_message(
-                perception_output.session_id,
-                "user",
-                perception_output.message,
-                attachment_ids,
-            )
+        _save_user_history_turn(request, current_user)
+        user_turn_saved = True
+        if status == "success":
             _save_assistant_history_message(
                 perception_output.session_id,
                 final_data,
                 assistant_message_type,
             )
-        if status == "success":
-            auth.bind_session(perception_output.session_id, current_user["user_id"])
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data(_request_status_event(state, has_error).model_dump())
         yield _sse_data({"chunk": "[DONE]"})
@@ -3703,6 +3693,9 @@ def _chat_stream_events(
         yield _sse_data({"error": "服务暂时异常，请重试"})
         request_error_type = type(e).__name__
     finally:
+        # 包括错误提前return、未捕获异常和流被关闭；保存用户事实但不保存错误回答。
+        if not user_turn_saved:
+            _save_user_history_turn(request, current_user)
         observability.record_request(
             request_status,
             error_type=request_error_type,
@@ -3913,6 +3906,16 @@ def _assistant_history_message_type(state: dict) -> str:
     if _serialize_generated_file_events(state):
         return memory.MESSAGE_TYPE_FILE_DELIVERY
     return memory.MESSAGE_TYPE_CHAT
+
+
+def _save_user_history_turn(request: ChatRequest, current_user: dict) -> None:
+    """已通过认证/额度/附件检查的请求，无论生成结果如何都保留并绑定。
+
+    每次提交是一轮独立事件，不按文本去重：重试和有意重复无法可靠区分。
+    在生成结束后保存，避免本轮消息提前进入历史而在模型输入中重复出现。
+    """
+    auth.bind_session(request.session_id, current_user["user_id"])
+    memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
 
 
 def _save_assistant_history_message(
