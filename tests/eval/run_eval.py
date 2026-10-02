@@ -81,13 +81,15 @@ def describe_eval_plan(questions, modes, no_judge=False):
     public = sum(max(item["selected_turns"]) for item in questions
                  if item["category"] == "public_with_note")
     judge_runs = 0 if no_judge else scored * len(modes)
-    estimate = sum(rounds * (3 if mode == "fast" else 5)
-                   + (public * 2 if mode == "expert" else 0) for mode in modes)
+    model_estimate = sum(rounds * (3 if mode == "fast" else 5) for mode in modes) + judge_runs
+    search_estimate = sum(public * 2 for mode in modes if mode == "expert")
     return {"questions": len(questions), "rounds_per_mode": rounds,
             "runs": rounds * len(modes), "scored_runs": scored * len(modes),
             "context_only_runs": (rounds - scored) * len(modes),
             "judge_runs": judge_runs,
-            "estimated_calls_including_search": estimate + judge_runs,
+            "estimated_model_calls": model_estimate,
+            "estimated_web_calls": search_estimate,
+            "estimated_calls_including_search": model_estimate + search_estimate,
             "estimate_is_hard_bound": False}
 
 
@@ -211,6 +213,88 @@ def snapshot_data(root):
             for path in sorted(root.rglob("*")) if path.is_file()} if root.exists() else {}
 
 
+class RetrievalRecorder:
+    """评测侧只读投影：完整候选池，不保存候选正文，不重跑检索或修改状态。
+
+    短追问的补充块来自递归检索中的原话分支标识集合，而非猜测第9/10名；
+    原话只有少量过线结果时，补充块也可能排在前8名。
+    """
+
+    def __init__(self, calls, threshold):
+        self.calls, self.threshold = calls, threshold
+        self.records, self.final_candidates, self.states = [], {}, {}
+        self.reflections = set()
+        self.local = threading.local()
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def identity(item):
+        return item.get("doc_id"), item.get("chunk_index")
+
+    @staticmethod
+    def project(item, rank, supplementary=False):
+        return {**{key: item.get(key) for key in
+                   ("source", "doc_id", "chunk_index", "score", "rerank_score")},
+                "rank": rank, "supplementary": supplementary}
+
+    def search(self, original, *args, **kwargs):
+        frames = getattr(self.local, "frames", [])
+        self.local.frames = frames
+        children = []
+        frames.append(children)
+        try:
+            result = original(*args, **kwargs)
+        finally:
+            frames.pop()
+        primary_keys = None
+        if kwargs.get("additional_query") and children:
+            # memory.search_documents先检索原话，再检索带前文的查询。
+            primary_keys = {self.identity(item) for item in children[0]["candidates"]}
+        candidates = [self.project(item, rank, bool(primary_keys is not None and
+                       self.identity(item) not in primary_keys))
+                      for rank, item in enumerate(result, 1)]
+        record = {"round": self.calls.current, "nested": bool(frames),
+                  "has_additional_query": bool(kwargs.get("additional_query")),
+                  "candidates": candidates}
+        if frames:
+            frames[-1].append(record)
+        with self.lock:
+            self.records.append(record)
+            if not frames:
+                accepted = [item for item in candidates
+                            if float(item.get("score") or 0) >= self.threshold]
+                self.final_candidates[self.calls.current] = [dict(item, rank=rank)
+                    for rank, item in enumerate(accepted, 1)]
+        return result
+
+    def source_details(self, original, state):
+        details = original(state)
+        with self.lock:
+            current = self.calls.current
+            if "grounded_candidates" in (state or {}):
+                previous = {self.identity(item): item for item in
+                            self.final_candidates.get(current, [])}
+                self.final_candidates[current] = [self.project(item, rank,
+                    previous.get(self.identity(item), {}).get("supplementary", False))
+                    for rank, item in enumerate(state["grounded_candidates"], 1)]
+            self.states[current] = dict(details)
+        return details
+
+    def reflect(self, original, *args, **kwargs):
+        # 已编译的LangGraph持有reflect_node；该节点运行时调用此全局函数。
+        # 记录进入反思节点，而不是仅凭有没有反思模型请求推断。
+        with self.lock:
+            self.reflections.add(self.calls.current)
+        return original(*args, **kwargs)
+
+    def turn_details(self, round_id, web_attempts):
+        with self.lock:
+            return {"final_candidates": list(self.final_candidates.get(round_id, [])),
+                    "evidence_state": self.states.get(round_id, {}).get("evidence"),
+                    "entered_reflection": round_id in self.reflections,
+                    "web_called": web_attempts > 0}
+
+
 def source_revision(repo):
     """记录提交及所有未忽略改动的字节哈希，不读取或输出.env等忽略文件。"""
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
@@ -281,14 +365,26 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def mark_budget_abort(turn, recorder):
+    """只标评测记录，不篡改已交付的SSE内容；预算中止不能算答题完成。"""
+    if not recorder.stop_reason:
+        return False
+    turn.update(user_visible_status=turn["status"], status="budget_aborted",
+                budget_aborted=True, budget_abort_reason=recorder.stop_reason)
+    return True
+
+
 class CallRecorder:
     """统一入口记录逻辑调用；HTTP request hook同时计入SDK内部重试尝试数。"""
 
-    def __init__(self, provider, output, hard_limit=700, stop_margin=20):
+    def __init__(self, provider, output, hard_limit=700, stop_margin=20, no_judge=False):
         self.provider, self.output = provider, output
         self.original = provider.chat_completion
-        self.limit = hard_limit - stop_margin
+        self.limit = hard_limit if no_judge else hard_limit - stop_margin
         self.count = 0
+        self.model_count = 0
+        self.web_count = 0
+        self.web_records = []
         self.lock = threading.Lock()
         self.current = None
         self.records = []
@@ -297,18 +393,30 @@ class CallRecorder:
         self.request_deadline = contextvars.ContextVar("eval_request_deadline", default=None)
         self.stop_reason = None
 
+    def take_attempt(self, kind):
+        """实际发送前原子记账；应用捕获异常或重试也不能突破共享硬上限。"""
+        with self.lock:
+            if self.stop_reason or self.count >= self.limit:
+                self.stop_reason = "paid_call_budget_exhausted"
+                raise EvalStopped(self.stop_reason)
+            self.count += 1
+            if kind == "model":
+                self.model_count += 1
+            else:
+                self.web_count += 1
+            if self.count == self.limit:
+                self.stop_reason = "paid_call_budget_exhausted"
+            return self.count
+
     def before_request(self, request):
         if request.method != "POST" or "/chat/completions" not in request.url.path:
             return
+        number = self.take_attempt("model")
         with self.lock:
-            if self.count >= self.limit:
-                self.stop_reason = "model_call_budget_near_limit"
-                raise EvalStopped(self.stop_reason)
-            self.count += 1
             item = self.current_call.get()
             if item is not None:
                 item["attempts"] += 1
-                item.setdefault("attempt_details", []).append({"number": self.count,
+                item.setdefault("attempt_details", []).append({"number": number,
                     "error_type": None, "status": None, "started_at_unix": time.time(),
                     "started_at_monotonic": time.perf_counter(),
                     "request_timeout": request.extensions.get("timeout")})
@@ -393,6 +501,49 @@ class CallRecorder:
                     attempt["finished_at_unix"] = time.time()
 
         client.send = send
+
+    def send_search_request(self, send, request, *args, **kwargs):
+        number = self.take_attempt("web")
+        item = {"number": number, "round": self.current, "started_at_unix": time.time(),
+                "elapsed_ms": None, "status": None, "error_type": None}
+        with self.lock:
+            self.web_records.append(item)
+        start = time.perf_counter()
+        try:
+            response = send(request, *args, **kwargs)
+            item["status"] = response.status_code
+            return response
+        except BaseException as exc:
+            item["error_type"] = type(exc).__name__
+            raise
+        finally:
+            item["elapsed_ms"] = (time.perf_counter() - start) * 1000
+
+    def install_search_http_hooks(self):
+        # 当前Tavily SDK用requests；在SDK内部的实际send处计数，而不是只计
+        # provider.search一次。外层超时重试、SDK重试及重定向都必须重新记账。
+        import requests
+        from tavily import TavilyClient
+        in_search = contextvars.ContextVar("eval_tavily_http", default=False)
+        original_search = TavilyClient._search
+        original_send = requests.Session.send
+
+        def search(client, *args, **kwargs):
+            token = in_search.set(True)
+            try:
+                return original_search(client, *args, **kwargs)
+            finally:
+                in_search.reset(token)
+
+        def send(session, request, *args, **kwargs):
+            if in_search.get():
+                return self.send_search_request(
+                    lambda req, *a, **k: original_send(session, req, *a, **k),
+                    request, *args, **kwargs)
+            return original_send(session, request, *args, **kwargs)
+
+        TavilyClient._search = search
+        requests.Session.send = send
 
     def remaining_budget(self):
         """评测插桩只读当前调用栈中的请求deadline；独立回放无请求时明确为null。"""
@@ -660,7 +811,9 @@ def retry_missing_judgements(args):
     dataset = json.loads((repo / "tests/eval/questions.json").read_text(encoding="utf-8"))
     questions = {item["id"]: item for item in dataset["questions"]}
     recorder = CallRecorder(llm_provider, output, min(args.max_calls, metadata["model_attempt_limit"]))
-    recorder.count = metadata["model_request_attempts"]
+    recorder.model_count = metadata["model_request_attempts"]
+    recorder.web_count = metadata.get("web_request_attempts", 0)
+    recorder.count = recorder.model_count + recorder.web_count
     recorder.records = original_calls
     llm_provider.chat_completion = recorder.call
     recorder.install_http_hooks()
@@ -691,7 +844,8 @@ def retry_missing_judgements(args):
         after = snapshot_data(repo / "data")
         write_json(output / "judge_retry_default_data_after.json", after)
         write_json(output / "model_calls.json", recorder.records)
-        metadata.update(model_request_attempts=recorder.count, logical_calls=len(recorder.records),
+        metadata.update(model_request_attempts=recorder.model_count, paid_request_attempts=recorder.count,
+                        logical_calls=len(recorder.records),
                         judge_state=state, judge_timeout_retries=retried,
                         judge_retry_data_unchanged=before == after,
                         judge_retry_runtime_removed=not work.exists())
@@ -754,10 +908,10 @@ def run(args):
     sys.addaudithook(guard)
     from fastapi.testclient import TestClient
     import main
-    from layers import auth, execution, llm_provider, memory
+    from layers import auth, execution, llm_provider, memory, planning, source_policy
     from utils import observability
     manifest = json.loads((repo / "tests/eval/manifest.json").read_text(encoding="utf-8"))
-    recorder = CallRecorder(llm_provider, output, args.max_calls)
+    recorder = CallRecorder(llm_provider, output, args.max_calls, no_judge=args.no_judge)
     llm_provider.chat_completion = recorder.call
     original_open_stream = execution._open_llm_stream_with_first_content_timeout
     def open_stream(messages, tier, timeout, first_content_timeout, stage_name):
@@ -774,14 +928,20 @@ def run(args):
             recorder.stream_stage.reset(token)
     execution._open_llm_stream_with_first_content_timeout = open_stream
     recorder.install_http_hooks()
+    recorder.install_search_http_hooks()
     timing = SSETimingProbe(main.app)
+    retrieval_recorder = RetrievalRecorder(recorder, config.RAG_SCORE_THRESHOLD)
     original_search = memory.search_documents
     retrievals = []
     def search(*positional, **keyword):
-        results = original_search(*positional, **keyword)
+        results = retrieval_recorder.search(original_search, *positional, **keyword)
         retrievals.append([{key: item.get(key) for key in ("source", "doc_id", "chunk_index", "score", "rerank_score")} for item in results[:5]])
         return results
     memory.search_documents = search
+    original_details = source_policy.source_details
+    source_policy.source_details = lambda state: retrieval_recorder.source_details(original_details, state)
+    original_reflect = planning.should_continue_react
+    planning.should_continue_react = lambda *a, **k: retrieval_recorder.reflect(original_reflect, *a, **k)
     stages = []
     original_stage = observability.log_stage
     def log_stage(name, elapsed_ms, *positional, **keyword):
@@ -793,7 +953,8 @@ def run(args):
                 "selection": args.ids, "plan": plan, "no_judge": args.no_judge,
                 "dataset_revision": dataset.get("revision", 1),
                 "runtime_directory": str(work), "output_directory": str(output),
-                "model_attempt_limit": args.max_calls, "stop_before_attempt": recorder.limit + 1,
+                "model_attempt_limit": args.max_calls, "paid_attempt_limit": args.max_calls,
+                "stop_before_attempt": recorder.limit + 1,
                 "settings": {name: getattr(config, name) for name in (
                     "FAST_LLM_TIMEOUT", "EXPERT_LLM_TIMEOUT", "EXPERT_COMPLEX_TIMEOUT",
                     "RERANK_ENABLED", "RERANK_TIMEOUT", "GRAPH_RAG_ENABLED", "FIRST_CONTENT_TIMEOUT")},
@@ -817,32 +978,42 @@ def run(args):
                         if index > max(question["selected_turns"]):
                             break
                         if recorder.count >= recorder.limit:
-                            raise EvalStopped("model_call_budget_near_limit")
+                            raise EvalStopped("paid_call_budget_exhausted")
                         recorder.current = "%s/%s/%s" % (mode, question["id"], index)
                         record_start, retrieve_start, stage_start = len(recorder.records), len(retrievals), len(stages)
+                        web_start = len(recorder.web_records)
                         start = time.perf_counter()
-                        response = client.post("/chat/stream", headers=headers,
-                                               json={"session_id": session, "message": prompt, "mode": mode})
+                        try:
+                            response = client.post("/chat/stream", headers=headers,
+                                                   json={"session_id": session, "message": prompt, "mode": mode})
+                        except BaseException:
+                            if not recorder.stop_reason:
+                                raise
+                            response = None
                         elapsed = int((time.perf_counter() - start) * 1000)
-                        if response.status_code != 200:
+                        if response is not None and response.status_code != 200 and not recorder.stop_reason:
                             raise EvalStopped("real_path_failed:/chat/stream:%s" % response.status_code)
-                        parsed = parse_sse(response.text)
+                        parsed = parse_sse(response.text if response is not None else "")
                         calls = recorder.records[record_start:]
-                        if recorder.stop_reason:
-                            raise EvalStopped(recorder.stop_reason)
                         expectation = dict(question)
                         expectation["question"] = prompt
                         if index < len(prompts):
                             checks = question["turn_checks"][index - 1]
                             expectation.update(expected_points=checks["expected_points"], expected_sources=checks["expected_sources"], forbidden=[], expected_behavior="answer")
                         turn = {"turn": index, "question": prompt, **parsed,
+                                **retrieval_recorder.turn_details(recorder.current, len(recorder.web_records) - web_start),
                                 "sse_timing": dict(timing.records[-1]),
                                 "elapsed_ms": elapsed, "retrievals": retrievals[retrieve_start:],
                                 "stages": stages[stage_start:], "model_calls": calls,
+                                "web_calls": recorder.web_records[web_start:],
+                                "web_attempts": len(recorder.web_records) - web_start,
                                 "answer_model_attempts": sum(item["attempts"] for item in calls),
                                 "literal_forbidden_matches": literal_forbidden_matches(parsed["answer"], expectation["forbidden"])}
                         # 先落盘真实回答，判卷失败时也不会丢掉刚发生的用户路径数据。
                         write_json(output / (recorder.current.replace("/", "-") + ".json"), turn)
+                        if mark_budget_abort(turn, recorder):
+                            write_json(output / (recorder.current.replace("/", "-") + ".json"), turn)
+                            raise EvalStopped(recorder.stop_reason)
                         if index not in question["selected_turns"]:
                             turn["context_only"] = True
                             write_json(output / (recorder.current.replace("/", "-") + ".json"), turn)
@@ -850,8 +1021,13 @@ def run(args):
                                         {"role": "assistant", "content": parsed["answer"]}]
                             print("CONTEXT %s attempts=%s" % (recorder.current, recorder.count), flush=True)
                             continue
-                        judgement, raw, error = judge_round(recorder, expectation, parsed["answer"], history, judge_state, output,
-                                                           no_judge=args.no_judge)
+                        try:
+                            judgement, raw, error = judge_round(recorder, expectation, parsed["answer"], history, judge_state, output,
+                                                               no_judge=args.no_judge)
+                        except EvalStopped:
+                            if mark_budget_abort(turn, recorder):
+                                write_json(output / (recorder.current.replace("/", "-") + ".json"), turn)
+                            raise
                         turn.update(judgement=judgement, judge_raw=raw, judge_error_type=error, judge_skipped=args.no_judge,
                                     scores={**rule_scores(expectation["expected_sources"], turn["retrievals"], parsed["citations"]),
                                             **semantic_scores(judgement, expectation["expected_behavior"])})
@@ -879,8 +1055,11 @@ def run(args):
         metadata["source_revision_finished"] = source_revision(repo)
         write_json(output / "default_data_after.json", after)
         write_json(output / "model_calls.json", recorder.records)
+        write_json(output / "web_calls.json", recorder.web_records)
+        write_json(output / "retrieval_calls.json", retrieval_recorder.records)
         write_reports(output, completed)
-        metadata.update(completed_questions=len(completed), model_request_attempts=recorder.count,
+        metadata.update(completed_questions=len(completed), model_request_attempts=recorder.model_count,
+                        web_request_attempts=recorder.web_count, paid_request_attempts=recorder.count,
                         logical_calls=len(recorder.records), judge_state=judge_state, stopped=stopped,
                         default_data_unchanged=before == after, default_data_files=len(before))
         # 父进程在worker退出后清理；不让仍活着的Chroma对象妨碍Windows删除。
@@ -889,7 +1068,8 @@ def run(args):
         if before != after:
             raise EvalStopped("Default data changed")
         print("RESULTS " + str(output), flush=True)
-        print("MODEL_ATTEMPTS %s COMPLETED %s DEFAULT_DATA_UNCHANGED %s" % (recorder.count, len(completed), before == after), flush=True)
+        print("MODEL_ATTEMPTS %s WEB_ATTEMPTS %s TOTAL_ATTEMPTS %s COMPLETED %s DEFAULT_DATA_UNCHANGED %s" %
+              (recorder.model_count, recorder.web_count, recorder.count, len(completed), before == after), flush=True)
     return output
 
 
@@ -910,8 +1090,10 @@ def main():
         select_questions(dataset["questions"], args.ids)
     except ValueError as exc:
         parser.error(str(exc))
-    if not 21 <= args.max_calls <= 700:
-        parser.error("max-calls must be 21..700")
+    if not 1 <= args.max_calls <= 700:
+        parser.error("max-calls must be 1..700")
+    if not args.no_judge and args.max_calls < 21:
+        parser.error("judge mode requires max-calls >= 21 (20 reserved)")
     if args.no_judge and args.retry_missing_judgements:
         parser.error("--no-judge cannot be combined with --retry-missing-judgements")
     if args.retry_missing_judgements:
