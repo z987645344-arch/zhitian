@@ -16,7 +16,7 @@ from typing import Callable, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, StrictBool
 import config
-from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider
+from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider, source_policy
 from layers.file_processing.models import (
     FileOwnershipContext,
     FileProcessingRequest,
@@ -95,6 +95,8 @@ class ToolStatusEvent(BaseModel):
 
 
 DEGRADATION_REASON_CODES = {
+    "web_low_relevance",
+    "fast_general_answer_failed",
     "fast_evidence_filter_timeout",
     "fast_evidence_filter_failed",
     "classification_timeout",
@@ -477,8 +479,11 @@ def _search_web(
     _execution_state: Optional[dict] = None,
 ) -> str:
     """联网搜索：先优化搜索query，再调用Tavily并整理成自然语言回复"""
+    if not source_policy.source_gate(_execution_state, "web").allowed:
+        return _source_blocked_answer(_execution_state)
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
-        raise ValueError("TAVILY_API_KEY未配置")
+        add_degradation_reason(_execution_state, "web_provider_failed")
+        return _fallback_llm_answer(query, session_id=session_id, tier=tier, _execution_state=_execution_state)
 
     started_at = time.perf_counter()
     search_budget = remaining_request_budget(
@@ -538,6 +543,7 @@ def _search_web(
         return answer
 
     if web_search_provider.has_low_relevance(results):
+        add_degradation_reason(_execution_state, "web_low_relevance")
         logger.warning("Tavily搜索结果相关性不足，降级为模型知识回答：query_len=%s", len(optimized_query or ""))
         answer = _fallback_llm_answer(
             original_question,
@@ -565,6 +571,7 @@ def _search_web(
         [candidate.model_dump() for candidate in results],
         ensure_ascii=False,
     )
+    source_policy.record_source(_execution_state, "web", "public_knowledge_miss")
     try:
         if not claim_post_circuit_final_attempt(_execution_state):
             return "已取得联网搜索结果，但%s" % deepseek_circuit_user_message(
@@ -624,8 +631,13 @@ def stream_search_result(
     total_budget: Optional[float] = None,
 ) -> Iterator[str]:
     """流式联网搜索：Tavily完成后用所选模型逐chunk整理搜索结果。"""
+    if not source_policy.source_gate(execution_state, "web").allowed:
+        yield _source_blocked_answer(execution_state)
+        return
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
-        raise ValueError("TAVILY_API_KEY未配置")
+        add_degradation_reason(execution_state, "web_provider_failed")
+        yield _fallback_llm_answer(query, session_id=session_id, tier=tier, _execution_state=execution_state)
+        return
 
     search_budget = remaining_request_budget(
         execution_state,
@@ -683,6 +695,7 @@ def stream_search_result(
         return
 
     if web_search_provider.has_low_relevance(results):
+        add_degradation_reason(execution_state, "web_low_relevance")
         logger.warning("Tavily搜索结果相关性不足，流式搜索降级为模型知识回答：query_len=%s", len(optimized_query or ""))
         answer = _fallback_llm_answer(
             original_question,
@@ -713,6 +726,7 @@ def stream_search_result(
         ensure_ascii=False,
     )
     emitted = False
+    source_policy.record_source(execution_state, "web", "public_knowledge_miss")
     collected_chunks = []
     stream = None
     try:
@@ -828,6 +842,7 @@ def _search_documents(
         str(item.get("doc_id", "")) for item in results
     )
     if not results and context and generate_answer:
+        source_policy.set_evidence(_execution_state, "hit")
         return _answer_from_supplied_context(
             query,
             context,
@@ -836,10 +851,11 @@ def _search_documents(
             _execution_state=_execution_state,
         )
     if not results:
+        source_policy.set_evidence(_execution_state, "miss")
         return ToolResult(
             tool="search_documents",
             status="success",
-            data="未找到可靠依据，无法确认答案",
+            data=_knowledge_miss_answer(query, tier, generate_answer, _execution_state),
             citations=[]
         )
 
@@ -856,6 +872,7 @@ def _search_documents(
             config.RAG_SCORE_THRESHOLD
         )
         if context and generate_answer:
+            source_policy.set_evidence(_execution_state, "hit")
             return _answer_from_supplied_context(
                 query,
                 context,
@@ -863,10 +880,11 @@ def _search_documents(
                 timeout=timeout,
                 _execution_state=_execution_state,
             )
+        source_policy.set_evidence(_execution_state, "miss")
         return ToolResult(
             tool="search_documents",
             status="success",
-            data="未找到可靠依据，无法确认答案",
+            data=_knowledge_miss_answer(query, tier, generate_answer, _execution_state),
             citations=[]
         )
 
@@ -879,6 +897,11 @@ def _search_documents(
         )
         for item in trusted_results
     ]
+    if tier == "expert" or generate_answer:
+        source_policy.set_evidence(_execution_state, "hit")
+    if _execution_state is not None:
+        _execution_state["grounded_candidates"] = list(trusted_results)
+    source_policy.record_source(_execution_state, "knowledge", "knowledge_hit")
     title_source_match = any(
         item.get("title_source_match") and float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
         for item in trusted_results
@@ -903,6 +926,7 @@ def _search_documents(
         and not context
         and deepseek_circuit_open(_execution_state)
         and not local_evidence_is_strong(metadata)
+        and source_policy.source_gate(_execution_state, "web").allowed
     )
     document_answer_context = DocumentAnswerContext(
         query=query,
@@ -947,6 +971,9 @@ def _search_documents(
     )
 
 
+_SUPPLIED_CONTEXT_AUTHORITY = object()
+
+
 def _answer_from_supplied_context(
     query: str,
     context: list[str],
@@ -975,6 +1002,7 @@ def _answer_from_supplied_context(
                     timeout=timeout,
                     _execution_state=_execution_state,
                     _model_stage=config.LLMStage.SUPPLIED_CONTEXT_ANSWER,
+                    _source_grounded=_SUPPLIED_CONTEXT_AUTHORITY,
                 )
             ).strip()
         except Exception as exc:
@@ -1005,7 +1033,7 @@ def _format_document_tool_context(results: list[dict]) -> str:
         content = str(item.get("content", "")).strip()
         if content:
             snippets.append("[%s] %s" % (index, content[:1200]))
-    return "\n\n".join(snippets) or "未找到可靠依据，无法确认答案"
+    return "\n\n".join(snippets) or source_policy.REFUSAL
 
 
 def _list_documents() -> ToolResult:
@@ -1683,14 +1711,14 @@ def _answer_from_documents(
                 )
             )
     if not snippets:
-        yield "未找到可靠依据，无法确认答案"
+        yield source_policy.REFUSAL
         return
 
     if tier == "expert":
         fixed_prompt = (
             "你是企业知识库问答助手。生成回答时必须遵守："
             "1. 仅基于检索到的知识库片段内容组织回答，不得引入片段之外的自身知识来补充、替换、“完善”或纠正片段内容。"
-            "2. 如果检索片段不足以支撑对用户问题的可靠回答（内容不相关、信息不完整、或未检索到任何片段），必须明确说明“未找到可靠依据，无法确认答案”，可建议咨询相关专业人士或查阅权威来源，不得展开缺少片段支持的具体内容替代。"
+            f"2. 如果检索片段不足以支撑对用户问题的可靠回答（内容不相关、信息不完整、或未检索到任何片段），必须明确说明“{source_policy.REFUSAL}”，可建议咨询相关专业人士或查阅权威来源，不得展开缺少片段支持的具体内容替代。"
             "3. 回答中涉及的来源、地区、机构等具体信息，必须与检索片段中实际出现的表述一致，不得替换为片段之外的其他来源、地区或版本的信息，即使自身知识认为更常见或更准确。"
             "4. 如果检索片段本身存在来源、地区或版本歧义，应如实呈现片段内容并说明该片段的来源范围，不得自行判断替换为片段之外的其他来源信息。"
             "不要在正文里写doc_id、chunk_index或score，来源引用由系统的citations字段单独展示。"
@@ -1699,10 +1727,11 @@ def _answer_from_documents(
         fixed_prompt = (
             "你是企业知识库问答助手。请只根据给定文档片段回答用户问题。"
             "不要编造文档片段之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
-            "如果片段不足以回答，直接回答：未找到可靠依据，无法确认答案。"
+            f"如果片段不足以回答，直接回答：{source_policy.REFUSAL}。"
         )
     fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
     fixed_prompt += "\n\n" + CONVERSATION_FACTS_PROMPT
+    fixed_prompt += source_policy.NO_SOURCE_NOTE_PROMPT
     dynamic_prompt = (
         f"用户问题：{_original_user_question(answer_context.query, _execution_state)}\n\n"
         "文档片段：\n"
@@ -1814,10 +1843,19 @@ def _fallback_llm_answer(
     _execution_state: Optional[dict] = None,
 ) -> str:
     """搜索质量不足或不可用时降级为模型知识回答"""
+    if _execution_state is not None:
+        _execution_state["web_failed"] = True
+    permission = source_policy.source_gate(_execution_state, "general")
+    if not permission.allowed:
+        source_policy.record_source(_execution_state, "refusal", permission.reason)
+        return _source_blocked_answer(_execution_state)
+    source_policy.record_source(_execution_state, "general", permission.reason)
     if timeout is not None and timeout <= 0:
-        return prefix or "搜索链路已达到时间预算，请稍后重试"
+        source_policy.record_source(_execution_state, "refusal", "request_budget_exhausted")
+        return "搜索链路已达到时间预算，请稍后重试"
     if not claim_post_circuit_final_attempt(_execution_state):
-        return prefix or deepseek_circuit_user_message(_execution_state)
+        source_policy.record_source(_execution_state, "refusal", "provider_unavailable")
+        return deepseek_circuit_user_message(_execution_state)
     system_prompt = _build_context_system_prompt(context)
     answer = _llm_chat(
         message=message,
@@ -1827,7 +1865,30 @@ def _fallback_llm_answer(
         timeout=timeout,
         _execution_state=_execution_state,
     )
-    return f"{prefix}\n{answer}" if prefix else str(answer)
+    return source_policy.annotate_answer(str(answer), _execution_state)
+
+
+def _knowledge_miss_answer(query: str, tier: str, generate_answer: bool, state: Optional[dict]) -> str:
+    """只有真实未命中才检查联网许可；fast由原有筛选/草稿路径处理，不另加调用。"""
+    if tier == "expert" and state is not None and source_policy.source_gate(state, "web").allowed:
+        return _search_web(query, session_id=state.get("session_id", ""), tier=tier, _execution_state=state)
+    source_policy.record_source(state, "refusal", "knowledge_miss")
+    return source_policy.refusal_for(state)
+
+
+def _source_blocked_answer(state: Optional[dict]) -> str:
+    """拒绝许可不抛出异常，不落入外层无约束chat兜底。可信候选仍可原样整理。"""
+    candidates = (state or {}).get("grounded_candidates") or []
+    if candidates:
+        source_policy.record_source(state, "knowledge", "external_source_blocked")
+        answer_context = DocumentAnswerContext(
+            query=(state or {}).get("message", ""), tier=(state or {}).get("mode", "expert"),
+            candidates=[DocumentAnswerCandidate(content=str(item.get("content", "")), source=str(item.get("source", "")),
+                       score=float(item.get("score", 0.0)), doc_id=str(item.get("doc_id", "")),
+                       chunk_index=int(item.get("chunk_index", 0))) for item in candidates],
+        )
+        return "".join(_answer_from_documents(answer_context, tier=answer_context.tier, _execution_state=state))
+    return source_policy.refusal_for(state)
 
 
 def _build_context_system_prompt(context: list[str] = None) -> str:
@@ -1856,8 +1917,28 @@ def _llm_chat(
     _execution_state: Optional[dict] = None,
     _timeout_reason_code: str = "final_answer_timeout",
     _model_stage: config.LLMStage = config.LLMStage.DIRECT_CHAT_REASONING,
+    _source_grounded: object = None,
 ) -> Union[str, Iterator[str]]:
     """通过统一适配层调用指定tier，每次只发送一次模型请求。"""
+
+    # MCP llm_chat的无state兼容契约本轮不改；所有Agent请求均携带state。
+    if search_results and _execution_state is not None and not source_policy.source_gate(_execution_state, "web").allowed:
+        answer = _source_blocked_answer(_execution_state)
+        return iter([answer]) if stream else answer
+    if _execution_state is not None and _execution_state.get("attachment_context") and not search_results:
+        source_policy.set_evidence(_execution_state, "hit")
+        source_policy.record_source(_execution_state, "knowledge", "supplied_context")
+        system_prompt = (
+            "只根据本轮附件和用户对话事实回答，部分缺失不得用自身知识补全。\n"
+            + "\n\n".join(_execution_state["attachment_context"])
+            + "\n" + system_prompt
+        )
+    elif _execution_state is not None and not search_results and _source_grounded is not _SUPPLIED_CONTEXT_AUTHORITY and not (
+        source_policy.source_gate(_execution_state, "direct").allowed
+        or source_policy.source_gate(_execution_state, "general").allowed
+    ):
+        answer = _source_blocked_answer(_execution_state)
+        return iter([answer]) if stream else answer
 
     if search_results:
         messages = _build_search_answer_messages(
@@ -1875,6 +1956,8 @@ def _llm_chat(
         )
 
     model_tier = config.resolve_model_tier(tier, config.LLMStage.DIRECT_CHAT_REASONING)
+    if _execution_state is not None or _source_grounded is _SUPPLIED_CONTEXT_AUTHORITY:
+        messages.insert(0, {"role": "system", "content": source_policy.NO_SOURCE_NOTE_PROMPT})
     try:
         if stream:
             response = llm_provider.chat_completion(

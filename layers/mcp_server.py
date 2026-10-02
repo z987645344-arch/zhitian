@@ -8,6 +8,10 @@ from mcp.server.stdio import stdio_server
 from mcp.server.fastmcp import FastMCP
 
 import layers.execution as execution
+from layers import source_policy
+from utils.logger import get_logger
+
+logger = get_logger("mcp_server")
 
 
 def _create_server():
@@ -24,13 +28,19 @@ server = _create_server()
 @server.tool()
 async def search_web(query: str, session_id: str = "", tier: str = "fast") -> str:
     """联网搜索工具"""
+    state = source_policy.mcp_web_state(query)
+    permitted = source_policy.source_gate(state, "web")
+    logger.info("MCP来源许可：tool=search_web allowed=%s reason=%s", permitted.allowed, permitted.reason)
+    if not permitted.allowed:
+        return source_policy.refusal_for(state)
     result = execution.run(
         "search_web",
         {
             "query": query,
             "session_id": session_id,
             "tier": tier
-        }
+        },
+        state=state,
     )
     return result.data if result.status == "success" else result.error_msg
 

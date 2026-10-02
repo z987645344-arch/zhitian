@@ -220,7 +220,7 @@ def test_fast_tool_set_does_not_expose_complex_task_declaration():
     tool_names = {item["function"]["name"] for item in planning.FAST_TOOLS}
 
     assert "declare_complex_task" not in tool_names
-    assert tool_names == {"search_documents", "list_documents"}
+    assert tool_names == {"search_documents", "list_documents", "direct_answer"}
 
 
 def test_complex_deadline_returns_completed_results_without_final_model(monkeypatch):

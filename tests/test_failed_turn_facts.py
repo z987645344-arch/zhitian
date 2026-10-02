@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import main
-from layers import auth, execution, llm_provider, memory, planning
+from layers import auth, execution, llm_provider, memory, planning, source_policy
 
 
 def response(text="", tool=False):
@@ -129,6 +129,17 @@ def test_all_failure_exits_bind_and_save_only_user(client, auth_headers, monkeyp
 def test_generation_uses_original_question_not_tool_query(monkeypatch, tier, kind):
     captured = []
     state = planning._new_agent_state("", "请按我刚才的订单解释还能怎么处理？", tier)
+    if kind == "chat":
+        state["source_policy"] = source_policy.classify_policy(state["message"], {
+            "source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True,
+        })
+    elif kind == "web":
+        state["message"] = "请结合我刚才的公开问题解释还能怎么处理？"
+        state["mode"] = "expert"
+        state["source_policy"] = source_policy.classify_policy(state["message"], {
+            "source": "public", "time_sensitivity": "general", "only_materials": False, "non_factual": False,
+        })
+        source_policy.set_evidence(state, "miss")
     monkeypatch.setattr(llm_provider, "chat_completion", lambda messages, **kwargs: captured.append(messages) or response("回答"))
     monkeypatch.setattr(execution, "_open_llm_stream_with_first_content_timeout", lambda messages, *args: (captured.append(messages) or iter([]), "回答"))
     if kind == "document":

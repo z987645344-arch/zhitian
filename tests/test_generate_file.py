@@ -394,6 +394,7 @@ def test_generate_file_intent_executes_content_then_file(monkeypatch):
     state["filename_hint"] = "项目报告"
     state["output_format"] = "md"
     state["context"] = ["已有上下文"]
+    state["attachment_context"] = ["已有上下文"]
     task = planning._task_from_intent(state, order=1)
     assert task.params["excluded_history_message_types"] == [
         memory.MESSAGE_TYPE_FILE_DELIVERY

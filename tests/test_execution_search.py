@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from unittest.mock import Mock
 
-from layers import execution, planning, web_search_provider
+from layers import execution, planning, source_policy, web_search_provider
 from layers.web_search_provider import SearchCandidate, WebSearchProvider
 
 
@@ -297,6 +297,16 @@ def test_search_documents_collects_stream_for_non_streaming_chat_contract(monkey
     assert result.citations[0].doc_id == "doc-1"
 
 
+def _web_state(state=None):
+    state = state if state is not None else planning._new_agent_state("web-permitted", "测试公开问题", "expert")
+    state["source_policy"] = source_policy.classify_policy(state["message"], {
+        "source": "public", "time_sensitivity": "general", "only_materials": False, "non_factual": False,
+    })
+    state["mode"] = "expert"
+    source_policy.set_evidence(state, "miss")
+    return state
+
+
 def _prepare_search(monkeypatch, provider=None):
     provider = provider or FakeProvider()
     monkeypatch.setattr(execution, "_has_valid_key", lambda value, name: True)
@@ -316,7 +326,7 @@ def test_query_rewrite_failure_uses_original_query_once(monkeypatch):
     monkeypatch.setattr(execution.llm_provider, "chat_completion", llm_provider)
     monkeypatch.setattr(execution, "_llm_chat", answer)
 
-    result = execution._search_web("原始查询", tier="fast")
+    result = execution._search_web("原始查询", tier="fast", _execution_state=_web_state())
 
     assert result == "整理后的回答"
     assert search_provider.queries == ["原始查询"]
@@ -329,7 +339,7 @@ def test_search_web_returns_llm_summary_when_tavily_succeeds(monkeypatch):
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="改写查询"))
     monkeypatch.setattr(execution, "_llm_chat", answer)
 
-    result = execution._search_web("原始问题", tier="expert")
+    result = execution._search_web("原始问题", tier="expert", _execution_state=_web_state())
 
     assert result == "正常整理结果"
     assert search_provider.queries == ["改写查询"]
@@ -344,7 +354,7 @@ def test_search_summary_failure_returns_friendly_message_and_counts_fallback(mon
     monkeypatch.setattr(execution, "_llm_chat", Mock(side_effect=TimeoutError("timeout")))
     monkeypatch.setattr(execution.observability, "record_search_fallback", fallback_counter)
 
-    result = execution._search_web("原始问题")
+    result = execution._search_web("原始问题", _execution_state=_web_state())
 
     assert result == "已取得联网搜索结果，但模型整理超时，请稍后重试。"
     assert "测试结果" not in result
@@ -359,12 +369,12 @@ def test_tavily_failure_and_empty_results_use_explicit_fallback(monkeypatch):
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
     monkeypatch.setattr(execution, "_fallback_llm_answer", fallback)
 
-    assert execution._search_web("原始问题") == "降级回答"
+    assert execution._search_web("原始问题", _execution_state=_web_state()) == "降级回答"
     assert "搜索服务暂时不可用" in fallback.call_args.kwargs["prefix"]
 
     fallback.reset_mock()
     _prepare_search(monkeypatch, FakeProvider(result=[]))
-    assert execution._search_web("原始问题") == "降级回答"
+    assert execution._search_web("原始问题", _execution_state=_web_state()) == "降级回答"
     assert "网络搜索无结果" in fallback.call_args.kwargs["prefix"]
 
 
@@ -377,7 +387,7 @@ def test_search_budget_returns_friendly_message_without_llm_wait(monkeypatch):
     monkeypatch.setattr(execution, "_llm_chat", llm)
     monkeypatch.setattr(execution.observability, "record_search_fallback", fallback_counter)
 
-    result = execution._search_web("原始问题")
+    result = execution._search_web("原始问题", _execution_state=_web_state())
 
     assert result == "已取得联网搜索结果，但模型整理时间不足，请稍后重试。"
     assert "测试结果" not in result
@@ -396,7 +406,7 @@ def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
     )
     monkeypatch.setattr(execution.observability, "record_search_fallback", fallback_counter)
 
-    chunks = list(execution.stream_search_result("原始问题", tier="expert"))
+    chunks = list(execution.stream_search_result("原始问题", tier="expert", execution_state=_web_state()))
 
     assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]
     assert "测试结果" not in chunks[0]
@@ -407,6 +417,7 @@ def test_stream_search_summary_failure_returns_friendly_message(monkeypatch):
 def test_stream_search_summary_uses_shared_first_content_guard(monkeypatch):
     _prepare_search(monkeypatch)
     state = planning._new_agent_state("search-stream-success", "原始问题", "expert")
+    _web_state(state)
     state["complex_deadline"] = time.perf_counter() + 1.0
     captured = {}
     observation = Mock()
@@ -446,6 +457,7 @@ def test_stream_search_summary_uses_shared_first_content_guard(monkeypatch):
 def test_stream_search_first_content_timeout_ignores_non_content_activity(monkeypatch):
     _prepare_search(monkeypatch)
     state = planning._new_agent_state("search-no-content", "原始问题", "expert")
+    _web_state(state)
     state["complex_deadline"] = time.perf_counter() + 1.0
     response = ReasoningOnlyStream()
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
@@ -474,6 +486,7 @@ def test_stream_search_first_content_timeout_ignores_non_content_activity(monkey
 def test_stream_search_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
     _prepare_search(monkeypatch)
     state = planning._new_agent_state("search-budget-clamp", "原始问题", "expert")
+    _web_state(state)
     state["complex_deadline"] = time.perf_counter() + 0.04
     response = ReasoningOnlyStream()
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
@@ -503,6 +516,7 @@ def test_web_search_provider_can_be_replaced_and_taints_state(monkeypatch):
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="改写查询"))
     monkeypatch.setattr(execution, "_llm_chat", Mock(return_value="整理结果"))
     state = planning._new_agent_state("taint-search", "问题", "expert")
+    _web_state(state)
 
     result = execution.run(
         "search_web",
@@ -520,6 +534,7 @@ def test_search_failure_still_taints_state(monkeypatch):
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
     monkeypatch.setattr(execution, "_fallback_llm_answer", Mock(return_value="降级回答"))
     state = planning._new_agent_state("taint-failure", "问题", "expert")
+    _web_state(state)
 
     result = execution.run("search_web", {"query": "问题"}, state=state)
 
@@ -532,6 +547,7 @@ def test_planning_tool_rounds_preserve_taint_and_block_later_write(monkeypatch):
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
     monkeypatch.setattr(execution, "_llm_chat", Mock(return_value="整理结果"))
     state = planning._new_agent_state("taint-rounds", "问题", "expert")
+    _web_state(state)
     state["intent"] = "search"
     state["tasks"] = [planning.Task(tool="search_web", params={"query": "问题"}, order=1)]
 
@@ -685,6 +701,7 @@ def test_output_anomaly_failure_does_not_change_search_answer(monkeypatch):
         Mock(side_effect=TimeoutError("checker timeout")),
     )
     state = planning._new_agent_state("taint-observe", "问题", "expert")
+    _web_state(state)
     state["external_content_tainted"] = True
     baseline = execution.observability.metrics_snapshot()
 

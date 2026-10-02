@@ -29,6 +29,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
+from layers import source_policy
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
 from utils import observability
@@ -481,6 +482,7 @@ class ChatResponse(BaseModel):
     session_id: str
     citations: list[execution.Citation] = Field(default_factory=list)
     reasoning: Optional[str] = None
+    source_policy: Optional[dict] = None
 
 
 class ChatFileEvent(BaseModel):
@@ -1529,7 +1531,7 @@ async def chat(
         )
         layer_trace.extend(final_state.get("layer_trace", []))
         layer_trace = list(dict.fromkeys(layer_trace))
-        final_data = final_state["response"]
+        final_data = source_policy.annotate_answer(final_state["response"], final_state)
         citations = _serialize_citations(final_state.get("citations", []))
         assistant_message_type = _assistant_history_message_type(final_state)
         # 以最终返回给用户的citations为准：planning在证据过滤与降级路径上会清空
@@ -1537,7 +1539,7 @@ async def chat(
         # 用户的文档也算成"实际引用"。
         cited_doc_ids = [str(item.get("doc_id", "")) for item in citations]
         has_error = bool(final_state.get("error"))
-        status = "degraded" if has_error or _is_degraded_response(final_data) else "success"
+        status = "degraded" if has_error or final_state.get("degradation_reasons") or _is_degraded_response(final_data) else "success"
 
         _save_user_history_turn(chat_request, current_user)
         user_turn_saved = True
@@ -1576,6 +1578,7 @@ async def chat(
         )
         reasoning = final_state.get("decision_reasoning") if mode == "expert" else None
         response_data["reasoning"] = reasoning
+        response_data["source_policy"] = source_policy.source_details(final_state)
         logger.info(
             "/chat决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
             trace_id,
@@ -3393,7 +3396,7 @@ def _chat_stream_events(
                 attachment_ids=attachment_ids,
                 tool_event_sink=tool_event_sink,
             )
-            final_data = final_state["response"]
+            final_data = source_policy.annotate_answer(final_state["response"], final_state)
             citations = _serialize_citations(final_state.get("citations", []))
             assistant_message_type = _assistant_history_message_type(final_state)
             has_error = bool(final_state.get("error"))
@@ -3408,6 +3411,7 @@ def _chat_stream_events(
                 _save_assistant_history_message(
                     perception_output.session_id, final_data, assistant_message_type,
                 )
+            yield _sse_data({"type": "source_policy", **source_policy.source_details(final_state)})
             yield _sse_data({"chunk": final_data})
             yield _sse_data({"type": "citations", "citations": citations})
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
@@ -3450,6 +3454,7 @@ def _chat_stream_events(
         )
         reasoning = state.get("decision_reasoning")
         yield _sse_data({"chunk": "", "reasoning": reasoning})
+        yield _sse_data({"type": "source_policy", **source_policy.source_details(state)})
         logger.info(
             "/chat/stream决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
             trace_id,
@@ -3595,7 +3600,7 @@ def _chat_stream_events(
                 tool_event_sink=tool_event_sink,
             )
             state = final_state
-            final_data = final_state["response"]
+            final_data = source_policy.annotate_answer(final_state["response"], final_state)
             citations = _serialize_citations(final_state.get("citations", []))
             generated_file_events = _serialize_generated_file_events(final_state)
             assistant_message_type = _assistant_history_message_type(final_state)
@@ -3652,6 +3657,7 @@ def _chat_stream_events(
                 yield _sse_data(file_event.model_dump())
 
         final_data = "".join(chunks)
+        yield _sse_data({"type": "source_policy", **source_policy.source_details(state)})
         status = (
             "degraded"
             if has_error or state.get("degradation_reasons") or _is_degraded_response(final_data)
@@ -3810,7 +3816,7 @@ def _prepare_stream_state(
         state = planning.retrieve_node(state)
         return state
     except Exception:
-        state["intent"] = "chat"
+        state["intent"] = "document"
         state["context"] = []
         state["decision_reasoning"] = planning.DECISION_REASONING_FALLBACK
         return state

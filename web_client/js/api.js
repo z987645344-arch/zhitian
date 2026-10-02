@@ -306,6 +306,18 @@ const API = (() => {
             });
             continue;
           }
+          if (payload.type === 'source_policy') {
+            handlers.onSourcePolicy?.({
+              source: String(payload.source || ''),
+              time_sensitivity: String(payload.time_sensitivity || ''),
+              only_materials: payload.only_materials === true,
+              classification_valid: payload.classification_valid === true,
+              evidence: String(payload.evidence || ''),
+              answer_source: String(payload.answer_source || ''),
+              reason: String(payload.reason || ''),
+            });
+            continue;
+          }
           if (payload.type === 'request_status') {
             handlers.onRequestStatus?.({
               status: String(payload.status || ''),

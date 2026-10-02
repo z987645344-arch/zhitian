@@ -9,7 +9,7 @@ from typing import Callable, Literal, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, StrictBool
 import config
-from layers import execution, llm_provider, memory, system_modules
+from layers import execution, llm_provider, memory, system_modules, source_policy
 from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from utils.logger import get_logger
@@ -55,16 +55,22 @@ FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。
 {"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason": "一句话说明判断依据"}"""
 
 
-FAST_DOCUMENT_GENERATION_PROMPT = """你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
+FAST_DOCUMENT_GENERATION_PROMPT = f"""你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
 
 生成原则：
 1. 如果提供了知识库片段，仅基于这些片段内容组织回答，不得引入片段之外的自身知识来补充、替换或"完善"片段内容；片段信息不完整时，如实说明"资料未详细说明"，不要编造。
-2. 如果没有提供任何知识库片段，直接回复"未找到可靠依据，无法确认答案"，可视情况建议咨询相关专业人士或查阅权威来源，不展开缺少片段支持的具体内容。
+2. 如果没有提供任何知识库片段，直接回复"{source_policy.REFUSAL}"，可视情况建议咨询相关专业人士或查阅权威来源，不展开缺少片段支持的具体内容。
 3. 回答简洁准确，不堆砌免责声明。
-4. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"未找到可靠依据，无法确认答案"，不得把仅有检索结果当作证据充分。"""
+4. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"{source_policy.REFUSAL}"，不得把仅有检索结果当作证据充分。"""
 
 
 class AgentState(TypedDict):
+    source_policy: source_policy.SourcePolicy
+    evidence_state: str
+    evidence_checked: bool
+    answer_source: str
+    source_reason: str
+    web_failed: bool
     session_id: str
     owner_user_id: str
     message: str
@@ -380,6 +386,22 @@ FAST_TOOLS = [
     }
 ]
 
+# 分类合并到原有工具选择；fast的常识草稿也由同一次调用提供，不能另加生成调用。
+FAST_TOOLS.append({"type": "function", "function": {
+    "name": "direct_answer", "description": "仅用于非事实型问候、感谢或对话本身的追问。",
+    "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}},
+}})
+for _tool in INTENT_TOOLS + FAST_TOOLS:
+    if _tool["function"]["name"] == "save_city":
+        continue
+    _params = _tool["function"]["parameters"]
+    _params["properties"]["source_classification"] = source_policy.SourceClassification.model_json_schema()
+    _params.setdefault("required", []).append("source_classification")
+    if _tool in FAST_TOOLS:
+        _params["properties"]["general_answer"] = {
+            "type": "string", "description": "仅公开一般知识：未命中资料时备用的简短通用知识答案；不写来源说明，不猜当前具体值。"
+        }
+
 COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_chat"}
 
 
@@ -407,14 +429,22 @@ def classify_node(state: AgentState) -> AgentState:
             session_id=state["session_id"],
         )
     except Exception as exc:
+        state["source_policy"] = source_policy.classify_policy(state["message"])
+        state["intent"] = "document"
         execution.open_deepseek_circuit_for_error(
             state,
             exc,
             "classification_timeout",
         )
-        raise
+        return state
     observability.log_stage("classify_model", int((time.perf_counter() - started_at) * 1000))
     state["intent"] = decision["intent"]
+    state["source_policy"] = decision.get("source_policy") or source_policy.classify_policy(state["message"])
+    # 所有事实问题先查库；工具分类结果不能直接授权联网或通用知识。
+    if state["intent"] == "search" or (
+        state["intent"] == "chat" and not source_policy.source_gate(state, "direct").allowed
+    ):
+        state["intent"] = "document"
     state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
     city = decision.get("city", "")
@@ -468,7 +498,7 @@ def plan_node(state: AgentState) -> AgentState:
     """plan node: ensure there is one pending task for the current round."""
     if len(state["tasks"]) > state["round_count"]:
         return state
-    task = _task_from_intent(state, order=len(state["tasks"]) + 1)
+    task = _guard_source_task(state, _task_from_intent(state, order=len(state["tasks"]) + 1))
     state["tasks"].append(task)
     return state
 
@@ -479,7 +509,8 @@ def execute_node(state: AgentState) -> AgentState:
         state["error"] = "没有可执行的任务"
         return state
 
-    task = state["tasks"][state["round_count"]]
+    task = _guard_source_task(state, state["tasks"][state["round_count"]])
+    state["tasks"][state["round_count"]] = task
     started_at = time.perf_counter()
     result = mcp_client.call_tool(task.tool, task.params, state=state)
     if state["intent"] == "generate_file" and result.status == "success":
@@ -533,6 +564,7 @@ def complex_plan_node(state: AgentState) -> AgentState:
         state["complex_action"] = "respond"
         return state
     observability.log_stage("complex_plan_model", int((time.perf_counter() - started_at) * 1000))
+    tasks = [_guard_source_task(state, task) for task in tasks]
     state["complex_task_list"] = tasks
     state["complex_task_created_count"] = len(tasks)
     state["current_task_pointer"] = 0
@@ -553,7 +585,7 @@ def execute_complex_node(state: AgentState) -> AgentState:
         state["complex_action"] = "respond"
         return state
 
-    task = state["complex_task_list"][pointer]
+    task = _guard_source_task(state, state["complex_task_list"][pointer])
     started_at = time.perf_counter()
     params = dict(task.params)
     remaining = _remaining_complex_budget(state)
@@ -638,7 +670,7 @@ def checkpoint_node(state: AgentState) -> AgentState:
                 observability.log_stage("complex_replan_model", int((time.perf_counter() - started_at) * 1000))
                 if replacement:
                     completed = state["complex_task_list"][:state["current_task_pointer"]]
-                    state["complex_task_list"] = completed + replacement
+                    state["complex_task_list"] = completed + [_guard_source_task(state, task) for task in replacement]
                     state["complex_task_created_count"] += len(replacement)
             state["complex_action"] = (
                 "checkpoint"
@@ -667,6 +699,7 @@ def checkpoint_node(state: AgentState) -> AgentState:
             adjusted_task = None
         observability.log_stage("complex_checkpoint_adjust_model", int((time.perf_counter() - started_at) * 1000))
         if adjusted_task is not None:
+            adjusted_task = _guard_source_task(state, adjusted_task)
             adjusted_task.adjusted = True
             state["complex_task_list"][state["current_task_pointer"]] = adjusted_task
             state["complex_task_created_count"] += 1
@@ -859,19 +892,27 @@ def run_graph_state(
     if float(state.get("complex_deadline") or 0.0) <= 0:
         state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     try:
-        return graph.invoke(state)
+        final_state = graph.invoke(state)
+        final_state["response"] = source_policy.annotate_answer(final_state.get("response", ""), final_state)
+        return final_state
     except Exception as e:
-        logger.error("规划层异常，降级为普通chat：session_id=%s error_type=%s", session_id, type(e).__name__)
+        logger.error("规划层异常，按来源许可降级：session_id=%s error_type=%s", session_id, type(e).__name__)
         execution.open_deepseek_circuit_for_error(
             state,
             e,
             "planning_timeout",
         )
-        # Level2：expert规划层出错时仅使用同tier普通chat降级。
+        # 分类/规划失败不能兜底成无来源约束的普通chat。
+        if not source_policy.source_gate(state, "direct").allowed and not source_policy.source_gate(state, "general").allowed:
+            state["error"] = "planning_degraded"
+            state["response"] = source_policy.refusal_for(state)
+            return state
         if not execution.claim_post_circuit_final_attempt(state):
             state["error"] = "planning_degraded"
             state["response"] = execution.deepseek_circuit_user_message(state)
             return state
+        if source_policy.source_gate(state, "general").allowed:
+            source_policy.record_source(state, "general", source_policy.source_gate(state, "general").reason)
         fallback = execution.run(
             "llm_chat",
             {
@@ -905,6 +946,12 @@ def _new_agent_state(
     tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]] = None,
 ) -> AgentState:
     return AgentState(
+        source_policy=source_policy.classify_policy(message),
+        evidence_state="failed",
+        evidence_checked=False,
+        answer_source="knowledge",
+        source_reason="knowledge_first",
+        web_failed=False,
         session_id=session_id,
         owner_user_id=owner_user_id,
         message=message,
@@ -964,13 +1011,22 @@ def _run_fast_state(state: AgentState) -> AgentState:
             total_budget=_remaining_fast_budget(deadline),
         )
         selection_elapsed_ms = int((time.perf_counter() - selection_started_at) * 1000)
-        tool_call = _select_fast_tool_call(_extract_tool_calls(first_response))
-        if tool_call is None:
+        calls = _extract_tool_calls(first_response)
+        primary = next((item for item in calls if item.get("name") in {"search_documents", "list_documents", "direct_answer"}), {})
+        arguments = primary.get("arguments") or {}
+        state["source_policy"] = source_policy.classify_policy(state["message"], arguments.get("source_classification"))
+        general_draft = str(arguments.get("general_answer") or llm_provider.extract_text(first_response) or "")
+        tool_call = _select_fast_tool_call(calls)
+        if primary.get("name") == "direct_answer" and source_policy.source_gate(state, "direct").allowed:
             observability.log_stage("fast_respond", selection_elapsed_ms)
             state["intent"] = "chat"
-            state["response"] = llm_provider.extract_text(first_response)
+            state["response"] = str(arguments.get("answer") or llm_provider.extract_text(first_response))
+            source_policy.record_source(state, "conversation", "non_factual")
             logger.info("fast路径完成：session_id=%s model_calls=1 tool=none", state["session_id"])
             return state
+
+        if tool_call is None:
+            tool_call = {"name": "search_documents", "arguments": {"query": state["message"]}}
 
         task = _fast_task_from_tool_call(state, tool_call)
         observability.log_stage("fast_select_tool", selection_elapsed_ms)
@@ -987,8 +1043,17 @@ def _run_fast_state(state: AgentState) -> AgentState:
         state["tool_call_history"] = [_tool_history_item(task)]
         state["citations"] = []
         if result.status == "error":
+            source_policy.set_evidence(state, "failed")
             state["error"] = result.error_msg or "工具调用失败"
             state["response"] = "抱歉，知识库处理失败，请稍后重试"
+            return state
+
+        # 附件正文已由入口校验；不把附件回答当作不受约束的direct_answer。
+        # 仍按无工具默认检索的规则执行，但可复用本次调用的资料回答，不新增调用。
+        if state.get("attachment_context") and llm_provider.extract_text(first_response).strip():
+            source_policy.set_evidence(state, "hit")
+            source_policy.record_source(state, "knowledge", "supplied_context")
+            state["response"] = llm_provider.extract_text(first_response)
             return state
 
         selected_evidence = ""
@@ -1008,7 +1073,14 @@ def _run_fast_state(state: AgentState) -> AgentState:
                     result,
                     selection.used_candidate_ids if selection.evidence_sufficient else [],
                 )
+                if selection.evidence_sufficient and (not selected_evidence or not selected_citations):
+                    raise ValueError("invalid selected evidence")
+                if not selection.evidence_sufficient and selection.used_candidate_ids:
+                    raise ValueError("inconsistent evidence decision")
+                evidence_state = "partial" if selection.reason.startswith("partial:") else "hit"
+                source_policy.set_evidence(state, evidence_state if selection.evidence_sufficient else "miss")
             except Exception as exc:
+                source_policy.set_evidence(state, "failed")
                 execution.add_degradation_reason(
                     state,
                     "fast_evidence_filter_timeout" if llm_provider.is_timeout_error(exc)
@@ -1038,7 +1110,15 @@ def _run_fast_state(state: AgentState) -> AgentState:
                 int((time.perf_counter() - evidence_started_at) * 1000),
             )
             if not selection.evidence_sufficient or not selected_evidence or not selected_citations:
-                state["response"] = "未找到可靠依据，无法确认答案"
+                # 异常不能伪装为未命中。只有有效筛选明确否定才可启用公开兜底。
+                if source_policy.source_gate(state, "general").allowed and general_draft.strip():
+                    source_policy.record_source(state, "general", "fast_general")
+                    state["response"] = source_policy.annotate_answer(general_draft, state)
+                else:
+                    if source_policy.source_gate(state, "general").allowed:
+                        execution.add_degradation_reason(state, "fast_general_answer_failed")
+                    source_policy.record_source(state, "refusal", source_policy.source_gate(state, "general").reason)
+                    state["response"] = source_policy.refusal_for(state)
                 state["citations"] = []
                 logger.info(
                     "fast路径完成：session_id=%s model_calls=2 tool=%s evidence_sufficient=false",
@@ -1098,8 +1178,10 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
         "你处于快速模式，只能基于对话上下文、长期记忆和本地企业知识库回答。"
         "需要查询知识库正文时调用search_documents；需要列出文件清单时调用list_documents。"
         "如果本轮提供了聊天附件，附件正文已经直接包含在上下文中，应优先阅读并回答附件内容，"
-        "不要仅为读取当前附件调用search_documents或list_documents。用户没有附加文字时，直接概括附件的主要内容。"
-        "其他问题直接回答，不调用工具。你没有联网搜索工具，不得声称已经查询互联网或获得实时结果。"
+        "事实型问题仍选择search_documents；用户没有附加文字时，可在本次回复正文概括附件的主要内容，不能用自身知识补全。"
+        "你没有联网搜索工具，不得声称已经查询互联网或获得实时结果。"
+        + source_policy.CLASSIFICATION_PROMPT
+        + "公开一般知识也先选search_documents，并在general_answer提供无来源备注的备用草稿；内部或当前具体值不写草稿。"
     )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
     messages.extend(_fast_history_messages(state["session_id"]))
@@ -1124,6 +1206,8 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
 def _build_fast_evidence_messages(state: AgentState, result: ToolResult) -> list[dict]:
     fixed_prompt = system_modules.prompt_prefix(
         FAST_EVIDENCE_PROMPT + "\n\n" + execution.CONVERSATION_FACTS_PROMPT
+        + "保持JSON字段不变；reason以hit:、partial:或miss:开头，分别表示完整命中、部分命中、未命中。"
+        "部分命中仍选出有依据的候选，不得把缺失部分交给通用知识补全。"
     )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
     messages.extend(_fast_history_messages(state["session_id"]))
@@ -1144,7 +1228,7 @@ def _build_fast_result_messages(
         "不要编造工具结果中不存在的信息，不要声称使用了联网搜索。"
     )
     fixed_prompt = system_modules.prompt_prefix(
-        instruction + "\n\n" + execution.CONVERSATION_FACTS_PROMPT
+        instruction + "\n\n" + execution.CONVERSATION_FACTS_PROMPT + source_policy.NO_SOURCE_NOTE_PROMPT
     )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
     messages.extend(_fast_history_messages(state["session_id"]))
@@ -1357,6 +1441,7 @@ def _normalize_complex_task(state: AgentState, raw_task: dict, task_index: int) 
     tool = str(raw_task.get("tool") or "").strip()
     if tool not in COMPLEX_TOOL_NAMES:
         return None
+    tool = _permitted_task_tool(state, tool)
     raw_params = raw_task.get("params") if isinstance(raw_task.get("params"), dict) else {}
     query = str(raw_params.get("query") or raw_params.get("message") or state["message"]).strip()
     if tool == "search_web":
@@ -1494,6 +1579,7 @@ def should_continue_react(state: AgentState) -> dict:
             state["intent"] == "document"
             and not _local_document_evidence_sufficient(state)
             and not _has_called_tool(state["tool_call_history"], "search_web")
+            and source_policy.source_gate(state, "web").allowed
         ):
             return {
                 "action": "continue",
@@ -1524,6 +1610,10 @@ def should_continue_react(state: AgentState) -> dict:
 
 
 def next_after_execute(state: AgentState) -> str:
+    if state.get("intent") == "document" and state.get("evidence_checked"):
+        # 资料已有答复（包括部分）、明确拒答或许可下的公开兜底已由执行层完成；
+        # 反思不能再把已处理的证据状态重新解释成联网许可。
+        return "respond"
     if state["intent"] in {
         "chat", "search", "document_list", "generate_file", "convert_document"
     }:
@@ -1616,6 +1706,10 @@ def _parse_reflection(raw: str) -> dict:
 
 
 def _task_from_intent(state: AgentState, order: int) -> Task:
+    if state["intent"] == "search" and not source_policy.source_gate(state, "web").allowed:
+        return Task(tool="search_documents", params={"query": state["message"], "tier": state["mode"]}, order=order)
+    if state["intent"] == "chat" and not source_policy.source_gate(state, "direct").allowed:
+        return Task(tool="search_documents", params={"query": state["message"], "tier": state["mode"]}, order=order)
     if state["intent"] == "convert_document":
         return Task(
             tool="convert_document",
@@ -1808,6 +1902,7 @@ def _respond_with_converted_file(state: AgentState) -> None:
 
 def _task_from_reflection(state: AgentState, reflection: dict) -> Optional[Task]:
     tool = str(reflection.get("tool", "")).strip()
+    tool = _permitted_task_tool(state, tool)
     query = str(reflection.get("query", "")).strip() or state["message"]
     order = len(state["tasks"]) + 1
     if tool == "search_web":
@@ -1933,13 +2028,13 @@ def _classify_with_model(
                     "如果用户明确提供自己的当前城市或所在地，优先写入主意图工具的city参数；模型能力支持多个工具时，可额外同时调用save_city。"
                     "save_city是附加工具，禁止单独调用；如果需要保存城市，也必须同时选择一个主意图工具，或将city写入主意图工具参数。"
                     "如果模型能力限制导致一次只能调用一个工具，禁止调用save_city，必须优先调用主意图工具并在city参数中带出城市。"
-                    "需要实时信息或外部事实时选search_web；无需联网时选direct_answer；"
+                    "事实型问题一律先选search_documents；非事实型问候、感谢或对话本身的追问才选direct_answer；"
                     "用户明确要求把内容整理、导出或生成为可下载文件、文档、清单或报告时选generate_file；"
                     "generate_file用于生成新的md、txt、pdf或docx交付物，不用于读取或转换用户已有文件；"
                     "用户明确要求把本轮已上传附件在PDF、Word、Excel、PPT之间转换时选convert_document；支持PDF转DOCX/XLSX/PPTX以及DOC/DOCX/XLS/XLSX/PPT/PPTX转PDF；附件缺失或数量不唯一时仍选convert_document，由系统负责提示，不要改选ask_clarification或猜测附件；"
                     "本轮attachment_ids非空表示用户已提供当前聊天附件，附件正文会由系统直接注入后续回答上下文；"
-                    "读取、概括、总结、分析当前附件时必须选direct_answer，不要选search_documents或list_documents；"
-                    "用户消息为空但attachment_ids非空时也选direct_answer，由后续节点直接概括附件；只有明确要求转换格式时选convert_document；"
+                    "读取、概括、总结、分析当前附件时选search_documents，附件正文由系统提供，回答只用资料；"
+                    "用户消息为空但attachment_ids非空时也选search_documents；只有明确要求转换格式时选convert_document；"
                     "当用户想知道企业信息库/知识库/已上传资料里“有哪些文件、哪些文档、哪些资料、上传了什么”时，必须选list_documents；"
                     "list_documents只列清单，不回答内容；"
                     "用户明确提到文档、资料、上传的文件、刚才的PDF、这份文件、这份文档等本地文档指代时选search_documents；"
@@ -1948,7 +2043,7 @@ def _classify_with_model(
                     "“企业信息库有哪些文件”“目前上传了哪些文档”“知识库里有哪些资料”“已上传的企业信息库文档有哪些”必须选list_documents，禁止选direct_answer或ask_clarification；"
                     "few-shot示例：用户问“企业信息库有哪些文件”=> list_documents；用户问“目前上传了哪些文档”=> list_documents；用户问“刚才上传的文档里有什么文件”=> list_documents；"
                     "用户问“知了是什么”=> search_documents，query_hint填“知了”；用户问“ERR-8842是什么意思”=> search_documents，query_hint填“ERR-8842”；用户问“这份文档说了什么”=> search_documents；"
-                    "search_documents只用于本地已上传文档，不能用于互联网新闻、天气、价格或实时信息；"
+                    "search_documents用于验证本地资料是否命中，包括公开问题；只有未命中且来源许可允许时系统才联网；"
                     "缺少城市、位置等关键信息导致无法准确回答时选ask_clarification。"
                     "天气/下雨/出行问题没有城市且上下文也没有用户城市时，必须选ask_clarification，不能选direct_answer；"
                     "天气/下雨/出行问题只要消息里有城市或上下文有用户城市，必须选search_web。"
@@ -1959,7 +2054,7 @@ def _classify_with_model(
                     "附近推荐问题没有位置且上下文也没有位置时，必须选ask_clarification。"
                     "用户只是评价、喜欢/不喜欢、询问或提到某城市时，不要调用save_city。"
     )
-    fixed_system_prompt = system_modules.prompt_prefix(fixed_system_prompt)
+    fixed_system_prompt = system_modules.prompt_prefix(fixed_system_prompt + source_policy.CLASSIFICATION_PROMPT)
     response = llm_provider.chat_completion(
         messages=cache_friendly_messages(
             fixed_system_prompt,
@@ -1996,11 +2091,21 @@ def _classify_with_model(
         )
     )
     tool_calls = _extract_tool_calls(response)
-    return _build_classify_decision(tool_calls)
+    decision = _build_classify_decision(tool_calls)
+    primary = next((item for item in tool_calls if item.get("name") != "save_city"), {})
+    decision["source_policy"] = source_policy.classify_policy(message, (primary.get("arguments") or {}).get("source_classification"))
+    if decision["intent"] in {"chat", "search"} and not (
+        decision["intent"] == "chat" and decision["source_policy"].non_factual and decision["source_policy"].classification_valid
+        and not decision["source_policy"].only_materials
+    ):
+        decision["intent"] = "document"
+    return decision
 
 
 def _respond_with_context(state: AgentState, base_response: str) -> str:
     """在有长期记忆上下文时，让所选模型生成最终回复。"""
+    if state.get("answer_source") in {"refusal", "general", "knowledge"} and state.get("evidence_checked"):
+        return base_response
     context_text = "\n".join(state["context"])
     messages = cache_friendly_messages(
         system_modules.prompt_prefix(
@@ -2057,7 +2162,7 @@ def _extract_tool_calls(response) -> list[dict]:
     if not choices and isinstance(response, dict):
         choices = response.get("choices") or []
     if not choices:
-        return [{"name": "direct_answer", "arguments": {}}]
+        return [{"name": "search_documents", "arguments": {}}]
 
     first_choice = choices[0]
     message = getattr(first_choice, "message", None)
@@ -2067,7 +2172,7 @@ def _extract_tool_calls(response) -> list[dict]:
     if not tool_calls and isinstance(message, dict):
         tool_calls = message.get("tool_calls")
     if not tool_calls:
-        return [{"name": "direct_answer", "arguments": {}}]
+        return [{"name": "search_documents", "arguments": {}}]
 
     parsed_calls = []
     for tool_call in tool_calls:
@@ -2082,8 +2187,8 @@ def _extract_tool_calls(response) -> list[dict]:
         if raw_arguments is None and isinstance(function, dict):
             raw_arguments = function.get("arguments")
         parsed_calls.append({
-            "name": name or "direct_answer",
-            "arguments": _parse_tool_arguments(raw_arguments)
+            "name": name if name in {item["function"]["name"] for item in INTENT_TOOLS} else "search_documents",
+            "arguments": _parse_tool_arguments(raw_arguments) if name in {item["function"]["name"] for item in INTENT_TOOLS} else {}
         })
     return parsed_calls
 
@@ -2091,7 +2196,7 @@ def _extract_tool_calls(response) -> list[dict]:
 def _build_classify_decision(tool_calls: list[dict]) -> dict:
     """根据一次Function Call返回的多个工具调用合成规划决策"""
     decision = {
-        "intent": "chat",
+        "intent": "document",
         "clarification": "",
         "city": "",
         "filename_hint": "",
@@ -2174,17 +2279,39 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
                 arguments.get("reasoning")
             )
             continue
-        if name == "direct_answer" and decision["intent"] not in {
+        if name == "direct_answer" and (len(tool_calls) == 1 or decision["intent"] not in {
             "search", "document", "document_list", "generate_file",
             "convert_document", "clarify"
-        }:
+        }):
             decision["intent"] = "chat"
             decision["decision_reasoning"] = _normalize_decision_reasoning(
                 arguments.get("reasoning")
             )
-    if has_save_city and decision["intent"] == "chat" and len(tool_calls) == 1:
-        decision["intent"] = "search"
+    if has_save_city and len(tool_calls) == 1:
+        decision["intent"] = "document"
     return decision
+
+
+def _permitted_task_tool(state: AgentState, tool: str) -> str:
+    """规划、重规划、checkpoint调整和反思只提议工具，不能扩大来源许可。"""
+    if tool == "search_web" and not source_policy.source_gate(state, "web").allowed:
+        source_policy.record_source(state, "knowledge", "web_blocked")
+        return "search_documents"
+    if tool == "llm_chat" and not (
+        source_policy.source_gate(state, "direct").allowed or source_policy.source_gate(state, "general").allowed
+        or source_policy.source_gate(state, "grounded").allowed
+    ):
+        return "search_documents"
+    return tool
+
+
+def _guard_source_task(state: AgentState, task: Task) -> Task:
+    tool = _permitted_task_tool(state, task.tool)
+    if tool == task.tool:
+        return task
+    return Task(tool=tool, params={"query": state["message"], "tier": state["mode"],
+                "generate_answer": not state.get("stream_document_answer", False)},
+                order=task.order, task_index=task.task_index, adjusted=task.adjusted)
 
 
 def _normalize_decision_reasoning(value) -> str:

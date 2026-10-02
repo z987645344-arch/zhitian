@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import config
 import main
 import pytest
-from layers import execution, planning
+from layers import execution, planning, source_policy
 from layers.web_search_provider import SearchCandidate
 
 
@@ -36,6 +36,14 @@ class _Provider:
 
 def _state():
     state = planning._new_agent_state("expert-degraded", "原始问题", "expert")
+    state["source_policy"] = source_policy.classify_policy(state["message"], {
+        "source": "public", "time_sensitivity": "general", "only_materials": False, "non_factual": False,
+    })
+    source_policy.set_evidence(state, "miss")
+    state["source_policy"] = source_policy.classify_policy(state["message"], {
+        "source": "public", "time_sensitivity": "general", "only_materials": False, "non_factual": False,
+    })
+    source_policy.set_evidence(state, "miss")
     state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     return state
 
@@ -225,6 +233,7 @@ def test_document_rerank_and_final_answer_timeouts_have_distinct_codes(monkeypat
     answer_from_documents.assert_called_once()
 
     final_state = _state()
+    final_state["web_failed"] = True
     monkeypatch.setattr(
         execution.llm_provider,
         "chat_completion",

@@ -188,6 +188,10 @@ def test_pre_send_reset_retries_once_without_opening_circuit(monkeypatch):
     monkeypatch.setattr(config, "DEEPSEEK_API_KEY", "probe-key")
     monkeypatch.setattr(config, "FAST_LLM_TIMEOUT_RETRIES", 0)
     state = planning._new_agent_state("pool-reset", "probe", "fast")
+    from layers import source_policy
+    state["source_policy"] = source_policy.classify_policy("probe", {
+        "source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True,
+    })
 
     answer = execution._llm_chat("probe", tier="fast", _execution_state=state)
 

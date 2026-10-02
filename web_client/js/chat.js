@@ -38,6 +38,8 @@
     skipped: '已跳过',
   };
   const REASON_LABELS = {
+    fast_general_answer_failed: '通用知识备用回答未能生成',
+    web_low_relevance: '联网结果相关性不足',
     web_provider_failed: '搜索服务不可用',
     web_no_results: '搜索无结果',
     query_rewrite_timeout: '搜索词改写超时，已使用原问题',
@@ -372,6 +374,36 @@
     scrollToBottom();
   }
 
+  function renderSourcePolicy(bubble, event) {
+    renderToolStatus(bubble, { tool: 'source_policy', display_code: 'source_policy', phase: 'succeeded' });
+    const row = Array.from(bubble.querySelectorAll('.execution-item'))
+      .find((item) => item.dataset.executionKey === 'source_policy-source_policy');
+    if (!row) return;
+    const sources = { internal: '内部事务', public: '公开信息', uncertain: '吃不准，按内部处理' };
+    const evidence = { hit: '命中', partial: '部分命中', miss: '未命中', failed: '判定失败' };
+    const answers = { knowledge: '资料', general: '通用知识', web: '联网资料', conversation: '对话', refusal: '无法确认' };
+    const reasons = {
+      knowledge_first: '先检索知识库', knowledge_hit: '已有资料依据', knowledge_miss: '未找到资料依据',
+      public_knowledge_miss: '公开问题未命中，允许联网', fast_general: '快速模式未联网',
+      web_failed_general: '联网未能核实，使用通用知识', latest_unverified: '最新信息无法核实',
+      materials_only: '遵守仅用资料要求', source_not_public: '按内部事务处理',
+      evidence_not_missing: '不得绕过资料或判定失败', web_required: '需先联网',
+      web_blocked: '联网许可未放行', external_source_blocked: '仅使用已有资料',
+      supplied_context: '使用本轮附件', non_factual: '非事实型对话',
+      request_budget_exhausted: '请求预算耗尽', provider_unavailable: '模型服务暂时不可用',
+    };
+    row.querySelector('.execution-name').textContent = '来源与依据';
+    row.querySelector('.execution-detail').textContent = [
+      event.classification_valid ? (sources[event.source] || '按内部处理') : '分类不可用，按内部处理',
+      event.time_sensitivity === 'current_value' ? '当前具体值' : '一般知识',
+      event.only_materials ? '仅根据资料' : '未限定仅用资料',
+      `证据：${evidence[event.evidence] || '判定失败'}`,
+      `回答来源：${answers[event.answer_source] || '待处理'}`,
+      reasons[event.reason] || '保守处理',
+    ].join(' · ');
+    scrollToBottom();
+  }
+
   function renderRequestStatus(bubble, event) {
     bubble.dataset.requestStatus = event.status || '';
     if (event.status !== 'degraded') return;
@@ -641,6 +673,9 @@
         },
         onToolStatus(toolEvent) {
           renderToolStatus(bubble, toolEvent);
+        },
+        onSourcePolicy(sourceEvent) {
+          renderSourcePolicy(bubble, sourceEvent);
         },
         onRequestStatus(statusEvent) {
           renderRequestStatus(bubble, statusEvent);

@@ -9,12 +9,12 @@ import pytest
 
 import config
 import main
-from layers import execution, planning
+from layers import execution, planning, source_policy
 from layers.execution import ToolResult
 
 
 def _state(intent="search"):
-    return planning.AgentState(
+    state = planning.AgentState(
         session_id="planning-test-session",
         message="测试问题",
         mode="expert",
@@ -32,6 +32,12 @@ def _state(intent="search"):
         clarification="",
         city=""
     )
+    state["source_policy"] = source_policy.classify_policy(state["message"], {
+        "source": "public" if intent == "search" else "internal",
+        "time_sensitivity": "general", "only_materials": False, "non_factual": intent == "chat",
+    })
+    source_policy.set_evidence(state, "miss")
+    return state
 
 
 def _result(tool="search_web", data="工具结果", status="success"):
@@ -41,8 +47,8 @@ def _result(tool="search_web", data="工具结果", status="success"):
 @pytest.mark.parametrize(
     "decision,expected_intent",
     [
-        ({"intent": "chat"}, "chat"),
-        ({"intent": "search"}, "search"),
+        ({"intent": "chat", "source_policy": source_policy.classify_policy("你好", {"source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True})}, "chat"),
+        ({"intent": "search"}, "document"),
         ({"intent": "document"}, "document"),
         ({"intent": "clarify", "clarification": "请补充城市"}, "clarify"),
     ]
@@ -159,14 +165,14 @@ def test_attachment_signal_routes_empty_message_to_direct_answer(monkeypatch):
         attachment_ids=["attachment-1"],
     )
 
-    assert decision["intent"] == "chat"
+    assert decision["intent"] == "document"
     assert any(
         "attachment-1" in item["content"]
         for item in observed["messages"]
     )
 
 
-def test_fast_attachment_context_is_answered_without_knowledge_tool(monkeypatch):
+def test_fast_attachment_context_no_tool_defaults_to_retrieval_without_extra_model(monkeypatch):
     _prepare_fast_mocks(monkeypatch)
     observed = {}
 
@@ -175,7 +181,7 @@ def test_fast_attachment_context_is_answered_without_knowledge_tool(monkeypatch)
         return _fast_response(content="附件主要内容是项目进度。")
 
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
-    tool_call = Mock(side_effect=AssertionError("current attachment must not use knowledge tools"))
+    tool_call = Mock(return_value=_result(tool="search_documents", data="附件检索结果"))
     monkeypatch.setattr(planning.mcp_client, "call_tool", tool_call)
 
     state = planning.run_graph_state(
@@ -186,7 +192,8 @@ def test_fast_attachment_context_is_answered_without_knowledge_tool(monkeypatch)
         attachment_ids=["attachment-1"],
     )
 
-    assert state["intent"] == "chat"
+    assert state["intent"] == "document"
+    tool_call.assert_called_once()
     assert state["response"] == "附件主要内容是项目进度。"
     assert any(
         "本轮聊天附件正文" in item["content"]
@@ -266,6 +273,9 @@ def test_chat_stream_sends_reasoning_before_body_and_preserves_done(
     ]
 
     assert events[0] == {"chunk": "", "reasoning": "适合直接结合上下文回答"}
+    assert events[1]["type"] == "source_policy"
+    assert events[1]["non_factual"] is True
+    events = [event for event in events if event.get("type") != "source_policy"]
     assert events[1]["chunk"] == "answer"
     assert events[-1] == {"chunk": "[DONE]"}
 
@@ -502,6 +512,9 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
         if line.startswith("data: ")
     ]
 
+    assert events[1]["type"] == "source_policy"
+    assert events[-4]["type"] == "source_policy"
+    events = [event for event in events if event.get("type") != "source_policy"]
     assert events[1]["chunk"].startswith("文件已生成：项目周报.pdf")
     assert events[2] == {
         "type": "file",
@@ -612,7 +625,7 @@ def test_react_limit_forces_respond_with_notice(monkeypatch):
 
 def test_chat_intent_skips_reflect(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
-    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "chat"})
+    monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: {"intent": "chat", "source_policy": source_policy.classify_policy("你好", {"source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True})})
     monkeypatch.setattr(planning.memory, "search_memory", lambda *args, **kwargs: [])
     monkeypatch.setattr(planning, "should_continue_react", Mock(side_effect=AssertionError("chat should skip reflect")))
     call_tool = Mock(return_value=_result(tool="llm_chat", data="聊天回复"))
@@ -680,7 +693,11 @@ def test_search_intent_skips_reflect_after_single_search(monkeypatch):
         "should_continue_react",
         Mock(side_effect=AssertionError("search should skip reflect"))
     )
-    call_tool = Mock(return_value=_result(tool="search_web", data="搜索结果"))
+    def knowledge_first(tool, params, state=None):
+        assert tool == "search_documents"
+        source_policy.set_evidence(state, "miss")
+        return _result(tool="search_documents", data="搜索结果")
+    call_tool = Mock(side_effect=knowledge_first)
     monkeypatch.setattr(planning.mcp_client, "call_tool", call_tool)
 
     state = planning.run_graph_state("planning-search", "查新闻", mode="expert")
@@ -766,7 +783,8 @@ def test_planning_exception_degrades_chat_and_skips_vector_memory(monkeypatch, c
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
-    assert response.json()["data"] == "降级回复"
+    assert response.json()["data"] == source_policy.REFUSAL
+    planning.execution.run.assert_not_called()
     assert vector_write.call_count == 0
 
 
@@ -803,7 +821,7 @@ def test_fast_chat_uses_one_model_call_without_tools(monkeypatch):
 
     def chat(messages, tier="fast", **kwargs):
         calls.append({"tier": tier, "tools": kwargs.get("tools")})
-        return _fast_response(content="直接回复")
+        return _fast_response(content="直接回复", tool_name="direct_answer", arguments={"answer": "直接回复", "source_classification": {"source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True}})
 
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
     tool_call = Mock(side_effect=AssertionError("chat should not execute a tool"))
@@ -817,7 +835,8 @@ def test_fast_chat_uses_one_model_call_without_tools(monkeypatch):
     assert calls[0]["tier"] == "fast"
     assert {item["function"]["name"] for item in calls[0]["tools"]} == {
         "search_documents",
-        "list_documents"
+        "list_documents",
+        "direct_answer"
     }
 
 
@@ -924,14 +943,16 @@ def test_fast_has_no_search_web_capability(monkeypatch):
         return _fast_response(content="无法联网，基于已有信息回答")
 
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)
-    tool_call = Mock(side_effect=AssertionError("search_web must be unavailable"))
+    tool_call = Mock(return_value=_result(tool="search_documents", data=""))
     monkeypatch.setattr(planning.mcp_client, "call_tool", tool_call)
 
     state = planning.run_graph_state("fast-no-web", "搜索最新消息", mode="fast")
 
     assert state["response"]
     assert "search_web" not in observed_tools
-    assert len(observed_tools) == 2
+    assert len(observed_tools) == 3
+    assert tool_call.call_args[0][0] == "search_documents"
+    assert state["response"] == source_policy.REFUSAL
 
 
 def test_fast_document_filters_citations_to_model_used_candidates(monkeypatch):
