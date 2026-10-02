@@ -123,7 +123,8 @@ def test_sse_records_user_visible_answer_citations_status_and_done():
 def test_budget_counts_actual_attempts_and_refuses_before_hard_limit(tmp_path):
     provider = SimpleNamespace(chat_completion=lambda *a, **k: None)
     recorder = ev.CallRecorder(provider, tmp_path, hard_limit=23, stop_margin=20)
-    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/v1/chat/completions"))
+    import httpx
+    request = httpx.Request("POST", "https://example.invalid/v1/chat/completions", json={"model": "test"})
     item = {"attempts": 0}
     token = recorder.current_call.set(item)
     try:

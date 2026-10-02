@@ -169,6 +169,60 @@ def snapshot_data(root):
             for path in sorted(root.rglob("*")) if path.is_file()} if root.exists() else {}
 
 
+def source_revision(repo):
+    """记录提交及所有未忽略改动的字节哈希，不读取或输出.env等忽略文件。"""
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    raw = subprocess.check_output(["git", "status", "--porcelain=v1", "-z"], cwd=repo)
+    entries, changed = raw.decode("utf-8").split("\0"), {}
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        name = entry[3:]
+        if "R" in entry[:2] or "C" in entry[:2]:
+            index += 1  # -z重命名先输出目标，再输出原路径。
+        path = repo / name
+        changed[name] = {"status": entry[:2], "sha256":
+                         hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
+    return {"commit": head, "dirty": bool(changed), "changed_files": changed}
+
+
+class SSETimingProbe:
+    """在ASGI send处记DONE；app返回处记后台结束，不用缓冲TestClient估计首字节。"""
+
+    def __init__(self, app):
+        self.app, self.records = app, []
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] != "/chat/stream":
+            return await self.app(scope, receive, send)
+        start = time.perf_counter()
+        item = {"started_at_unix": time.time(), "done_ms": None,
+                "body_finished_ms": None, "background_finished_ms": None}
+        self.records.append(item)
+        buffered = b""
+
+        async def timed_send(event):
+            nonlocal buffered
+            if event["type"] == "http.response.body":
+                buffered += event.get("body", b"")
+                while b"\n" in buffered:
+                    line, buffered = buffered.split(b"\n", 1)
+                    if line.startswith(b"data:"):
+                        data = json.loads(line[5:])
+                        if data.get("chunk") == "[DONE]":
+                            item["done_ms"] = (time.perf_counter() - start) * 1000
+                if not event.get("more_body", False):
+                    item["body_finished_ms"] = (time.perf_counter() - start) * 1000
+            await send(event)
+        try:
+            await self.app(scope, receive, timed_send)
+        finally:
+            item["background_finished_ms"] = (time.perf_counter() - start) * 1000
+
+
 def cleanup_runtime(path):
     """只清理本脚本创建的仓库外临时根；子进程退出后Windows句柄必已释放。"""
     path = Path(path).resolve()
@@ -212,7 +266,24 @@ class CallRecorder:
             if item is not None:
                 item["attempts"] += 1
                 item.setdefault("attempt_details", []).append({"number": self.count,
-                                                               "error_type": None, "status": None})
+                    "error_type": None, "status": None, "started_at_unix": time.time(),
+                    "started_at_monotonic": time.perf_counter(),
+                    "request_timeout": request.extensions.get("timeout")})
+                body = json.loads(request.content)
+                item["actual_request"] = body
+                item["model"] = body.get("model")
+                item["thinking"] = body.get("thinking")
+                item["thinking_effective"] = body.get("thinking", {"type": "enabled"})
+                attempt = item["attempt_details"][-1]
+                original_trace = request.extensions.get("trace")
+
+                def trace(name, info):
+                    if name.endswith("receive_response_headers.complete"):
+                        attempt["headers_received_ms"] = (
+                            time.perf_counter() - attempt["started_at_monotonic"]) * 1000
+                    if original_trace:
+                        original_trace(name, info)
+                request.extensions["trace"] = trace
 
     def stage(self, messages, kwargs):
         if self.stream_stage.get():
@@ -234,19 +305,62 @@ class CallRecorder:
         return "unclassified"
 
     def usage(self, item, response):
-        usage = getattr(response, "usage", None)
+        usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
         if usage is None:
             return
         data = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage)
-        item["usage"] = {"prompt_tokens": int(data.get("prompt_tokens") or 0),
-                         "completion_tokens": int(data.get("completion_tokens") or 0),
-                         **self.provider.extract_cache_usage(response)}
+        item["usage"] = {**data, **self.provider.extract_cache_usage(response)}
+
+    def install_http_hooks(self):
+        client = self.provider._get_shared_http_client()
+        client.event_hooks["request"].append(self.before_request)
+        original_send = client.send
+
+        def send(request, *args, **kwargs):
+            start = time.perf_counter()
+            item = self.current_call.get()
+            try:
+                response = original_send(request, *args, **kwargs)
+                if item and item.get("attempt_details"):
+                    attempt = item["attempt_details"][-1]
+                    attempt["status"] = response.status_code
+                    if kwargs.get("stream"):
+                        attempt.setdefault("headers_received_ms", (time.perf_counter() - start) * 1000)
+                    # httpcore的trace发生在响应体读取之前，即非流式也不把完成当响应头。
+                    item.setdefault("response_model", response.headers.get("x-model"))
+                return response
+            except BaseException as exc:
+                if item and item.get("attempt_details"):
+                    item["attempt_details"][-1]["error_type"] = type(exc).__name__
+                raise
+            finally:
+                if item and item.get("attempt_details"):
+                    attempt = item["attempt_details"][-1]
+                    attempt["elapsed_ms"] = (time.perf_counter() - start) * 1000
+                    attempt["finished_at_unix"] = time.time()
+
+        client.send = send
+
+    def remaining_budget(self):
+        """评测插桩只读当前调用栈中的请求deadline；独立回放无请求时明确为null。"""
+        for frame in inspect.stack()[2:]:
+            state = frame.frame.f_locals.get("state") or frame.frame.f_locals.get("execution_state")
+            deadline = state.get("complex_deadline") if isinstance(state, dict) else None
+            if not deadline and frame.function == "_run_fast_state":
+                deadline = frame.frame.f_locals.get("deadline")
+            if deadline:
+                return max(0.0, float(deadline) - time.perf_counter())
+        return None
 
     def call(self, messages, tier="fast", **kwargs):
         item = {"index": len(self.records) + 1, "round": self.current,
                 "stage": self.stage(messages, kwargs), "tier": tier, "attempts": 0,
                 "messages": messages, "tools": kwargs.get("tools"),
-                "usage": None, "error_type": None, "elapsed_ms": None}
+                "usage": None, "error_type": None, "elapsed_ms": None,
+                "started_at_unix": time.time(), "remaining_request_budget": self.remaining_budget(),
+                "requested_timeout": kwargs.get("timeout"), "total_budget": kwargs.get("total_budget"),
+                "request_options": kwargs,
+                "first_reasoning_ms": None, "first_content_ms": None, "last_content_ms": None}
         with self.lock:
             item["index"] = len(self.records) + 1
             self.records.append(item)
@@ -256,6 +370,7 @@ class CallRecorder:
             if kwargs.get("stream"):
                 kwargs = {**kwargs, "stream_options": {"include_usage": True}}
             response = self.original(messages, tier=tier, **kwargs)
+            item["response_model"] = getattr(response, "model", None)
             self.usage(item, response)
             if kwargs.get("stream"):
                 return RecordedStream(response, item, self, start)
@@ -280,6 +395,17 @@ class RecordedStream:
         try:
             chunk = next(self.iterator)
             self.recorder.usage(self.item, chunk)
+            elapsed = (time.perf_counter() - self.start) * 1000
+            for choice in getattr(chunk, "choices", []) or []:
+                delta = getattr(choice, "delta", None)
+                if getattr(delta, "reasoning_content", None) and self.item.get("first_reasoning_ms") is None:
+                    self.item["first_reasoning_ms"] = elapsed
+                if getattr(delta, "content", None):
+                    if self.item.get("first_content_ms") is None:
+                        self.item["first_content_ms"] = elapsed
+                    self.item["last_content_ms"] = elapsed
+            if getattr(chunk, "model", None):
+                self.item["response_model"] = chunk.model
             self.item["elapsed_ms"] = int((time.perf_counter() - self.start) * 1000)
             return chunk
         except StopIteration:
@@ -466,7 +592,7 @@ def retry_missing_judgements(args):
     recorder.count = metadata["model_request_attempts"]
     recorder.records = original_calls
     llm_provider.chat_completion = recorder.call
-    llm_provider._get_shared_http_client().event_hooks["request"].append(recorder.before_request)
+    recorder.install_http_hooks()
     state = metadata["judge_state"]
     retried = []
     try:
@@ -567,25 +693,8 @@ def run(args):
         finally:
             recorder.stream_stage.reset(token)
     execution._open_llm_stream_with_first_content_timeout = open_stream
-    llm_provider._get_shared_http_client().event_hooks["request"].append(recorder.before_request)
-    http_client = llm_provider._get_shared_http_client()
-    original_send = http_client.send
-    def send(request, *positional, **keyword):
-        started = time.perf_counter()
-        item = recorder.current_call.get()
-        try:
-            response = original_send(request, *positional, **keyword)
-            if item and item.get("attempt_details"):
-                item["attempt_details"][-1]["status"] = response.status_code
-            return response
-        except BaseException as exc:
-            if item and item.get("attempt_details"):
-                item["attempt_details"][-1]["error_type"] = type(exc).__name__
-            raise
-        finally:
-            if item and item.get("attempt_details"):
-                item["attempt_details"][-1]["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
-    http_client.send = send
+    recorder.install_http_hooks()
+    timing = SSETimingProbe(main.app)
     original_search = memory.search_documents
     retrievals = []
     def search(*positional, **keyword):
@@ -600,7 +709,8 @@ def run(args):
         return original_stage(name, elapsed_ms, *positional, **keyword)
     observability.log_stage = log_stage
     completed, judge_state, stopped = [], {"attempted": 0, "parse_failed": 0}, None
-    metadata = {"baseline_commit": baseline, "dataset_revision": dataset.get("revision", 1),
+    metadata = {"baseline_commit": baseline, "source_revision": source_revision(repo),
+                "dataset_revision": dataset.get("revision", 1),
                 "runtime_directory": str(work), "output_directory": str(output),
                 "model_attempt_limit": args.max_calls, "stop_before_attempt": recorder.limit + 1,
                 "settings": {name: getattr(config, name) for name in (
@@ -612,7 +722,8 @@ def run(args):
                 "group_semantics": "multi-turn behavior/points=last turn, citations/retrievals=union, duration/calls=sum; intermediate judgments retained"}
     write_json(output / "run_metadata.json", metadata)
     try:
-        with TestClient(main.app) as client:
+        # 包装ASGI而不是客户端响应迭代；TestClient缓冲不影响服务端DONE测量。
+        with TestClient(timing) as client:
             headers = prepare_corpus(client, auth, repo / "tests/eval/corpus", manifest, output)
             if args.prepare_only:
                 return output
@@ -642,6 +753,7 @@ def run(args):
                             checks = question["turn_checks"][index - 1]
                             expectation.update(expected_points=checks["expected_points"], expected_sources=checks["expected_sources"], forbidden=[], expected_behavior="answer")
                         turn = {"turn": index, "question": prompt, **parsed,
+                                "sse_timing": dict(timing.records[-1]),
                                 "elapsed_ms": elapsed, "retrievals": retrievals[retrieve_start:],
                                 "stages": stages[stage_start:], "model_calls": calls,
                                 "answer_model_attempts": sum(item["attempts"] for item in calls),
@@ -673,6 +785,7 @@ def run(args):
         llm_provider.close_resources()
         logging.shutdown()
         after = snapshot_data(repo / "data")
+        metadata["source_revision_finished"] = source_revision(repo)
         write_json(output / "default_data_after.json", after)
         write_json(output / "model_calls.json", recorder.records)
         write_reports(output, completed)
