@@ -221,3 +221,62 @@ def test_d2_selection_has_26_questions_38_rounds_76_runs_and_search_in_estimate(
     assert plan["runs"] == plan["scored_runs"] == 76
     assert plan["context_only_runs"] == 0
     assert plan["estimated_calls_including_search"] == 390
+
+
+def test_no_judge_never_calls_provider_or_writes_judge_output(tmp_path):
+    def forbidden_call(*args, **kwargs):
+        raise AssertionError("no-judge must not call any judge model")
+    recorder = SimpleNamespace(provider=SimpleNamespace(chat_completion=forbidden_call))
+    state = {"attempted": 0, "parse_failed": 0}
+    output = tmp_path / "judge-output"
+    output.mkdir()
+    assert ev.judge_round(recorder, {}, "回答", [], state, output, no_judge=True) == (None, "", None)
+    assert state == {"attempted": 0, "parse_failed": 0}
+    assert list(output.iterdir()) == []
+    assert ev.semantic_scores(None, "answer")["behavior_correct"] is None
+
+
+def test_default_judge_still_calls_once_and_retains_raw_output(tmp_path):
+    calls = []
+    raw = json.dumps(judgement())
+    provider = SimpleNamespace(chat_completion=lambda *a, **k: calls.append(k) or raw,
+                               extract_text=lambda response: response)
+    recorder = SimpleNamespace(provider=provider, current="fast/S01/1", stop_reason=None)
+    question = {"question": "测试", "expected_behavior": "answer", "expected_points": ["要点"],
+                "forbidden": ["禁止项"], "expected_sources": []}
+    state = {"attempted": 0, "parse_failed": 0}
+    parsed, actual_raw, error = ev.judge_round(recorder, question, "回答", [], state, tmp_path)
+    assert len(calls) == 1 and state == {"attempted": 1, "parse_failed": 0}
+    assert parsed == judgement() and actual_raw == raw and error is None
+    assert json.loads((tmp_path / "judge_raw.jsonl").read_text(encoding="utf-8"))["raw"] == raw
+
+
+def test_no_judge_plan_has_14_runs_and_58_estimated_answer_and_search_calls():
+    from pathlib import Path
+    questions = json.loads((Path(__file__).parent / "eval/questions.json").read_text(encoding="utf-8"))["questions"]
+    chosen = ev.select_questions(questions, ["R01", "R07", "U02", "P01", "M01"])
+    plan = ev.describe_eval_plan(chosen, ["fast", "expert"], no_judge=True)
+    assert plan["questions"] == 5 and plan["rounds_per_mode"] == 7
+    assert plan["runs"] == 14 and plan["judge_runs"] == 0
+    assert plan["estimated_calls_including_search"] == 58
+    assert ev.describe_eval_plan(chosen, ["fast", "expert"])["estimated_calls_including_search"] == 72
+
+
+def test_no_judge_cli_passes_option_to_worker(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(ev.sys, "argv", ["run_eval.py", "--no-judge", "--ids", "M01", "R01",
+                                        "--output", str(tmp_path / "not-created"), "--max-calls", "80"])
+    monkeypatch.setattr(ev.subprocess, "run", lambda command, **kwargs:
+                        commands.append(command) or SimpleNamespace(returncode=0))
+    assert ev.main() == 0
+    assert len(commands) == 1 and "--no-judge" in commands[0] and "--worker" in commands[0]
+    assert commands[0][-3:] == ["--ids", "M01", "R01"]
+
+
+def test_no_judge_rejects_retry_mode_before_any_provider_call(monkeypatch):
+    monkeypatch.setattr(ev.sys, "argv", ["run_eval.py", "--no-judge", "--retry-missing-judgements"])
+    monkeypatch.setattr(ev, "retry_missing_judgements", lambda args:
+                        pytest.fail("no-judge must never enter judge retry"))
+    with pytest.raises(SystemExit) as exc:
+        ev.main()
+    assert exc.value.code == 2

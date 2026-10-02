@@ -70,7 +70,7 @@ def select_questions(questions, ids=None):
             for question in questions if question["id"] in selected]
 
 
-def describe_eval_plan(questions, modes):
+def describe_eval_plan(questions, modes, no_judge=False):
     """规划估计而非上界：fast每轮3次答题+判卷，expert每轮5次+判卷。
 
     公开常识题另预留每题两次搜索尝试；实际重试/规划次数仍由运行时硬限额约束。
@@ -80,12 +80,14 @@ def describe_eval_plan(questions, modes):
     scored = sum(len(item["selected_turns"]) for item in questions)
     public = sum(max(item["selected_turns"]) for item in questions
                  if item["category"] == "public_with_note")
-    estimate = sum(rounds * (3 if mode == "fast" else 5) + scored
+    judge_runs = 0 if no_judge else scored * len(modes)
+    estimate = sum(rounds * (3 if mode == "fast" else 5)
                    + (public * 2 if mode == "expert" else 0) for mode in modes)
     return {"questions": len(questions), "rounds_per_mode": rounds,
             "runs": rounds * len(modes), "scored_runs": scored * len(modes),
             "context_only_runs": (rounds - scored) * len(modes),
-            "estimated_calls_including_search": estimate,
+            "judge_runs": judge_runs,
+            "estimated_calls_including_search": estimate + judge_runs,
             "estimate_is_hard_bound": False}
 
 
@@ -487,7 +489,10 @@ class RecordedStream:
         self.item["elapsed_ms"] = int((time.perf_counter() - self.start) * 1000)
 
 
-def judge_round(recorder, question, answer, history, judge_state, output):
+def judge_round(recorder, question, answer, history, judge_state, output, *, no_judge=False):
+    # 人工复核模式不得调用供应商，也不得把缺失判卷当成通过或失败。
+    if no_judge:
+        return None, "", None
     material = {"question": question["question"], "expected_behavior": question["expected_behavior"],
                 "expected_points": question["expected_points"], "forbidden": question["forbidden"],
                 "expected_sources": question["expected_sources"], "history": history,
@@ -705,7 +710,7 @@ def run(args):
         sys.path.insert(0, str(repo))
     dataset = json.loads((repo / "tests/eval/questions.json").read_text(encoding="utf-8"))
     questions = select_questions(dataset["questions"], args.ids)
-    plan = describe_eval_plan(questions, args.modes)
+    plan = describe_eval_plan(questions, args.modes, no_judge=args.no_judge)
     print("PLAN " + json.dumps(plan, ensure_ascii=False), flush=True)
     output = Path(args.output or repo / "backups/eval" / time.strftime("%Y%m%d-%H%M%S")).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -785,7 +790,7 @@ def run(args):
     observability.log_stage = log_stage
     completed, judge_state, stopped = [], {"attempted": 0, "parse_failed": 0}, None
     metadata = {"baseline_commit": baseline, "source_revision": source_revision(repo),
-                "selection": args.ids, "plan": plan,
+                "selection": args.ids, "plan": plan, "no_judge": args.no_judge,
                 "dataset_revision": dataset.get("revision", 1),
                 "runtime_directory": str(work), "output_directory": str(output),
                 "model_attempt_limit": args.max_calls, "stop_before_attempt": recorder.limit + 1,
@@ -845,8 +850,9 @@ def run(args):
                                         {"role": "assistant", "content": parsed["answer"]}]
                             print("CONTEXT %s attempts=%s" % (recorder.current, recorder.count), flush=True)
                             continue
-                        judgement, raw, error = judge_round(recorder, expectation, parsed["answer"], history, judge_state, output)
-                        turn.update(judgement=judgement, judge_raw=raw, judge_error_type=error,
+                        judgement, raw, error = judge_round(recorder, expectation, parsed["answer"], history, judge_state, output,
+                                                           no_judge=args.no_judge)
+                        turn.update(judgement=judgement, judge_raw=raw, judge_error_type=error, judge_skipped=args.no_judge,
                                     scores={**rule_scores(expectation["expected_sources"], turn["retrievals"], parsed["citations"]),
                                             **semantic_scores(judgement, expectation["expected_behavior"])})
                         write_json(output / (recorder.current.replace("/", "-") + ".json"), turn)
@@ -893,6 +899,7 @@ def main():
     parser.add_argument("--modes", nargs="+", choices=("fast", "expert"), default=["fast", "expert"])
     parser.add_argument("--max-calls", type=int, default=700)
     parser.add_argument("--ids", nargs="+", help="题号或题号/轮次；指定轮次的前置轮只建立上下文、不判卷")
+    parser.add_argument("--no-judge", action="store_true", help="完全禁用判卷模型，保留原始回答和规则指标供人工复核")
     parser.add_argument("--prepare-only", action="store_true", help="只验证上传核验路径，不发出问答或判卷调用")
     parser.add_argument("--retry-missing-judgements", action="store_true", help="只补判已有结果中无返回的超时，每轮最多一次；不重复问答")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -905,6 +912,8 @@ def main():
         parser.error(str(exc))
     if not 21 <= args.max_calls <= 700:
         parser.error("max-calls must be 21..700")
+    if args.no_judge and args.retry_missing_judgements:
+        parser.error("--no-judge cannot be combined with --retry-missing-judgements")
     if args.retry_missing_judgements:
         try:
             retry_missing_judgements(args)
@@ -920,6 +929,8 @@ def main():
                    "--modes", *args.modes]
         if args.prepare_only:
             command.append("--prepare-only")
+        if args.no_judge:
+            command.append("--no-judge")
         if args.ids:
             command.extend(["--ids", *args.ids])
         process = subprocess.run(command, cwd=repo)
