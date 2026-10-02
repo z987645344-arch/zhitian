@@ -27,6 +27,7 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 from tests.eval.run_eval import snapshot_data, source_revision
+from layers import retrieval_query
 
 THRESHOLDS = (.40, .45, .50, .55, .60)
 TOP_KS = (5, 8, 10)
@@ -60,6 +61,7 @@ def expand_rounds(questions):
                 evidence = TURN_EVIDENCE[key]
             rounds.append({"id": key, "category": question["category"], "question": text,
                            "history_query": "\n".join(turns[:index]),
+                           "user_history": [{"role": "user", "content": value} for value in turns[:index - 1]],
                            "evidence": evidence, "evidence_mapping":
                            "measurement_supplement" if key in TURN_EVIDENCE else "dataset",
                            "negative": question["id"].startswith(("R", "U")),
@@ -244,7 +246,7 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def measure_variant(memory, blocks, rounds, path, include_full=True):
+def measure_variant(memory, blocks, rounds, path, include_full=True, compare_short_followup=False):
     """三种top_k各调原检索入口；quote定位依赖原始chunk_index。"""
     import config
     memory.close_resources()
@@ -261,13 +263,22 @@ def measure_variant(memory, blocks, rounds, path, include_full=True):
     doc_ids = list(dict.fromkeys(item["doc_id"] for item in blocks))
     rows = []
     for index, round_item in enumerate(rounds):
-        for mode in ("raw", "history"):
+        for mode in (["raw", "history", "short_history", "primary_plus_context"] if compare_short_followup else ["raw", "history"]):
             query = round_item["question"] if mode == "raw" else round_item["history_query"]
+            if mode in {"short_history", "primary_plus_context"}:
+                query = retrieval_query.build_document_query(round_item["question"], round_item["question"],
+                                                            round_item.get("user_history", []))
+            options = {}
+            if mode == "primary_plus_context":
+                if query != round_item["question"]:
+                    options["additional_query"] = query
+                query = round_item["question"]
             by_k = {str(k): memory.search_documents(query, top_k=k, verified_doc_ids=doc_ids,
-                                                   enable_rerank=False) for k in TOP_KS}
+                                                   enable_rerank=False, **options) for k in TOP_KS}
             ranking = memory.search_documents(query, top_k=len(blocks), verified_doc_ids=doc_ids,
-                                              enable_rerank=False) if include_full else by_k["10"]
+                                              enable_rerank=False, **options) if include_full else by_k["10"]
             rows.append({**round_item, "query_mode": mode, "query": query,
+                         "history_applied": (mode == "short_history" and query != round_item["question"]) or bool(options),
                          "full_ranking": ranking, "by_top_k": by_k,
                          "top_score": ranking[0]["score"] if ranking else None,
                          "evidence": [describe_evidence(item, blocks, ranking, by_k)
@@ -279,7 +290,7 @@ def measure_variant(memory, blocks, rounds, path, include_full=True):
 
 def make_summary(rows):
     result = {"grid": [], "categories": [], "negative_scores": []}
-    for mode in ("raw", "history"):
+    for mode in dict.fromkeys(row["query_mode"] for row in rows):
         selected = [row for row in rows if row["query_mode"] == mode]
         for threshold in THRESHOLDS:
             for k in TOP_KS:
@@ -297,7 +308,7 @@ def make_summary(rows):
 
 def write_report(output, variants, metadata):
     lines = ["# 本地召回测量（零API）", "", "## 口径", "",
-             "- 57题逐轮，共69轮；每轮原话/确定性拼接全部之前的用户消息，两种查询。",
+             "- 57题逐轮，共69轮；原话/全部之前用户消息拼接；compare-short-followup另测线上同一短追问规则。",
              "- quote允许忽略排版空白，不推断同义。多轮按turn_checks的expected_sources限定；"
              "M02/3和M04/2补充逐轮quote，不修改题库。仅对有quote的轮计算召回率。",
              "- 完整库排名用于定位；top_k=5/8/10各跑真实检索，候选池分别为20/32/40。",
@@ -336,8 +347,10 @@ def run(args):
         # Windows HNSW句柄可能活到进程退出；父进程只在子进程退出之后清理自己创建的目录。
         work = Path(tempfile.mkdtemp(prefix="zhitian-recall-")).resolve()
         try:
-            result = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve()),
-                                     "--output", str(output), "--worker-runtime", str(work)], cwd=repo)
+            command = [sys.executable, "-B", str(Path(__file__).resolve()), "--output", str(output)]
+            if args.compare_short_followup:
+                command.append("--compare-short-followup")
+            result = subprocess.run(command + ["--worker-runtime", str(work)], cwd=repo)
         finally:
             shutil.rmtree(work)
         metadata_path = output / "metadata.json"
@@ -411,7 +424,10 @@ def run(args):
             blocks.extend({"source": source, "doc_id": doc_id, "chunk_index": index,
                            "content": chunk} for index, chunk in enumerate(chunks))
         metadata.update(documents=documents, chunks=len(blocks), rounds=len(rounds),
-                        queries=len(rounds) * 2, rag_threshold=config.RAG_SCORE_THRESHOLD,
+                        queries=len(rounds) * (4 if args.compare_short_followup else 2), rag_threshold=config.RAG_SCORE_THRESHOLD,
+                        rag_top_k=config.RAG_DOCUMENT_TOP_K,
+                        followup_extra_top_k=config.RAG_FOLLOWUP_EXTRA_TOP_K,
+                        strong_score=config.RAG_STRONG_EVIDENCE_SCORE_THRESHOLD, title_score=config.TITLE_MATCH_MIN_SCORE,
                         bm25_scale=config.BM25_SCORE_SCALE,
                         embedding_model_sha256=hashlib.sha256(
                             Path(original_embedding._model_dir, "model.onnx").read_bytes()).hexdigest())
@@ -419,10 +435,54 @@ def run(args):
         for variant in ("original", "without_header", "without_examples"):
             print("VARIANT " + variant, flush=True)
             current = transform_blocks(blocks, variant)
-            rows = measure_variant(memory, current, rounds, work / "data" / variant)
+            rows = measure_variant(memory, current, rounds, work / "data" / variant,
+                                   compare_short_followup=args.compare_short_followup)
             summary = make_summary(rows)
             variants[variant] = {"chunks": len(current), "rows": rows, "summary": summary}
             write_json(output / (variant + ".json"), variants[variant])
+            if variant == "original" and args.compare_short_followup:
+                # 计时不用测量缓存替身：真实ONNX，每个短追问交替测原话/双查询三遍。
+                embedding.get_embedding_function = lambda: original_embedding
+                # Chroma collection在初始化时已捕获嵌入函数，仅切换工厂不会替换它。
+                memory._get_document_collection()._embedding_function = original_embedding
+                timings = []
+                for item in rounds:
+                    expanded = retrieval_query.build_document_query(item["question"], item["question"], item.get("user_history", []))
+                    if expanded == item["question"]:
+                        continue
+                    samples = {"raw": [], "primary_plus_context": []}
+                    for repeat in range(3):
+                        for mode in (["raw", "primary_plus_context"] if repeat % 2 == 0 else ["primary_plus_context", "raw"]):
+                            started = time.perf_counter()
+                            memory.search_documents(item["question"], top_k=8,
+                                                    verified_doc_ids=[entry["doc_id"] for entry in blocks],
+                                                    enable_rerank=False,
+                                                    **({"additional_query": expanded} if mode == "primary_plus_context" else {}))
+                            samples[mode].append(time.perf_counter() - started)
+                    timings.append({"id": item["id"], **samples})
+                metadata["local_retrieval_timings_seconds"] = timings
+                embedding.get_embedding_function = lambda: cache
+                memory._get_document_collection()._embedding_function = cache
+        if args.compare_short_followup:
+            from layers import execution
+            original_rows = variants["original"]["rows"]
+            distributions = {}
+            for label, mode, threshold, k in (("old", "raw", .55, 5), ("replacement", "short_history", .50, 8), ("new", "primary_plus_context", .50, 8)):
+                counts = {"strong": 0, "weak": 0, "miss": 0}
+                for row in original_rows:
+                    if row["query_mode"] != mode:
+                        continue
+                    candidates = row["by_top_k"][str(k)]
+                    trusted = [item for item in candidates if item["score"] >= threshold]
+                    state = "miss"
+                    if trusted:
+                        details = execution.document_search_metadata(candidates, trusted, memory.SearchDiagnostics())
+                        state = "strong" if execution.local_evidence_is_strong(details) else "weak"
+                    counts[state] += 1
+                distributions[label] = counts
+            metadata["strength_without_rerank"] = distributions
+            metadata["short_followup_rounds"] = [row["id"] for row in original_rows
+                                                 if row["query_mode"] == "short_history" and row["history_applied"]]
         metadata["success"] = True
     finally:
         if memory is not None:
@@ -445,5 +505,6 @@ if __name__ == "__main__":
     # 直接运行时先补仓库路径，模块导入仍不初始化应用。
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output")
+    parser.add_argument("--compare-short-followup", action="store_true")
     parser.add_argument("--worker-runtime", help=argparse.SUPPRESS)
     run(parser.parse_args())

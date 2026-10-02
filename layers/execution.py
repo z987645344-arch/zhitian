@@ -16,7 +16,7 @@ from typing import Callable, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, StrictBool
 import config
-from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider, source_policy
+from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider, source_policy, retrieval_query
 from layers.file_processing.models import (
     FileOwnershipContext,
     FileProcessingRequest,
@@ -339,10 +339,10 @@ def local_evidence_is_strong(metadata: dict) -> bool:
         return candidate_count <= 3 and trusted_count <= 3
     return bool(
         metadata.get("rerank_succeeded")
-        and trusted_count >= 2
+        and int(metadata.get("strong_trusted_count", trusted_count)) >= 2
         and float(metadata.get("best_score", 0.0) or 0.0)
-        >= float(config.RAG_SCORE_THRESHOLD) + LOCAL_EVIDENCE_STRONG_SCORE_MARGIN
-        and float(metadata.get("best_rerank_score", 0.0) or 0.0)
+        >= float(config.RAG_STRONG_EVIDENCE_SCORE_THRESHOLD)
+        and float(metadata.get("strong_best_rerank_score", metadata.get("best_rerank_score", 0.0)) or 0.0)
         >= LOCAL_EVIDENCE_STRONG_RERANK_SCORE
     )
 
@@ -820,14 +820,23 @@ def _search_documents(
     verified_doc_ids = auth.get_verified_doc_ids()
     diagnostics = memory.SearchDiagnostics()
     effective_rerank_enabled = rerank_enabled and not deepseek_circuit_open(_execution_state)
+    original_question = _original_user_question(query, _execution_state)
+    history = (
+        conversation_history_messages(str((_execution_state or {}).get("session_id") or ""))
+        if retrieval_query.is_short_followup(original_question) else []
+    )
+    # fast工具query、expert普通/复杂/反思query在此收口；两路分别用于BM25和向量。
+    # 原query及state.message不改，筛选与最终正文仍面对用户原话。
+    retrieval_text = retrieval_query.build_document_query(query, original_question, history)
     results = memory.search_documents(
         query,
-        top_k=5,
+        top_k=config.RAG_DOCUMENT_TOP_K,
         verified_doc_ids=verified_doc_ids,
         tier=tier,
         enable_rerank=effective_rerank_enabled,
         timeout=timeout,
         diagnostics=diagnostics,
+        **({"additional_query": retrieval_text} if retrieval_text != query else {}),
     )
     rerank_reason = provider_degradation_reason_for_kind(
         diagnostics.rerank_error_kind
@@ -900,25 +909,7 @@ def _search_documents(
     ]
     if _execution_state is not None:
         _execution_state["grounded_candidates"] = list(trusted_results)
-    title_source_match = any(
-        item.get("title_source_match") and float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
-        for item in trusted_results
-    )
-    metadata = {
-        "title_source_match": title_source_match,
-        "candidate_count": len(results),
-        "trusted_count": len(trusted_results),
-        "unique_document_count": len({str(item.get("doc_id", "")) for item in trusted_results}),
-        "best_score": best_score,
-        "best_rerank_score": max(
-            (float(item.get("rerank_score", 0.0) or 0.0) for item in trusted_results),
-            default=0.0,
-        ),
-        "rerank_succeeded": diagnostics.rerank_succeeded,
-        "rerank_timed_out": diagnostics.rerank_timed_out,
-        "rerank_error_kind": diagnostics.rerank_error_kind,
-        "supplied_context_answer": bool(context and generate_answer),
-    }
+    metadata = document_search_metadata(results, trusted_results, diagnostics, bool(context and generate_answer))
     evidence = "hit" if context or local_evidence_is_strong(metadata) else "weak"
     if tier == "expert" or generate_answer:
         source_policy.set_evidence(_execution_state, evidence)
@@ -973,6 +964,31 @@ def _search_documents(
 
 
 _SUPPLIED_CONTEXT_AUTHORITY = object()
+
+
+def document_search_metadata(results: list[dict], trusted_results: list[dict], diagnostics: memory.SearchDiagnostics,
+                             supplied_context_answer: bool = False) -> dict:
+    """线上与零付费测量共用强证据输入，不用新增弱片段凑足强证据条数。"""
+    strong_support_floor = config.RAG_STRONG_EVIDENCE_SCORE_THRESHOLD - LOCAL_EVIDENCE_STRONG_SCORE_MARGIN
+    strong_trusted = [item for item in trusted_results if float(item.get("score", 0.0)) >= strong_support_floor]
+    return {
+        "title_source_match": any(
+            item.get("title_source_match") and float(item.get("score", 0.0)) >= config.RAG_SCORE_THRESHOLD
+            for item in trusted_results
+        ),
+        "candidate_count": len(results),
+        "trusted_count": len(trusted_results),
+        # 强线减原margin保持旧0.55计数线；低分的第二条不得绕过弱证据反思。
+        "strong_trusted_count": len(strong_trusted),
+        "strong_best_rerank_score": max((float(item.get("rerank_score", 0.0) or 0.0) for item in strong_trusted), default=0.0),
+        "unique_document_count": len({str(item.get("doc_id", "")) for item in trusted_results}),
+        "best_score": max((float(item.get("score", 0.0)) for item in results), default=0.0),
+        "best_rerank_score": max((float(item.get("rerank_score", 0.0) or 0.0) for item in trusted_results), default=0.0),
+        "rerank_succeeded": diagnostics.rerank_succeeded,
+        "rerank_timed_out": diagnostics.rerank_timed_out,
+        "rerank_error_kind": diagnostics.rerank_error_kind,
+        "supplied_context_answer": supplied_context_answer,
+    }
 
 
 def _answer_from_supplied_context(

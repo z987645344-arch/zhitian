@@ -344,7 +344,7 @@ def test_f44_gate_rejects_single_marginal_hit_and_accepts_strong_reranked_eviden
     state["results"][0].metadata.update({
         "candidate_count": 3,
         "trusted_count": 2,
-        "best_score": config.RAG_SCORE_THRESHOLD + 0.11,
+        "best_score": config.RAG_STRONG_EVIDENCE_SCORE_THRESHOLD + 0.01,
         "best_rerank_score": 9.0,
     })
     assert planning._local_document_evidence_sufficient(state) is True

@@ -21,7 +21,7 @@ from chromadb.api.client import SharedSystemClient
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 import config
-from layers import chroma_sync, db_schema_version, embedding, llm_provider
+from layers import chroma_sync, db_schema_version, embedding, llm_provider, retrieval_query
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages
@@ -658,10 +658,20 @@ def search_documents(
     enable_rerank: bool = True,
     timeout: Optional[float] = None,
     diagnostics: Optional[SearchDiagnostics] = None,
+    additional_query: Optional[str] = None,
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，合并BM25与向量两个独立候选源。"""
     if not query:
         return []
+    if additional_query and additional_query != query and config.RAG_FOLLOWUP_EXTRA_TOP_K > 0:
+        # 原路包括既有可选精排，与非追问完全相同；前文路只做本地召回。
+        # 不对追加后的集合再精排/截到top_k，避免改变原路顺序或挤掉原路证据。
+        primary = search_documents(query, top_k=top_k, verified_doc_ids=verified_doc_ids,
+                                   tier=tier, enable_rerank=enable_rerank, timeout=timeout, diagnostics=diagnostics)
+        contextual = search_documents(additional_query, top_k=top_k, verified_doc_ids=verified_doc_ids,
+                                      tier=tier, enable_rerank=False, timeout=timeout)
+        return retrieval_query.append_context_results(primary, contextual, config.RAG_SCORE_THRESHOLD,
+                                                       top_k, config.RAG_FOLLOWUP_EXTRA_TOP_K)
     allowed_doc_ids = None
     if verified_doc_ids is not None:
         allowed_doc_ids = [str(doc_id) for doc_id in verified_doc_ids if doc_id]
@@ -937,8 +947,8 @@ def _merge_document_results(primary: list[dict], fallback: list[dict]) -> list[d
 
 
 def _title_match_min_score() -> float:
-    """Title/source命中时的最低保证分，略高于RAG阈值但仍保留分数排序机制。"""
-    return round(max(0.0, float(config.RAG_SCORE_THRESHOLD)) + TITLE_MATCH_SCORE_MARGIN, 6)
+    """独立的Title/source保证分；候选接受阈值下降不得降低标题分。"""
+    return round(max(0.0, float(config.TITLE_MATCH_MIN_SCORE)), 6)
 
 
 def _apply_title_source_boost(candidates: list[dict], query: str) -> list[dict]:

@@ -188,6 +188,6 @@ def test_cleanup_only_after_measurement_child_returns(monkeypatch, tmp_path):
         calls.append(command)
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(recall.subprocess, "run", child)
-    recall.run(SimpleNamespace(output=str(tmp_path / "results"), worker_runtime=None))
+    recall.run(SimpleNamespace(output=str(tmp_path / "results"), worker_runtime=None, compare_short_followup=False))
     assert len(calls) == 1
     assert not work.exists()

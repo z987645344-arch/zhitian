@@ -367,7 +367,13 @@ EMBEDDING_BATCH_SIZE = max(1, int(os.getenv("EMBEDDING_BATCH_SIZE", "4")))
 EMBEDDING_CPU_MEM_ARENA_ENABLED = (
     os.getenv("EMBEDDING_CPU_MEM_ARENA_ENABLED", "false").strip().lower() == "true"
 )
-RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.55"))
+RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.50"))
+RAG_DOCUMENT_TOP_K = max(1, int(os.getenv("RAG_DOCUMENT_TOP_K", "8")))
+# 短追问保留原查询候选，再补最多两块；不占用原查询名额。
+RAG_FOLLOWUP_EXTRA_TOP_K = max(0, int(os.getenv("RAG_FOLLOWUP_EXTRA_TOP_K", "2")))
+# 接受更多弱候选不等于降低强证据/标题保证分；保持旧0.55+0.10、0.55+0.02。
+RAG_STRONG_EVIDENCE_SCORE_THRESHOLD = float(os.getenv("RAG_STRONG_EVIDENCE_SCORE_THRESHOLD", "0.65"))
+TITLE_MATCH_MIN_SCORE = float(os.getenv("TITLE_MATCH_MIN_SCORE", "0.57"))
 BM25_SCORE_SCALE = float(os.getenv("BM25_SCORE_SCALE", "20.0"))
 TITLE_BOOST_MAX_QUERY_LENGTH = int(os.getenv("TITLE_BOOST_MAX_QUERY_LENGTH", "12"))
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
