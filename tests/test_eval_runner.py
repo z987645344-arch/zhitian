@@ -180,3 +180,44 @@ def test_completion_does_not_reroll_json_failures_or_valid_scores(error, raw, pa
     row = {"mode": "fast", "id": "S01", "turns": [{"turn": 1, "judgement": parsed}]}
     latest = {"fast/S01/1": {"error_type": error, "raw": raw}}
     assert ev.missing_timeout_judgements([row], latest) == []
+
+
+def test_ids_select_whole_question_or_turn_without_mutating_dataset():
+    questions = [{"id": "S01", "question": "单题", "category": "single_fact"},
+                 {"id": "M01", "question": ["一", "二", "三"], "category": "multi_turn"}]
+    chosen = ev.select_questions(questions, ["M01/3", "S01", "M01/1", "M01/3"])
+    assert [(item["id"], item["selected_turns"]) for item in chosen] == [
+        ("S01", [1]), ("M01", [1, 3])]
+    assert all("selected_turns" not in item for item in questions)
+    assert ev.select_questions(questions, ["M01/2", "M01"])[0]["selected_turns"] == [1, 2, 3]
+    assert len(ev.select_questions(questions)) == 2
+
+
+@pytest.mark.parametrize("selector", ["missing", "S01/2", "M01/0", "M01/4", "M01/no", "M01/1/2", "M01/"])
+def test_ids_reject_unknown_or_out_of_range_before_any_paid_call(selector):
+    questions = [{"id": "S01", "question": "单题"},
+                 {"id": "M01", "question": ["一", "二", "三"]}]
+    with pytest.raises(ValueError):
+        ev.select_questions(questions, [selector])
+
+
+def test_turn_selection_plan_accounts_for_history_setup_and_only_selected_judges():
+    chosen = ev.select_questions([
+        {"id": "M01", "question": ["一", "二", "三"], "category": "multi_turn"}], ["M01/3"])
+    plan = ev.describe_eval_plan(chosen, ["fast", "expert"])
+    assert plan["runs"] == 6 and plan["scored_runs"] == 2
+    assert plan["context_only_runs"] == 4
+    assert plan["estimated_calls_including_search"] == 26
+    assert plan["estimate_is_hard_bound"] is False
+
+
+def test_d2_selection_has_26_questions_38_rounds_76_runs_and_search_in_estimate():
+    from pathlib import Path
+    questions = json.loads((Path(__file__).parent / "eval/questions.json").read_text(encoding="utf-8"))["questions"]
+    ids = (["S08"] + ["R%02d" % n for n in range(1, 11)]
+           + [prefix + "%02d" % n for prefix in ("P", "U", "M") for n in range(1, 6)])
+    plan = ev.describe_eval_plan(ev.select_questions(questions, ids), ["fast", "expert"])
+    assert plan["questions"] == 26 and plan["rounds_per_mode"] == 38
+    assert plan["runs"] == plan["scored_runs"] == 76
+    assert plan["context_only_runs"] == 0
+    assert plan["estimated_calls_including_search"] == 390
