@@ -1117,8 +1117,11 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
 
 
 def _build_fast_evidence_messages(state: AgentState, result: ToolResult) -> list[dict]:
-    fixed_prompt = system_modules.prompt_prefix(FAST_EVIDENCE_PROMPT)
+    fixed_prompt = system_modules.prompt_prefix(
+        FAST_EVIDENCE_PROMPT + "\n\n" + execution.CONVERSATION_FACTS_PROMPT
+    )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
+    messages.extend(_fast_history_messages(state["session_id"]))
     messages.append({
         "role": "user",
         "content": "用户问题：%s\n\n候选片段：\n%s" % (state["message"], result.data),
@@ -1135,8 +1138,11 @@ def _build_fast_result_messages(
         "你处于快速模式。请只根据提供的本地工具结果和对话上下文回答，"
         "不要编造工具结果中不存在的信息，不要声称使用了联网搜索。"
     )
-    fixed_prompt = system_modules.prompt_prefix(instruction)
+    fixed_prompt = system_modules.prompt_prefix(
+        instruction + "\n\n" + execution.CONVERSATION_FACTS_PROMPT
+    )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
+    messages.extend(_fast_history_messages(state["session_id"]))
     if result.tool == "search_documents":
         messages.append({
             "role": "user",
@@ -1147,7 +1153,6 @@ def _build_fast_result_messages(
         })
         return messages
 
-    messages.extend(_fast_history_messages(state["session_id"]))
     context_text = "\n".join(state["context"]) if state["context"] else "无"
     messages.append({
         "role": "user",
@@ -1196,12 +1201,7 @@ def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple
 
 
 def _fast_history_messages(session_id: str) -> list[dict]:
-    history = memory.get_history(session_id, limit=10) if session_id else []
-    return [
-        {"role": item["role"], "content": item["content"]}
-        for item in history
-        if item.get("role") in {"user", "assistant"} and item.get("content")
-    ]
+    return execution.conversation_history_messages(session_id)
 
 
 def _select_fast_tool_call(tool_calls: list[dict]) -> Optional[dict]:

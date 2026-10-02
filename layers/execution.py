@@ -59,6 +59,15 @@ class DocumentAnswerContext(BaseModel):
     candidates: list[DocumentAnswerCandidate] = Field(default_factory=list)
 
 
+CONVERSATION_FACTS_PROMPT = (
+    "对话历史中的用户陈述可作为本次问题的条件，不等于已经核验的订单记录或审批结果。"
+    "按时间顺序采用用户明确更正后的最新条件；未更正的订单号、型号、地区、时间和诉求应保留，"
+    "不同订单的条件不得混用。助手以前的回答只供理解上下文，不作为制度或已执行操作的证明。"
+    "公司制度、产品规格和权益仍须由本轮提供的知识库片段支持；不得用自身知识补全，"
+    "不得把用户陈述升级为已查到订单、已批准或已执行操作。"
+)
+
+
 class ToolResult(BaseModel):
     tool: str
     status: str
@@ -954,6 +963,7 @@ def _answer_from_supplied_context(
             answer = str(
                 _llm_chat(
                     message=query,
+                    session_id=str((_execution_state or {}).get("session_id") or ""),
                     system_prompt=system_prompt,
                     tier=config.resolve_model_tier(
                         tier,
@@ -1686,6 +1696,7 @@ def _answer_from_documents(
             "如果片段不足以回答，直接回答：未找到可靠依据，无法确认答案。"
         )
     fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
+    fixed_prompt += "\n\n" + CONVERSATION_FACTS_PROMPT
     dynamic_prompt = (
         f"用户问题：{answer_context.query}\n\n"
         "文档片段：\n"
@@ -1703,13 +1714,15 @@ def _answer_from_documents(
         if tier == "expert":
             messages = cache_friendly_messages(
                 fixed_prompt,
-                [{"role": "user", "content": dynamic_prompt}],
+                conversation_history_messages(
+                    str((_execution_state or {}).get("session_id") or "")
+                ) + [{"role": "user", "content": dynamic_prompt}],
                 include_date=True,
             )
         else:
             prompt = current_date_prompt() + "\n\n" + fixed_prompt + "\n\n" + dynamic_prompt
             messages = _build_model_messages(
-                "",
+                str((_execution_state or {}).get("session_id") or ""),
                 prompt,
             )
         first_content_timeout = remaining_request_budget(
@@ -1876,6 +1889,26 @@ def _llm_chat(
         raise
 
 
+def conversation_history_messages(
+    session_id: str,
+    excluded_history_message_types: Optional[list[str]] = None,
+) -> list[dict]:
+    """原样读取最近10条用户/助手消息，不摘要、不提升为system指令。"""
+    history = memory.get_history(session_id, limit=10) if session_id else []
+    excluded_types = {
+        str(item).strip()
+        for item in (excluded_history_message_types or [])
+        if str(item).strip()
+    }
+    return [
+        {"role": item["role"], "content": item["content"]}
+        for item in history
+        if item.get("role") in {"user", "assistant"}
+        and item.get("content")
+        and item.get("message_type", memory.MESSAGE_TYPE_CHAT) not in excluded_types
+    ]
+
+
 def _build_model_messages(
     session_id: str,
     message: str,
@@ -1883,24 +1916,12 @@ def _build_model_messages(
     excluded_history_message_types: Optional[list[str]] = None,
 ) -> list[dict]:
     """读取会话历史并追加本轮用户消息"""
-    history = memory.get_history(session_id, limit=10) if session_id else []
-    excluded_types = {
-        str(item).strip()
-        for item in (excluded_history_message_types or [])
-        if str(item).strip()
-    }
     messages = cache_friendly_messages(
         system_modules.prompt_prefix("你是知天对话助手，请准确完成用户请求。"),
         ([{"role": "system", "content": system_prompt}] if system_prompt else []),
         include_date=True,
     )
-    messages.extend([
-        {"role": item["role"], "content": item["content"]}
-        for item in history
-        if item.get("role") in {"user", "assistant"}
-        and item.get("content")
-        and item.get("message_type", memory.MESSAGE_TYPE_CHAT) not in excluded_types
-    ])
+    messages.extend(conversation_history_messages(session_id, excluded_history_message_types))
     messages.append({"role": "user", "content": message})
     return messages
 
