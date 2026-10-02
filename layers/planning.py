@@ -713,6 +713,7 @@ def complex_respond_node(state: AgentState) -> AgentState:
                 state["mode"],
                 config.LLMStage.COMPLEX_FINAL_SUMMARY,
             ),
+            stage=config.LLMStage.COMPLEX_FINAL_SUMMARY,
             timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
             total_budget=_remaining_complex_budget(state),
         )
@@ -956,6 +957,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
         first_response = llm_provider.chat_completion(
             _build_fast_messages(state),
             tier="fast",
+            stage="fast_tool_selection",
             tools=FAST_TOOLS,
             tool_choice="auto",
             timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
@@ -996,6 +998,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
                 evidence_response = llm_provider.chat_completion(
                     _build_fast_evidence_messages(state, result),
                     tier="fast",
+                    stage="fast_evidence_filter",
                     response_format={"type": "json_object"},
                     timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
                     total_budget=_remaining_fast_budget(deadline),
@@ -1050,6 +1053,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
             final_response = llm_provider.chat_completion(
                 _build_fast_result_messages(state, result, selected_evidence),
                 tier="fast",
+                stage="fast_result_generation",
                 timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
                 total_budget=_remaining_fast_budget(deadline),
             )
@@ -1254,6 +1258,7 @@ def _generate_complex_tasks(
             state["mode"],
             config.LLMStage.COMPLEX_TASK_DECOMPOSITION,
         ),
+        stage=config.LLMStage.COMPLEX_TASK_DECOMPOSITION,
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1301,6 +1306,7 @@ def _check_complex_route_with_model(state: AgentState) -> str:
             state["mode"],
             config.LLMStage.CHECKPOINT_ROUTE,
         ),
+        stage=config.LLMStage.CHECKPOINT_ROUTE,
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1334,6 +1340,7 @@ def _adjust_complex_task_with_model(state: AgentState, task: Task) -> Optional[T
             state["mode"],
             config.LLMStage.CHECKPOINT_ADJUSTMENT,
         ),
+        stage=config.LLMStage.CHECKPOINT_ADJUSTMENT,
         response_format={"type": "json_object"},
         timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         total_budget=_remaining_complex_budget(state),
@@ -1573,6 +1580,7 @@ def _reflect_with_model(state: AgentState) -> dict:
                 state["mode"],
                 config.LLMStage.REACT_REFLECTION,
             ),
+            stage=config.LLMStage.REACT_REFLECTION,
             timeout=min(config.EXPERT_LLM_TIMEOUT, _remaining_complex_budget(state)),
         )
         raw = llm_provider.extract_text(response)
@@ -1974,6 +1982,7 @@ def _classify_with_model(
             include_date=True,
         ),
         tier=config.resolve_model_tier(tier, config.LLMStage.INTENT_CLASSIFICATION),
+        stage=config.LLMStage.INTENT_CLASSIFICATION,
         tools=INTENT_TOOLS,
         tool_choice="auto",
         timeout=(
@@ -2023,6 +2032,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
                     state["mode"],
                     config.LLMStage.HISTORY_CONTEXT_POLISH,
                 ),
+                stage=config.LLMStage.HISTORY_CONTEXT_POLISH,
                 timeout=execution.remaining_request_budget(
                     state,
                     config.EXPERT_LLM_TIMEOUT,

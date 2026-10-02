@@ -46,6 +46,7 @@ def test_http_hook_records_actual_body_timeout_headers_and_attempt():
     assert item["model"] == "actual" and item["thinking"] == {"type": "disabled"}
     attempt = item["attempt_details"][0]
     assert attempt["request_timeout"] == {"read": 12.0}
+    assert attempt["model"] == "actual" and attempt["thinking_effective"] == {"type": "disabled"}
     assert attempt["headers_received_ms"] >= 0 and attempt["started_at_unix"] > 0
 
 
@@ -85,3 +86,36 @@ def test_observation_samples_are_fixed_fictional_and_invalid_links():
         assert "岚屿栖盒" in item["question"]
         for host in re.findall(r"https?://([A-Za-z0-9.-]+)", item["answer"]):
             assert host.endswith(".invalid")
+
+
+def test_request_deadline_crosses_first_content_worker_context(monkeypatch):
+    import contextvars
+    import threading
+    recorder = ev.CallRecorder(SimpleNamespace(chat_completion=None), None)
+    monkeypatch.setattr(ev.time, "perf_counter", lambda: 105.0)
+    token = recorder.request_deadline.set(120.0)
+    result = []
+    context = contextvars.copy_context()
+    worker = threading.Thread(target=context.run, args=(lambda: result.append(recorder.remaining_budget()),))
+    worker.start()
+    worker.join()
+    recorder.request_deadline.reset(token)
+    assert result == [15.0]
+
+
+def test_remaining_budget_reads_private_execution_state(monkeypatch):
+    recorder = ev.CallRecorder(SimpleNamespace(chat_completion=None), None)
+    monkeypatch.setattr(ev.time, "perf_counter", lambda: 100.0)
+    def generate(_execution_state):
+        return recorder.remaining_budget()
+    assert generate({"complex_deadline": 107.0}) == 7.0
+
+
+def test_effective_budget_matches_existing_provider_defaults(monkeypatch):
+    import config
+    recorder = ev.CallRecorder(SimpleNamespace(chat_completion=None), None)
+    monkeypatch.setattr(config, "FAST_LLM_TIMEOUT_RETRIES", 1)
+    monkeypatch.setattr(config, "FAST_LLM_RETRY_DELAY", .75)
+    assert recorder.effective_budget("fast", {"timeout": 12.0}) == (12.0, 24.75)
+    assert recorder.effective_budget("expert", {"timeout": 25.0}) == (25.0, 25.0)
+    assert recorder.effective_budget("fast", {"timeout": 12.0, "total_budget": 15.0}) == (12.0, 15.0)

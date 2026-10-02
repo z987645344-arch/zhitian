@@ -166,6 +166,7 @@ def extract_chunk_graph(text: str, tier: str = "fast") -> Optional[dict]:
             response = llm_provider.chat_completion(
                 messages,
                 tier=tier,
+                stage="graph_extraction",
                 response_format={"type": "json_object"},
                 timeout=config.GRAPH_EXTRACTION_TIMEOUT,
             )

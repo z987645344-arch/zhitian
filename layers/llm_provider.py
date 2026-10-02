@@ -182,6 +182,7 @@ def chat_completion(
     tier: str = "fast",
     response_format: Optional[dict] = None,
     timeout: Optional[float] = None,
+    stage: Optional[str] = None,
     **kwargs: Any
 ) -> Any:
     """Call exactly one configured provider request for the selected tier."""
@@ -189,6 +190,11 @@ def chat_completion(
         raise ValueError("tier must be fast or expert")
 
     request_timeout = float(timeout or _default_timeout(tier))
+    if stage is not None:
+        thinking_options = config.stage_thinking_kwargs(stage)
+        if thinking_options:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}),
+                                    **thinking_options["extra_body"]}
     total_budget = kwargs.pop("total_budget", None)
     request_kwargs = {
         "messages": messages,

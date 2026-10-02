@@ -252,6 +252,7 @@ class CallRecorder:
         self.records = []
         self.current_call = contextvars.ContextVar("eval_call", default=None)
         self.stream_stage = contextvars.ContextVar("eval_stream_stage", default=None)
+        self.request_deadline = contextvars.ContextVar("eval_request_deadline", default=None)
         self.stop_reason = None
 
     def before_request(self, request):
@@ -275,6 +276,8 @@ class CallRecorder:
                 item["thinking"] = body.get("thinking")
                 item["thinking_effective"] = body.get("thinking", {"type": "enabled"})
                 attempt = item["attempt_details"][-1]
+                attempt["model"] = body.get("model")
+                attempt["thinking_effective"] = body.get("thinking", {"type": "enabled"})
                 original_trace = request.extensions.get("trace")
 
                 def trace(name, info):
@@ -286,6 +289,8 @@ class CallRecorder:
                 request.extensions["trace"] = trace
 
     def stage(self, messages, kwargs):
+        if kwargs.get("stage") is not None:
+            return getattr(kwargs["stage"], "value", kwargs["stage"])
         if self.stream_stage.get():
             return self.stream_stage.get()
         for frame in inspect.stack()[2:]:
@@ -343,8 +348,12 @@ class CallRecorder:
 
     def remaining_budget(self):
         """评测插桩只读当前调用栈中的请求deadline；独立回放无请求时明确为null。"""
-        for frame in inspect.stack()[2:]:
-            state = frame.frame.f_locals.get("state") or frame.frame.f_locals.get("execution_state")
+        deadline = self.request_deadline.get()
+        if deadline is not None:
+            return max(0.0, deadline - time.perf_counter())
+        for frame in inspect.stack()[1:]:
+            state = (frame.frame.f_locals.get("state") or frame.frame.f_locals.get("execution_state")
+                     or frame.frame.f_locals.get("_execution_state"))
             deadline = state.get("complex_deadline") if isinstance(state, dict) else None
             if not deadline and frame.function == "_run_fast_state":
                 deadline = frame.frame.f_locals.get("deadline")
@@ -352,13 +361,24 @@ class CallRecorder:
                 return max(0.0, float(deadline) - time.perf_counter())
         return None
 
+    def effective_budget(self, tier, kwargs):
+        """复述provider现有预算供诊断，不把记录值传回运行路径。"""
+        import config
+        timeout = float(kwargs.get("timeout") or (
+            config.EXPERT_LLM_TIMEOUT if tier == "expert" else config.FAST_LLM_TIMEOUT))
+        retries = config.FAST_LLM_TIMEOUT_RETRIES if tier == "fast" else 0
+        budget = kwargs.get("total_budget") or timeout * (retries + 1) + config.FAST_LLM_RETRY_DELAY * retries
+        return timeout, float(budget)
+
     def call(self, messages, tier="fast", **kwargs):
+        effective_timeout, effective_budget = self.effective_budget(tier, kwargs)
         item = {"index": len(self.records) + 1, "round": self.current,
                 "stage": self.stage(messages, kwargs), "tier": tier, "attempts": 0,
                 "messages": messages, "tools": kwargs.get("tools"),
                 "usage": None, "error_type": None, "elapsed_ms": None,
                 "started_at_unix": time.time(), "remaining_request_budget": self.remaining_budget(),
                 "requested_timeout": kwargs.get("timeout"), "total_budget": kwargs.get("total_budget"),
+                "effective_timeout": effective_timeout, "effective_total_budget": effective_budget,
                 "request_options": kwargs,
                 "first_reasoning_ms": None, "first_content_ms": None, "last_content_ms": None}
         with self.lock:
@@ -688,9 +708,15 @@ def run(args):
     original_open_stream = execution._open_llm_stream_with_first_content_timeout
     def open_stream(messages, tier, timeout, first_content_timeout, stage_name):
         token = recorder.stream_stage.set(stage_name)
+        remaining = recorder.remaining_budget()
+        # 供应商首正文工作线程复制ContextVar，不复制调用栈；传绝对deadline才能
+        # 记录工作线程实际开始调用时的剩余预算，而不是将其误记为无请求。
+        deadline_token = recorder.request_deadline.set(
+            time.perf_counter() + remaining if remaining is not None else None)
         try:
             return original_open_stream(messages, tier, timeout, first_content_timeout, stage_name)
         finally:
+            recorder.request_deadline.reset(deadline_token)
             recorder.stream_stage.reset(token)
     execution._open_llm_stream_with_first_content_timeout = open_stream
     recorder.install_http_hooks()

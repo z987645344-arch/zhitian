@@ -94,6 +94,28 @@ def resolve_model_tier(request_tier: str, stage: LLMStage) -> str:
     return EXPERT_STAGE_MODEL_TIERS[normalized_stage]
 
 
+# 默认全部保持供应商既有推理行为：开启时不添加thinking字段，请求体与旧版一致。
+# 开关只决定thinking，不改变档位、提示词、JSON格式、timeout或重试预算。
+# fast三个阶段及GraphRAG也须独立登记，不能借用expert的阶段开关。
+STAGE_THINKING_ENABLED = {
+    name: os.getenv("LLM_THINKING_%s" % name.upper(), "true").strip().lower()
+    not in {"false", "0", "no", "off"}
+    for name in [stage.value for stage in LLMStage] + [
+        "fast_tool_selection", "fast_evidence_filter", "fast_result_generation", "graph_extraction",
+    ]
+}
+
+
+def stage_thinking_kwargs(stage: str) -> dict:
+    """关闭使用DeepSeek官方extra_body写法；开启不新增字段，保持默认请求体。"""
+    name = stage.value if isinstance(stage, LLMStage) else str(stage)
+    if name not in STAGE_THINKING_ENABLED:
+        raise ValueError("unknown thinking stage: %s" % stage)
+    if STAGE_THINKING_ENABLED[name]:
+        return {}
+    return {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
 FAST_LLM_TIMEOUT = float(os.getenv("FAST_LLM_TIMEOUT", "10.0"))
 EXPERT_LLM_TIMEOUT = float(os.getenv("EXPERT_LLM_TIMEOUT", "25.0"))
 EXPERT_COMPLEX_TIMEOUT = float(os.getenv("EXPERT_COMPLEX_TIMEOUT", "120.0"))

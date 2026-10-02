@@ -582,6 +582,7 @@ def _search_web(
             timeout=remaining,
             _execution_state=_execution_state,
             _timeout_reason_code="search_summary_timeout",
+            _model_stage=config.LLMStage.WEB_SEARCH_SUMMARY_NONSTREAM,
         )
         _observe_external_search_output(
             original_question,
@@ -973,6 +974,7 @@ def _answer_from_supplied_context(
                     ),
                     timeout=timeout,
                     _execution_state=_execution_state,
+                    _model_stage=config.LLMStage.SUPPLIED_CONTEXT_ANSWER,
                 )
             ).strip()
         except Exception as exc:
@@ -1612,6 +1614,8 @@ def _open_llm_stream_with_first_content_timeout(
             response = llm_provider.chat_completion(
                 messages,
                 tier=tier,
+                stage=(config.LLMStage.DOCUMENT_ANSWER if stage_name == "文档回答"
+                       else config.LLMStage.WEB_SEARCH_SUMMARY_STREAM),
                 timeout=timeout,
                 stream=True,
             )
@@ -1851,6 +1855,7 @@ def _llm_chat(
     excluded_history_message_types: Optional[list[str]] = None,
     _execution_state: Optional[dict] = None,
     _timeout_reason_code: str = "final_answer_timeout",
+    _model_stage: config.LLMStage = config.LLMStage.DIRECT_CHAT_REASONING,
 ) -> Union[str, Iterator[str]]:
     """通过统一适配层调用指定tier，每次只发送一次模型请求。"""
 
@@ -1875,12 +1880,13 @@ def _llm_chat(
             response = llm_provider.chat_completion(
                 messages,
                 tier=model_tier,
+                stage=_model_stage,
                 timeout=timeout,
                 stream=True
             )
             return llm_provider.iter_text(response)
 
-        response = llm_provider.chat_completion(messages, tier=model_tier, timeout=timeout)
+        response = llm_provider.chat_completion(messages, tier=model_tier, timeout=timeout, stage=_model_stage)
         return llm_provider.extract_text(response)
     except Exception as exc:
         open_deepseek_circuit_for_error(
@@ -2014,6 +2020,7 @@ def _observe_external_search_output(
                 include_date=True,
             ),
             tier=config.resolve_model_tier(tier, config.LLMStage.OUTPUT_OBSERVATION),
+            stage=config.LLMStage.OUTPUT_OBSERVATION,
             response_format={"type": "json_object"},
             timeout=timeout,
             total_budget=timeout,
@@ -2095,6 +2102,7 @@ def _rewrite_search_query(
         response = llm_provider.chat_completion(
             messages,
             tier=config.resolve_model_tier(tier, config.LLMStage.SEARCH_QUERY_REWRITE),
+            stage=config.LLMStage.SEARCH_QUERY_REWRITE,
             timeout=effective_timeout,
         )
         rewritten = llm_provider.extract_text(response)
