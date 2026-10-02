@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from layers import auth
+from layers import auth, llm_provider
 
 
 def _make_user(role: str) -> str:
@@ -37,7 +37,7 @@ def _reset_limiter_storage():
 
 
 @pytest.fixture(autouse=True)
-def _clean_limiter():
+def _clean_limiter(monkeypatch):
     """隔离限流计数，并还原被lifespan改写的进程级请求闸门。
 
     `main._accepting_requests`是模块级全局，`with TestClient(...)`退出时
@@ -45,10 +45,18 @@ def _clean_limiter():
     还原，后续那些不用上下文管理器构造TestClient的测试会全部拿到503。
     """
     accepting_before = main._accepting_requests
+    model_calls = []
+
+    def unexpected_model_call(*args, **kwargs):
+        model_calls.append(True)
+        raise AssertionError("限流测试不能调用真实模型")
+
+    monkeypatch.setattr(llm_provider, "chat_completion", unexpected_model_call)
     _reset_limiter_storage()
     yield
     _reset_limiter_storage()
     main._accepting_requests = accepting_before
+    assert model_calls == []
 
 
 def test_seed_rows_cover_four_roles_with_designed_defaults():
@@ -129,10 +137,10 @@ def test_chat_returns_429_after_exceeding_role_limit(monkeypatch):
     """把customer压到2/分钟，第3次/chat必须真实返回429。"""
     monkeypatch.setattr(
         main.planning,
-        "run_graph",
+        "run_graph_state",
         lambda *args, **kwargs: {
-            "status": "success",
-            "data": "ok",
+            "error": "",
+            "response": "ok",
             "layer_trace": [],
             "citations": [],
         },
@@ -160,10 +168,10 @@ def test_limit_change_takes_effect_without_restart(monkeypatch):
     """同一个TestClient进程内改配置，后续请求立即按新值限流。"""
     monkeypatch.setattr(
         main.planning,
-        "run_graph",
+        "run_graph_state",
         lambda *args, **kwargs: {
-            "status": "success",
-            "data": "ok",
+            "error": "",
+            "response": "ok",
             "layer_trace": [],
             "citations": [],
         },
@@ -196,10 +204,10 @@ def test_roles_are_limited_independently(monkeypatch):
     """customer被限死时，reviewer仍按自己的额度正常放行。"""
     monkeypatch.setattr(
         main.planning,
-        "run_graph",
+        "run_graph_state",
         lambda *args, **kwargs: {
-            "status": "success",
-            "data": "ok",
+            "error": "",
+            "response": "ok",
             "layer_trace": [],
             "citations": [],
         },
@@ -218,5 +226,6 @@ def test_roles_are_limited_independently(monkeypatch):
         payload = {"session_id": "rl-%s" % uuid.uuid4().hex[:6], "message": "hi", "mode": "fast"}
         assert client.post("/chat", headers=_auth(customer_token), json=payload).status_code == 200
         assert client.post("/chat", headers=_auth(customer_token), json=payload).status_code == 429
+        reviewer_payload = dict(payload, session_id="reviewer-rl-%s" % uuid.uuid4().hex)
         for _ in range(3):
-            assert client.post("/chat", headers=_auth(reviewer_token), json=payload).status_code == 200
+            assert client.post("/chat", headers=_auth(reviewer_token), json=reviewer_payload).status_code == 200

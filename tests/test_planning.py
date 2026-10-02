@@ -226,7 +226,6 @@ def test_chat_response_exposes_reasoning_only_for_expert(
     )
     monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
 
     expert = client.post(
         "/chat",
@@ -253,7 +252,6 @@ def test_chat_stream_sends_reasoning_before_body_and_preserves_done(
     monkeypatch.setattr(main.execution, "_llm_chat", lambda **kwargs: iter(["answer"]))
     monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
     monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
 
     response = client.post(
@@ -317,7 +315,6 @@ def test_expert_document_stream_sends_chunks_then_independent_citations(
     )
     monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
     monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
 
     response = client.post(
@@ -417,7 +414,6 @@ def test_expert_document_first_content_timeout_still_sends_citations(
     )
     monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
     monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
 
     response = client.post(
@@ -493,7 +489,6 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
         "maybe_save_to_vector",
         lambda *args: vector_messages.append(args),
     )
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args: None)
     monkeypatch.setattr(main.observability, "reset_trace_id", lambda token: None)
 
     response = client.post(

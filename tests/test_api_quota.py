@@ -56,7 +56,6 @@ def _install_chat_key_probe(monkeypatch, observed_keys):
     monkeypatch.setattr(
         main.memory, "maybe_save_to_vector", lambda *args, **kwargs: None
     )
-    monkeypatch.setattr(main.auth, "bind_session", lambda *args, **kwargs: None)
 
 
 def test_enterprise_password_fifth_failure_locks_exact_account_for_twelve_hours(

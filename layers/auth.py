@@ -1170,7 +1170,7 @@ def reset_user_password(user_id: str) -> Optional[str]:
 
 
 def bind_session(session_id: str, user_id: str) -> None:
-    """绑定会话到用户。"""
+    """仅绑定尚无主人的会话；调用方随后校验归属，不能追加第二个主人。"""
     if not session_id or not user_id:
         return
     try:
@@ -1178,9 +1178,13 @@ def bind_session(session_id: str, user_id: str) -> None:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO user_sessions (session_id, user_id)
-                VALUES (?, ?)
+                SELECT ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM user_sessions WHERE session_id = ?
+                )
                 """,
-                (session_id, user_id)
+                # 单条写SQL由SQLite串行化，不作易产生竞态的“先查再插”。
+                (session_id, user_id, session_id)
             )
     except Exception as e:
         logger.error(
@@ -1193,7 +1197,7 @@ def bind_session(session_id: str, user_id: str) -> None:
 
 
 def verify_session_owner(session_id: str, user_id: str) -> bool:
-    """校验session是否归属当前用户。"""
+    """校验唯一归属；旧数据若已有多个主人则拒绝访问，不自行决定真主人。"""
     if not session_id or not user_id:
         return False
     try:
@@ -1201,8 +1205,13 @@ def verify_session_owner(session_id: str, user_id: str) -> bool:
             row = conn.execute(
                 """
                 SELECT 1
-                FROM user_sessions
-                WHERE session_id = ? AND user_id = ?
+                FROM user_sessions AS owned
+                WHERE owned.session_id = ? AND owned.user_id = ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_sessions AS other
+                    WHERE other.session_id = owned.session_id
+                    AND other.user_id != owned.user_id
+                )
                 LIMIT 1
                 """,
                 (session_id, user_id)
@@ -1442,17 +1451,22 @@ def delete_session_binding(session_id: str) -> bool:
 
 
 def list_user_session_ids(user_id: str) -> list[str]:
-    """返回用户绑定过的全部session，最近绑定的优先。"""
+    """返回用户唯一拥有的session；歧义绑定不泄漏历史摘要。"""
     if not user_id:
         return []
     try:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT session_id
-                FROM user_sessions
-                WHERE user_id = ?
-                ORDER BY created_at DESC
+                SELECT owned.session_id
+                FROM user_sessions AS owned
+                WHERE owned.user_id = ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM user_sessions AS other
+                    WHERE other.session_id = owned.session_id
+                    AND other.user_id != owned.user_id
+                )
+                ORDER BY owned.created_at DESC
                 """,
                 (user_id,),
             ).fetchall()

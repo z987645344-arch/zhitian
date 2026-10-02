@@ -1489,6 +1489,7 @@ async def chat(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
+    _bind_or_verify_session(chat_request.session_id, current_user)
     mode = _validate_chat_mode(chat_request.mode)
     api_key = _resolve_chat_api_key(current_user["user_id"])
     attachment_context = _resolve_attachment_context(
@@ -1616,6 +1617,7 @@ async def chat_stream(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
+    _bind_or_verify_session(chat_request.session_id, current_user)
     mode = _validate_chat_mode(chat_request.mode)
     api_key = _resolve_chat_api_key(current_user["user_id"])
     attachment_context = _resolve_attachment_context(
