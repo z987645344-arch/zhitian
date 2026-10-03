@@ -358,7 +358,7 @@ def test_expert_document_stream_sends_chunks_then_independent_citations(
     assert events[-1] == {"chunk": "[DONE]"}
 
 
-def test_expert_document_first_content_timeout_still_sends_citations(
+def test_expert_document_first_content_timeout_clears_citations(
     client, auth_headers, monkeypatch
 ):
     headers, _ = auth_headers("customer")
@@ -439,7 +439,7 @@ def test_expert_document_first_content_timeout_still_sends_citations(
 
     failure_index = next(
         index for index, event in enumerate(events)
-        if "模型整理超时" in event.get("chunk", "")
+        if event.get("chunk") == execution.ANSWER_GENERATION_FAILURE_MESSAGE
     )
     citation_index = next(
         index for index, event in enumerate(events) if event.get("type") == "citations"
@@ -448,7 +448,7 @@ def test_expert_document_first_content_timeout_still_sends_citations(
         event for event in events if event.get("type") == "request_status"
     )
     assert citation_index > failure_index
-    assert events[citation_index]["citations"][0]["doc_id"] == "doc-timeout"
+    assert events[citation_index]["citations"] == []
     assert status_event == {
         "type": "request_status",
         "status": "degraded",
@@ -877,8 +877,25 @@ def test_fast_document_uses_three_model_calls_and_local_retrieval(monkeypatch):
     assert params["rerank_enabled"] is False
 
 
-def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
+@pytest.mark.parametrize(
+    ("outcome", "expected_reason"),
+    [
+        ("timeout", "final_answer_timeout"),
+        ("exception", "final_answer_failed"),
+        ("empty", "final_answer_failed"),
+    ],
+)
+def test_fast_document_generation_failure_never_returns_local_summary(
+    monkeypatch,
+    outcome,
+    expected_reason,
+):
     _prepare_fast_mocks(monkeypatch)
+    final_outcome = {
+        "timeout": TimeoutError("simulated timeout"),
+        "exception": RuntimeError("simulated failure"),
+        "empty": _fast_response(content=""),
+    }[outcome]
     responses = iter([
         _fast_response(tool_name="search_documents", arguments={"query": "local topic"}),
         _fast_response(content=json.dumps({
@@ -886,7 +903,7 @@ def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
             "used_candidate_ids": [1],
             "reason": "候选相关",
         }, ensure_ascii=False)),
-        TimeoutError("simulated timeout"),
+        final_outcome,
     ])
 
     def chat(*args, **kwargs):
@@ -910,8 +927,10 @@ def test_fast_document_generation_failure_returns_local_summary(monkeypatch):
     state = planning.run_graph_state("fast-document-fallback", "local topic", mode="fast")
 
     assert state["error"] == "fast_final_generation_failed"
-    assert state["response"].startswith("（模型生成失败，以下为本地检索结果摘要）")
-    assert "local evidence summary" in state["response"]
+    assert state["response"] == execution.ANSWER_GENERATION_FAILURE_MESSAGE
+    assert "local evidence summary" not in state["response"]
+    assert state["citations"] == []
+    assert expected_reason in state["degradation_reasons"]
 
 
 def test_fast_document_list_uses_two_model_calls(monkeypatch):

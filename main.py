@@ -3630,6 +3630,9 @@ def _chat_stream_events(
                     llm_provider.close_stream(document_stream)
                 final_data = "".join(chunks)
                 final_state["response"] = final_data
+                # 文档流可能在首正文前或中途失败；失败出口会清空state里的引用。
+                # 此处必须在流消费后重新序列化，避免把失败前缓存的引用发给客户端。
+                citations = _serialize_citations(final_state.get("citations", []))
                 new_reasons = [
                     code
                     for code in final_state.get("degradation_reasons", [])

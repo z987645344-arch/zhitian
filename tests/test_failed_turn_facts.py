@@ -4,6 +4,7 @@
 import json
 import uuid
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -189,3 +190,23 @@ def test_expert_remaining_final_generators_keep_original_facts(monkeypatch, stag
     text = "\n".join(m["content"] for m in captured[-1])
     assert "TEST-EXPERT-KEEP" in text
     assert state["message"] in text
+
+
+def test_context_polish_failure_never_returns_raw_tool_result(monkeypatch):
+    state = planning._new_agent_state("context-polish-failure", "问题", "expert")
+    state["context"] = ["历史信息"]
+    state["citations"] = [
+        execution.Citation(source="资料", doc_id="doc-1", chunk_index=0, score=0.9)
+    ]
+    monkeypatch.setattr(
+        llm_provider,
+        "chat_completion",
+        Mock(side_effect=RuntimeError("simulated failure")),
+    )
+
+    answer = planning._respond_with_context(state, "RAW_TOOL_RESULT_MUST_NOT_LEAK")
+
+    assert answer == execution.ANSWER_GENERATION_FAILURE_MESSAGE
+    assert "RAW_TOOL_RESULT_MUST_NOT_LEAK" not in answer
+    assert state["citations"] == []
+    assert state["degradation_reasons"] == ["final_answer_failed"]

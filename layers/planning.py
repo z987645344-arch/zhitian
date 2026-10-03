@@ -713,12 +713,15 @@ def complex_respond_node(state: AgentState) -> AgentState:
     state["citations"] = _dedupe_citations(state["citations"])
     if state["error"] == "complex_task_timeout" or _complex_budget_exhausted(state):
         state["error"] = "complex_task_timeout"
-        state["response"] = _complex_timeout_response(state["complex_task_results"])
+        state["response"] = execution.mark_answer_generation_failure(
+            state,
+            "final_answer_timeout",
+        )
         observability.log_stage("complex_respond_model", 0)
         _append_layer_trace(state, "complex_respond")
         return state
     if not execution.claim_post_circuit_final_attempt(state):
-        state["response"] = _fallback_complex_response(state["complex_task_results"])
+        state["response"] = execution.mark_answer_generation_failure(state)
         observability.log_stage("complex_respond_model", 0)
         _append_layer_trace(state, "complex_respond")
         return state
@@ -765,10 +768,9 @@ def complex_respond_node(state: AgentState) -> AgentState:
             "complex_task_timeout" if reason_code == "final_answer_timeout"
             else "complex_respond_failed"
         )
-        state["response"] = (
-            _complex_timeout_response(state["complex_task_results"])
-            if reason_code == "final_answer_timeout"
-            else _fallback_complex_response(state["complex_task_results"])
+        state["response"] = execution.mark_answer_generation_failure(
+            state,
+            reason_code or "final_answer_failed",
         )
     observability.log_stage("complex_respond_model", int((time.perf_counter() - started_at) * 1000))
     _append_layer_trace(state, "complex_respond")
@@ -843,8 +845,14 @@ def respond_node(state: AgentState) -> AgentState:
 
 def _structured_degraded_response(state: AgentState) -> str:
     reasons = set(state.get("degradation_reasons", []))
-    if "final_answer_timeout" in reasons:
-        return "模型最终回答生成超时，请稍后重试。"
+    if reasons.intersection({
+        "final_answer_timeout",
+        "final_answer_failed",
+        "document_first_content_timeout",
+        "deepseek_rate_limit",
+        "deepseek_upstream_unavailable",
+    }):
+        return execution.ANSWER_GENERATION_FAILURE_MESSAGE
     if "search_summary_timeout" in reasons:
         return "已取得联网搜索结果，但模型整理超时，请稍后重试。"
     if "web_provider_failed" in reasons:
@@ -1150,13 +1158,19 @@ def _run_fast_state(state: AgentState) -> AgentState:
                 timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
                 total_budget=_remaining_fast_budget(deadline),
             )
-            state["response"] = llm_provider.extract_text(final_response) or result.data
+            state["response"] = llm_provider.extract_text(final_response).strip()
+            if not state["response"]:
+                raise ValueError("empty fast final response")
         except Exception as exc:
             state["error"] = "fast_final_generation_failed"
-            state["citations"] = []
-            state["response"] = (
-                "（模型生成失败，以下为本地检索结果摘要）\n" + str(result.data or "")
-            ).strip()
+            reason_code = execution.provider_degradation_reason(
+                exc,
+                "final_answer_timeout",
+            ) or "final_answer_failed"
+            state["response"] = execution.mark_answer_generation_failure(
+                state,
+                reason_code,
+            )
             logger.warning(
                 "fast最终生成降级：session_id=%s tool=%s error_type=%s",
                 state["session_id"],
@@ -1509,12 +1523,8 @@ def _complex_tasks_payload(tasks: list[Task]) -> list[dict]:
 
 
 def _fallback_complex_response(results: list[ComplexTaskResult]) -> str:
-    if not results:
-        return "复杂任务未能生成可执行步骤，请稍后重试。"
-    lines = ["复杂任务未能完成最终汇总，以下为已执行步骤摘要："]
-    for item in results:
-        lines.append("%s. [%s] %s" % (item.task_index + 1, item.status, item.result_summary))
-    return "\n".join(lines)
+    del results
+    return execution.ANSWER_GENERATION_FAILURE_MESSAGE
 
 
 def _remaining_complex_budget(state: AgentState) -> float:
@@ -1539,13 +1549,8 @@ def _mark_complex_timeout(state: AgentState) -> AgentState:
 
 
 def _complex_timeout_response(results: list[ComplexTaskResult]) -> str:
-    prefix = "复杂任务已达到全局时间上限，以下为超时前已完成的步骤摘要："
-    if not results:
-        return prefix + "\n尚无已完成步骤。"
-    lines = [prefix]
-    for item in results:
-        lines.append("%s. [%s] %s" % (item.task_index + 1, item.status, item.result_summary))
-    return "\n".join(lines)
+    del results
+    return execution.ANSWER_GENERATION_FAILURE_MESSAGE
 
 
 def _consecutive_complex_failures(results: list[ComplexTaskResult]) -> int:
@@ -2040,6 +2045,8 @@ def _dedupe_citations(citations: list[Citation]) -> list[Citation]:
 
 
 def _with_react_limit_notice(state: AgentState, response: str) -> str:
+    if str(response or "").strip() == execution.ANSWER_GENERATION_FAILURE_MESSAGE:
+        return execution.ANSWER_GENERATION_FAILURE_MESSAGE
     if not state.get("react_limit_reached"):
         return response
     notice = "基于目前检索到的信息回答，可能不够全面。"
@@ -2170,7 +2177,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         include_date=True,
     )
     if not execution.claim_post_circuit_final_attempt(state):
-        return base_response
+        return execution.mark_answer_generation_failure(state)
     try:
         started_at = time.perf_counter()
         response = llm_provider.extract_text(
@@ -2188,15 +2195,20 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
             )
         )
         observability.log_stage("respond_context_model", int((time.perf_counter() - started_at) * 1000))
+        if not response.strip():
+            raise ValueError("empty context-polished response")
         return response
     except Exception as exc:
-        execution.open_deepseek_circuit_for_error(
+        reason_code = execution.open_deepseek_circuit_for_error(
             state,
             exc,
             "final_answer_timeout",
             final_attempt_consumed=True,
         )
-        return base_response
+        return execution.mark_answer_generation_failure(
+            state,
+            reason_code or "final_answer_failed",
+        )
 
 
 def _extract_tool_calls(response) -> list[dict]:

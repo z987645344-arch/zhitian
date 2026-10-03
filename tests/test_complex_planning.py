@@ -6,7 +6,7 @@ import time
 from unittest.mock import Mock
 
 import config
-from layers import planning
+from layers import execution, planning
 from layers.execution import Citation, ToolResult
 
 
@@ -241,8 +241,10 @@ def test_complex_deadline_returns_completed_results_without_final_model(monkeypa
     planning.complex_respond_node(state)
 
     assert state["error"] == "complex_task_timeout"
-    assert "已达到全局时间上限" in state["response"]
-    assert "已完成结果" in state["response"]
+    assert state["response"] == execution.ANSWER_GENERATION_FAILURE_MESSAGE
+    assert "已完成结果" not in state["response"]
+    assert state["citations"] == []
+    assert state["degradation_reasons"] == ["final_answer_timeout"]
     assert model_call.call_count == 0
 
 

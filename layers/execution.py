@@ -175,6 +175,7 @@ DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS = max(
     float(config.CONVERSION_TIMEOUT_SECONDS) * 2 + RETRY_DELAY,
 )
 SEARCH_SUMMARY_FALLBACK_MESSAGE = "已取得联网搜索结果，但模型未能完成整理，请稍后重试。"
+ANSWER_GENERATION_FAILURE_MESSAGE = "抱歉，这次回答生成失败，请稍后重试。"
 CONTENT_TAINT_BLOCK_MESSAGE = "本次请求包含联网搜索结果，为安全考虑本次不支持生成文件或格式转换操作，如需使用请另起一次不包含联网搜索的请求。"
 WRITE_TOOLS = {"generate_file", "convert_document"}
 OUTPUT_ANOMALY_REASON_TYPES = {
@@ -202,6 +203,24 @@ def add_degradation_reason(state: Optional[dict], reason_code: str) -> None:
     reasons = state.setdefault("degradation_reasons", [])
     if reason_code not in reasons:
         reasons.append(reason_code)
+
+
+def mark_answer_generation_failure(
+    state: Optional[dict],
+    reason_code: Optional[str] = None,
+) -> str:
+    """统一回答生成失败出口；禁止把内部候选或工具原始结果交给用户。"""
+    existing_reasons = list((state or {}).get("degradation_reasons") or [])
+    safe_reason = reason_code if reason_code in DEGRADATION_REASON_CODES else None
+    if safe_reason is None:
+        safe_reason = next(
+            (item for item in reversed(existing_reasons) if item in DEGRADATION_REASON_CODES),
+            "final_answer_failed",
+        )
+    add_degradation_reason(state, safe_reason)
+    if state is not None:
+        state["citations"] = []
+    return ANSWER_GENERATION_FAILURE_MESSAGE
 
 
 def open_deepseek_circuit(
@@ -951,6 +970,10 @@ def _search_documents(
             timeout=timeout,
             _execution_state=_execution_state,
         ))
+        if answer.rstrip().endswith(ANSWER_GENERATION_FAILURE_MESSAGE):
+            # 非流式调用随后会把ToolResult.citations重新合并进state；生成失败时
+            # 必须在结果对象上也清空，不能只清state里的旧引用。
+            citations = []
     else:
         answer = _format_document_tool_context(trusted_results)
     return ToolResult(
@@ -1801,8 +1824,10 @@ def _answer_from_documents(
             emitted = True
             yield chunk
         if not emitted:
-            add_degradation_reason(_execution_state, "final_answer_failed")
-            yield _empty_document_answer_failure_message("final_answer_failed")
+            yield mark_answer_generation_failure(
+                _execution_state,
+                "final_answer_failed",
+            )
     except Exception as e:
         timeout_reason_code = (
             "document_first_content_timeout"
@@ -1817,37 +1842,32 @@ def _answer_from_documents(
         )
         if reason_code is None:
             reason_code = "final_answer_failed"
-            add_degradation_reason(_execution_state, reason_code)
         logger.warning(
             "文档回答流式生成失败：query_len=%s emitted=%s error_type=%s",
             len(answer_context.query or ""),
             emitted,
             type(e).__name__,
         )
+        failure_message = mark_answer_generation_failure(
+            _execution_state,
+            reason_code,
+        )
         if emitted:
-            yield _partial_document_answer_failure_message(reason_code)
+            yield "\n\n" + failure_message
         else:
-            yield _empty_document_answer_failure_message(reason_code)
+            yield failure_message
     finally:
         llm_provider.close_stream(stream)
 
 
 def _empty_document_answer_failure_message(reason_code: str) -> str:
-    if reason_code in {"document_first_content_timeout", "final_answer_timeout"}:
-        return "已取得知识库文档依据，但模型整理超时，请稍后重试。"
-    if reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
-        return "已取得知识库文档依据，但模型服务暂时不可用，请稍后重试。"
-    return "已取得知识库文档依据，但模型未能完成整理，请稍后重试。"
+    del reason_code
+    return ANSWER_GENERATION_FAILURE_MESSAGE
 
 
 def _partial_document_answer_failure_message(reason_code: str) -> str:
-    if reason_code in {"document_first_content_timeout", "final_answer_timeout"}:
-        detail = "模型整理超时"
-    elif reason_code in {"deepseek_rate_limit", "deepseek_upstream_unavailable"}:
-        detail = "模型服务暂时不可用"
-    else:
-        detail = "模型未能完成整理"
-    return "\n\n（已取得知识库文档依据，但%s；以上为已生成的部分内容，建议稍后重试。）" % detail
+    del reason_code
+    return "\n\n" + ANSWER_GENERATION_FAILURE_MESSAGE
 
 
 def _fallback_llm_answer(

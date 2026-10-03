@@ -135,7 +135,7 @@ def test_document_answer_failure_before_first_chunk_never_returns_raw_evidence(m
         _execution_state=state,
     ))
 
-    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
     assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
     assert state["degradation_reasons"] == ["final_answer_timeout"]
 
@@ -167,7 +167,7 @@ def test_document_answer_failure_after_partial_output_keeps_partial_and_appends_
     ))
 
     assert chunks[0] == "已生成的正常回答"
-    assert chunks[1].startswith("\n\n（已取得知识库文档依据，但模型整理超时")
+    assert chunks[1] == "\n\n" + execution.ANSWER_GENERATION_FAILURE_MESSAGE
     assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
     assert state["degradation_reasons"] == ["final_answer_timeout"]
 
@@ -193,7 +193,7 @@ def test_document_answer_empty_stream_returns_explicit_failure(monkeypatch):
         _execution_state=state,
     ))
 
-    assert chunks == ["已取得知识库文档依据，但模型未能完成整理，请稍后重试。"]
+    assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
     assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
     assert state["degradation_reasons"] == ["final_answer_failed"]
 
@@ -231,7 +231,7 @@ def test_document_answer_first_content_timeout_ignores_non_content_activity(monk
     elapsed = time.perf_counter() - started_at
 
     assert elapsed < 0.5
-    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
     assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in "".join(chunks)
     assert state["degradation_reasons"] == ["document_first_content_timeout"]
     assert captured["request_key"] == "test-personal-key"
@@ -268,7 +268,7 @@ def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monk
     elapsed = time.perf_counter() - started_at
 
     assert elapsed < 0.5
-    assert chunks == ["已取得知识库文档依据，但模型整理超时，请稍后重试。"]
+    assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
     assert state["degradation_reasons"] == ["document_first_content_timeout"]
     assert response.closed.wait(0.5)
 
@@ -295,6 +295,37 @@ def test_search_documents_collects_stream_for_non_streaming_chat_contract(monkey
     assert result.data == "非流式接口回答"
     assert isinstance(result.data, str)
     assert result.citations[0].doc_id == "doc-1"
+
+
+def test_non_streaming_document_generation_failure_clears_result_citations(monkeypatch):
+    state = planning._new_agent_state("document-http-failure", "问题", "expert")
+    monkeypatch.setattr(execution.auth, "get_verified_doc_ids", lambda: ["doc-1"])
+    monkeypatch.setattr(execution.memory, "search_documents", lambda *args, **kwargs: [{
+        "doc_id": "doc-1",
+        "chunk_index": 0,
+        "source": "资料.pdf",
+        "content": "RAW_EVIDENCE_MUST_NOT_LEAK",
+        "score": 0.9,
+    }])
+    monkeypatch.setattr(
+        execution.llm_provider,
+        "chat_completion",
+        Mock(side_effect=RuntimeError("simulated generation failure")),
+    )
+
+    result = execution._search_documents(
+        "问题",
+        tier="fast",
+        generate_answer=True,
+        rerank_enabled=False,
+        _execution_state=state,
+    )
+
+    assert result.data == execution.ANSWER_GENERATION_FAILURE_MESSAGE
+    assert "RAW_EVIDENCE_MUST_NOT_LEAK" not in result.data
+    assert result.citations == []
+    assert state["citations"] == []
+    assert state["degradation_reasons"] == ["final_answer_failed"]
 
 
 def _web_state(state=None):
