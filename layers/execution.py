@@ -363,8 +363,9 @@ def local_evidence_is_strong(metadata: dict) -> bool:
     trusted_count = int(metadata.get("trusted_count", 0) or 0)
     if metadata.get("supplied_context_answer"):
         return True
-    if metadata.get("title_source_match"):
-        return candidate_count <= 3 and trusted_count <= 3
+    # Title matching is an additional success path, not a veto on reranked evidence.
+    if metadata.get("title_source_match") and candidate_count <= 3 and trusted_count <= 3:
+        return True
     return bool(
         metadata.get("rerank_succeeded")
         and int(metadata.get("strong_trusted_count", trusted_count)) >= 2

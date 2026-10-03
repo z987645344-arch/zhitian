@@ -74,6 +74,25 @@ def test_low_score_high_rerank_does_not_promote_old_weak_evidence(defaults):
     assert not execution.local_evidence_is_strong(details)
 
 
+@pytest.mark.parametrize("title_match", [False, True])
+@pytest.mark.parametrize("failed_criterion", [None, "rerank", "count", "vector", "rerank_score"])
+def test_large_title_match_preserves_ordinary_evidence_criteria(defaults, title_match, failed_criterion):
+    metadata = {"title_source_match": title_match, "candidate_count": 8, "trusted_count": 8,
+                "rerank_succeeded": True, "strong_trusted_count": 2, "best_score": .65,
+                "strong_best_rerank_score": 8.5}
+    changes = {"rerank": {"rerank_succeeded": False}, "count": {"strong_trusted_count": 1},
+               "vector": {"best_score": .649999}, "rerank_score": {"strong_best_rerank_score": 8.499999}}
+    metadata.update(changes.get(failed_criterion, {}))
+    assert execution.local_evidence_is_strong(metadata) is (failed_criterion is None)
+
+
+@pytest.mark.parametrize("candidate_count,trusted_count", [(1, 1), (3, 3), (3, 4)])
+def test_small_title_match_preserves_existing_shortcut(defaults, candidate_count, trusted_count):
+    metadata = {"title_source_match": True, "candidate_count": candidate_count,
+                "trusted_count": trusted_count, "rerank_succeeded": False, "best_score": .50}
+    assert execution.local_evidence_is_strong(metadata) is (candidate_count <= 3 and trusted_count <= 3)
+
+
 @pytest.mark.parametrize("threshold", [.40, .50, .55, .60])
 def test_title_minimum_does_not_follow_acceptance(defaults, monkeypatch, threshold):
     monkeypatch.setattr(config, "RAG_SCORE_THRESHOLD", threshold)
