@@ -61,12 +61,11 @@ VERIFICATION_CODE_MAX_ATTEMPTS = 5
 PASSWORD_MIN_LENGTH = 10
 PASSWORD_STRENGTH_HINT = "密码需至少10位，且包含大小写字母和数字"
 
-# 组织种子数据："默认"为受保护组织（所有用户注册后自动关联，不可改名/删除）；
-# "法律"为业务种子组织，guidance模块据此动态生成初始文案。
+# 仅初始化受保护的"默认"组织（注册后自动关联，不可改名/删除）。
+# 其他组织由管理后台维护；初始化不会删除已有组织或资料。
 DEFAULT_ORGANIZATION_NAME = "默认"
 _SEED_ORGANIZATIONS = (
     (DEFAULT_ORGANIZATION_NAME, None, 1),
-    ("法律", "具体法条、司法解释、案例适用", 0),
 )
 
 

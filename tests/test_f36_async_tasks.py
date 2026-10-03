@@ -86,7 +86,7 @@ def test_same_content_allowed_across_orgs(client, auth_headers):
     from datetime import datetime as _dt
     from layers import auth as _auth
     org_a = grant_work_organization(user["user_id"], name="法律")
-    # 测试环境只种「默认」「法律」两个组织，第二个组织需自建
+    # 非默认组织由测试自行创建，不依赖产品种子数据。
     with _auth._connect() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO organizations (name, content, is_protected, created_at)"

@@ -99,7 +99,9 @@ def test_shared_history_preserves_roles_limit_and_delivery_exclusion(monkeypatch
 
 
 def test_user_facts_instruction_does_not_weaken_evidence_or_json_contract():
-    assert "不等于已经核验的订单记录或审批结果" in execution.CONVERSATION_FACTS_PROMPT
+    assert "不等于已经核验的事实或已执行的操作" in execution.CONVERSATION_FACTS_PROMPT
+    assert "未更正的编号、对象、时间和诉求等条件应保留" in execution.CONVERSATION_FACTS_PROMPT
+    assert "不同对象的条件不得混用" in execution.CONVERSATION_FACTS_PROMPT
     assert "助手以前的回答只供理解上下文" in execution.CONVERSATION_FACTS_PROMPT
     assert "不得用自身知识补全" in execution.CONVERSATION_FACTS_PROMPT
     assert '"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason"' in planning.FAST_EVIDENCE_PROMPT

@@ -14,7 +14,7 @@ FAST_GENERAL_NOTE = "以下来自通用知识，非知识库资料；当前快�
 NO_SOURCE_NOTE_PROMPT = "不要自行撰写来源说明或联网状态备注；这些说明由服务端统一添加。"
 CLASSIFICATION_PROMPT = (
     "在本次主工具的source_classification参数中同时完成来源分类，不增加一次调用。"
-    "source取internal/public/uncertain；企业内部制度、订单、库存、客户事实属于internal；"
+    "source取internal/public/uncertain；本知识库所有者自己的资料、作品、业务与客户事实属于internal；"
     "明确的公开信息属于public；吃不准取uncertain，按内部处理。"
     "time_sensitivity取current_value/general，当前价格、最新政策、实时状态等具体值取current_value。"
     "only_materials表示用户是否限定只根据资料或知识库；必须理解否定、引用和上下文。"

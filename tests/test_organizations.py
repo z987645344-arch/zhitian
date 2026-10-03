@@ -13,26 +13,26 @@ def _org_by_name(name):
 
 
 def _verified_document(organization_name, doc_id):
+    if not _org_by_name(organization_name):
+        organizations.create_organization(organization_name, "具体法条、司法解释、案例适用")
     auth.register_document(doc_id, "测试.md", "test-uploader", organization_id=_org_by_name(organization_name)["id"])
     assert auth.approve_document(doc_id, "test-reviewer")
 
 
 def test_seed_organizations_idempotent():
     first = organizations.list_organizations()
-    assert len(first) == 2
-    assert {item["name"] for item in first} == {"默认", "法律"}
+    assert len(first) == 1
+    assert {item["name"] for item in first} == {"默认"}
 
     default_org = _org_by_name("默认")
     assert default_org["is_protected"] is True
     assert default_org["content"] is None
 
-    legal_org = _org_by_name("法律")
-    assert legal_org["is_protected"] is False
-    assert legal_org["content"] == "具体法条、司法解释、案例适用"
+    assert _org_by_name("法律") is None
 
     auth.init_db()
     second = organizations.list_organizations()
-    assert len(second) == 2
+    assert len(second) == 1
     assert {item["id"] for item in first} == {item["id"] for item in second}
 
 
@@ -188,27 +188,26 @@ def test_approved_employee_only_attached_to_default_organization(client, auth_he
 
 
 def test_generate_guidance_content_with_zero_one_and_multiple_organizations():
-    initial_organizations = organizations.list_organizations()
+    organizations.create_organization("法律", "具体法条、司法解释、案例适用")
+    legal_org = _org_by_name("法律")
     assert (
         organizations.generate_guidance_content()
-        == "当前企业知识库暂无已核验的参考资料。"
+        == "当前知识库暂无已核验的参考资料。"
     )
     assert "法律" not in organizations.generate_guidance_content()
     auth.register_document("legal-doc", "测试.md", "test-uploader", organization_id=_org_by_name("法律")["id"])
     assert "法律" not in organizations.generate_guidance_content()
     assert auth.approve_document("legal-doc", "test-reviewer")
     assert organizations.generate_guidance_content() == (
-        "当前企业知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
-        + organizations.GUIDANCE_RETRIEVAL_RULE
+        "当前知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
     )
 
     organizations.create_organization("财务", "发票报销")
     assert "财务" not in organizations.generate_guidance_content()
     _verified_document("财务", "finance-doc")
     assert organizations.generate_guidance_content() == (
-        "当前企业知识库已收录法律（具体法条、司法解释、案例适用）、"
+        "当前知识库已收录法律（具体法条、司法解释、案例适用）、"
         "财务（发票报销）领域相关参考资料。"
-        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
 
     organizations.create_organization("空白组织", None)
@@ -216,16 +215,15 @@ def test_generate_guidance_content_with_zero_one_and_multiple_organizations():
     _verified_document("空白组织", "blank-doc")
     # ORDER BY name ASC 按SQLite默认二进制排序（Unicode码点），"空"(U+7A7A)早于"财"(U+8D22)
     assert organizations.generate_guidance_content() == (
-        "当前企业知识库已收录法律（具体法条、司法解释、案例适用）、"
+        "当前知识库已收录法律（具体法条、司法解释、案例适用）、"
         "空白组织、财务（发票报销）领域相关参考资料。"
-        + organizations.GUIDANCE_RETRIEVAL_RULE
     )
     assert auth.delete_document_record("legal-doc") == 1
     assert "法律" not in organizations.generate_guidance_content()
     assert auth.delete_document_record("finance-doc") == 1
     assert auth.delete_document_record("blank-doc") == 1
-    assert organizations.generate_guidance_content() == "当前企业知识库暂无已核验的参考资料。"
-    assert _org_by_name("法律") == initial_organizations[1]
+    assert organizations.generate_guidance_content() == "当前知识库暂无已核验的参考资料。"
+    assert _org_by_name("法律") == legal_org
 
 
 def test_guidance_excludes_rejected_and_default_organization_documents():
@@ -233,19 +231,18 @@ def test_guidance_excludes_rejected_and_default_organization_documents():
     _verified_document("法律", "legal-doc")
     assert "法律" in organizations.generate_guidance_content()
     assert auth.reject_document("legal-doc", "test-reviewer")
-    assert organizations.generate_guidance_content() == "当前企业知识库暂无已核验的参考资料。"
+    assert organizations.generate_guidance_content() == "当前知识库暂无已核验的参考资料。"
 
 
 def test_get_system_modules_returns_dynamic_guidance(client, auth_headers):
     developer_headers, _ = auth_headers("developer")
     response = client.get("/developer/system-modules", headers=developer_headers)
     assert response.status_code == 200
-    assert response.json()["guidance"]["content"] == "当前企业知识库暂无已核验的参考资料。"
+    assert response.json()["guidance"]["content"] == "当前知识库暂无已核验的参考资料。"
     _verified_document("法律", "legal-dynamic-doc")
     response = client.get("/developer/system-modules", headers=developer_headers)
     assert response.json()["guidance"]["content"] == (
-        "当前企业知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
-        + organizations.GUIDANCE_RETRIEVAL_RULE
+        "当前知识库已收录法律（具体法条、司法解释、案例适用）领域相关参考资料。"
     )
 
     organizations.create_organization("财务", "发票报销")
@@ -257,7 +254,7 @@ def test_get_system_modules_returns_dynamic_guidance(client, auth_headers):
     assert auth.delete_document_record("legal-dynamic-doc") == 1
     assert auth.delete_document_record("finance-dynamic-doc") == 1
     response = client.get("/developer/system-modules", headers=developer_headers)
-    assert response.json()["guidance"]["content"] == "当前企业知识库暂无已核验的参考资料。"
+    assert response.json()["guidance"]["content"] == "当前知识库暂无已核验的参考资料。"
 
 
 def test_organization_crud_endpoints_require_developer(client, auth_headers):
@@ -266,7 +263,7 @@ def test_organization_crud_endpoints_require_developer(client, auth_headers):
 
     listed = client.get("/developer/organizations", headers=developer_headers)
     assert listed.status_code == 200
-    assert len(listed.json()["organizations"]) == 2
+    assert len(listed.json()["organizations"]) == 1
     assert client.get("/developer/organizations", headers=reviewer_headers).status_code == 403
 
     created = client.post(
@@ -341,4 +338,4 @@ def test_put_system_modules_rejects_manual_guidance(client, auth_headers):
     )
     assert response.status_code == 200
     assert response.json()["tone"]["content"] == "专业"
-    assert response.json()["guidance"]["content"] == "当前企业知识库暂无已核验的参考资料。"
+    assert response.json()["guidance"]["content"] == "当前知识库暂无已核验的参考资料。"

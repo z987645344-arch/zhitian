@@ -29,8 +29,7 @@ def _state(intent="search"):
         react_limit_reached=False,
         response="",
         error="",
-        clarification="",
-        city=""
+        clarification=""
     )
     state["source_policy"] = source_policy.classify_policy(state["message"], {
         "source": "public" if intent == "search" else "internal",
@@ -50,35 +49,34 @@ def _result(tool="search_web", data="工具结果", status="success"):
         ({"intent": "chat", "source_policy": source_policy.classify_policy("你好", {"source": "internal", "time_sensitivity": "general", "only_materials": False, "non_factual": True})}, "chat"),
         ({"intent": "search"}, "document"),
         ({"intent": "document"}, "document"),
-        ({"intent": "clarify", "clarification": "请补充城市"}, "clarify"),
+        ({"intent": "clarify", "clarification": "请补充必要条件"}, "clarify"),
     ]
 )
 def test_classify_node_parses_intents(monkeypatch, decision, expected_intent):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
     monkeypatch.setattr(planning, "_classify_with_model", lambda message, context, tier="fast", **kwargs: decision)
-    monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: None)
 
     state = planning.classify_node(_state(""))
 
     assert state["intent"] == expected_intent
     if expected_intent == "clarify":
-        assert state["clarification"] == "请补充城市"
+        assert state["clarification"] == "请补充必要条件"
 
 
-def test_classify_node_saves_city_to_state(monkeypatch):
-    saved = []
+def test_classify_node_does_not_persist_specialized_memory(monkeypatch):
     monkeypatch.setattr(planning, "_load_classify_context", lambda session_id, message: [])
     monkeypatch.setattr(
         planning,
         "_classify_with_model",
-        lambda message, context, tier="fast", **kwargs: {"intent": "chat", "city": "杭州"}
+        lambda message, context, tier="fast", **kwargs: {"intent": "document"}
     )
-    monkeypatch.setattr(planning, "_save_city_memory", lambda session_id, city: saved.append((session_id, city)))
+    save = Mock(side_effect=AssertionError("classification must not write specialized memory"))
+    monkeypatch.setattr(planning.memory, "save_to_vector", save)
 
     state = planning.classify_node(_state(""))
 
-    assert state["city"] == "杭州"
-    assert saved == [("planning-test-session", "杭州")]
+    assert state["intent"] == "document"
+    save.assert_not_called()
 
 
 def test_classify_node_uses_request_mode(monkeypatch):
@@ -550,15 +548,15 @@ def test_clarify_intent_skips_retrieve_plan_execute(monkeypatch):
     monkeypatch.setattr(
         planning,
         "_classify_with_model",
-        lambda message, context, tier="fast", **kwargs: {"intent": "clarify", "clarification": "你在哪个城市？"}
+        lambda message, context, tier="fast", **kwargs: {"intent": "clarify", "clarification": "需要处理哪个对象？"}
     )
     monkeypatch.setattr(planning.memory, "search_memory", Mock(side_effect=AssertionError("retrieve should be skipped")))
     monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(side_effect=AssertionError("execute should be skipped")))
 
-    state = planning.run_graph_state("planning-clarify", "今天天气怎么样", mode="expert")
+    state = planning.run_graph_state("planning-clarify", "请处理一下", mode="expert")
 
     assert state["intent"] == "clarify"
-    assert state["response"] == "你在哪个城市？"
+    assert state["response"] == "需要处理哪个对象？"
     assert state["tasks"] == []
     assert state["results"] == []
 

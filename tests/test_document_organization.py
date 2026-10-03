@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """文档组织归属：上传校验、管理端按组织隔离可见性，客户端检索不受影响。"""
 
+import pytest
+
 from layers import auth, memory, organizations, system_modules
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_organization(isolated_persistent_storage):
+    """隔离测试自行创建业务组织，不依赖产品种子数据。"""
+    organizations.create_organization("法律", "测试组织资料")
 
 
 def _org_id(name):

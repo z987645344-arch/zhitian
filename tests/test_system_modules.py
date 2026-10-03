@@ -102,16 +102,16 @@ def test_modules_precede_rules_date_and_dynamic_content(monkeypatch):
     assert messages[-1]["content"] == "FAST_DYNAMIC"
 
 
-def test_fast_prompt_inherits_retrieval_rule_from_generated_guidance():
-    legal = next(item for item in system_modules.organizations.list_organizations() if item["name"] == "法律")
+def test_fast_prompt_inherits_inventory_but_not_routing_from_generated_guidance():
+    legal = system_modules.organizations.create_organization("法律", "测试资料")
     auth.register_document("guidance-rule-doc", "测试.md", "test-uploader", organization_id=legal["id"])
     assert auth.approve_document("guidance-rule-doc", "test-reviewer")
     state = planning._new_agent_state("module-fast-guidance", "测试问题", "fast")
     system_prompt = planning._build_fast_messages(state)[0]["content"]
-    rule = system_modules.organizations.GUIDANCE_RETRIEVAL_RULE
-
-    assert rule in system_prompt
-    assert system_prompt.index(rule) < system_prompt.index("你处于快速模式")
+    inventory = "当前知识库已收录法律（测试资料）领域相关参考资料。"
+    assert inventory in system_prompt
+    assert system_prompt.index(inventory) < system_prompt.index("你处于快速模式")
+    assert "应优先调用search_documents核验" not in system_prompt
 
 
 def test_fast_three_calls_share_module_order_and_keep_dynamic_content_outside_prefix(
@@ -189,7 +189,7 @@ def test_expert_document_metadata_stays_in_dynamic_message(monkeypatch):
     dynamic = messages[-1]["content"]
     assert fixed.index("GUIDANCE_MARKER") < fixed.index("TONE_MARKER")
     assert fixed.index("TONE_MARKER") < fixed.index("FORBIDDEN_MARKER")
-    assert fixed.index("FORBIDDEN_MARKER") < fixed.index("你是企业知识库问答助手")
+    assert fixed.index("FORBIDDEN_MARKER") < fixed.index("你是知识库问答助手")
     assert "不得替换为片段之外的其他来源、地区或版本的信息" in fixed
     assert "DYNAMIC_QUERY" not in fixed
     assert "DYNAMIC_SOURCE" not in fixed

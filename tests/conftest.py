@@ -184,6 +184,9 @@ def grant_work_organization(user_id, name="法律"):
     且上传时必须显式传入归属组织；只想验证上传校验、审核流程等其他逻辑的
     测试需先满足该前置条件。关联行随 _cleanup_test_usernames 一并清理。
     """
+    from layers import organizations
+    if not any(item["name"] == name for item in organizations.list_organizations()):
+        organizations.create_organization(name, None)
     with auth._connect() as conn:
         row = conn.execute(
             "SELECT id FROM organizations WHERE name = ?", (name,)

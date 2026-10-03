@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
 """组织加入/退出审批体系、审批路由（含冷启动兜底）与工作资格门槛。"""
 
+import pytest
+
 from layers import auth, organizations, system_modules
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_organization(isolated_persistent_storage):
+    """隔离测试自行创建业务组织，不依赖产品种子数据。"""
+    organizations.create_organization("法律", "测试组织资料")
 
 
 def _org_id(name):

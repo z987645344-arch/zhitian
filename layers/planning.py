@@ -42,7 +42,7 @@ class FastEvidenceSelection(BaseModel):
     reason: str = ""
 
 
-FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。你会收到用户问题，以及从企业知识库检索到的若干候选片段（每个候选带编号和原文内容）。
+FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。你会收到用户问题，以及从知识库检索到的若干候选片段（每个候选带编号和原文内容）。
 
 你的任务：判断这些候选片段中，哪些足以支撑对用户问题的可靠回答。
 
@@ -55,13 +55,12 @@ FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。
 {"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason": "一句话说明判断依据"}"""
 
 
-FAST_DOCUMENT_GENERATION_PROMPT = f"""你是知天智能问答系统的回答生成环节，服务于企业员工。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
+FAST_DOCUMENT_GENERATION_PROMPT = f"""你是知天智能问答系统的回答生成环节。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
 
 生成原则：
 1. 如果提供了知识库片段，仅基于这些片段内容组织回答，不得引入片段之外的自身知识来补充、替换或"完善"片段内容；片段信息不完整时，如实说明"资料未详细说明"，不要编造。
-2. 如果没有提供任何知识库片段，直接回复"{source_policy.REFUSAL}"，可视情况建议咨询相关专业人士或查阅权威来源，不展开缺少片段支持的具体内容。
-3. 回答简洁准确，不堆砌免责声明。
-4. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"{source_policy.REFUSAL}"，不得把仅有检索结果当作证据充分。"""
+2. 如果没有提供任何知识库片段，直接回复"{source_policy.REFUSAL}"，不展开缺少片段支持的具体内容。
+3. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"{source_policy.REFUSAL}"，不得把仅有检索结果当作证据充分。"""
 
 
 class AgentState(TypedDict):
@@ -89,7 +88,6 @@ class AgentState(TypedDict):
     response: str
     error: str
     clarification: str
-    city: str
     filename_hint: str
     output_format: str
     conversion_target_format: str
@@ -143,24 +141,16 @@ INTENT_TOOLS = [
         "function": {
             "name": "search_web",
             "description": (
-                "当用户问题完整清晰，且需要实时信息、联网搜索、天气、新闻、价格、最新状态或外部事实核验时调用。"
+                "仅在来源闸门允许时，用于联网核实公开且需要最新信息的问题。"
                 "本工具只表示一个单一搜索目标；如果用户要求分别检索多个对象后比较或汇总，应调用declare_complex_task。"
                 "query_hint是搜索方向提示，不必重写完整query。"
-                "如果问题是天气/出行且消息中有城市或上下文已有用户城市，直接调用本工具。"
-                "如果用户同时明确提供了自己的城市，优先在city参数中带出城市。"
-                "如果模型能力支持多个工具，可额外调用save_city；如果一次只能调用一个工具，必须优先调用search_web，不要只调用save_city。"
-                "示例：“北京今天天气”“我在北京，今天天气怎么样”都应调用search_web。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query_hint": {
                         "type": "string",
-                        "description": "搜索方向提示，例如天气、新闻、价格、对比评测等"
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "用户明确提供的当前城市或所在地；没有则不填"
+                        "description": "需要联网核实的公开信息与时间范围"
                     }
                 },
                 "required": ["query_hint"]
@@ -173,13 +163,12 @@ INTENT_TOOLS = [
             "name": "search_documents",
             "description": (
                 "查询用户已上传的本地文档/资料内容，与search_web（查询互联网实时信息）严格区分。"
-                "用于回答文档内容、术语、产品说明、编号、段落信息、内部定义或企业知识库中的专有名词解释。"
+                "用于检索资料中的内容、名称、编号、概念定义或其他事实。"
                 "用户提到“文档”“资料”“上传的文件”“刚才的PDF”“这份文件”“这份文档”等明确指代本地文档时使用。"
-                "用户问“这份文档说了什么”“文档主要内容是什么”“ERR-8842是什么意思”“知了是什么”“蓝鲸项目有哪些能力”这类内容问题，必须调用本工具。"
-                "当用户提出简短定义型问题（例如“XX是什么”“XX介绍一下”），且XX可能是企业内部术语、产品名、项目名、编号或知识库标题时，应优先调用本工具检索验证，不要直接用通用常识回答。"
+                "询问资料内容、名称或编号的含义时，必须调用本工具检索验证，不要用通用常识猜测知识库所有者自己的事实。"
                 "当当前知识库已有某个专业或业务领域的verified资料时，用户提出该领域内的事实性、规范性或依据性问题，即使没有显式提到文档或复述资料原词，也应优先调用本工具检索核验，不要仅凭模型训练知识直接回答。"
-                "如果用户问“有哪些文件/文档/资料”“上传了哪些文档”“企业信息库有哪些文件”这类清单问题，不要调用本工具，应调用list_documents。"
-                "不要用于天气、新闻、价格、互联网实时信息、通用知识问答。"
+                "如果用户只问已上传资料的清单，应调用list_documents。"
+                "事实问题包括公开问题也先检索本地资料；只有未命中且来源闸门允许时，才由系统改用其他来源。"
             ),
             "parameters": {
                 "type": "object",
@@ -198,8 +187,8 @@ INTENT_TOOLS = [
         "function": {
             "name": "list_documents",
             "description": (
-                "列出当前企业信息库/知识库中已审核通过的文件、文档或资料清单。"
-                "当用户问“企业信息库有哪些文件”“目前上传了哪些文档”“知识库里有哪些资料”“已上传的企业信息库文档有哪些”“刚才上传的文档里有什么文件”时调用。"
+                "列出当前知识库中已审核通过的文件、文档或资料清单。"
+                "当用户询问有哪些已上传资料时调用。"
                 "本工具只返回文件名/来源列表，不检索文档内容，不回答文档片段问题。"
                 "如果用户要看某份文档的内容、摘要、说明、编号含义或具体资料，调用search_documents。"
             ),
@@ -268,21 +257,12 @@ INTENT_TOOLS = [
         "function": {
             "name": "direct_answer",
             "description": (
-                "当用户问题完整清晰，可以直接根据已有上下文或通用知识回答，不需要联网搜索时调用。"
-                "如果问题属于可能被当前知识库已有verified资料覆盖的专业或业务领域，并且涉及事实、规范、依据或结论核验，不得调用本工具，应调用search_documents；是否属于该范围由语义和知识库领域背景综合判断，不要求用户显式提到文档。"
-                "当本轮attachment_ids非空时，附件正文已经作为本轮上下文提供；读取、概括、分析当前附件应调用本工具，"
-                "不要为读取当前附件调用search_documents或list_documents。只有格式转换请求才调用convert_document。"
-                "天气、下雨、出行、附近推荐这类依赖城市或位置的问题，不要调用本工具。"
-                "如果用户同时明确提供了自己的城市，优先在city参数中带出城市；如果模型能力支持多个工具，可额外调用save_city。"
+                "仅用于非事实型问候、感谢或关于本对话本身的追问，仍须经过来源闸门。"
+                "事实型问题与当前附件的内容问题先选search_documents，不得绕过资料核验直接作答。"
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "用户明确提供的当前城市或所在地；没有则不填"
-                    }
-                }
+                "properties": {}
             }
         }
     },
@@ -291,13 +271,8 @@ INTENT_TOOLS = [
         "function": {
             "name": "ask_clarification",
             "description": (
-                "当用户问题缺少关键信息无法准确回答时调用，返回一个澄清问题。"
-                "判断规则：问天气/出行但没有城市且上下文没有用户城市时，询问用户所在城市；"
-                "例如“今天天气怎么样”“明天会下雨吗”“今天适合出门吗”这类问题没有城市时，必须询问城市；"
-                "问“附近”但没有位置且上下文没有位置时，说明无法获取位置并询问用户提供位置；"
-                "问题完整清晰时不要调用本工具，正常选择search_web或direct_answer；"
-                "能从消息推断出城市（如“北京今天天气”）或上下文已有用户城市时，直接search_web不问。"
-                "如果用户同时明确提供了自己的城市，优先在city参数中带出城市；如果模型能力支持多个工具，可额外调用save_city。"
+                "只有缺少回答所必需的关键信息、且当前消息与上下文都无法提供时，才向用户追问。"
+                "不得猜测缺失条件；信息已经充分时，按来源规则选择对应工具，不重复追问。"
             ),
             "parameters": {
                 "type": "object",
@@ -305,37 +280,9 @@ INTENT_TOOLS = [
                     "question": {
                         "type": "string",
                         "description": "需要向用户询问的具体问题"
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "用户明确提供的当前城市或所在地；没有则不填"
                     }
                 },
                 "required": ["question"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_city",
-            "description": (
-                "辅助工具，不能单独调用。每次必须同时调用一个主意图工具：search_web、direct_answer或ask_clarification。"
-                "当且仅当用户明确提供自己的当前城市或所在地时调用，可与search_web/direct_answer/ask_clarification同时调用。"
-                "如果一次只能调用一个工具，不要调用本工具，请把城市写入主意图工具的city参数。"
-                "例如“我在北京”“我住在上海”“我的城市是广州”“北京，帮我查天气”可调用。"
-                "例如“我在北京，今天天气怎么样”必须同时调用search_web和save_city。"
-                "如果用户只是评价、喜欢/不喜欢、询问或提到某城市，例如“我不喜欢北京的天气”，不要调用。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "用户明确提供的当前城市或所在地"
-                    }
-                },
-                "required": ["city"]
             }
         }
     }
@@ -355,15 +302,15 @@ FAST_TOOLS = [
         "function": {
             "name": "search_documents",
             "description": (
-                "仅检索本地已审核企业知识库内容。用户询问内部文档内容、产品、项目、编号、"
-                "术语定义或可能属于企业资料的事实时调用。不要用于互联网新闻、天气、价格或最新消息。"
+                "检索本地已审核知识库内容。事实型问题先检索资料，不能直接用通用知识代替核验。"
+                "本工具不联网；未命中时由来源闸门决定后续来源。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "用于本地企业知识库检索的完整查询"
+                        "description": "用于本地知识库检索的完整查询"
                     }
                 },
                 "required": ["query"]
@@ -375,7 +322,7 @@ FAST_TOOLS = [
         "function": {
             "name": "list_documents",
             "description": (
-                "列出本地企业知识库中已审核通过的文件清单。用户询问有哪些文件、文档、资料或已上传内容时调用。"
+                "列出本地知识库中已审核通过的文件清单。用户询问有哪些文件、文档、资料或已上传内容时调用。"
                 "只用于清单，不用于回答文档正文。"
             ),
             "parameters": {
@@ -392,14 +339,12 @@ FAST_TOOLS.append({"type": "function", "function": {
     "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}},
 }})
 for _tool in INTENT_TOOLS + FAST_TOOLS:
-    if _tool["function"]["name"] == "save_city":
-        continue
     _params = _tool["function"]["parameters"]
     _params["properties"]["source_classification"] = source_policy.SourceClassification.model_json_schema()
     _params.setdefault("required", []).append("source_classification")
     if _tool in FAST_TOOLS:
         _params["properties"]["general_answer"] = {
-            "type": "string", "description": "仅公开一般知识：未命中资料时备用的简短通用知识答案；不写来源说明，不猜当前具体值。"
+            "type": "string", "description": "仅公开一般知识：未命中资料时备用的通用知识答案；不写来源说明，不猜当前具体值。"
         }
 
 COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_chat"}
@@ -447,8 +392,6 @@ def classify_node(state: AgentState) -> AgentState:
         state["intent"] = "document"
     state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
-    city = decision.get("city", "")
-    state["city"] = city
     state["filename_hint"] = str(decision.get("filename_hint", "") or "")
     state["output_format"] = str(decision.get("output_format", "md") or "md")
     state["conversion_target_format"] = str(
@@ -463,8 +406,6 @@ def classify_node(state: AgentState) -> AgentState:
     state["decision_reasoning"] = _normalize_decision_reasoning(
         decision.get("decision_reasoning")
     )
-    if city:
-        _save_city_memory(state["session_id"], city)
     logger.info(
         "意图分类结果：session_id=%s intent=%s reasoning_present=%s reasoning_len=%s",
         state["session_id"],
@@ -991,7 +932,6 @@ def _new_agent_state(
         response="",
         error="",
         clarification="",
-        city="",
         filename_hint="",
         output_format="md",
         conversion_target_format="",
@@ -1210,7 +1150,7 @@ def _remaining_fast_budget(deadline: float) -> float:
 
 def _build_fast_messages(state: AgentState) -> list[dict]:
     fixed_prompt = system_modules.prompt_prefix(
-        "你处于快速模式，只能基于对话上下文、长期记忆和本地企业知识库回答。"
+        "你处于快速模式，只能基于对话上下文、长期记忆和本地知识库回答。"
         "需要查询知识库正文时调用search_documents；需要列出文件清单时调用list_documents。"
         "如果本轮提供了聊天附件，附件正文已经直接包含在上下文中，应优先阅读并回答附件内容，"
         "事实型问题仍选择search_documents；用户没有附加文字时，可在本次回复正文概括附件的主要内容，不能用自身知识补全。"
@@ -1788,9 +1728,9 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
         context_text = "\n".join(state["context"] or [])
         system_prompt = (
             "你负责生成可直接保存为文件的完整Markdown正文。只输出正文，不要解释生成过程，"
-            "不要添加下载链接或本地路径。根据用户要求组织清晰结构；如果提供了历史或检索上下文，"
+            "不要添加下载链接或本地路径。根据用户要求生成内容；如果提供了历史或检索上下文，"
             "只使用相关内容，不得编造。不要把整篇正文包在```markdown或```围栏中；"
-            "正文内部需要展示代码时可以保留对应代码块。可使用Markdown标题、加粗和列表组织内容，"
+            "正文内部需要展示代码时可以保留对应代码块。"
             "即使目标格式是PDF或DOCX也先输出Markdown。"
         )
         if context_text:
@@ -1845,7 +1785,7 @@ def _task_from_intent(state: AgentState, order: int) -> Task:
                 "tier": state["mode"],
                 "system_prompt": (
                     "请优先根据本轮聊天附件正文回答。用户没有附加文字时，概括附件主要内容；"
-                    "不得把当前附件误当成企业知识库文件清单，也不得编造附件中没有的信息。"
+                    "不得把当前附件误当成知识库文件清单，也不得编造附件中没有的信息。"
                     "\n\n本轮聊天附件正文：\n"
                     + "\n\n".join(state["attachment_context"])
                 ),
@@ -2073,19 +2013,16 @@ def _classify_with_model(
     """使用所选模型的 Function Call 选择搜索或直接回答。"""
     context_text = "\n".join(context or [])
     fixed_system_prompt = (
-                    "你只负责一次性完成工具选择、澄清判断和城市提取。"
+                    "你只负责一次性完成工具选择、澄清判断和来源分类。"
                     "选择工具时必须在该工具的reasoning参数中用一句话说明依据，控制在60字以内。"
                     "每次必须调用一个且仅一个主意图工具：declare_complex_task、search_web、search_documents、list_documents、generate_file、convert_document、direct_answer、ask_clarification。"
                     "如果请求必须顺序完成多个独立检索、比较、分析或操作，且单一工具无法覆盖完整目标，调用declare_complex_task；"
-                    "例如分别检索两个主题后比较、先查企业文档再查外部资料并汇总。简单单问、单次搜索、单份文档查询或普通对话不要声明复杂任务。"
+                    "例如分别检索两个主题后比较、先查本地文档再查外部资料并汇总。简单单问、单次搜索、单份文档查询或普通对话不要声明复杂任务。"
                     "强制few-shot：‘分别搜索A和B两个话题并对比’=>declare_complex_task；"
                     "‘先查A的最新情况，再结合B给出建议’=>declare_complex_task；"
                     "‘搜索A的最新消息’=>search_web。复杂请求禁止选择direct_answer或单次search_web。"
                     "当多个检索对象和比较/汇总目标已经明确时，问题就是完整的；不要因为‘近期’‘最新’"
                     "没有指定精确日期范围而ask_clarification，应结合当前日期直接declare_complex_task。"
-                    "如果用户明确提供自己的当前城市或所在地，优先写入主意图工具的city参数；模型能力支持多个工具时，可额外同时调用save_city。"
-                    "save_city是附加工具，禁止单独调用；如果需要保存城市，也必须同时选择一个主意图工具，或将city写入主意图工具参数。"
-                    "如果模型能力限制导致一次只能调用一个工具，禁止调用save_city，必须优先调用主意图工具并在city参数中带出城市。"
                     "事实型问题一律先选search_documents；非事实型问候、感谢或对话本身的追问才选direct_answer；"
                     "用户明确要求把内容整理、导出或生成为可下载文件、文档、清单或报告时选generate_file；"
                     "generate_file用于生成新的md、txt、pdf或docx交付物，不用于读取或转换用户已有文件；"
@@ -2093,24 +2030,13 @@ def _classify_with_model(
                     "本轮attachment_ids非空表示用户已提供当前聊天附件，附件正文会由系统直接注入后续回答上下文；"
                     "读取、概括、总结、分析当前附件时选search_documents，附件正文由系统提供，回答只用资料；"
                     "用户消息为空但attachment_ids非空时也选search_documents；只有明确要求转换格式时选convert_document；"
-                    "当用户想知道企业信息库/知识库/已上传资料里“有哪些文件、哪些文档、哪些资料、上传了什么”时，必须选list_documents；"
+                    "当用户想知道知识库/已上传资料里“有哪些文件、哪些文档、哪些资料、上传了什么”时，必须选list_documents；"
                     "list_documents只列清单，不回答内容；"
                     "用户明确提到文档、资料、上传的文件、刚才的PDF、这份文件、这份文档等本地文档指代时选search_documents；"
-                    "“这份文档说了什么”“文档主要内容是什么”“ERR-8842是什么意思”这类内容检索必须选search_documents，禁止选ask_clarification；"
-                    "简短定义型问题也要判断是否可能属于企业知识库内容：例如“知了是什么”“蓝鲸项目是什么”“ERR-8842是什么”这类产品名、项目名、编号或非明显日常概念，应优先选search_documents检索验证，而不是直接用模型常识回答；"
-                    "“企业信息库有哪些文件”“目前上传了哪些文档”“知识库里有哪些资料”“已上传的企业信息库文档有哪些”必须选list_documents，禁止选direct_answer或ask_clarification；"
-                    "few-shot示例：用户问“企业信息库有哪些文件”=> list_documents；用户问“目前上传了哪些文档”=> list_documents；用户问“刚才上传的文档里有什么文件”=> list_documents；"
-                    "用户问“知了是什么”=> search_documents，query_hint填“知了”；用户问“ERR-8842是什么意思”=> search_documents，query_hint填“ERR-8842”；用户问“这份文档说了什么”=> search_documents；"
+                    "资料内容、名称、编号或概念含义等事实问题必须选search_documents检索验证，不用模型常识猜测，不因名称陌生就选ask_clarification；"
+                    "只询问已上传资料清单时必须选list_documents，禁止选direct_answer或ask_clarification；"
                     "search_documents用于验证本地资料是否命中，包括公开问题；只有未命中且来源许可允许时系统才联网；"
-                    "缺少城市、位置等关键信息导致无法准确回答时选ask_clarification。"
-                    "天气/下雨/出行问题没有城市且上下文也没有用户城市时，必须选ask_clarification，不能选direct_answer；"
-                    "天气/下雨/出行问题只要消息里有城市或上下文有用户城市，必须选search_web。"
-                    "明确示例：“北京今天天气”必须选search_web；“我在北京，今天天气怎么样”必须选search_web，并在search_web.city中填写北京。"
-                    "“北京”“上海”“广州”等城市名出现在天气/出行问题中时，视为城市已提供，不要澄清。"
-                    "自我介绍、姓名、偏好、常住地、来自哪里等个人信息陈述不需要联网，必须选direct_answer；"
-                    "这类消息即使包含城市，也只在direct_answer.city中带出城市，不要选search_web，除非用户同时询问天气、出行、新闻、价格或实时信息。"
-                    "附近推荐问题没有位置且上下文也没有位置时，必须选ask_clarification。"
-                    "用户只是评价、喜欢/不喜欢、询问或提到某城市时，不要调用save_city。"
+                    "仅在缺少回答所必需的关键信息且当前消息与上下文都未提供时选ask_clarification；不得猜测缺失条件，条件已明确时不重复追问。"
     )
     fixed_system_prompt = system_modules.prompt_prefix(fixed_system_prompt + source_policy.CLASSIFICATION_PROMPT)
     response = llm_provider.chat_completion(
@@ -2150,7 +2076,7 @@ def _classify_with_model(
     )
     tool_calls = _extract_tool_calls(response)
     decision = _build_classify_decision(tool_calls)
-    primary = next((item for item in tool_calls if item.get("name") != "save_city"), {})
+    primary = next(iter(tool_calls), {})
     decision["source_policy"] = source_policy.classify_policy(message, (primary.get("arguments") or {}).get("source_classification"))
     if decision["intent"] in {"chat", "search"} and not (
         decision["intent"] == "chat" and decision["source_policy"].non_factual and decision["source_policy"].classification_valid
@@ -2179,7 +2105,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
             "content": (
                 f"用户当前问题：{state['message']}\n\n"
                 f"执行层初步回复：{base_response}\n\n"
-                "请结合历史记录和初步回复，生成自然、准确的最终回答。"
+                "请结合与本轮相关的历史事实和初步回复回答用户问题。"
             )
         }],
         include_date=True,
@@ -2258,7 +2184,6 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
     decision = {
         "intent": "document",
         "clarification": "",
-        "city": "",
         "filename_hint": "",
         "output_format": "md",
         "conversion_target_format": "",
@@ -2274,14 +2199,9 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
             complex_call.get("arguments", {}).get("reasoning")
         )
         return decision
-    has_save_city = False
     for tool_call in tool_calls:
         name = tool_call["name"]
         arguments = tool_call["arguments"]
-        if name == "save_city" and arguments.get("city"):
-            has_save_city = True
-            decision["city"] = str(arguments["city"]).strip()
-            continue
         if name == "ask_clarification":
             decision["intent"] = "clarify"
             decision["clarification"] = arguments.get("question", "请补充关键信息。")
@@ -2347,8 +2267,6 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
             decision["decision_reasoning"] = _normalize_decision_reasoning(
                 arguments.get("reasoning")
             )
-    if has_save_city and len(tool_calls) == 1:
-        decision["intent"] = "document"
     return decision
 
 
@@ -2398,40 +2316,22 @@ def _load_classify_context(session_id: str, message: str) -> list[str]:
     if not session_id:
         return []
     context = []
-    for query in [message, "用户城市 用户位置"]:
-        try:
-            for item in memory.search_session_memory(query, session_id=session_id, top_k=3):
-                if item not in context:
-                    context.append(item)
-        except Exception as e:
-            logger.error("规划层上下文检索失败：session_id=%s error_type=%s", session_id, type(e).__name__)
-            pass
+    try:
+        for item in memory.search_session_memory(message, session_id=session_id, top_k=3):
+            if item not in context:
+                context.append(item)
+    except Exception as e:
+        logger.error("规划层上下文检索失败：session_id=%s error_type=%s", session_id, type(e).__name__)
     return context[:3]
 
 
 def _merge_context(primary: list[str], secondary: list[str]) -> list[str]:
-    """合并上下文并去重，保留classify阶段已有城市信息"""
+    """合并上下文并去重，保留classify阶段已有的相关记忆。"""
     merged = []
     for item in (primary or []) + (secondary or []):
         if item and item not in merged:
             merged.append(item)
     return merged[:3]
-
-
-def _save_city_memory(session_id: str, city: str) -> None:
-    """写入用户城市长期记忆"""
-    if not session_id or not city:
-        return
-    try:
-        memory.save_to_vector(
-            session_id,
-            f"用户城市：{city}",
-            role="user",
-            importance_level=memory.IMPORTANCE_LEVEL_HIGH
-        )
-    except Exception as e:
-        logger.error("城市信息写入失败：session_id=%s error_type=%s", session_id, type(e).__name__)
-        pass
 
 
 builder = StateGraph(AgentState)
