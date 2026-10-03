@@ -1104,7 +1104,7 @@ def test_fast_evidence_failure_sse_degraded_and_budget_fallback(
             return _fast_response(tool_name="search_documents", arguments={"query": "topic"})
         if len(calls) == 2:
             if not budget_sufficient:
-                clock[0] = config.FAST_REQUEST_TIMEOUT - config.FAST_LLM_TIMEOUT + .1
+                clock[0] = config.FAST_REQUEST_TIMEOUT - config.FAST_FINAL_ANSWER_RESERVE_SECONDS + .1
             raise failure
         return _fast_response(content="只回答候选支持的内容，资料未详细说明其余部分")
     monkeypatch.setattr(planning.llm_provider, "chat_completion", chat)

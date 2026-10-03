@@ -192,21 +192,30 @@ def test_expert_remaining_final_generators_keep_original_facts(monkeypatch, stag
     assert state["message"] in text
 
 
-def test_context_polish_failure_never_returns_raw_tool_result(monkeypatch):
+@pytest.mark.parametrize("tool,base", [
+    ("search_web", "联网整理成品：服务时间为每天9点至18点。"),
+    ("llm_chat", "你好，很高兴为你服务。"),
+    ("list_documents", "当前企业信息库包含以下文件：\n1. 售后手册"),
+])
+@pytest.mark.parametrize("failure", [TimeoutError("simulated"), RuntimeError("simulated"), ""])
+def test_context_polish_failure_preserves_completed_tool_answer(monkeypatch, tool, base, failure):
     state = planning._new_agent_state("context-polish-failure", "问题", "expert")
     state["context"] = ["历史信息"]
+    state["intent"] = {"search_web": "web", "llm_chat": "chat", "list_documents": "document_list"}[tool]
+    state["results"] = [execution.ToolResult(tool=tool, status="success", data=base)]
     state["citations"] = [
         execution.Citation(source="资料", doc_id="doc-1", chunk_index=0, score=0.9)
     ]
     monkeypatch.setattr(
         llm_provider,
         "chat_completion",
-        Mock(side_effect=RuntimeError("simulated failure")),
+        Mock(side_effect=failure) if isinstance(failure, Exception) else Mock(return_value=response(failure)),
     )
 
-    answer = planning._respond_with_context(state, "RAW_TOOL_RESULT_MUST_NOT_LEAK")
+    citations = list(state["citations"])
+    state = planning.respond_node(state)
 
-    assert answer == execution.ANSWER_GENERATION_FAILURE_MESSAGE
-    assert "RAW_TOOL_RESULT_MUST_NOT_LEAK" not in answer
-    assert state["citations"] == []
-    assert state["degradation_reasons"] == ["final_answer_failed"]
+    assert state["response"] == base
+    assert state["citations"] == citations
+    assert state["degradation_reasons"] == ["context_polish_failed"]
+    assert state["deepseek_circuit_open"] is False

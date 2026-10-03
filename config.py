@@ -150,6 +150,15 @@ LLM_MAX_KEEPALIVE_CONNECTIONS = max(
 # DeepSeek未公开HTTP空闲连接关闭时限，保守仅保留1秒；活跃流不受此值影响。
 LLM_KEEPALIVE_EXPIRY_SECONDS = 1.0
 FAST_REQUEST_TIMEOUT = float(os.getenv("FAST_REQUEST_TIMEOUT", "25.0"))
+# 最终生成预留（不是扩大单步/整请求预算）：baseline-ae3d27d-20261001 的
+# fast最终生成44次P90=6.0216秒；4384808检索小测expert文档生成5次P90=16.186秒。
+# 向上取整至0.1秒；后者覆盖8–10候选输入，小样本仍须生产复核。
+FAST_FINAL_ANSWER_RESERVE_SECONDS = max(
+    0.1, float(os.getenv("FAST_FINAL_ANSWER_RESERVE_SECONDS", "6.1"))
+)
+EXPERT_FINAL_ANSWER_RESERVE_SECONDS = max(
+    0.1, float(os.getenv("EXPERT_FINAL_ANSWER_RESERVE_SECONDS", "16.2"))
+)
 SEARCH_TOTAL_TIMEOUT = float(os.getenv("SEARCH_TOTAL_TIMEOUT", "30.0"))
 # 本机fast档搜索词改写实测需9.956秒，且供应商timeout可能比设定墙钟再多约5秒；
 # 暂以15秒留出松弛，仍需生产网络实测复核，不能视为已经定型的容量参数。

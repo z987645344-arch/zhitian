@@ -659,6 +659,7 @@ def search_documents(
     timeout: Optional[float] = None,
     diagnostics: Optional[SearchDiagnostics] = None,
     additional_query: Optional[str] = None,
+    request_deadline: Optional[float] = None,
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，合并BM25与向量两个独立候选源。"""
     if not query:
@@ -667,7 +668,8 @@ def search_documents(
         # 原路包括既有可选精排，与非追问完全相同；前文路只做本地召回。
         # 不对追加后的集合再精排/截到top_k，避免改变原路顺序或挤掉原路证据。
         primary = search_documents(query, top_k=top_k, verified_doc_ids=verified_doc_ids,
-                                   tier=tier, enable_rerank=enable_rerank, timeout=timeout, diagnostics=diagnostics)
+                                   tier=tier, enable_rerank=enable_rerank, timeout=timeout, diagnostics=diagnostics,
+                                   request_deadline=request_deadline)
         contextual = search_documents(additional_query, top_k=top_k, verified_doc_ids=verified_doc_ids,
                                       tier=tier, enable_rerank=False, timeout=timeout)
         return retrieval_query.append_context_results(primary, contextual, config.RAG_SCORE_THRESHOLD,
@@ -720,6 +722,7 @@ def search_documents(
             tier=tier,
             timeout=timeout,
             diagnostics=diagnostics,
+            request_deadline=request_deadline,
         )
     observability.log_stage("documents_rerank", int((time.perf_counter() - stage_started_at) * 1000))
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1059,6 +1062,7 @@ def _apply_document_rerank(
     tier: str = "fast",
     timeout: Optional[float] = None,
     diagnostics: Optional[SearchDiagnostics] = None,
+    request_deadline: Optional[float] = None,
 ) -> list[dict]:
     if not config.RERANK_ENABLED:
         return candidates
@@ -1082,6 +1086,7 @@ def _apply_document_rerank(
         tier=tier,
         timeout=timeout,
         diagnostics=diagnostics,
+        request_deadline=request_deadline,
     ) + tail
 
 
@@ -1095,6 +1100,7 @@ def _rerank_candidates(
     tier: str = "fast",
     timeout: Optional[float] = None,
     diagnostics: Optional[SearchDiagnostics] = None,
+    request_deadline: Optional[float] = None,
 ) -> list[dict]:
     """用fast tier一次性批量重排候选chunk，失败时返回原顺序。"""
     if not candidates:
@@ -1102,6 +1108,22 @@ def _rerank_candidates(
 
     started_at = time.perf_counter()
     try:
+        reserved_options = {}
+        if tier == "expert" and request_deadline is not None:
+            # 在本地召回结束后才计算，不能把召回耗时算进最终回答预留。
+            reserved_deadline = (request_deadline - config.EXPERT_FINAL_ANSWER_RESERVE_SECONDS
+                                 - llm_provider.OPTIONAL_STAGE_HANDOFF_SECONDS)
+            budget = reserved_deadline - time.perf_counter()
+            if budget <= 0:
+                raise TimeoutError("final answer reserve leaves no rerank budget")
+            step_timeout = min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
+            # 旧规则允许一次超时重试；总墙钟也不能超过旧两次单步+等待的额度。
+            retry_budget = step_timeout * (config.FAST_LLM_TIMEOUT_RETRIES + 1)
+            retry_budget += config.FAST_LLM_RETRY_DELAY * config.FAST_LLM_TIMEOUT_RETRIES
+            budget = min(budget, retry_budget)
+            reserved_options = dict(total_budget=budget, require_full_retry_budget=True,
+                                    enforce_wall_clock=True,
+                                    wall_clock_deadline=min(time.perf_counter() + budget, reserved_deadline))
         payload = [
             {
                 "index": index,
@@ -1133,7 +1155,8 @@ def _rerank_candidates(
             tier=config.resolve_model_tier(tier, config.LLMStage.DOCUMENT_RERANK),
             stage=config.LLMStage.DOCUMENT_RERANK,
             response_format={"type": "json_object"},
-            timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT))
+            timeout=min(config.RERANK_TIMEOUT, float(timeout or config.RERANK_TIMEOUT)),
+            **reserved_options,
         )
         score_map = _parse_rerank_scores(llm_provider.extract_text(response), len(candidates))
         scored_candidates = []

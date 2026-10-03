@@ -6,7 +6,8 @@ import threading
 import time
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
+from contextvars import ContextVar, Token, copy_context
+from queue import Queue, Empty
 from typing import Any, Iterator, Optional
 
 import httpx
@@ -19,6 +20,8 @@ from utils import observability
 
 logger = get_logger("llm_provider")
 VALID_TIERS = {"fast", "expert"}
+# 提前交接50ms给线程唤醒/关闭响应，不能把这些开销从最终生成预留中扣除。
+OPTIONAL_STAGE_HANDOFF_SECONDS = 0.05
 _request_api_key: ContextVar[Optional[str]] = ContextVar(
     "deepseek_request_api_key", default=None
 )
@@ -27,6 +30,38 @@ _stream_registry: ContextVar[Optional["StreamRegistry"]] = ContextVar(
 )
 _http_client_lock = threading.Lock()
 _shared_http_client: Optional[httpx.Client] = None
+_optional_stage_guard: ContextVar[Optional["_OptionalStageGuard"]] = ContextVar(
+    "optional_model_stage_guard", default=None
+)
+
+
+class _OptionalStageGuard:
+    """只取消本次可选调用的HTTP响应，不关闭其他用户共用的连接池。"""
+
+    def __init__(self) -> None:
+        self.cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._response: Optional[httpx.Response] = None
+
+    def register(self, response: httpx.Response) -> None:
+        with self._lock:
+            self._response = response
+            cancelled = self.cancelled.is_set()
+        if cancelled:
+            _close_raw_stream(response)
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled.set()
+            response = self._response
+        _close_raw_stream(response)
+
+
+def _track_optional_stage_response(response: httpx.Response) -> None:
+    # HTTPX响应钩子在正文消费之前执行，非流式SDK尚未返回时也能关闭响应。
+    guard = _optional_stage_guard.get()
+    if guard is not None:
+        guard.register(response)
 
 
 class _RejectCookiePolicy(DefaultCookiePolicy):
@@ -106,6 +141,7 @@ def _get_shared_http_client() -> httpx.Client:
                     keepalive_expiry=config.LLM_KEEPALIVE_EXPIRY_SECONDS,
                 ),
                 cookies=CookieJar(policy=_RejectCookiePolicy()),
+                event_hooks={"response": [_track_optional_stage_response]},
             )
         return _shared_http_client
 
@@ -186,6 +222,58 @@ def chat_completion(
     **kwargs: Any
 ) -> Any:
     """Call exactly one configured provider request for the selected tier."""
+    enforce_wall_clock = kwargs.pop("enforce_wall_clock", False)
+    wall_clock_deadline = kwargs.pop("wall_clock_deadline", None)
+    if not enforce_wall_clock:
+        return _chat_completion(messages, tier, response_format, timeout, stage, **kwargs)
+    # SDK read timeout会被非正文网络活动续期；可选筛选/精排必须有独立墙钟界限。
+    # 仅这两个显式开启的非流式阶段使用工作线程，默认模型调用/请求体不变。
+    budget = float(kwargs.get("total_budget") or 0.0)
+    if budget <= 0 or kwargs.get("stream"):
+        raise ValueError("wall-clock budget requires a positive non-streaming total_budget")
+    deadline = time.perf_counter() + budget
+    if wall_clock_deadline is not None:
+        deadline = min(deadline, float(wall_clock_deadline))
+    if deadline <= time.perf_counter():
+        raise TimeoutError("optional model stage wall-clock budget exhausted")
+    guard = _OptionalStageGuard()
+    results: Queue = Queue(maxsize=1)
+    context = copy_context()  # 继承个人Key、观测trace，不在新线程丢失请求上下文。
+
+    def call_in_context() -> None:
+        token = _optional_stage_guard.set(guard)
+        try:
+            result = _chat_completion(messages, tier, response_format, timeout, stage,
+                                     _deadline=deadline, _cancelled=guard.cancelled, **kwargs)
+            results.put((True, result))
+        except BaseException as exc:
+            results.put((False, exc))
+        finally:
+            _optional_stage_guard.reset(token)
+
+    threading.Thread(target=context.run, args=(call_in_context,),
+                     name="llm-optional-stage", daemon=True).start()
+    try:
+        succeeded, result = results.get(timeout=max(0.0, deadline - time.perf_counter()))
+    except Empty:
+        # 尽力关闭已取得响应头的单次HTTP响应；尚未取得头时晚到钩子也会关闭。
+        # 已发送的调用不能撤销计费，但绝不消费晚到结果或启动新重试。
+        guard.cancel()
+        raise TimeoutError("optional model stage wall-clock budget exhausted") from None
+    if time.perf_counter() > deadline:
+        guard.cancel()
+        raise TimeoutError("optional model stage wall-clock budget exhausted")
+    if not succeeded:
+        raise result
+    return result
+
+
+def _chat_completion(
+    messages: list[dict], tier: str, response_format: Optional[dict],
+    timeout: Optional[float], stage: Optional[str],
+    _deadline: Optional[float] = None, _cancelled: Optional[threading.Event] = None,
+    **kwargs: Any,
+) -> Any:
     if tier not in VALID_TIERS:
         raise ValueError("tier must be fast or expert")
 
@@ -197,6 +285,7 @@ def chat_completion(
                                     **thinking_options["extra_body"]}
         kwargs.update({key: value for key, value in thinking_options.items() if key != "extra_body"})
     total_budget = kwargs.pop("total_budget", None)
+    require_full_retry_budget = kwargs.pop("require_full_retry_budget", False)
     request_kwargs = {
         "messages": messages,
         "timeout": request_timeout,
@@ -221,14 +310,14 @@ def chat_completion(
     started_at = time.perf_counter()
     default_budget = request_timeout * (max_timeout_retries + 1)
     default_budget += config.FAST_LLM_RETRY_DELAY * max_timeout_retries
-    deadline = started_at + float(total_budget or default_budget)
+    deadline = _deadline if _deadline is not None else started_at + float(total_budget or default_budget)
     attempt = 0
     connection_reset_retried = False
 
     while True:
         try:
             remaining = deadline - time.perf_counter()
-            if remaining <= 0:
+            if remaining <= 0 or (_cancelled is not None and _cancelled.is_set()):
                 raise TimeoutError("model request budget exhausted")
             request_kwargs["timeout"] = min(request_timeout, remaining)
             response = client.chat.completions.create(**request_kwargs)
@@ -245,6 +334,7 @@ def chat_completion(
             if (
                 not connection_reset_retried
                 and remaining > 0
+                and not (_cancelled is not None and _cancelled.is_set())
                 and _is_pre_send_connection_reset(exc)
             ):
                 # ConnectError发生在发送任何请求字节之前；这次立即换连接重试
@@ -253,7 +343,12 @@ def chat_completion(
                 continue
             error_kind = observability.classify_provider_error(exc)
             should_retry = error_kind == "timeout" and attempt < max_timeout_retries
-            if should_retry and remaining > config.FAST_LLM_RETRY_DELAY:
+            retry_cost = config.FAST_LLM_RETRY_DELAY
+            if require_full_retry_budget:
+                retry_cost += request_timeout
+            retry_fits = remaining >= retry_cost if require_full_retry_budget else remaining > retry_cost
+            if (should_retry and retry_fits
+                    and not (_cancelled is not None and _cancelled.is_set())):
                 attempt += 1
                 time.sleep(min(config.FAST_LLM_RETRY_DELAY, remaining))
                 continue

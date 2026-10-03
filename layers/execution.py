@@ -112,6 +112,7 @@ DEGRADATION_REASON_CODES = {
     "document_first_content_timeout",
     "final_answer_timeout",
     "final_answer_failed",
+    "context_polish_failed",
     "output_observation_timeout",
     "output_observation_failed",
     "deepseek_rate_limit",
@@ -855,6 +856,8 @@ def _search_documents(
         enable_rerank=effective_rerank_enabled,
         timeout=timeout,
         diagnostics=diagnostics,
+        **({"request_deadline": float(_execution_state["complex_deadline"])}
+           if tier == "expert" and (_execution_state or {}).get("complex_deadline") else {}),
         **({"additional_query": retrieval_text} if retrieval_text != query else {}),
     )
     rerank_reason = provider_degradation_reason_for_kind(

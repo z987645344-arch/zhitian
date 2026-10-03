@@ -1081,13 +1081,21 @@ def _run_fast_state(state: AgentState) -> AgentState:
         if task.tool == "search_documents":
             evidence_started_at = time.perf_counter()
             try:
+                evidence_deadline = (deadline - config.FAST_FINAL_ANSWER_RESERVE_SECONDS
+                                     - llm_provider.OPTIONAL_STAGE_HANDOFF_SECONDS)
+                evidence_budget = evidence_deadline - time.perf_counter()
+                if evidence_budget <= 0:
+                    raise TimeoutError("final answer reserve leaves no evidence budget")
                 evidence_response = llm_provider.chat_completion(
                     _build_fast_evidence_messages(state, result),
                     tier="fast",
                     stage="fast_evidence_filter",
                     response_format={"type": "json_object"},
-                    timeout=min(config.FAST_LLM_TIMEOUT, _remaining_fast_budget(deadline)),
-                    total_budget=_remaining_fast_budget(deadline),
+                    timeout=min(config.FAST_LLM_TIMEOUT, evidence_budget),
+                    total_budget=evidence_budget,
+                    require_full_retry_budget=True,
+                    enforce_wall_clock=True,
+                    wall_clock_deadline=evidence_deadline,
                 )
                 selection = _parse_fast_evidence_selection(evidence_response)
                 selected_evidence, selected_citations = _select_fast_evidence(
@@ -1107,9 +1115,9 @@ def _run_fast_state(state: AgentState) -> AgentState:
                     "fast_evidence_filter_timeout" if llm_provider.is_timeout_error(exc)
                     else "fast_evidence_filter_failed",
                 )
-                # 筛选是可选步骤，不开熔断。只有能留出既有最终生成的一次预算
+                # 筛选是可选步骤，不开熔断。只有能留出实测P90最终生成预留
                 # 才继续；不给几乎耗尽的请求再启动一次必然失败的模型调用。
-                if deadline - time.perf_counter() >= config.FAST_LLM_TIMEOUT:
+                if deadline - time.perf_counter() >= config.FAST_FINAL_ANSWER_RESERVE_SECONDS:
                     selected_evidence = str(result.data or "")
                     selected_citations = _dedupe_citations(result.citations or [])
                     selection = FastEvidenceSelection(
@@ -2153,7 +2161,7 @@ def _classify_with_model(
 
 
 def _respond_with_context(state: AgentState, base_response: str) -> str:
-    """在有长期记忆上下文时，让所选模型生成最终回复。"""
+    """润色面向用户的成品；文档原始候选已在respond_node的独立分支处理。"""
     if state.get("answer_source") in {"refusal", "general", "knowledge"} and state.get("evidence_checked"):
         return base_response
     context_text = "\n".join(state["context"])
@@ -2177,7 +2185,8 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         include_date=True,
     )
     if not execution.claim_post_circuit_final_attempt(state):
-        return execution.mark_answer_generation_failure(state)
+        execution.add_degradation_reason(state, "context_polish_failed")
+        return base_response
     try:
         started_at = time.perf_counter()
         response = llm_provider.extract_text(
@@ -2199,16 +2208,12 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
             raise ValueError("empty context-polished response")
         return response
     except Exception as exc:
-        reason_code = execution.open_deepseek_circuit_for_error(
-            state,
-            exc,
-            "final_answer_timeout",
-            final_attempt_consumed=True,
+        # 润色失败已被成品兜底吸收；不丢弃成品/引用，也不升级请求级熔断。
+        execution.add_degradation_reason(state, "context_polish_failed")
+        logger.warning(
+            "历史润色失败，保留成品回答：error_type=%s", type(exc).__name__,
         )
-        return execution.mark_answer_generation_failure(
-            state,
-            reason_code or "final_answer_failed",
-        )
+        return base_response
 
 
 def _extract_tool_calls(response) -> list[dict]:
