@@ -2763,6 +2763,12 @@ async def list_verified_documents(
     }
 
 
+@app.get("/debug/retrieve/config")
+async def debug_retrieve_config(current_user: dict = Depends(require_reviewer)):
+    """供管理端取得聊天候选默认值，不检索、不读取文档。"""
+    return {"document_top_k": config.RAG_DOCUMENT_TOP_K}
+
+
 @app.post("/debug/retrieve")
 async def debug_retrieve(
     request: DebugRetrieveRequest,
@@ -2821,7 +2827,8 @@ async def debug_retrieve(
     return {
         "results": debug_results,
         "total": len(debug_results),
-        "threshold": config.RAG_SCORE_THRESHOLD
+        "threshold": config.RAG_SCORE_THRESHOLD,
+        "document_top_k": config.RAG_DOCUMENT_TOP_K,
     }
 
 
@@ -3610,7 +3617,7 @@ def _chat_stream_events(
                 reasons_before = list(final_state.get("degradation_reasons", []))
                 execution.emit_tool_status(final_state, "llm_chat", "started")
                 if final_state.get("react_limit_reached"):
-                    notice = "基于目前检索到的信息回答，可能不够全面。\n\n"
+                    notice = planning.REACT_LIMIT_NOTICE + "\n\n"
                     chunks.append(notice)
                     yield _sse_data({"chunk": notice})
                 document_stream = execution._answer_from_documents(

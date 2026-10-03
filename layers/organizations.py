@@ -490,24 +490,26 @@ def save_lobby_content(
     return get_lobby_content()
 
 
+def verified_knowledge_domains() -> list[dict]:
+    """规范与拒答共用的已核验资料领域；每次读取，不缓存部署状态。"""
+    with auth._connect() as conn:
+        rows = conn.execute(
+            """SELECT o.name, o.content FROM organizations o
+            WHERE o.name != ? AND EXISTS (
+                SELECT 1 FROM documents d
+                WHERE d.organization_id = o.id AND d.trust_level = 'verified'
+            ) ORDER BY o.name ASC""", (DEFAULT_ORGANIZATION_NAME,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def generate_guidance_content() -> str:
     """每次读取时按有已核验文档的非默认组织动态拼接guidance文案。
 
     组织存在不等于知识库收录了资料；用文档审核状态作依据，不缓存该查询。
     核验通过、拒绝或删除文档后的下一次读取自然更新，不修改任何组织数据。
     """
-    with auth._connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT o.name, o.content FROM organizations o
-            WHERE o.name != ? AND EXISTS (
-                SELECT 1 FROM documents d
-                WHERE d.organization_id = o.id AND d.trust_level = 'verified'
-            )
-            ORDER BY o.name ASC
-            """,
-            (DEFAULT_ORGANIZATION_NAME,),
-        ).fetchall()
+    rows = verified_knowledge_domains()
     if not rows:
         return "当前知识库暂无已核验的参考资料。"
     parts = []

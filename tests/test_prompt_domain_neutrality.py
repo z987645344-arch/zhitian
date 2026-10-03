@@ -26,8 +26,9 @@ def test_runtime_static_strings_have_no_domain_assumptions():
 
 def test_neutral_generation_prompts_keep_refusal_and_partial_evidence_boundary(monkeypatch):
     assert "未找到可靠依据，无法确认答案" in planning.FAST_DOCUMENT_GENERATION_PROMPT
-    assert "不得引入片段之外的自身知识来补充、替换" in planning.FAST_DOCUMENT_GENERATION_PROMPT
-    assert "片段信息不完整时，如实说明" in planning.FAST_DOCUMENT_GENERATION_PROMPT
+    assert "不得引入资料之外的自身知识来补充、替换" in planning.FAST_DOCUMENT_GENERATION_PROMPT
+    assert "部分命中不得用自身知识补全" in planning.FAST_DOCUMENT_GENERATION_PROMPT
+    assert "只有用户询问的部分没有资料依据时" in planning.FAST_DOCUMENT_GENERATION_PROMPT
     captured = {}
     monkeypatch.setattr(execution.system_modules, "prompt_prefix", lambda text: text)
     def completion(messages, **_kwargs):
@@ -41,9 +42,9 @@ def test_neutral_generation_prompts_keep_refusal_and_partial_evidence_boundary(m
     assert list(execution._answer_from_documents(context, tier="expert")) == ["正常回答"]
     prompt = captured["prompt"]
     assert "未找到可靠依据，无法确认答案" in prompt
-    assert "不得引入片段之外的自身知识来补充、替换、“完善”或纠正片段内容" in prompt
-    assert "不得替换为片段之外的其他来源、地区或版本的信息" in prompt
-    assert "不得自行判断替换为片段之外的其他来源信息" in prompt
+    assert "不得引入资料之外的自身知识来补充、替换、“完善”或纠正资料内容" in prompt
+    assert "不得替换为资料之外的其他来源、地区或版本的信息" in prompt
+    assert "不得自行判断替换为资料之外的其他来源信息" in prompt
 
 
 def test_graph_entity_examples_are_generic_and_types_remain_open():

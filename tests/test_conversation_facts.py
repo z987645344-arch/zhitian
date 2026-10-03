@@ -56,7 +56,7 @@ def test_document_answer_stream_receives_raw_history(fact_history, monkeypatch, 
     assert messages[-4:-1] == history
     assert execution.CONVERSATION_FACTS_PROMPT in "\n".join(m["content"] for m in messages)
     if tier == "expert":
-        assert "仅基于检索到的知识库片段" in messages[0]["content"]
+        assert "仅基于提供的知识库资料" in messages[0]["content"]
         assert "未找到可靠依据，无法确认答案" in messages[0]["content"]
 
 
@@ -106,4 +106,4 @@ def test_user_facts_instruction_does_not_weaken_evidence_or_json_contract():
     assert "不得用自身知识补全" in execution.CONVERSATION_FACTS_PROMPT
     assert '"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason"' in planning.FAST_EVIDENCE_PROMPT
     assert "未找到可靠依据，无法确认答案" in planning.FAST_DOCUMENT_GENERATION_PROMPT
-    assert '不得引入片段之外的自身知识来补充、替换或"完善"片段内容' in planning.FAST_DOCUMENT_GENERATION_PROMPT
+    assert '不得引入资料之外的自身知识来补充、替换或"完善"资料内容' in planning.FAST_DOCUMENT_GENERATION_PROMPT

@@ -206,6 +206,8 @@ def test_context_polish_failure_preserves_completed_tool_answer(monkeypatch, too
     state["citations"] = [
         execution.Citation(source="资料", doc_id="doc-1", chunk_index=0, score=0.9)
     ]
+    # 引用属于正在保留的成品工具回答，不再依赖旧轮次累积的state引用。
+    state["results"][0].citations = list(state["citations"])
     monkeypatch.setattr(
         llm_provider,
         "chat_completion",

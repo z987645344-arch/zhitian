@@ -62,5 +62,5 @@ jobs:
       - name: Run offline test suite
         run: .\run_tests.bat -q
 
-      - name: Test local time display
-        run: node --test tests/web_time.test.js
+      - name: Test web client behavior
+        run: node --test tests/web_time.test.js tests/web_source_policy.test.js tests/web_markdown.test.js

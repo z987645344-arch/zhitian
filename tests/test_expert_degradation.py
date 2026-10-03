@@ -308,7 +308,7 @@ def test_tool_status_payload_is_allowlisted_and_contains_no_sensitive_inputs(mon
     for event in events:
         payload = event.model_dump()
         assert set(payload) == {
-            "type", "tool", "phase", "display_code", "elapsed_ms", "result_count", "reason_code"
+            "type", "tool", "phase", "display_code", "elapsed_ms", "result_count", "reason_code", "occurrence"
         }
         serialized = json.dumps(payload)
         assert private_marker not in serialized

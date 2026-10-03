@@ -55,12 +55,15 @@ FAST_EVIDENCE_PROMPT = """你是知天智能问答系统的证据筛选环节。
 {"evidence_sufficient": true/false, "used_candidate_ids": [编号], "reason": "一句话说明判断依据"}"""
 
 
-FAST_DOCUMENT_GENERATION_PROMPT = f"""你是知天智能问答系统的回答生成环节。你会收到用户问题和知识库片段（可能已经筛选，也可能是筛选失败时保留的全部检索候选）。
+FAST_DOCUMENT_GENERATION_PROMPT = f"""你是知天智能问答系统的回答生成环节。你会收到用户问题和知识库资料（可能已经筛选，也可能是筛选失败时保留的全部候选资料）。
 
 生成原则：
-1. 如果提供了知识库片段，仅基于这些片段内容组织回答，不得引入片段之外的自身知识来补充、替换或"完善"片段内容；片段信息不完整时，如实说明"资料未详细说明"，不要编造。
-2. 如果没有提供任何知识库片段，直接回复"{source_policy.REFUSAL}"，不展开缺少片段支持的具体内容。
-3. 只回答片段能够支持的内容；如果片段与问题无关或无法支持核心问题，直接回复"{source_policy.REFUSAL}"，不得把仅有检索结果当作证据充分。"""
+1. 如果提供了知识库资料，仅基于这些资料内容组织回答，不得引入资料之外的自身知识来补充、替换或"完善"资料内容；部分命中不得用自身知识补全，不要编造。
+2. 如果没有提供任何知识库资料，只输出"{source_policy.REFUSAL}"，不展开缺少资料支持的具体内容。
+3. 只回答资料能够支持的内容；如果资料与问题无关或无法支持核心问题，只输出"{source_policy.REFUSAL}"，不得把仅有候选资料当作证据充分。""" + source_policy.DOCUMENT_PRESENTATION_PROMPT
+
+
+REACT_LIMIT_NOTICE = "基于目前提供的资料回答，可能不够全面。"
 
 
 class AgentState(TypedDict):
@@ -82,6 +85,7 @@ class AgentState(TypedDict):
     results: list[ToolResult]
     citations: list[Citation]
     round_count: int
+    document_search_occurrence: int
     tool_call_history: list[dict]
     react_action: str
     react_limit_reached: bool
@@ -464,7 +468,7 @@ def execute_node(state: AgentState) -> AgentState:
     state["results"].append(result)
     state["round_count"] += 1
     state["tool_call_history"].append(_tool_history_item(task))
-    state["citations"] = _dedupe_citations(state["citations"] + (result.citations or []))
+    state["citations"] = _dedupe_citations(result.citations or [])
     if result.status == "error":
         state["error"] = result.error_msg
     return state
@@ -479,6 +483,8 @@ def reflect_node(state: AgentState) -> AgentState:
     state["react_limit_reached"] = bool(decision.get("limit_reached", False))
     next_task = decision.get("task")
     if state["react_action"] == "continue" and next_task:
+        if next_task.tool == "search_documents":
+            execution.emit_tool_status(state, "reflection", "succeeded")
         state["tasks"].append(next_task)
     return state
 
@@ -758,6 +764,7 @@ def respond_node(state: AgentState) -> AgentState:
 
     latest_result = state["results"][-1]
     base_response = latest_result.data
+    state["citations"] = _dedupe_citations(latest_result.citations or [])
     if (
         latest_result.tool == "search_documents"
         and (latest_result.metadata or {}).get("document_answer_deferred")
@@ -771,7 +778,6 @@ def respond_node(state: AgentState) -> AgentState:
             _execution_state=state,
         ))
         latest_result.data = base_response
-    state["citations"] = _dedupe_citations(state["citations"])
     if latest_result.tool == "search_documents":
         state["response"] = _with_react_limit_notice(state, base_response)
         observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
@@ -1098,6 +1104,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
             state["citations"] = selected_citations
 
         response_started_at = time.perf_counter()
+        execution.emit_tool_status(state, "llm_chat", "started")
         try:
             final_response = llm_provider.chat_completion(
                 _build_fast_result_messages(state, result, selected_evidence),
@@ -1126,6 +1133,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
                 type(exc).__name__,
             )
         observability.log_stage("fast_respond", int((time.perf_counter() - response_started_at) * 1000))
+        execution.emit_tool_status(state, "llm_chat", "degraded" if state.get("error") else "succeeded")
         logger.info(
             "fast路径完成：session_id=%s model_calls=%s tool=%s",
             state["session_id"],
@@ -1161,6 +1169,7 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
     messages.extend(_fast_history_messages(state["session_id"]))
     if state["attachment_context"]:
+        messages.append({"role": "system", "content": source_policy.DOCUMENT_PRESENTATION_PROMPT})
         messages.append({
             "role": "system",
             "content": "本轮聊天附件正文：\n" + "\n\n".join(state["attachment_context"])
@@ -1210,7 +1219,7 @@ def _build_fast_result_messages(
     if result.tool == "search_documents":
         messages.append({
             "role": "user",
-            "content": "用户问题：%s\n\n知识库片段：\n%s" % (
+            "content": "用户问题：%s\n\n知识库资料：\n%s" % (
                 state["message"],
                 selected_evidence,
             ),
@@ -1997,7 +2006,7 @@ def _with_react_limit_notice(state: AgentState, response: str) -> str:
         return execution.ANSWER_GENERATION_FAILURE_MESSAGE
     if not state.get("react_limit_reached"):
         return response
-    notice = "基于目前检索到的信息回答，可能不够全面。"
+    notice = REACT_LIMIT_NOTICE
     if str(response or "").startswith(notice):
         return response
     return f"{notice}\n\n{response or ''}".strip()

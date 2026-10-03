@@ -7,6 +7,13 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 REFUSAL = "未找到可靠依据，无法确认答案"
+EMPTY_KNOWLEDGE_REFUSAL = "知识库里目前还没有可用的资料，暂时没法回答。"
+SCOPED_KNOWLEDGE_REFUSAL = "知识库里没有找到和这个问题相关的资料，暂时没法回答。目前收录的是{domains}方面的资料，可以换个问法，或者问问这些方面的内容。"
+DOCUMENT_PRESENTATION_PROMPT = (
+    "面向用户一律称‘资料’，正文不使用‘片段’、‘检索’或‘知识库片段’等内部用语。"
+    "只有用户询问的部分没有资料依据时，才用一句话说明‘资料里没有提到XX’；"
+    "问题已完整回答时，不追加未提及其他事项的说明。"
+)
 LATEST_UNVERIFIED = "本次联网查询未能核实最新信息，无法确认答案，请稍后重试。"
 FAST_LATEST_UNVERIFIED = "当前快速模式未进行联网查询，无法核实最新信息。如需最新信息请切换到专家模式。"
 WEB_FAILURE_NOTE = "联网查询失败，以下为通用知识，可能不是最新信息。"
@@ -134,7 +141,9 @@ def source_details(state: Optional[dict]) -> dict:
 
 def annotate_answer(answer: str, state: Optional[dict]) -> str:
     """入口与保存历史共用且幂等，剥除模型冒写的前置说明，以服务端为准。"""
-    text = str(answer or "")
+    text = present_refusal(str(answer or ""))
+    if is_knowledge_refusal(text):
+        record_source(state, "refusal", "knowledge_miss")
     if (state or {}).get("answer_source") != "general":
         return text
     note = FAST_GENERAL_NOTE if (state or {}).get("mode") == "fast" else WEB_FAILURE_NOTE
@@ -142,6 +151,49 @@ def annotate_answer(answer: str, state: Optional[dict]) -> str:
         text = text.replace(known, "")
     text = re.sub(r"^\s*(?:[（(]?)(?:以下|本回答|此回答|回答内容)(?:来自|基于|依据|使用|为)[^。\n]{0,160}(?:通用知识|模型知识|非知识库)[^。\n]{0,100}[。\n）)]*", "", text)
     return note + "\n\n" + text.lstrip()
+
+
+def knowledge_refusal() -> str:
+    from layers.organizations import verified_knowledge_domains
+    domains = "、".join(item["name"] for item in verified_knowledge_domains())
+    return SCOPED_KNOWLEDGE_REFUSAL.format(domains=domains) if domains else EMPTY_KNOWLEDGE_REFUSAL
+
+
+def is_knowledge_refusal(answer: str) -> bool:
+    text = str(answer or "")
+    return REFUSAL in text or EMPTY_KNOWLEDGE_REFUSAL in text or (
+        SCOPED_KNOWLEDGE_REFUSAL.split("{domains}")[0] in text)
+
+
+def present_refusal(answer: str) -> str:
+    # 模型只认识原标记；最新信息拒答与通用知识备注完全不动。
+    if REFUSAL not in answer:
+        return answer
+    return re.sub(re.escape(REFUSAL) + r"[。.]?", lambda _m: knowledge_refusal(), answer)
+
+
+def present_document_stream(chunks):
+    """仅缓冲可能属于拒答标记的后缀，正常正文仍逐块交付。"""
+    pending = ""
+    skip_period = False
+    for chunk in chunks:
+        text = str(chunk)
+        if skip_period and text:
+            text = text.lstrip("。.")
+            skip_period = False
+        pending += text
+        while REFUSAL in pending:
+            before, pending = pending.split(REFUSAL, 1)
+            yield before + knowledge_refusal()
+            pending = pending.lstrip("。.")
+            skip_period = not pending
+        hold = max((n for n in range(1, len(REFUSAL)) if pending.endswith(REFUSAL[:n])), default=0)
+        ready = pending[:-hold] if hold else pending
+        if ready:
+            yield ready
+        pending = pending[-hold:] if hold else ""
+    if pending:
+        yield pending
 
 
 def mcp_web_state(query: str) -> dict:

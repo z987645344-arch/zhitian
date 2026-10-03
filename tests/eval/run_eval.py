@@ -461,7 +461,7 @@ class CallRecorder:
             if frame.filename.endswith(("planning.py", "memory.py", "execution.py", "graph_store.py")):
                 if frame.function == "open_and_read_first_content":
                     text = "\n".join(str(m.get("content", "")) for m in messages)
-                    return "document_answer_stream" if "片段" in text else "search_summary_stream"
+                    return "document_answer_stream" if "知识库问答助手" in text else "search_summary_stream"
                 return frame.function.lstrip("_")
         return "unclassified"
 

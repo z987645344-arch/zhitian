@@ -63,7 +63,7 @@ CONVERSATION_FACTS_PROMPT = (
     "对话历史中的用户陈述可作为本次问题的条件，不等于已经核验的事实或已执行的操作。"
     "按时间顺序采用用户明确更正后的最新条件；未更正的编号、对象、时间和诉求等条件应保留，"
     "不同对象的条件不得混用。助手以前的回答只供理解上下文，不作为资料事实或已执行操作的证明。"
-    "知识库所有者自己的资料事实仍须由本轮提供的知识库片段支持；不得用自身知识补全，"
+    "知识库所有者自己的资料事实仍须由本轮提供的知识库资料支持；不得用自身知识补全，"
     "不得把用户陈述升级为已核验、已批准或已执行操作。"
 )
 
@@ -92,6 +92,7 @@ class ToolStatusEvent(BaseModel):
     elapsed_ms: Optional[int] = None
     result_count: Optional[int] = None
     reason_code: Optional[str] = None
+    occurrence: Optional[int] = None
 
 
 DEGRADATION_REASON_CODES = {
@@ -126,6 +127,7 @@ TOOL_DISPLAY_CODES = {
     "llm_chat": "answer_generation",
     "generate_file": "file_generation",
     "convert_document": "document_conversion",
+    "reflection": "reflection",
 }
 LOCAL_EVIDENCE_STRONG_SCORE_MARGIN = 0.10
 LOCAL_EVIDENCE_STRONG_RERANK_SCORE = 8.5
@@ -325,6 +327,11 @@ def emit_tool_status(
 ) -> ToolStatusEvent:
     """在真实工具边界产生脱敏事件；可选sink用于SSE实时转发。"""
     safe_reason_code = reason_code if reason_code in DEGRADATION_REASON_CODES else None
+    occurrence = None
+    if state is not None and tool == "search_documents":
+        if phase == "started":
+            state["document_search_occurrence"] = state.get("document_search_occurrence", 0) + 1
+        occurrence = state.get("document_search_occurrence")
     event = ToolStatusEvent(
         tool=tool,
         phase=phase,
@@ -332,6 +339,7 @@ def emit_tool_status(
         elapsed_ms=elapsed_ms,
         result_count=result_count,
         reason_code=safe_reason_code,
+        occurrence=occurrence,
     )
     if state is not None:
         state.setdefault("tool_status_events", []).append(event)
@@ -883,6 +891,12 @@ def _search_documents(
             _execution_state=_execution_state,
         )
     if not results:
+        previous = next((item for item in reversed((_execution_state or {}).get("results", []))
+                         if item.tool == "search_documents" and item.document_answer_context
+                         and item.document_answer_context.candidates), None)
+        if previous is not None and (_execution_state or {}).get("evidence_state") in {"hit", "partial", "weak"}:
+            # 二次换问法没有新增资料：最终生成仍使用第一轮资料，不累加空轮引用。
+            return previous.model_copy(update={"metadata": {**previous.metadata, "document_answer_deferred": True}})
         source_policy.set_evidence(_execution_state, "miss")
         return ToolResult(
             tool="search_documents",
@@ -957,6 +971,17 @@ def _search_documents(
             if str(item.get("content", "")).strip()
         ],
     )
+    previous = next((item for item in reversed((_execution_state or {}).get("results", []))
+                     if item.tool == "search_documents" and item.document_answer_context
+                     and item.document_answer_context.candidates), None)
+    if previous is not None:
+        current_keys = {(item.doc_id, item.chunk_index) for item in document_answer_context.candidates}
+        previous_keys = {(item.doc_id, item.chunk_index) for item in previous.document_answer_context.candidates}
+        if current_keys <= previous_keys:
+            # 没有新增依据时不缩减第一轮资料；只调整最终生成的资料组，不改来源判定。
+            document_answer_context = previous.document_answer_context
+    citations = [Citation(source=item.source, doc_id=item.doc_id, chunk_index=item.chunk_index,
+                          score=item.score) for item in document_answer_context.candidates]
     if generate_answer and context:
         context_result = _answer_from_supplied_context(
             query,
@@ -966,6 +991,7 @@ def _search_documents(
             _execution_state=_execution_state,
         )
         answer = context_result.data
+        citations = context_result.citations
     elif generate_answer and not defer_document_answer:
         answer = "".join(_answer_from_documents(
             document_answer_context,
@@ -978,7 +1004,7 @@ def _search_documents(
             # 必须在结果对象上也清空，不能只清state里的旧引用。
             citations = []
     else:
-        answer = _format_document_tool_context(trusted_results)
+        answer = _format_document_tool_context([item.model_dump() for item in document_answer_context.candidates])
     return ToolResult(
         tool="search_documents",
         status="success",
@@ -1027,7 +1053,8 @@ def _answer_from_supplied_context(
     system_prompt = (
         "请只根据本轮提供的附件或上下文回答用户问题。不得编造上下文中没有的信息；"
         "如果无法回答，明确说明依据不足。"
-        "\n\n本轮附件或上下文：\n" + "\n\n".join(context)
+        + source_policy.DOCUMENT_PRESENTATION_PROMPT
+        + "\n\n本轮附件或上下文：\n" + "\n\n".join(context)
     )
     if not claim_post_circuit_final_attempt(_execution_state):
         answer = deepseek_circuit_user_message(_execution_state)
@@ -1729,6 +1756,27 @@ def _open_llm_stream_with_first_content_timeout(
 
 
 def _answer_from_documents(
+    answer_context: DocumentAnswerContext, tier: str = "fast",
+    timeout: Optional[float] = None, _execution_state: Optional[dict] = None,
+) -> Iterator[str]:
+    report = not (_execution_state or {}).get("stream_document_answer")
+    reasons_before = set((_execution_state or {}).get("degradation_reasons", []))
+    if report:
+        emit_tool_status(_execution_state, "llm_chat", "started")
+    stream = _raw_answer_from_documents(answer_context, tier, timeout, _execution_state)
+    try:
+        for chunk in source_policy.present_document_stream(stream):
+            if source_policy.is_knowledge_refusal(chunk):
+                source_policy.record_source(_execution_state, "refusal", "knowledge_miss")
+            yield chunk
+    finally:
+        llm_provider.close_stream(stream)
+        if report:
+            new_reasons = set((_execution_state or {}).get("degradation_reasons", [])) - reasons_before
+            emit_tool_status(_execution_state, "llm_chat", "degraded" if new_reasons else "succeeded")
+
+
+def _raw_answer_from_documents(
     answer_context: DocumentAnswerContext,
     tier: str = "fast",
     timeout: Optional[float] = None,
@@ -1760,24 +1808,24 @@ def _answer_from_documents(
     if tier == "expert":
         fixed_prompt = (
             "你是知识库问答助手。生成回答时必须遵守："
-            "1. 仅基于检索到的知识库片段内容组织回答，不得引入片段之外的自身知识来补充、替换、“完善”或纠正片段内容。"
-            f"2. 如果检索片段不足以支撑对用户问题的可靠回答（内容不相关、信息不完整、或未检索到任何片段），必须明确说明“{source_policy.REFUSAL}”，不得展开缺少片段支持的具体内容替代。"
-            "3. 回答中涉及的来源、地区、机构等具体信息，必须与检索片段中实际出现的表述一致，不得替换为片段之外的其他来源、地区或版本的信息，即使自身知识认为更常见或更准确。"
-            "4. 如果检索片段本身存在来源、地区或版本歧义，应如实呈现片段内容并说明该片段的来源范围，不得自行判断替换为片段之外的其他来源信息。"
+            "1. 仅基于提供的知识库资料内容组织回答，不得引入资料之外的自身知识来补充、替换、“完善”或纠正资料内容。"
+            f"2. 如果资料不足以支撑对用户核心问题的可靠回答（内容不相关或没有资料），必须只输出“{source_policy.REFUSAL}”，不得展开缺少资料支持的具体内容替代；部分命中时只回答有依据的部分，不用自身知识补全。"
+            "3. 回答中涉及的来源、地区、机构等具体信息，必须与资料中实际出现的表述一致，不得替换为资料之外的其他来源、地区或版本的信息，即使自身知识认为更常见或更准确。"
+            "4. 如果资料本身存在来源、地区或版本歧义，应如实呈现资料内容并说明其来源范围，不得自行判断替换为资料之外的其他来源信息。"
             "不要在正文里写doc_id、chunk_index或score，来源引用由系统的citations字段单独展示。"
         )
     else:
         fixed_prompt = (
-            "你是知识库问答助手。请只根据给定文档片段回答用户问题。"
-            "不要编造文档片段之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
-            f"如果片段不足以回答，直接回答：{source_policy.REFUSAL}。"
+            "你是知识库问答助手。请只根据给定资料回答用户问题。"
+            "不要编造资料之外的信息，不要在正文里写来源、doc_id、chunk_index或score。"
+            f"如果资料不足以回答核心问题，只输出：{source_policy.REFUSAL}。部分命中不得用自身知识补全。"
         )
-    fixed_prompt = system_modules.prompt_prefix(fixed_prompt)
+    fixed_prompt = system_modules.prompt_prefix(fixed_prompt + source_policy.DOCUMENT_PRESENTATION_PROMPT)
     fixed_prompt += "\n\n" + CONVERSATION_FACTS_PROMPT
     fixed_prompt += source_policy.NO_SOURCE_NOTE_PROMPT
     dynamic_prompt = (
         f"用户问题：{_original_user_question(answer_context.query, _execution_state)}\n\n"
-        "文档片段：\n"
+        "文档资料：\n"
         + "\n\n".join(snippets)
     )
     if not claim_post_circuit_final_attempt(_execution_state):

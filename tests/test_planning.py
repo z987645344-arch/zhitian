@@ -618,7 +618,7 @@ def test_react_limit_forces_respond_with_notice(monkeypatch):
 
     assert decision["action"] == "respond"
     assert decision["limit_reached"] is True
-    assert "基于目前检索到的信息回答，可能不够全面" in state["response"]
+    assert "基于目前提供的资料回答，可能不够全面" in state["response"]
 
 
 def test_chat_intent_skips_reflect(monkeypatch):
@@ -781,7 +781,7 @@ def test_planning_exception_degrades_chat_and_skips_vector_memory(monkeypatch, c
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
-    assert response.json()["data"] == source_policy.REFUSAL
+    assert response.json()["data"] == source_policy.knowledge_refusal()
     planning.execution.run.assert_not_called()
     assert vector_write.call_count == 0
 
@@ -1129,7 +1129,7 @@ def test_fast_evidence_failure_sse_degraded_and_budget_fallback(
     else:
         assert len(calls) == 2
         assert citations == []
-        assert "未找到可靠依据，无法确认答案" in response.text
+        assert source_policy.knowledge_refusal() in response.text
 
 
 @pytest.mark.parametrize("raw", ["not-json", "{}", '{"used_candidate_ids": [1]}',
@@ -1142,6 +1142,7 @@ def test_fast_evidence_invalid_decision_is_failure(raw):
 def test_fast_document_generation_keeps_evidence_boundaries():
     prompt = planning.FAST_DOCUMENT_GENERATION_PROMPT
     assert "未找到可靠依据，无法确认答案" in prompt
-    assert "不得引入片段之外的自身知识来补充、替换或\"完善\"片段内容" in prompt
-    assert "片段信息不完整时，如实说明\"资料未详细说明\"，不要编造" in prompt
-    assert "如果片段与问题无关或无法支持核心问题" in prompt
+    assert "不得引入资料之外的自身知识来补充、替换或\"完善\"资料内容" in prompt
+    assert "部分命中不得用自身知识补全，不要编造" in prompt
+    assert "如果资料与问题无关或无法支持核心问题" in prompt
+    assert "问题已完整回答时，不追加未提及其他事项的说明" in prompt

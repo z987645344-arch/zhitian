@@ -766,6 +766,14 @@ button.danger-button:hover { border-color: var(--danger); background: var(--surf
 .source-summary { border-radius: var(--radius); }
 .chat-log-inner { max-width: 900px; }
 .bubble-body { font-size: 16px; line-height: 1.85; overflow-wrap: anywhere; }
+.bubble.assistant .bubble-body { white-space: normal; }
+.bubble-body p { margin: 0 0 .75em; }
+.bubble-body p:last-child { margin-bottom: 0; }
+.bubble-body h1, .bubble-body h2, .bubble-body h3, .bubble-body h4, .bubble-body h5, .bubble-body h6 { margin: .8em 0 .4em; font-size: 1.15em; line-height: 1.5; }
+.bubble-body ul, .bubble-body ol { margin: .5em 0; padding-left: 1.5em; }
+.bubble-body code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.bubble-body pre { max-width: 100%; overflow-x: auto; white-space: pre; padding: .8em; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-low); }
+.bubble-body pre code { overflow-wrap: normal; }
 .bubble.assistant { box-shadow: none; }
 .bubble-role { font-family: var(--font-mono); letter-spacing: .08em; }
 details.citations, details.execution-timeline { display: block; }

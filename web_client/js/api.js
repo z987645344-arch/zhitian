@@ -303,6 +303,7 @@ const API = (() => {
                 ? Number(payload.result_count)
                 : null,
               reason_code: String(payload.reason_code || ''),
+              occurrence: Number.isInteger(payload.occurrence) && payload.occurrence > 0 ? payload.occurrence : null,
             });
             continue;
           }

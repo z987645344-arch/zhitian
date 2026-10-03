@@ -103,8 +103,8 @@ def test_expert_document_answer_prompt_is_evidence_and_source_bound(monkeypatch)
     assert answer == "基于片段的回答"
     system_text = captured["messages"][0]["content"]
     user_text = captured["messages"][-1]["content"]
-    assert "仅基于检索到的知识库片段" in system_text
-    assert "不得替换为片段之外的其他来源、地区或版本的信息" in system_text
+    assert "仅基于提供的知识库资料" in system_text
+    assert "不得替换为资料之外的其他来源、地区或版本的信息" in system_text
     assert "未找到可靠依据，无法确认答案" in system_text
     assert "source=大陆法律资料.docx score=0.910000" in user_text
     assert captured["kwargs"]["tier"] == "fast"

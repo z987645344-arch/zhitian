@@ -198,7 +198,7 @@ def test_expert_real_graph_searches_knowledge_before_any_web(source, only, monke
         assert result["answer_source"] == "web"
         assert result["response"] == "联网资料回答"
     else:
-        assert result["response"] == policy.REFUSAL
+        assert result["response"] == policy.knowledge_refusal()
         no_external[0].assert_not_called()
         no_external[1].assert_not_called()
 
