@@ -3,6 +3,11 @@ name: Backend Container CI
 on:
   push:
   pull_request:
+  # UTC 周一 02:17 / 北京时间周一 10:17，避开整点拥堵；只运行默认分支。
+  # 公开仓库 60 天无活动时 GitHub 自动停用 schedule，维护者须定期确认仍启用。
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
+  schedule:
+    - cron: "17 2 * * 1"
 
 permissions:
   contents: read
@@ -12,6 +17,7 @@ env:
 
 jobs:
   build-and-scan:
+    if: github.event_name != 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -46,6 +52,8 @@ jobs:
           set -euo pipefail
           mkdir -p ci-reports
           docker buildx build \
+            --pull \
+            --no-cache \
             --load \
             --metadata-file ci-reports/build-metadata.json \
             --tag "${{ steps.image.outputs.version_tag }}" \
@@ -211,6 +219,13 @@ jobs:
           ignore-unfixed: false
           exit-code: "1"
           trivyignores: .trivyignore.yaml
+
+      - name: Check vulnerability exceptions against current unfiltered scan
+        if: always()
+        # 放在两次 Trivy 扫描之后，失效告警不能让扫描被跳过；失败不可忽略。
+        run: >-
+          python scripts/vulnerability_exceptions.py check-scan
+          --trivy-report-file ci-reports/trivy-image.json
 
       - name: Upload build and security reports
         if: always()
