@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import zipfile
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ import yaml
 
 from scripts import build_hnsw_wheel as build
 from scripts import check_python_base_digest as base
+from scripts import check_runtime_versions as runtime_versions
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -144,7 +146,13 @@ def test_docker_runtime_only_installs_verified_wheel():
     runtime = docker.split("AS runtime", 1)[1]
     assert "type=bind,from=hnsw-wheel" in runtime
     assert "build-verifier.py --verify" in runtime
+    wheel_install = next(line for line in runtime.splitlines()
+                         if "pip install" in line and "/wheels/chroma_hnswlib" in line)
+    assert "--no-deps" in wheel_install
     assert "pip check" in runtime
+    assert "COPY requirements.txt scripts/check_runtime_versions.py ./" in docker
+    assert runtime.index("-r requirements.txt") < runtime.index("pip check") < runtime.index(
+        "python check_runtime_versions.py") < runtime.index("uninstall --yes")
     assert "g++" not in runtime and "build-essential" not in runtime
     assert "uninstall --yes setuptools wheel pip" in runtime
 
@@ -161,6 +169,8 @@ def test_windows_ci_reuses_wheel(name):
     assert "--no-deps (Get-ChildItem hnsw-artifact/*.whl).FullName" in text
     install = next(s["run"] for s in job["steps"] if "--verify hnsw-artifact" in s.get("run", ""))
     lines = install.splitlines()
+    assert install.index("-r requirements.txt") < install.index("pip check") < install.index(
+        "scripts/check_runtime_versions.py")
     for position, line in enumerate(lines[:-1]):
         if line.strip().startswith(("python ", ".\\.venv\\Scripts\\python.exe ")):
             assert lines[position + 1].strip() == "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
@@ -170,6 +180,12 @@ def test_container_audit_uses_same_wheel_without_weakening_gate():
     text = (ROOT / ".github/workflows/container-ci.yml").read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
     steps = workflow["jobs"]["build-and-scan"]["steps"]
+    verify = next(step for step in steps if step["name"] == "Verify pinned runtime package versions")
+    assert "set -euo pipefail" in verify["run"]
+    assert "docker run --rm --network none --entrypoint python" in verify["run"]
+    assert "scripts/check_runtime_versions.py" in verify["run"]
+    assert not verify.get("continue-on-error", False) and "if" not in verify
+    assert next(i for i, step in enumerate(steps) if step["name"] == "Build version and commit tags") < steps.index(verify)
     assert 'python-version: "3.12"' in text
     assert "PIP_FIND_LINKS=" in text and "--target hnsw-export" in text
     scans = [s for s in steps if s.get("id") in ("pip_audit", "trivy_report", "trivy_gate")]
@@ -178,6 +194,62 @@ def test_container_audit_uses_same_wheel_without_weakening_gate():
     assert gate["with"]["severity"] == "HIGH,CRITICAL"
     assert gate["with"]["ignore-unfixed"] is False and gate["with"]["exit-code"] == "1"
     assert "check-outcomes" in text and "check-scan" in text
+
+
+def test_windows_wheel_build_checks_both_versions_before_runtime_probe():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/build-hnsw-wheel.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["wheel"]["steps"]
+    check = next(step["run"] for step in steps if "scripts/check_hnsw_runtime.py" in step.get("run", ""))
+    assert check.index("pip install --no-deps") < check.index("scripts/check_runtime_versions.py") < check.index(
+        "scripts/check_hnsw_runtime.py")
+    assert "python scripts/check_runtime_versions.py\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in check
+
+
+def test_local_install_docs_disable_wheel_dependency_resolution():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    instructions = (ROOT / "docs/hnsw_wheel_build.md").read_text(encoding="utf-8")
+    assert "pip install --no-deps (Join-Path" in readme
+    assert "scripts/check_runtime_versions.py" in readme
+    assert "pip install --no-deps <已核验的wheel路径>" in instructions
+    assert "scripts/check_runtime_versions.py" in instructions
+
+
+def test_runtime_version_pins_match_requirements():
+    assert runtime_versions.EXPECTED_VERSIONS == {"numpy": "1.26.4", "chroma-hnswlib": "0.7.3"}
+    assert "numpy==" + runtime_versions.EXPECTED_VERSIONS["numpy"] in (
+        ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+
+
+def test_installed_runtime_versions_are_pinned():
+    assert runtime_versions.verify_runtime_versions() == {"numpy": "1.26.4", "chroma-hnswlib": "0.7.3"}
+
+
+@pytest.mark.parametrize("versions, returncode, message", [
+    ({"numpy": "1.26.4", "chroma-hnswlib": "0.7.3"}, 0, "chroma-hnswlib==0.7.3"),
+    ({"numpy": "2.5.3", "chroma-hnswlib": "0.7.3"}, 1, "numpy=2.5.3; 必须为 1.26.4"),
+    ({"numpy": "1.26.4", "chroma-hnswlib": "0.7.4"}, 1, "chroma-hnswlib=0.7.4; 必须为 0.7.3"),
+    ({"numpy": None, "chroma-hnswlib": "0.7.3"}, 1, "运行依赖缺失: numpy"),
+    ({"numpy": "1.26.4", "chroma-hnswlib": None}, 1, "运行依赖缺失: chroma-hnswlib"),
+])
+def test_version_guard_rejects_wrong_or_missing_packages_with_nonzero_exit(versions, returncode, message):
+    # 用独立进程验证实际退出码；只替换元数据读取，不导入应用，不修改已安装包。
+    code = "\n".join([
+        "from scripts import check_runtime_versions as check",
+        f"versions = {versions!r}",
+        "def read(name):",
+        "    value = versions[name]",
+        "    if value is None:",
+        "        raise check.metadata.PackageNotFoundError(name)",
+        "    return value",
+        "check.metadata.version = read",
+        "raise SystemExit(check.main())",
+    ])
+    result = subprocess.run([sys.executable, "-X", "utf8", "-c", code], cwd=ROOT,
+                            capture_output=True, text=True, encoding="utf-8", timeout=10)
+    assert result.returncode == returncode
+    assert message in (result.stdout if returncode == 0 else result.stderr)
+    if returncode:
+        assert not result.stdout
 
 
 @pytest.mark.parametrize("version, accepted", [

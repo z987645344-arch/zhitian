@@ -8,13 +8,15 @@ Chroma 保持 `0.5.0`，其依赖 `chroma-hnswlib==0.7.3` 不升级。该版本�
 2. 等该运行成功，在页面底部 Artifacts 下载 `chroma-hnswlib-0.7.3-cp312-win_amd64`。也可用 `gh run download <运行编号> --name chroma-hnswlib-0.7.3-cp312-win_amd64 --dir <仓库外目录>`。记录运行编号和源码提交，不混用未知来源的构件。
 3. 解包后保留 wheel、Apache-2.0 `LICENSE`、`SHA256SUMS`、`build-manifest.json`、编译日志及核验脚本。使用经审核的仓库脚本验证：`python scripts/build_hnsw_wheel.py --verify <解包目录>`，它检查源码身份、wheel ABI/平台、许可证和清单里每个文件的 SHA-256。
 4. 可额外执行 PowerShell `Get-FileHash -Algorithm SHA256 <wheel文件>`，与 `SHA256SUMS` 的对应行逐字比较。清单与构件来自同一运行，校验能发现下载损坏，但不代替审核工作流及其源码。
-5. 用正式安装的 Python 3.12 创建项目 `.venv`，先安装这份已核验的 wheel，再安装 `requirements.txt` 及需要的开发/测试依赖，运行 `pip check`、`scripts/check_hnsw_runtime.py` 和权威回归。已有3.10环境时先记录包清单，将其改名为`.venv310`留作回退备份；不要覆盖旧环境，也不要把它纳入Git或镜像。部署完成、确认无需回退后再删除备份。
+5. 用正式安装的 Python 3.12 创建项目 `.venv`，先用 `python -m pip install --no-deps <已核验的wheel路径>` 安装构件，不让wheel自行解析并安装最新NumPy；再安装 `requirements.txt` 及需要的开发/测试依赖，运行 `pip check`、`scripts/check_runtime_versions.py`（必须为numpy 1.26.4、chroma-hnswlib 0.7.3）、`scripts/check_hnsw_runtime.py` 和权威回归，任一步失败即停止。已有3.10环境时先记录包清单，将其改名为`.venv310`留作回退备份；不要覆盖旧环境，也不要把它纳入Git或镜像。部署完成、确认无需回退后再删除备份。
 
 构件保留 90 天；过期后从同一经审核的源码重建并重新核验。不同编译器/构建时点的 wheel 二进制哈希可能不同，因此以对应那次运行的清单为准，不伪称跨构建逐字可复现。Windows 构建机上的持久化、读写、检索和删除冒烟测试必须通过后才上传构件。
 
 ## 镜像与定时更新
 
 Dockerfile 以具体 Python 补丁标签和多平台 manifest digest 锁定官方 slim trixie 基础镜像；hnsw 在独立阶段编译，运行阶段通过只读构建挂载安装 wheel，不复制编译器、源码或构建工具进运行层。`libgomp1` 是编译产物需要的 OpenMP 运行库，不是编译器。其他应用依赖仍由原 `requirements.txt` 锁定。
+
+运行阶段也用`--no-deps`安装hnsw wheel，随后由requirements统一解析应用依赖。在同一安装层卸载构建工具前核验最终numpy与hnsw版本；容器CI另对构建好的镜像复核，Windows CI与本机安装使用同一个核验脚本，版本不匹配或包缺失均失败，不允许先装上最新NumPy再降级。
 
 这里“不保留构建工具”指不带入编译阶段工具：运行层没有编译器、pip、setuptools、wheel或pybind11。Chroma 0.5.0自身声明的传递依赖`build>=1.0.3`仍保留（本轮新旧镜像均为1.6.1）；删除它会破坏原依赖组与pip check，不能在本轮顺手删掉。因此不能把本轮结果描述为运行层不存在任何构建相关的Python包。
 

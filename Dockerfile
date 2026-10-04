@@ -84,12 +84,13 @@ RUN apt-get update \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+COPY requirements.txt scripts/check_runtime_versions.py ./
 RUN --mount=type=bind,from=hnsw-wheel,source=/wheels,target=/wheels,ro \
     python /wheels/build-verifier.py --verify /wheels \
-    && python -m pip install --no-cache-dir /wheels/chroma_hnswlib-0.7.3-*.whl \
+    && python -m pip install --no-cache-dir --no-deps /wheels/chroma_hnswlib-0.7.3-*.whl \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip check \
+    && python check_runtime_versions.py \
     && python -m pip uninstall --yes setuptools wheel pip
 
 RUN groupadd --system appuser \

@@ -64,6 +64,14 @@ jobs:
             --tag "${{ steps.image.outputs.commit_tag }}" \
             .
 
+      - name: Verify pinned runtime package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --entrypoint python \
+            '${{ steps.image.outputs.version_tag }}' scripts/check_runtime_versions.py \
+            | tee ci-reports/runtime-package-versions.txt
+
       - name: Record image digest
         shell: bash
         run: |

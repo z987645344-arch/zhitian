@@ -106,6 +106,9 @@ if ($LASTEXITCODE -ne 0) { throw "hnsw 安装失败" }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
 .\.venv\Scripts\python.exe -m pip check
+if ($LASTEXITCODE -ne 0) { throw "依赖检查失败" }
+.\.venv\Scripts\python.exe scripts/check_runtime_versions.py
+if ($LASTEXITCODE -ne 0) { throw "最终运行依赖版本不匹配" }
 ```
 
 ### 3. 配置
