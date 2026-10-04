@@ -2,11 +2,14 @@
 """从校验过的官方源码构建可移植CP312 hnsw wheel，供Linux镜像和Windows CI共用。"""
 
 import argparse
+from email.parser import BytesParser
+from email.policy import compat32
 import hashlib
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -81,8 +84,15 @@ def verify_artifact(directory):
     if not wheel.name.endswith(("-win_amd64.whl", "-linux_x86_64.whl")):
         raise ValueError("构件不是受支持的x86-64平台")
     with zipfile.ZipFile(wheel) as archive:
-        metadata = archive.read("chroma_hnswlib-0.7.3.dist-info/METADATA").decode()
-        if "Version: 0.7.3\n" not in metadata or "Name: chroma-hnswlib\n" not in metadata:
+        # Core Metadata是email头格式；Windows构件使用CRLF，不能按LF子串找身份。
+        metadata = BytesParser(policy=compat32).parsebytes(
+            archive.read("chroma_hnswlib-0.7.3.dist-info/METADATA"), headersonly=True,
+        )
+        names = metadata.get_all("Name", [])
+        versions = metadata.get_all("Version", [])
+        # Name按PEP 503归一化；Version仍精确锁定0.7.3，缺失/重复头一律拒绝。
+        if (metadata.defects or len(names) != 1 or versions != ["0.7.3"]
+                or re.sub(r"[-_.]+", "-", names[0]).lower() != "chroma-hnswlib"):
             raise ValueError("wheel元数据身份不匹配")
     print("verified", wheel.name, digest(wheel))
     return wheel

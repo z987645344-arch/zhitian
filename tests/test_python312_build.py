@@ -17,11 +17,11 @@ from scripts import check_python_base_digest as base
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def artifact(tmp_path):
+def artifact(tmp_path, metadata_text="Name: chroma-hnswlib\nVersion: 0.7.3\n"):
     tmp_path.mkdir(parents=True, exist_ok=True)
     wheel = tmp_path / "chroma_hnswlib-0.7.3-cp312-cp312-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("chroma_hnswlib-0.7.3.dist-info/METADATA", "Name: chroma-hnswlib\nVersion: 0.7.3\n")
+        archive.writestr("chroma_hnswlib-0.7.3.dist-info/METADATA", metadata_text)
     (tmp_path / "LICENSE").write_text("Apache-2.0", encoding="utf-8")
     manifest = {"source_url": build.SOURCE_URL, "source_sha256": build.SOURCE_SHA256,
                 "no_native": True, "files": {p.name: build.digest(p) for p in tmp_path.iterdir()}}
@@ -33,6 +33,34 @@ def test_verified_artifact(tmp_path):
     directory = tmp_path / "artifact"
     wheel, _ = artifact(directory)
     assert build.verify_artifact(directory) == wheel
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"], ids=["LF", "CRLF"])
+@pytest.mark.parametrize("name", ["chroma-hnswlib", "chroma_hnswlib", "Chroma.Hnswlib", "CHROMA--HNSWLIB"])
+def test_metadata_accepts_platform_line_endings_and_normalized_name(tmp_path, line_ending, name):
+    directory = tmp_path / "artifact"
+    metadata_text = line_ending.join(["Metadata-Version: 2.4", "Name: " + name, "Version: 0.7.3", "", ""])
+    wheel, _ = artifact(directory, metadata_text)
+    assert build.verify_artifact(directory) == wheel
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"], ids=["LF", "CRLF"])
+@pytest.mark.parametrize("metadata_text", [
+    "Name: other-package\nVersion: 0.7.3\n",
+    "Name: chroma-hnswlib\nVersion: 0.7.4\n",
+    "Name: chroma-hnswlib\nVersion: 0.7.30\n",
+    "Version: 0.7.3\n",
+    "Name: chroma-hnswlib\n",
+    "Name: chroma-hnswlib\nName: other-package\nVersion: 0.7.3\n",
+    "Name: chroma-hnswlib\nVersion: 0.7.3\nVersion: 0.7.4\n",
+    "Name: other-package\nVersion: 0.7.4\n\nName: chroma-hnswlib\nVersion: 0.7.3\n",
+], ids=["wrong-name", "wrong-version", "version-prefix", "missing-name", "missing-version",
+        "duplicate-name", "duplicate-version", "identity-in-body"])
+def test_metadata_rejects_wrong_missing_or_ambiguous_identity(tmp_path, line_ending, metadata_text):
+    directory = tmp_path / "artifact"
+    artifact(directory, metadata_text.replace("\n", line_ending))
+    with pytest.raises(ValueError, match="wheel元数据身份不匹配"):
+        build.verify_artifact(directory)
 
 
 @pytest.mark.parametrize("fault", ["wheel", "license", "source", "portable", "escape"])

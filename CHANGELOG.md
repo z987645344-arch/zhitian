@@ -2306,3 +2306,10 @@
 - 测试入口过渡期只接受项目.venv的3.10或3.12，本机仍为3.10.11且未改包。新旧镜像以同一requirements重新构建，34项直接锁定版本全部一致；Python支持范围导致Deprecated 1.3.1→3.0.0、rpds-py 0.30.0→2026.6.3、websockets 16.1.1→17.2，移除仅旧Python需要的async-timeout 5.0.1、exceptiongroup 1.3.1、tomli 2.4.1。此比较不是生产镜像包清单核验。
 - 本机权威run_tests.bat -q实测1154 passed、5 deselected，新增构件身份、哈希、解包越界、可移植编译及CI接线测试19项；临时禁网3.12镜像中真实嵌入五项与新增十九项均通过，应用导入、就绪200及hnsw持久化读写检索删除通过，构建时data为空。转换探针回环请求1→0，正常DOCX/XLSX/PPTX转换文本哈希和切片数与旧镜像相同；pip-audit仅干跑解析152个包通过，不冒充漏洞扫描通过。默认data的16个文件大小、mtime及SHA-256前后差异0，模型及联网付费调用0。
 - 本轮不改VERSION、不推送、不打标、不部署，只能结论为本地通过；Windows 3.12构件实际构建、完整CI、漏洞扫描和例外失效检查须推送后核实，本机.venv迁移及版本守卫收紧留第三段。手动集成工作流既有Windows Office测试与Linux-only转换沙箱的不兼容未处理，不能声称该工作流已实跑通过。
+
+### 2026-10-04 hnsw 构件身份校验兼容 Windows 元数据行尾
+
+- 核对CI运行37182329233：Windows已成功编译CP312 wheel，但元数据自检失败，后续冒烟、上传及backend均被跳过，没有可下载的构件。以同版本setuptools 80.9.0在本机Windows的egg2dist元数据写入路径复现：Name仍为chroma-hnswlib、Version仍为0.7.3，行尾均为CRLF；旧LF子串判据真实失败，新验证器对同一份复现元数据通过，不冒充读取了该CI的二进制构件。
+- METADATA改用标准email BytesParser与compat32策略逐字段读取；Name按PEP 503归一化后必须等于chroma-hnswlib，Version仍精确等于0.7.3。缺失、重复字段和正文伪装身份均拒绝，源码身份、SHA-256、ABI/平台、许可证及可移植编译检查保持不变；不新增依赖，不改镜像、工作流或VERSION。
+- 新增24个确定性用例覆盖LF/CRLF、名称大小写及分隔符归一化、错误包名/版本、版本前缀、缺失/重复字段和正文伪装；构件测试在本机3.10与禁网临时3.12容器均43 passed。项目.venv的run_tests.bat -q实测1178 passed、5 deselected、既有Starlette警告1条，591.29秒；语法检查通过，默认data的16个文件大小、mtime与SHA-256差异0，本机.venv与指挥师文档未改，仓库外复现目录已清理。
+- 只本地提交，不推送、不打标、不部署，无付费调用；本轮远程CI尚未运行，必须推送后确认Windows wheel构建及Windows 3.12完整回归均通过，不能以本地复现替代该项验收。
