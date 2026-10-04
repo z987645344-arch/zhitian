@@ -2313,3 +2313,10 @@
 - METADATA改用标准email BytesParser与compat32策略逐字段读取；Name按PEP 503归一化后必须等于chroma-hnswlib，Version仍精确等于0.7.3。缺失、重复字段和正文伪装身份均拒绝，源码身份、SHA-256、ABI/平台、许可证及可移植编译检查保持不变；不新增依赖，不改镜像、工作流或VERSION。
 - 新增24个确定性用例覆盖LF/CRLF、名称大小写及分隔符归一化、错误包名/版本、版本前缀、缺失/重复字段和正文伪装；构件测试在本机3.10与禁网临时3.12容器均43 passed。项目.venv的run_tests.bat -q实测1178 passed、5 deselected、既有Starlette警告1条，591.29秒；语法检查通过，默认data的16个文件大小、mtime与SHA-256差异0，本机.venv与指挥师文档未改，仓库外复现目录已清理。
 - 只本地提交，不推送、不打标、不部署，无付费调用；本轮远程CI尚未运行，必须推送后确认Windows wheel构建及Windows 3.12完整回归均通过，不能以本地复现替代该项验收。
+
+### 2026-10-04 Windows MCP 超时显式清理整棵进程树
+
+- 在仓库外官方Windows Python 3.12.10临时环境复现：原版超时返回5秒后，测试子进程仍为STILL_ACTIVE，等待句柄未结束，命令行为测试休眠，父进程已退出；父子均属于SDK创建的Job，并非tasklist误报或Job绑定失败。同一mcp 1.28.1、pywin32 312下，AnyIO 4.14.2及4.15.1均复现；本机3.10.11对照无残留，不能把对象回收差异当作可靠清理机制。
+- Windows专用stdio路径复用SDK的进程与Job创建、MCP消息协议，在超时、外部取消和正常结束时屏蔽清理阶段的取消，显式终止Job并关闭句柄，再关闭transport；Job不可用时用隐藏窗口的taskkill /T /F结束整树，失败不静默放行。Linux仍走原SDK stdio_client，不改依赖、超时配置、接口或VERSION。
+- 新增7项确定性/真实进程回归：故意保留进程对象引用，验证超时、取消和正常结束均释放Job且父子进程结束；覆盖taskkill成功/失败、Job终止异常仍关闭句柄及非Windows仍用SDK。原超时测试的2秒调用预算、5秒等待与存活断言不变；独立Windows 3.12的MCP相关测试12 passed，语法检查及临时环境pip check通过。项目3.10的run_tests.bat -q为1185 passed、5 deselected、既有Starlette警告1条，565.66秒；默认data的16个文件大小、mtime和SHA-256前后差异0，项目.venv的181个包版本及指挥师文档均未改动，仓库外临时环境已清理。
+- 本轮零付费，只本地提交，不推送、不打标、不部署；推送后的Windows wheel构建和Windows 3.12完整回归尚未验证，不能用本机定向测试替代远程验收。
