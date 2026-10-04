@@ -210,7 +210,7 @@ docker version
 
 ## 9. Python 3.10语法兼容
 
-后端镜像固定Python 3.10。若构建或启动日志出现与`X | Y`类型注解有关的`SyntaxError`，这是源码使用了项目不支持的语法，不是Docker或LibreOffice故障。代码应使用`Optional`或`Union`，修正后重新构建并运行权威测试；不要通过在服务器上偷偷升级Python来绕过项目版本契约。
+后端镜像固定Python 3.10。Python 3.10已经支持PEP 604的`X | Y`联合类型语法，`int | str`也可在运行时求值。遇到相关报错时，先核对实际解释器版本、完整报错位置，以及操作数是否为类型或尚未定义的前向引用，不要直接认定联合类型语法不受支持。前向引用可使用字符串注解或`from __future__ import annotations`；不要通过在服务器上偷偷升级Python来绕过项目版本契约。
 
 已解决标准：Python 3.10下语法检查和权威回归通过，新镜像启动且`/api/ready`为200。
 

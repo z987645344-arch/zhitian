@@ -22,7 +22,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from tests.eval.run_eval import (
-    CallRecorder, EvalStopped, cleanup_runtime, snapshot_data, source_revision, write_json,
+    CallRecorder, EvalStopped, cleanup_runtime, is_project_venv, snapshot_data, source_revision, write_json,
 )
 
 
@@ -296,7 +296,7 @@ def replay_matrix(plan, comparison):
 
 def run(plan_path, output, comparison="on-off", max_calls=None):
     repo = Path(__file__).resolve().parents[2]
-    if Path(sys.executable).resolve() != (repo / ".venv/Scripts/python.exe").resolve():
+    if not is_project_venv(repo):
         raise EvalStopped("Use project .venv")
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     validate_plan(plan)

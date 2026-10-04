@@ -49,6 +49,20 @@ class EvalStopped(RuntimeError):
     """达到用户指定的停止条件；保留已有结果，不替换路径或重跑凑数据。"""
 
 
+def is_project_venv(repo):
+    """仅允许当前仓库的Windows/Linux虚拟环境，不接受其他venv或基础Python。
+
+    Linux的bin/python可以是符号链接；解释器路径不能resolve到基础Python
+    后再比较，否则直接使用基础Python也可能误过。另核对prefix以确认venv。
+    """
+    repo = Path(repo).resolve()
+    executable = os.path.normcase(os.path.abspath(sys.executable))
+    candidates = [repo / ".venv" / "Scripts" / "python.exe",
+                  repo / ".venv" / "bin" / "python"]
+    return (Path(sys.prefix).resolve() == (repo / ".venv").resolve()
+            and executable in {os.path.normcase(os.path.abspath(path)) for path in candidates})
+
+
 def select_questions(questions, ids=None):
     """按题/轮选择；多轮前置轮仍实际执行以建立历史，但不重复判卷计分。"""
     known = {item["id"]: item for item in questions}
@@ -762,7 +776,7 @@ def missing_timeout_judgements(completed, latest):
 def retry_missing_judgements(args):
     """仅补一次无返回的超时判卷；不重复答题、不修补无效JSON，沿用累计费用上限。"""
     repo = Path(__file__).resolve().parents[2]
-    if Path(sys.executable).resolve() != (repo / ".venv/Scripts/python.exe").resolve():
+    if not is_project_venv(repo):
         raise EvalStopped("Use project .venv Python")
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(repo))
@@ -857,7 +871,7 @@ def retry_missing_judgements(args):
 
 def run(args):
     repo = Path(__file__).resolve().parents[2]
-    if Path(sys.executable).resolve() != (repo / ".venv/Scripts/python.exe").resolve():
+    if not is_project_venv(repo):
         raise EvalStopped("Use project .venv Python")
     sys.dont_write_bytecode = True
     if str(repo) not in sys.path:

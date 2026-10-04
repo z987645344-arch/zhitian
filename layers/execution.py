@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_for_futures
 from contextvars import copy_context
 from typing import Callable, Literal, Optional, Union
 
@@ -1288,7 +1288,19 @@ def _run_conversion_with_agent_budget(
 
     future = executor.submit(_convert_with_admission)
     try:
-        return future.result(timeout=max(0.001, timeout_seconds))
+        done, _ = wait_for_futures([future], timeout=max(0.001, timeout_seconds))
+        if not done:
+            future.add_done_callback(_cleanup_late_conversion_result)
+            logger.warning(
+                "附件转换达到Agent预算：target_format=%s budget_ms=%s",
+                target_format,
+                int(max(0.0, timeout_seconds) * 1000),
+            )
+            return _agent_conversion_timeout(
+                os.path.splitext(source_path or "")[1].lstrip("."),
+                target_format,
+            )
+        return future.result()
     except heavy_task_limits.HeavyTaskRejected as exc:
         return converter.ConversionResult(
             success=False,
@@ -1297,17 +1309,6 @@ def _run_conversion_with_agent_budget(
             converted_to_format=target_format,
             error_type=exc.code,
             error_msg=exc.message,
-        )
-    except FutureTimeoutError:
-        future.add_done_callback(_cleanup_late_conversion_result)
-        logger.warning(
-            "附件转换达到Agent预算：target_format=%s budget_ms=%s",
-            target_format,
-            int(max(0.0, timeout_seconds) * 1000),
-        )
-        return _agent_conversion_timeout(
-            os.path.splitext(source_path or "")[1].lstrip("."),
-            target_format,
         )
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
@@ -1744,16 +1745,18 @@ def _open_llm_stream_with_first_content_timeout(
         daemon=True,
     )
     worker.start()
-    try:
-        return result.result(timeout=wait_seconds)
-    except FutureTimeoutError as exc:
+    # 依据Future是否完成区分墙钟超时与工作线程异常。Python 3.11起
+    # futures.TimeoutError是内置TimeoutError的别名，不能用except区分二者。
+    done, _ = wait_for_futures([result], timeout=wait_seconds)
+    if not done:
         cancelled.set()
         with holder_lock:
             response = response_holder["response"]
         llm_provider.close_stream(response)
         raise FirstContentTimeoutError(
             "llm first content timeout"
-        ) from exc
+        )
+    return result.result()
 
 
 def _answer_from_documents(

@@ -207,7 +207,7 @@
 | Docker Compose `env_file`插值 | 默认解析会把值中的`$...`当作变量引用，bcrypt哈希或未来外部凭据可能被误解析/截断；`format: raw`从Compose 2.30.0起可用 | 生产API的`env_file`必须使用`path + format: raw`长语法；部署前确认`docker compose version --short >= 2.30.0`，后端`.env`逐行采用不带引号的`KEY=value`。不得输出完整`docker compose config`，只用`--quiet`验证语法 |
 | JWT_SECRET_KEY | 不能用占位值 | 必须在 .env 配置随机强密钥 |
 | Codex 沙盒 PATH | 与本机不一致 | 运行时验证需用提权方式调 .venv\Scripts\python.exe |
-| Python 3.10 | 不支持 `X \| Y` 类型语法在运行时求值 | 用 `Optional` 或 `Union`，或加 `from __future__ import annotations` |
+| Python 3.10 | 已支持 PEP 604 的 `X \| Y` 联合类型语法及运行时求值 | 不要把联合类型误报为3.10不兼容；注解中的前向引用、非类型操作数仍须单独核对，必要时用字符串注解或 `from __future__ import annotations` |
 | LibreOffice 转换 | `.doc/.xls/.xlsx/.ppt/.pptx` 转换依赖本机 `soffice`，并采用进程级串行锁和默认 30 秒超时 | 复用 `layers/converter.py` 和 `LIBREOFFICE_PATH`，不得绕过锁、超时及临时文件清理 |
 | 聊天附件双生命周期 | 提取文本只在单进程内存中按 session 保存并默认 30 分钟过期；原始文件独立持久化到用户文件库 | 不要把文本 TTL 当成原始文件保留期，也不要把附件正文写入 SQLite、Chroma 或日志 |
 | MCP 外部子进程 | `mcp_connector.py` 当前仅支持 stdio；直接继承完整环境会污染子进程，Windows 仅终止直接子进程会留下进程树 | 使用安全环境白名单并默认排除 `PYTHONPATH`；超时或取消必须终止整棵进程树并真实检查无残留 |

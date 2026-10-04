@@ -15,7 +15,9 @@ langgraph==1.0.10
 langchain-core==1.5.3
 langsmith==0.10.15
 langgraph-checkpoint==4.1.1
-langgraph-prebuilt==1.0.13
+# 1.0.9起引用主包1.1.3才提供的ExecutionInfo；保持langgraph 1.0.10时
+# 必须配套1.0.8（主包声明的最低版本），pip check不会发现这类运行时不兼容。
+langgraph-prebuilt==1.0.8
 langgraph-sdk==0.3.15
 chromadb==0.5.0
 # F32：chromadb 0.5.0 声明 numpy>=1.22.5 无上界，干净环境会解析到 NumPy 2.x，
@@ -23,6 +25,8 @@ chromadb==0.5.0
 # 因元数据合法而无法发现。1.26.4 是 1.x 最后一个版本，且满足 onnxruntime>=1.21.6
 # 与 rank-bm25 的约束（openai 的 numpy>=2.0.2 仅属未安装的 voice-helpers extra）。
 numpy==1.26.4
+# 与最近容器CI及本机真实嵌入验证保持一致，避免升级Python时传递依赖漂移。
+onnxruntime==1.23.2
 # cryptography 50.0.0 修复 PKCS#7 解密漏洞；使用最新补丁 50.0.1。
 # 阿里云 DirectMail 传递依赖 tea-openapi，0.4.5 对 Python>=3.9 约束
 # cryptography<49，必须显式锁定 0.4.6 才能与 50.x 保持依赖一致。

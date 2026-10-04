@@ -26,7 +26,7 @@ import time
 _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-from tests.eval.run_eval import snapshot_data, source_revision
+from tests.eval.run_eval import is_project_venv, snapshot_data, source_revision
 from layers import retrieval_query
 
 THRESHOLDS = (.40, .45, .50, .55, .60)
@@ -339,7 +339,7 @@ def write_report(output, variants, metadata):
 
 def run(args):
     repo = Path(__file__).resolve().parents[2]
-    if Path(sys.executable).resolve() != (repo / ".venv/Scripts/python.exe").resolve():
+    if not is_project_venv(repo):
         raise RuntimeError("Use project .venv Python")
     sys.dont_write_bytecode = True
     output = Path(args.output or repo / "backups/eval" / ("recall-" + time.strftime("%Y%m%d-%H%M%S"))).resolve()

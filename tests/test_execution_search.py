@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 from unittest.mock import Mock
 
+import pytest
+
 from layers import execution, planning, source_policy, web_search_provider
 from layers.web_search_provider import SearchCandidate, WebSearchProvider
 
@@ -68,6 +70,31 @@ class FakeProvider(WebSearchProvider):
         if self.error:
             raise self.error
         return self.result
+
+
+def test_model_builtin_timeout_is_not_first_content_deadline(monkeypatch):
+    # 在3.10也直接抛内置TimeoutError，不依赖futures异常是否是别名。
+    model_error = TimeoutError("model request timed out")
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", Mock(side_effect=model_error))
+    with pytest.raises(TimeoutError) as caught:
+        execution._open_llm_stream_with_first_content_timeout([], "fast", 1, 1, "文档回答")
+    assert caught.value is model_error
+    assert not isinstance(caught.value, execution.FirstContentTimeoutError)
+
+
+def test_waiting_for_first_content_raises_explicit_project_timeout(monkeypatch):
+    response = ReasoningOnlyStream()
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", Mock(return_value=response))
+    with pytest.raises(execution.FirstContentTimeoutError):
+        execution._open_llm_stream_with_first_content_timeout([], "fast", 1, .05, "文档回答")
+    assert response.closed.wait(.5)
+
+
+def test_conversion_worker_builtin_timeout_is_not_agent_deadline():
+    def convert(*_args):
+        raise TimeoutError("converter failed internally")
+    with pytest.raises(TimeoutError, match="converter failed internally"):
+        execution._run_conversion_with_agent_budget(convert, "test.docx", "pdf", 1)
 
 
 def test_expert_document_answer_prompt_is_evidence_and_source_bound(monkeypatch):
