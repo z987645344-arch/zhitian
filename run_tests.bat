@@ -8,9 +8,9 @@ if not exist "%PY%" (
     exit /b 1
 )
 
-"%PY%" -c "import sys; sys.exit(0 if sys.version_info[:2] in ((3, 10), (3, 12)) else 1)"
+"%PY%" -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)"
 if errorlevel 1 (
-    echo Python 3.10 or 3.12 venv is required during migration. The current interpreter version does not match. 1>&2
+    echo Python 3.12 project venv is required. The current interpreter version does not match. 1>&2
     exit /b 1
 )
 

@@ -23,7 +23,7 @@
 zhitian/
 ├── main.py                     FastAPI入口、认证依赖、核心HTTP/SSE契约
 ├── config.py                   环境变量与运行参数
-├── requirements.txt            Python 3.10精确依赖
+├── requirements.txt            Python 3.12精确依赖
 ├── Dockerfile                  非root生产镜像、LibreOffice、中文字体、嵌入资产
 ├── VERSION                     应用版本唯一来源（OpenAPI与根路由读取）
 ├── layers/
@@ -74,7 +74,7 @@ zhitian/
 
 | 类别 | 当前实现 |
 |------|----------|
-| 运行时 | Python 3.10、FastAPI 0.141.1、Starlette 1.4.1、Uvicorn 0.51.0 |
+| 运行时 | Python 3.12、FastAPI 0.141.1、Starlette 1.4.1、Uvicorn 0.51.0 |
 | 模型编排 | DeepSeek兼容API、LangGraph 1.0.10、langchain-core 1.5.3 |
 | 结构化边界 | Pydantic 2.13.4 |
 | 权威关系数据 | SQLite：`users.db`、`history.db`、`files.db` |
@@ -83,9 +83,10 @@ zhitian/
 | 中文嵌入 | `BAAI/bge-small-zh-v1.5`自研ONNX运行路径，512维 |
 | 文档处理 | pdfplumber、pypdf、python-docx、openpyxl、python-pptx、PyMuPDF、LibreOffice headless |
 | 外部能力 | Tavily联网搜索、阿里云DirectMail、stdio MCP连接基础设施 |
-| 部署 | Python 3.10 slim非root镜像；独立部署仓库编排API、两套静态站点和反向代理 |
+| 部署 | Python 3.12 slim trixie非root镜像（补丁标签与digest锁定）；独立部署仓库编排API、两套静态站点和反向代理 |
 
 所有直接Python依赖以`requirements.txt`为准。嵌入资产的来源、许可、哈希和升级流程见`docs/embedding_model_asset.md`。
+Chroma保持0.5.0、hnsw保持0.7.3；Windows项目环境先安装本仓库CI核验的CP312 wheel，获取与SHA-256核验见`docs/hnsw_wheel_build.md`，再安装requirements并运行`pip check`。
 
 ## 四、请求数据流
 

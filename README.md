@@ -1,7 +1,7 @@
 # 知天 Agent Platform
 
 [![CI](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml/badge.svg)](https://github.com/z987645344-arch/zhitian/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.141.1-009688?logo=fastapi&logoColor=white)
 ![Release](https://img.shields.io/badge/release-v3.4-B87333)
 
@@ -82,7 +82,7 @@ flowchart LR
 ### 1. 环境
 
 - Windows 10/11
-- Python 3.10
+- Python 3.12（Windows x64）
 - LibreOffice（Office/PDF 转换需要）
 - DeepSeek API Key；联网搜索另需 Tavily API Key
 - 阿里云 DirectMail AccessKey（可选，仅邮箱验证码功能需要）
@@ -92,8 +92,20 @@ flowchart LR
 ```powershell
 git clone https://github.com/z987645344-arch/zhitian.git
 cd zhitian
-py -3.10 -m venv .venv
+py -3.12 -m venv .venv
+```
+
+先按 [hnsw wheel 构建与核验](docs/hnsw_wheel_build.md) 从本仓库经审核的成功 CI 下载 Windows CP312 构件，保留许可证并核对 SHA-256。Chroma 仍为 0.5.0；不要让 pip 在本机临时编译或使用其他来源的 hnsw wheel。
+
+```powershell
+$hnswArtifactDir = "填写仓库外的构件解包目录"
+.\.venv\Scripts\python.exe scripts/build_hnsw_wheel.py --verify "$hnswArtifactDir"
+if ($LASTEXITCODE -ne 0) { throw "hnsw 构件核验失败，停止安装" }
+.\.venv\Scripts\python.exe -m pip install --no-deps (Join-Path $hnswArtifactDir "chroma_hnswlib-0.7.3-cp312-cp312-win_amd64.whl")
+if ($LASTEXITCODE -ne 0) { throw "hnsw 安装失败" }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
+.\.venv\Scripts\python.exe -m pip check
 ```
 
 ### 3. 配置
@@ -136,7 +148,7 @@ Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口�
 脚本默认排除`integration`标记；需要单独运行真实集成测试时使用
 `.\run_tests.bat -m integration`。不要直接调用`python -m pytest`，也不要使用
 “系统Python + `.venv` site-packages”的替代方式；测试收集阶段会校验解释器必须是
-项目`.venv`中的Python 3.10，避免MCP子进程环境隔离产生假性失败。
+项目`.venv`中的Python 3.12，避免MCP子进程环境隔离产生假性失败；外部stdio MCP也应显式使用这份解释器。
 
 ## 推荐评审路径
 

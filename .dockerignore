@@ -4,6 +4,7 @@ data/
 backups/
 .zhitian-restore-*/
 .venv/
+.venv310/
 .git/
 **/__pycache__/
 *.pyc

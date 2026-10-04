@@ -208,11 +208,13 @@ docker version
 
 已解决标准：同一用户上下文能稳定执行Docker/Compose和项目Python版本检查，后续验证记录明确命令身份与路径。
 
-## 9. Python 3.10语法兼容
+## 9. Python 3.12环境与语法兼容
 
-后端镜像固定Python 3.10。Python 3.10已经支持PEP 604的`X | Y`联合类型语法，`int | str`也可在运行时求值。遇到相关报错时，先核对实际解释器版本、完整报错位置，以及操作数是否为类型或尚未定义的前向引用，不要直接认定联合类型语法不受支持。前向引用可使用字符串注解或`from __future__ import annotations`；不要通过在服务器上偷偷升级Python来绕过项目版本契约。
+后端镜像、CI和项目`.venv`统一使用Python 3.12，权威回归不再接受旧解释器。Python 3.12支持PEP 604的`X | Y`联合类型语法，`int | str`也可在运行时求值。遇到相关报错时，先核对实际解释器版本、完整报错位置，以及操作数是否为类型或尚未定义的前向引用，不要直接认定联合类型语法不受支持。前向引用可使用字符串注解或`from __future__ import annotations`；不要通过在服务器上偷偷升级Python来绕过项目版本契约。
 
-已解决标准：Python 3.10下语法检查和权威回归通过，新镜像启动且`/api/ready`为200。
+Windows重建`.venv`时，先按[hnsw构件说明](hnsw_wheel_build.md)取得本仓库经审核的CI CP312 wheel，保留许可证，核对SHA-256并运行验证器，再安装wheel与requirements、运行`pip check`。旧`.venv310`只作回退备份，不进入Git或Docker构建上下文；部署确认无需回退后再由维护者删除。
+
+已解决标准：Python 3.12下语法检查和`run_tests.bat -q`通过，真实嵌入与隔离召回对比通过；镜像启动及`/api/ready`的现场结论由部署方另行核验。
 
 ## 10. 何时停止操作并回滚
 

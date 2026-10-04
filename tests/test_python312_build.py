@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """Python迁移的供应链、可移植构件与CI接线的零付费回归。"""
 
+import ast
 import io
 import json
 from pathlib import Path
 import subprocess
 import tarfile
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -178,7 +180,27 @@ def test_container_audit_uses_same_wheel_without_weakening_gate():
     assert "check-outcomes" in text and "check-scan" in text
 
 
-def test_transition_guard_accepts_only310_and312():
-    for name in ("run_tests.bat", "tests/conftest.py"):
-        text = (ROOT / name).read_text(encoding="utf-8")
-        assert "in ((3, 10), (3, 12))" in text
+@pytest.mark.parametrize("version, accepted", [
+    ((3, 10, 11), False), ((3, 11, 9), False), ((3, 12, 10), True),
+    ((3, 12, 15), True), ((3, 13, 0), False), ((3, 14, 0), False),
+])
+def test_project_guard_accepts_only312(version, accepted):
+    batch = (ROOT / "run_tests.bat").read_text(encoding="utf-8")
+    expression = next(line.split(' -c "', 1)[1].rstrip('"')
+                      for line in batch.splitlines() if ' -c "' in line)
+    calls = []
+    interpreter = SimpleNamespace(version_info=version, executable="project/.venv/Scripts/python.exe",
+                                  exit=calls.append)
+    # 对真实入口的条件求值，不加载会初始化应用的conftest。
+    exec(expression.replace("import sys; ", ""), {"sys": interpreter})
+    assert calls == [0 if accepted else 1]
+    tree = ast.parse((ROOT / "tests/conftest.py").read_text(encoding="utf-8"))
+    guard = next(node for node in tree.body if isinstance(node, ast.Assert))
+    value = eval(compile(ast.Expression(guard.test), "conftest-version-guard", "eval"),
+                 {"sys": interpreter, "_py": Path(interpreter.executable)})
+    assert value is accepted
+
+
+def test_rollback_environment_cannot_enter_git_or_image():
+    for name in (".gitignore", ".dockerignore"):
+        assert ".venv310/" in (ROOT / name).read_text(encoding="utf-8").splitlines()

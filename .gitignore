@@ -2,6 +2,7 @@
 .env.*
 !.env*.example
 .venv/
+.venv310/
 __pycache__/
 data/
 backups/

@@ -19,8 +19,8 @@ elif __name__ == "tests.conftest":
     sys.modules.setdefault("conftest", sys.modules[__name__])
 
 _py = pathlib.Path(sys.executable)
-assert ".venv" in str(_py).lower() and sys.version_info[:2] in ((3, 10), (3, 12)), (
-    f"迁移期必须使用项目 .venv 的 Python 3.10 或 3.12 运行测试，当前解释器为 {sys.executable} "
+assert ".venv" in str(_py).lower() and sys.version_info[:2] == (3, 12), (
+    f"必须使用项目 .venv 的 Python 3.12 运行测试，当前解释器为 {sys.executable} "
     f"（版本 {sys.version_info[:2]}）。请使用根目录 run_tests.bat，不要直接调用 python -m pytest。"
 )
 
