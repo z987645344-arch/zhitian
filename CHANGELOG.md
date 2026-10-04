@@ -2298,3 +2298,11 @@
 - langgraph保持1.0.10，必需子包prebuilt锁定配套1.0.8；1.0.9及之后的已检查版本引用主包尚无的ExecutionInfo。仅重装本机prebuilt修复模块文件缺失，181个分发包中只有它由1.0.13改为1.0.8，pip check与真实模块导入通过。ONNX Runtime锁定1.23.2，与最新容器CI运行37176046159及本机一致，不调整本机ONNX或Chroma 0.5.0。
 - 三个评测脚本共用Windows/Linux项目虚拟环境守卫，核验解释器路径和prefix，不因Linux符号链接误放行基础解释器；新增路径、异常归因及prebuilt真实导入回归。手册和排障文档更正Python 3.10已支持PEP 604联合类型的说明，其他Python版本记录不动。
 - 项目Python 3.10虚拟环境的run_tests.bat -q实测1135 passed、5 deselected、既有Starlette警告1条，349.53秒，含真实嵌入五项；相关149项在本机3.10与临时Linux 3.12环境均通过。干净3.10和3.12容器安装同一依赖组后pip check及prebuilt实际导入通过；仅临时源码副本的测试版本守卫适配3.12，仓库与本机仍为3.10。默认数据16个文件的大小、mtime与SHA-256前后差异0，模型及联网付费调用为零；不改VERSION、不推送、不打标，不能据此视为后续Python升级或生产部署完成。
+
+### 2026-10-04 Python 3.12 镜像与 CI 使用可移植 hnsw 构件
+
+- 基础镜像锁定官方python:3.12.15-slim-trixie及manifest digest；Chroma保持0.5.0，hnsw保持0.7.3。独立构建阶段校验PyPI官方源码SHA-256，以HNSWLIB_NO_NATIVE和通用x86-64参数编译wheel；运行阶段只读挂载、核验并安装构件，保留OpenMP运行库，不保留编译器、pip、setuptools、wheel或pybind11，原apt-get upgrade继续执行。Chroma原有的build传递依赖保留，新旧均为1.6.1；这里不宣称运行层不存在任何构建相关包。
+- 三个CI工作流改用Python 3.12；新增可复用及手动触发的Windows CP312构建工作流，随wheel保留Apache-2.0许可证、编译日志、来源清单和SHA-256，持久化读写与检索冒烟通过后才上传。Windows安装步骤逐项检查退出码，核验失败不得继续安装；容器pip-audit解析使用同一Linux构件，requirements和三扫描输入、严重级别及例外规则均不改。每周扫描只读检查官方补丁标签digest，变化或暂不可核实时发notice，不自动更新；下载、核验与第三段迁移步骤见docs/hnsw_wheel_build.md。
+- 测试入口过渡期只接受项目.venv的3.10或3.12，本机仍为3.10.11且未改包。新旧镜像以同一requirements重新构建，34项直接锁定版本全部一致；Python支持范围导致Deprecated 1.3.1→3.0.0、rpds-py 0.30.0→2026.6.3、websockets 16.1.1→17.2，移除仅旧Python需要的async-timeout 5.0.1、exceptiongroup 1.3.1、tomli 2.4.1。此比较不是生产镜像包清单核验。
+- 本机权威run_tests.bat -q实测1154 passed、5 deselected，新增构件身份、哈希、解包越界、可移植编译及CI接线测试19项；临时禁网3.12镜像中真实嵌入五项与新增十九项均通过，应用导入、就绪200及hnsw持久化读写检索删除通过，构建时data为空。转换探针回环请求1→0，正常DOCX/XLSX/PPTX转换文本哈希和切片数与旧镜像相同；pip-audit仅干跑解析152个包通过，不冒充漏洞扫描通过。默认data的16个文件大小、mtime及SHA-256前后差异0，模型及联网付费调用0。
+- 本轮不改VERSION、不推送、不打标、不部署，只能结论为本地通过；Windows 3.12构件实际构建、完整CI、漏洞扫描和例外失效检查须推送后核实，本机.venv迁移及版本守卫收紧留第三段。手动集成工作流既有Windows Office测试与Linux-only转换沙箱的不兼容未处理，不能声称该工作流已实跑通过。

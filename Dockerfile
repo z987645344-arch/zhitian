@@ -12,7 +12,7 @@
 # 资产tag。许可链与原方案一致——仍是我们自己从MIT原仓库导出，不取用未声明
 # license的第三方ONNX镜像仓库。
 #
-# 用Python而不是curl/wget下载：python:3.10-slim**不自带curl也不自带wget**
+# 用Python而不是curl/wget下载：官方slim镜像不自带这些下载工具
 # （实测），装它们要多一次到Debian源的网络往返——而本次改造的目的正是减少
 # 构建期网络依赖，为下载工具再引入一个下载步骤是自相矛盾的。该镜像自带
 # tar/sha256sum/gzip，且Python本身就在，足够完成下载、校验与解包。
@@ -20,7 +20,8 @@
 # 构建期出网目标由download.pytorch.org换成github.com（下载会重定向到
 # GitHub的资产CDN），受限网络需相应放行。
 # ---------------------------------------------------------------------------
-FROM python:3.10-slim AS model-fetch
+ARG PYTHON_BASE=python:3.12.15-slim-trixie@sha256:29113dcae7aad06daa8e95260fa09f27d62be33b9687ea3774f771d601a02256
+FROM ${PYTHON_BASE} AS model-fetch
 
 ARG MODEL_ASSET_URL=https://github.com/z987645344-arch/zhitian/releases/download/embedding-model-bge-small-zh-v1.5-v1/bge-small-zh-v1.5-onnx.tar.gz
 ARG MODEL_ASSET_SHA256=c05ddb2b56dd0f869d3c4c8a3401ae0b8b017d80e39cc0c8211d197efa9ea32d
@@ -43,9 +44,23 @@ RUN for attempt in 1 2 3; do \
 
 
 # ---------------------------------------------------------------------------
-# 阶段二：运行镜像
+# 阶段二：可移植hnsw wheel；阶段三：只安装wheel的运行镜像
 # ---------------------------------------------------------------------------
-FROM python:3.10-slim
+# CP312没有0.7.3官方wheel；只在构建阶段编译，禁止宿主专属指令集。
+FROM ${PYTHON_BASE} AS hnsw-wheel
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_hnsw_wheel.py ./
+RUN python -m pip install --no-cache-dir setuptools==80.9.0 wheel==0.46.2 pybind11==3.0.1 numpy==1.26.4 \
+    && python build_hnsw_wheel.py --output /wheels
+
+# CI的pip-audit解析同一源码依赖时使用这份wheel，不另行编译或改扫描输入。
+FROM scratch AS hnsw-export
+COPY --from=hnsw-wheel /wheels/ /
+
+FROM ${PYTHON_BASE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -62,6 +77,7 @@ RUN apt-get update \
         fontconfig \
         fonts-noto-cjk \
         libseccomp2 \
+        libgomp1 \
         libreoffice-calc-nogui \
         libreoffice-impress-nogui \
         libreoffice-writer-nogui \
@@ -69,7 +85,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN python -m pip install --no-cache-dir -r requirements.txt \
+RUN --mount=type=bind,from=hnsw-wheel,source=/wheels,target=/wheels,ro \
+    python /wheels/build-verifier.py --verify /wheels \
+    && python -m pip install --no-cache-dir /wheels/chroma_hnswlib-0.7.3-*.whl \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip check \
     && python -m pip uninstall --yes setuptools wheel pip
 
 RUN groupadd --system appuser \
