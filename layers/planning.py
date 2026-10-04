@@ -106,6 +106,8 @@ class AgentState(TypedDict):
     complex_deadline: float
     stream_prepared: bool
     stream_document_answer: bool
+    section_neighbor_count: int
+    final_document_answer_context: execution.DocumentAnswerContext
     external_content_tainted: bool
     deepseek_circuit_open: bool
     post_circuit_final_attempted: bool
@@ -764,6 +766,10 @@ def respond_node(state: AgentState) -> AgentState:
 
     latest_result = state["results"][-1]
     base_response = latest_result.data
+    if (latest_result.tool == "search_documents" and latest_result.document_answer_context is not None
+            and (latest_result.metadata or {}).get("document_answer_deferred")):
+        execution.prepare_document_answer_context(latest_result.document_answer_context, state)
+        latest_result.citations = execution.document_answer_citations(latest_result.document_answer_context)
     state["citations"] = _dedupe_citations(latest_result.citations or [])
     if (
         latest_result.tool == "search_documents"
@@ -1101,6 +1107,9 @@ def _run_fast_state(state: AgentState) -> AgentState:
                     task.tool,
                 )
                 return state
+            selected_evidence, selected_citations = execution.prepare_fast_document_evidence(
+                result, selected_evidence, selected_citations, state,
+            )
             state["citations"] = selected_citations
 
         response_started_at = time.perf_counter()
@@ -1982,7 +1991,7 @@ def _summarize_results_for_reflection(results: list[ToolResult]) -> list[dict]:
             "data_preview": str(result.data or "")[:500],
             "error_type": "tool_error" if result.status == "error" else "",
             "citation_count": len(citations),
-            "citation_scores": [round(float(item.score), 6) for item in citations[:5]]
+            "citation_scores": [round(float(item.score), 6) if item.score is not None else None for item in citations[:5]]
         })
     return summary
 

@@ -317,7 +317,8 @@ def test_convertible_upload_converts_and_cleans_temp_files(
         os.makedirs(output_dir)
         output_path = os.path.join(output_dir, "converted.%s" % requested_format)
         with open(output_path, "wb") as output:
-            output.write(b"converted")
+            # 新入库流程会读取可选DOCX标题样式，转换桩也必须输出合法DOCX。
+            output.write(_docx_bytes() if requested_format == "docx" else b"converted")
         return converter.ConversionResult(
             success=True,
             status=converter.ConversionStatus.SUCCESS,

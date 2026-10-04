@@ -38,7 +38,7 @@ class Citation(BaseModel):
     source: str
     doc_id: str
     chunk_index: int
-    score: float
+    score: Optional[float] = None
 
 
 class DocumentAnswerCandidate(BaseModel):
@@ -46,9 +46,10 @@ class DocumentAnswerCandidate(BaseModel):
 
     content: str
     source: str
-    score: float
+    score: Optional[float] = None
     doc_id: str = ""
     chunk_index: int = 0
+    section_neighbor: bool = False
 
 
 class DocumentAnswerContext(BaseModel):
@@ -57,6 +58,66 @@ class DocumentAnswerContext(BaseModel):
     query: str
     tier: str
     candidates: list[DocumentAnswerCandidate] = Field(default_factory=list)
+    allowed_doc_ids: list[str] = Field(default_factory=list)
+    neighbors_prepared: bool = False
+
+
+def prepare_document_answer_context(context: DocumentAnswerContext,
+                                    state: Optional[dict]) -> DocumentAnswerContext:
+    """最终生成前才补同节邻段；请求共用上限，资料范围只可收紧。
+
+    可选元数据缺失时不推测小节。补取不参与精排、强弱证据判定或筛选，
+    无相关度分数；已核验权限与最初检索范围取交集，避免扩大文档范围。
+    """
+    if context.neighbors_prepared:
+        return context
+    context.neighbors_prepared = True
+    # 没有请求状态就无法保证整次请求上限，不补取。
+    remaining = max(0, config.RAG_SECTION_NEIGHBOR_MAX - (state or {}).get("section_neighbor_count", 0))
+    if state is None or not remaining or not context.allowed_doc_ids:
+        return context
+    try:
+        verified = set(auth.get_verified_doc_ids())
+        allowed = [doc_id for doc_id in context.allowed_doc_ids if doc_id in verified]
+        neighbors = memory.get_document_section_neighbors(
+            [(item.doc_id, item.chunk_index) for item in context.candidates], allowed, remaining,
+        )
+    except Exception as exc:
+        logger.warning("同节邻段补取失败：error_type=%s", type(exc).__name__)
+        return context
+    context.candidates.extend(DocumentAnswerCandidate(
+        content=item.content, source=item.source, doc_id=item.doc_id,
+        chunk_index=item.chunk_index, section_neighbor=True,
+    ) for item in neighbors)
+    state["section_neighbor_count"] = state.get("section_neighbor_count", 0) + len(neighbors)
+    return context
+
+
+def document_answer_citations(context: DocumentAnswerContext) -> list[Citation]:
+    return [Citation(source=item.source, doc_id=item.doc_id, chunk_index=item.chunk_index,
+                     score=item.score) for item in context.candidates]
+
+
+def prepare_fast_document_evidence(result: "ToolResult", evidence: str,
+                                   citations: list[Citation], state: dict) -> tuple[str, list[Citation]]:
+    """只扩展已选中的资料，保留筛选编号/正文和原顺序，不改变筛选输入。"""
+    if result.document_answer_context is None:
+        return evidence, citations
+    selected = {(item.doc_id, item.chunk_index) for item in citations}
+    original = result.document_answer_context
+    final_context = DocumentAnswerContext(
+        query=original.query, tier=original.tier, allowed_doc_ids=original.allowed_doc_ids,
+        candidates=[item.model_copy() for item in original.candidates
+                    if (item.doc_id, item.chunk_index) in selected],
+    )
+    prepare_document_answer_context(final_context, state)
+    added = [item for item in final_context.candidates if item.section_neighbor]
+    next_index = max((int(n) for n in re.findall(r"(?m)^\[(\d+)\]", evidence)), default=0) + 1
+    for index, item in enumerate(added, next_index):
+        evidence += f"\n\n[{index}] {item.content}"
+        citations.append(Citation(source=item.source, doc_id=item.doc_id, chunk_index=item.chunk_index))
+    state["final_document_answer_context"] = final_context
+    return evidence, citations
 
 
 CONVERSATION_FACTS_PROMPT = (
@@ -960,6 +1021,7 @@ def _search_documents(
     document_answer_context = DocumentAnswerContext(
         query=query,
         tier=tier,
+        allowed_doc_ids=list(verified_doc_ids),
         candidates=[
             DocumentAnswerCandidate(
                 content=str(item.get("content", "")),
@@ -994,6 +1056,8 @@ def _search_documents(
         answer = context_result.data
         citations = context_result.citations
     elif generate_answer and not defer_document_answer:
+        prepare_document_answer_context(document_answer_context, _execution_state)
+        citations = document_answer_citations(document_answer_context)
         answer = "".join(_answer_from_documents(
             document_answer_context,
             tier=tier,
@@ -1797,14 +1861,8 @@ def _raw_answer_from_documents(
     for index, item in enumerate(answer_context.candidates, start=1):
         content = item.content.strip()
         if content:
-            snippets.append(
-                "[%s] source=%s score=%.6f\n%s" % (
-                    index,
-                    item.source,
-                    item.score,
-                    content,
-                )
-            )
+            score_label = f" score={item.score:.6f}" if item.score is not None else " section_neighbor=true"
+            snippets.append(f"[{index}] source={item.source}{score_label}\n{content}")
     if not snippets:
         yield source_policy.REFUSAL
         return

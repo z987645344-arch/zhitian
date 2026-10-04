@@ -21,7 +21,7 @@ from chromadb.api.client import SharedSystemClient
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 import config
-from layers import chroma_sync, db_schema_version, embedding, llm_provider, retrieval_query
+from layers import chroma_sync, db_schema_version, embedding, llm_provider, retrieval_query, document_sections
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages
@@ -36,6 +36,15 @@ class SearchDiagnostics(BaseModel):
     rerank_timed_out: bool = False
     rerank_succeeded: bool = False
     rerank_error_kind: Optional[str] = None
+
+
+class DocumentSectionNeighbor(BaseModel):
+    """未打分的同节邻段；只用于最终生成，不进入召回或精排。"""
+
+    content: str
+    source: str
+    doc_id: str
+    chunk_index: int
 
 
 COLLECTION_NAME = "zhitian_memory"
@@ -564,6 +573,7 @@ def save_document(
     converted_from: str = "",
     organization_id: Optional[int] = None,
     on_batch_written: Optional[Callable[[int, int], None]] = None,
+    chunk_section_paths: Optional[list[str]] = None,
 ) -> int:
     """将文档切片写入独立Chroma Collection。
 
@@ -582,6 +592,9 @@ def save_document(
         return 0
 
     total_chunks = len(clean_chunks)
+    if chunk_section_paths is not None and len(chunk_section_paths) != len(chunks):
+        raise ValueError("小节元数据与切片数量不一致")
+    section_paths = [value for chunk, value in zip(chunks, chunk_section_paths or [""] * len(chunks)) if chunk]
     uploaded_at = utc_now_naive().isoformat()
     with _chroma_lock:
         collection = _get_document_collection()
@@ -598,6 +611,7 @@ def save_document(
                         "total_chunks": total_chunks,
                         "uploaded_at": uploaded_at,
                         "organization_id": organization_id if organization_id else 0,
+                        **({"section_paths": section_paths[i]} if section_paths[i] else {}),
                     }
                     for i in range(start, end)
                 ],
@@ -615,6 +629,49 @@ def save_document(
     if config.GRAPH_RAG_ENABLED:
         _build_document_graph(doc_id, clean_chunks)
     return total_chunks
+
+
+def get_document_section_neighbors(chunk_keys: list[tuple[str, int]],
+                                   allowed_doc_ids: list[str], limit: int) -> list[DocumentSectionNeighbor]:
+    """同文档、同叶子小节、±1，按种子顺序追加；旧字段缺失时不补。"""
+    if limit <= 0 or not chunk_keys:
+        return []
+    allowed = set(allowed_doc_ids)
+    seeds = list(dict.fromkeys((str(doc_id), int(index)) for doc_id, index in chunk_keys))
+    document_ids = list(dict.fromkeys(doc_id for doc_id, _ in seeds if doc_id in allowed))
+    if not document_ids:
+        return []
+    indices = sorted({i + offset for doc_id, i in seeds if doc_id in allowed
+                      for offset in (-1, 0, 1) if i + offset >= 0})
+    with _chroma_lock:
+        rows = _get_document_collection().get(
+            where={"$and": [{"doc_id": {"$in": document_ids}}, {"chunk_index": {"$in": indices}}]},
+            include=["documents", "metadatas"],
+        )
+    chunks = {}
+    for content, metadata in zip(rows.get("documents") or [], rows.get("metadatas") or []):
+        metadata = metadata or {}
+        key = (str(metadata.get("doc_id", "")), int(metadata.get("chunk_index", -1)))
+        if key[0] in allowed and content:
+            chunks[key] = (content, metadata, document_sections.read_section_paths(metadata.get("section_paths", "")))
+    seen = set(seeds)
+    result = []
+    for doc_id, index in seeds:
+        seed = chunks.get((doc_id, index))
+        if not seed or not seed[2]:
+            continue
+        for offset in (-1, 1):
+            key = (doc_id, index + offset)
+            neighbor = chunks.get(key)
+            if key in seen or not neighbor or not seed[2].intersection(neighbor[2]):
+                continue
+            content, metadata, _ = neighbor
+            result.append(DocumentSectionNeighbor(content=content, source=str(metadata.get("source", "")),
+                                                  doc_id=doc_id, chunk_index=index + offset))
+            seen.add(key)
+            if len(result) >= limit:
+                return result
+    return result
 
 
 def count_document_chunks(doc_id: str) -> int:

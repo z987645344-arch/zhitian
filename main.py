@@ -118,6 +118,7 @@ def _run_ingest_task(
     converted_from: str,
     organization_id: Optional[int],
     uploaded_by: str,
+    chunk_section_paths: Optional[List[str]] = None,
 ) -> None:
     """后台执行向量化与登记。**在工作线程内同步跑**，由BackgroundTasks调度。
 
@@ -130,6 +131,8 @@ def _run_ingest_task(
     「排队中」。队列位在端点返回accepted之前就已预留（reserve_ingest_slot）。
     """
     write_chunks = [chunk for chunk in chunks if chunk]
+    write_section_paths = ([value for chunk, value in zip(chunks, chunk_section_paths) if chunk]
+                           if chunk_section_paths is not None else None)
     total_chunks = len(write_chunks)
 
     def _record_written_batch(processed: int, total: int) -> None:
@@ -162,6 +165,7 @@ def _run_ingest_task(
                     converted_from=converted_from,
                     organization_id=organization_id,
                     on_batch_written=_record_written_batch,
+                    **({"chunk_section_paths": write_section_paths} if write_section_paths is not None else {}),
                 )
                 if count != total_chunks:
                     raise RuntimeError("入库切片数与预期不一致")
@@ -2476,6 +2480,9 @@ async def upload_document(
             }
 
         chunks = await asyncio.to_thread(document_loader.chunk_text, text)
+        from layers.document_sections import chunk_section_paths
+        section_paths = await asyncio.to_thread(chunk_section_paths, text, chunks,
+                                               source_path=parse_path, source_name=filename)
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
         # F37：切分成本可忽略，向量化才是大头，因此在向量化之前按切片数拒绝。
@@ -2510,6 +2517,7 @@ async def upload_document(
             converted_from,
             organization_id,
             current_user["user_id"],
+            **({"chunk_section_paths": section_paths} if any(section_paths) else {}),
         )
         accepted_body = {
             "status": "accepted",
@@ -2583,6 +2591,9 @@ async def input_knowledge(
     # F35：与/documents/upload同因，切分与向量化一并下放线程池
     with heavy_task_limits.occupy_slot():
         chunks = await asyncio.to_thread(document_loader.chunk_text, content)
+        from layers.document_sections import chunk_section_paths
+        section_paths = await asyncio.to_thread(chunk_section_paths, content, chunks,
+                                               source_name=title, markdown=True)
     # F37：与/documents/upload同一约束，文字录入同样按切片数设上限
     if len(chunks) > config.MAX_DOCUMENT_CHUNKS:
         raise HTTPException(
@@ -2612,6 +2623,7 @@ async def input_knowledge(
         "",
         knowledge_request.organization_id,
         current_user["user_id"],
+        **({"chunk_section_paths": section_paths} if any(section_paths) else {}),
     )
     return {
         "status": "accepted",
@@ -3847,13 +3859,13 @@ def _serialize_citations(citations: list) -> list[dict]:
     serialized = []
     for citation in citations or []:
         if hasattr(citation, "model_dump"):
-            serialized.append(citation.model_dump())
+            serialized.append(citation.model_dump(exclude_none=True))
         elif isinstance(citation, dict):
             serialized.append({
                 "source": str(citation.get("source", "")),
                 "doc_id": str(citation.get("doc_id", "")),
                 "chunk_index": int(citation.get("chunk_index", 0)),
-                "score": float(citation.get("score", 0.0))
+                **({"score": float(citation["score"])} if citation.get("score") is not None else {})
             })
     return serialized
 
