@@ -503,18 +503,23 @@ def verified_knowledge_domains() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def verified_knowledge_domain_labels() -> list[str]:
+    """规范和拒答共用的领域展示名称；保留描述，不缓存审核状态。"""
+    labels = []
+    for row in verified_knowledge_domains():
+        content = (row["content"] or "").strip()
+        name = str(row["name"])
+        labels.append("%s（%s）" % (name, content) if content else name)
+    return labels
+
+
 def generate_guidance_content() -> str:
     """每次读取时按有已核验文档的非默认组织动态拼接guidance文案。
 
     组织存在不等于知识库收录了资料；用文档审核状态作依据，不缓存该查询。
     核验通过、拒绝或删除文档后的下一次读取自然更新，不修改任何组织数据。
     """
-    rows = verified_knowledge_domains()
-    if not rows:
+    parts = verified_knowledge_domain_labels()
+    if not parts:
         return "当前知识库暂无已核验的参考资料。"
-    parts = []
-    for row in rows:
-        content = (row["content"] or "").strip()
-        name = str(row["name"])
-        parts.append("%s（%s）" % (name, content) if content else name)
     return "当前知识库已收录%s领域相关参考资料。" % "、".join(parts)

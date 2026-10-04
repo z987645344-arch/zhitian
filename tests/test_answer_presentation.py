@@ -109,11 +109,16 @@ def test_events_preserve_each_search_and_reflection_order(monkeypatch):
     assert [events[i].occurrence for i in [0, 1, 3, 4]] == [1, 1, 2, 2]
 
 
-def test_refusal_domains_share_guidance_source_and_stream_boundaries(monkeypatch):
-    domains = [{"name": "测试作品", "content": ""}, {"name": "测试业务", "content": ""}]
+@pytest.mark.parametrize("description,label", [
+    ("", "测试作品"), (None, "测试作品"), ("  \n ", "测试作品"),
+    ("  创作与实践  ", "测试作品（创作与实践）"),
+])
+def test_refusal_domains_share_guidance_source_and_stream_boundaries(monkeypatch, description, label):
+    domains = [{"name": "测试作品", "content": description}, {"name": "测试业务", "content": ""}]
     monkeypatch.setattr(organizations, "verified_knowledge_domains", lambda: domains)
-    expected = source_policy.SCOPED_KNOWLEDGE_REFUSAL.format(domains="测试作品、测试业务")
-    assert "测试作品、测试业务" in organizations.generate_guidance_content()
+    expected = source_policy.SCOPED_KNOWLEDGE_REFUSAL.format(domains=label + "、测试业务")
+    assert organizations.verified_knowledge_domain_labels() == [label, "测试业务"]
+    assert label + "、测试业务" in organizations.generate_guidance_content()
     assert source_policy.annotate_answer(source_policy.REFUSAL + "。", {}) == expected
     assert source_policy.is_knowledge_refusal(expected)
     for position in range(len(source_policy.REFUSAL) + 1):
@@ -127,6 +132,8 @@ def test_refusal_domains_share_guidance_source_and_stream_boundaries(monkeypatch
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_refusal_http_sse_and_history_are_identical(client, auth_headers, monkeypatch, stream):
+    monkeypatch.setattr(organizations, "verified_knowledge_domains", lambda: [
+        {"name": "测试作品", "content": "创作与实践"}])
     headers, _ = auth_headers("customer")
     request = state(mode="fast", source="internal")
     request["response"] = source_policy.REFUSAL
@@ -143,6 +150,7 @@ def test_refusal_http_sse_and_history_are_identical(client, auth_headers, monkey
         else:
             answer = response.json()["data"]
         assert answer == source_policy.knowledge_refusal()
+        assert "测试作品（创作与实践）" in answer
         history = main.memory.get_history("presentation-stream" if stream else "presentation-http")
         assert history[-1]["content"] == answer
     finally:
@@ -172,7 +180,7 @@ def test_refusal_domain_updates_after_review_and_delete_without_cache():
     auth.register_document("presentation-domain", "测试.md", "test-uploader", organization_id=organization["id"])
     assert source_policy.knowledge_refusal() == source_policy.EMPTY_KNOWLEDGE_REFUSAL
     assert auth.approve_document("presentation-domain", "test-reviewer")
-    assert source_policy.knowledge_refusal() == source_policy.SCOPED_KNOWLEDGE_REFUSAL.format(domains="动态测试领域")
-    assert "动态测试领域" in organizations.generate_guidance_content()
+    assert source_policy.knowledge_refusal() == source_policy.SCOPED_KNOWLEDGE_REFUSAL.format(domains="动态测试领域（说明）")
+    assert "动态测试领域（说明）" in organizations.generate_guidance_content()
     assert auth.delete_document_record("presentation-domain") == 1
     assert source_policy.knowledge_refusal() == source_policy.EMPTY_KNOWLEDGE_REFUSAL

@@ -154,8 +154,8 @@ def annotate_answer(answer: str, state: Optional[dict]) -> str:
 
 
 def knowledge_refusal() -> str:
-    from layers.organizations import verified_knowledge_domains
-    domains = "、".join(item["name"] for item in verified_knowledge_domains())
+    from layers.organizations import verified_knowledge_domain_labels
+    domains = "、".join(verified_knowledge_domain_labels())
     return SCOPED_KNOWLEDGE_REFUSAL.format(domains=domains) if domains else EMPTY_KNOWLEDGE_REFUSAL
 
 
