@@ -12,6 +12,8 @@ from queue import Queue, Empty
 from typing import Any, Iterator, Optional
 
 import httpx
+from httpcore import ConnectError, ConnectTimeout, NetworkBackend, NetworkStream
+from httpcore._backends.sync import SyncBackend, SyncStream
 from openai import APIConnectionError, DefaultHttpxClient, OpenAI
 
 import config
@@ -34,6 +36,159 @@ _shared_http_client: Optional[httpx.Client] = None
 _optional_stage_guard: ContextVar[Optional["_OptionalStageGuard"]] = ContextVar(
     "optional_model_stage_guard", default=None
 )
+_request_call_guard: ContextVar[Optional["_RequestCallGuard"]] = ContextVar(
+    "request_model_call_guard", default=None
+)
+
+
+class RequestCancelled(BaseException):
+    """请求取消不是模型故障；像asyncio取消一样，不进入Exception重试/降级兜底。"""
+
+
+def current_request_control() -> Optional["StreamRegistry"]:
+    return _stream_registry.get()
+
+
+def check_request_cancelled(stage: Optional[str] = None, state: Optional[dict] = None) -> None:
+    control = (state or {}).get("request_cancel") or current_request_control()
+    if control is not None:
+        control.check(stage)
+
+
+class _RequestCallGuard:
+    def __init__(self, control: "StreamRegistry") -> None:
+        self.control = control
+        self._lock = threading.Lock()
+        self.response = None
+        self.network = None
+
+    def register(self, response: httpx.Response) -> None:
+        with self._lock:
+            self.response = response
+        if self.control.cancelled.is_set():
+            self.cancel()
+            self.control.check()
+
+    def attach(self, stream: NetworkStream) -> None:
+        with self._lock:
+            self.network = stream
+        if self.control.cancelled.is_set():
+            self.cancel()
+            self.control.check()
+
+    def cancel(self) -> None:
+        with self._lock:
+            response, network = self.response, self.network
+        if response is not None:
+            _close_raw_stream(response)
+        elif network is not None:
+            _shutdown_network_stream(network)
+            try:
+                network.close()
+            except Exception as exc:
+                logger.warning("关闭请求连接失败：error_type=%s", type(exc).__name__)
+
+
+class _CancellableNetworkStream(NetworkStream):
+    """每次读写按当前请求登记，而非把复用连接永久绑定到某个用户。"""
+    def __init__(self, stream: NetworkStream) -> None:
+        self.stream = stream
+
+    def _check(self) -> None:
+        guard = _request_call_guard.get()
+        if guard is not None:
+            guard.attach(self.stream)
+        check_request_cancelled()
+
+    def read(self, max_bytes: int, timeout: Optional[float] = None) -> bytes:
+        self._check()
+        return self.stream.read(max_bytes, timeout)
+
+    def write(self, buffer: bytes, timeout: Optional[float] = None) -> None:
+        self._check()
+        self.stream.write(buffer, timeout)
+
+    def close(self) -> None:
+        self.stream.close()
+
+    def start_tls(self, ssl_context, server_hostname=None, timeout=None) -> NetworkStream:
+        self._check()
+        # 默认SyncStream在wrap_socket内部握手时会转移fd，原socket无法shutdown。
+        # 先创建TLS socket并登记，再握手，覆盖等待TLS响应这一阶段。
+        if isinstance(self.stream, SyncStream) and _request_call_guard.get() is not None:
+            sock = self.stream.get_extra_info("socket")
+            if not hasattr(sock, "do_handshake"):
+                try:
+                    tls_sock = ssl_context.wrap_socket(sock, server_hostname=server_hostname,
+                                                       do_handshake_on_connect=False)
+                    result = _CancellableNetworkStream(SyncStream(tls_sock))
+                    result._check()
+                    tls_sock.settimeout(timeout)
+                    tls_sock.do_handshake()
+                    result._check()
+                    return result
+                except BaseException as exc:
+                    if "tls_sock" in locals():
+                        tls_sock.close()
+                    if isinstance(exc, socket.timeout):
+                        raise ConnectTimeout(str(exc)) from exc
+                    if isinstance(exc, OSError):
+                        raise ConnectError(str(exc)) from exc
+                    raise
+        result = _CancellableNetworkStream(self.stream.start_tls(ssl_context, server_hostname, timeout))
+        result._check()
+        return result
+
+    def get_extra_info(self, info: str) -> Any:
+        return self.stream.get_extra_info(info)
+
+
+class _CancellableBackend(NetworkBackend):
+    def __init__(self, backend: NetworkBackend) -> None:
+        self.backend = backend
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None) -> NetworkStream:
+        check_request_cancelled()
+        # 在TCP connect之前登记socket，断开不必等连接超时；DNS阶段无请求字节。
+        if isinstance(self.backend, SyncBackend) and _request_call_guard.get() is not None:
+            last_error = None
+            for family, kind, protocol, _, address in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+                check_request_cancelled()
+                sock = socket.socket(family, kind, protocol)
+                result = _CancellableNetworkStream(SyncStream(sock))
+                try:
+                    result._check()
+                    sock.settimeout(timeout)
+                    if local_address is not None:
+                        sock.bind((local_address, 0))
+                    for option in socket_options or []:
+                        sock.setsockopt(*option)
+                    sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    sock.connect(address)
+                    result._check()
+                    return result
+                except BaseException as exc:
+                    sock.close()
+                    check_request_cancelled()
+                    if not isinstance(exc, OSError):
+                        raise
+                    last_error = exc
+            if isinstance(last_error, socket.timeout):
+                raise ConnectTimeout(str(last_error)) from last_error
+            raise ConnectError(str(last_error)) from last_error
+        result = _CancellableNetworkStream(self.backend.connect_tcp(
+            host, port, timeout=timeout, local_address=local_address, socket_options=socket_options))
+        result._check()
+        return result
+
+    def connect_unix_socket(self, *args, **kwargs) -> NetworkStream:
+        check_request_cancelled()
+        result = _CancellableNetworkStream(self.backend.connect_unix_socket(*args, **kwargs))
+        result._check()
+        return result
+
+    def sleep(self, seconds: float) -> None:
+        self.backend.sleep(seconds)
 
 
 class _OptionalStageGuard:
@@ -63,6 +218,9 @@ def _track_optional_stage_response(response: httpx.Response) -> None:
     guard = _optional_stage_guard.get()
     if guard is not None:
         guard.register(response)
+    request_guard = _request_call_guard.get()
+    if request_guard is not None:
+        request_guard.register(response)
 
 
 class _RejectCookiePolicy(DefaultCookiePolicy):
@@ -75,7 +233,7 @@ class _RejectCookiePolicy(DefaultCookiePolicy):
         return False
 
 
-class StreamAbandonedError(RuntimeError):
+class StreamAbandonedError(RequestCancelled):
     """客户端已经断开，不再把新建的流交给已结束的请求。"""
 
 
@@ -86,6 +244,43 @@ class StreamRegistry:
         self._lock = threading.Lock()
         self._streams: set[Any] = set()
         self._closed = False
+        self.cancelled = threading.Event()
+        self._calls: set[_RequestCallGuard] = set()
+        self.model_calls = 0
+        self.interrupted_calls = 0
+        self.stage = "request_start"
+        self.history_user_id = None
+        self.history_assistant_id = None
+
+    def check(self, stage: Optional[str] = None) -> None:
+        with self._lock:
+            if self.cancelled.is_set():
+                raise RequestCancelled("client_disconnected")
+            if stage:
+                self.stage = str(getattr(stage, "value", stage))
+
+    @contextmanager
+    def model_attempt(self, stage: Optional[str], *, model: bool = True):
+        guard = _RequestCallGuard(self)
+        with self._lock:
+            if self.cancelled.is_set():
+                raise RequestCancelled("client_disconnected")
+            if stage:
+                self.stage = str(getattr(stage, "value", stage))
+            if model:
+                self.model_calls += 1
+            self._calls.add(guard)
+        token = _request_call_guard.set(guard)
+        try:
+            yield
+            self.check()
+        except Exception:
+            self.check()  # 被shutdown引发的网络异常转取消，绝不重试或开熔断。
+            raise
+        finally:
+            _request_call_guard.reset(token)
+            with self._lock:
+                self._calls.discard(guard)
 
     def register(self, stream: Any) -> None:
         with self._lock:
@@ -99,13 +294,33 @@ class StreamRegistry:
         with self._lock:
             self._streams.discard(stream)
 
-    def close_all(self) -> None:
+    def close_all(self) -> bool:
         with self._lock:
+            if self.cancelled.is_set():
+                return False
             self._closed = True
+            self.cancelled.set()
             streams = list(self._streams)
             self._streams.clear()
+            calls = list(self._calls)
+            # 已被首正文超时等路径关闭的SDK响应不算本次被中断的调用。
+            active_streams = 0
+            for stream in streams:
+                response = stream if isinstance(stream, httpx.Response) else getattr(stream, "response", None)
+                if not isinstance(response, httpx.Response) or not response.is_closed:
+                    active_streams += 1
+            self.interrupted_calls += len(calls) + active_streams
+        for guard in calls:
+            guard.cancel()
         for stream in streams:
             _close_raw_stream(stream)
+        return True
+
+    def cancel(self, trace_id: str) -> None:
+        if not self.close_all():
+            return
+        logger.info("[cancel] trace_id=%s reason=client_disconnected stage=%s model_calls=%s interrupted_calls=%s",
+                    trace_id, self.stage, self.model_calls, self.interrupted_calls)
 
 
 @contextmanager
@@ -125,21 +340,24 @@ def _close_raw_stream(stream: Any) -> None:
         # 等待读超时约1.90秒，peer也未收到EOF。先shutdown再close使取消
         # 独立于下一个正文块/读超时；正常消费完的响应已closed，不破坏keep-alive。
         network_stream = response.extensions.get("network_stream")
-        get_info = getattr(network_stream, "get_extra_info", None)
-        try:
-            connection = get_info("socket") if callable(get_info) else None
-            if connection is not None:
-                connection.shutdown(socket.SHUT_RDWR)
-        except OSError as exc:
-            # 读取线程可能已抢先关闭/断开同一socket，这两种竞态即已达成取消。
-            if exc.errno not in {errno.EBADF, errno.ENOTCONN}:
-                logger.warning("中断模型连接失败：error_type=%s", type(exc).__name__)
+        _shutdown_network_stream(network_stream)
     close = getattr(stream, "close", None)
     if callable(close):
         try:
             close()
         except Exception as exc:
             logger.warning("关闭模型流失败：error_type=%s", type(exc).__name__)
+
+
+def _shutdown_network_stream(network_stream: Any) -> None:
+    get_info = getattr(network_stream, "get_extra_info", None)
+    try:
+        connection = get_info("socket") if callable(get_info) else None
+        if connection is not None:
+            connection.shutdown(socket.SHUT_RDWR)
+    except OSError as exc:
+        if exc.errno not in {errno.EBADF, errno.ENOTCONN}:
+            logger.warning("中断模型连接失败：error_type=%s", type(exc).__name__)
 
 
 def close_stream(stream: Any) -> None:
@@ -160,6 +378,13 @@ def _get_shared_http_client() -> httpx.Client:
                 cookies=CookieJar(policy=_RejectCookiePolicy()),
                 event_hooks={"response": [_track_optional_stage_response]},
             )
+            # HTTPX没有“收到响应头前”的取消钩子。只替换池的网络后端，
+            # 包括环境代理池；限额、Cookie、TLS、HTTP/1.1与池复用保持原样。
+            transports = {_shared_http_client._transport, *[t for t in _shared_http_client._mounts.values() if t]}
+            for transport in transports:
+                pool = getattr(transport, "_pool", None)
+                if pool is not None:
+                    pool._network_backend = _CancellableBackend(pool._network_backend)
         return _shared_http_client
 
 
@@ -230,6 +455,17 @@ def run_with_api_key(api_key: str, function: Any, *args: Any, **kwargs: Any) -> 
         return function(*args, **kwargs)
 
 
+def run_request_background(api_key: str, control: Optional[StreamRegistry], function: Any, *args: Any) -> Any:
+    try:
+        if control is None:
+            return run_with_api_key(api_key, function, *args)
+        with use_stream_registry(control):
+            control.check("memory_background")
+            return run_with_api_key(api_key, function, *args)
+    except RequestCancelled:
+        return None
+
+
 def chat_completion(
     messages: list[dict],
     tier: str = "fast",
@@ -239,6 +475,7 @@ def chat_completion(
     **kwargs: Any
 ) -> Any:
     """Call exactly one configured provider request for the selected tier."""
+    check_request_cancelled(stage)
     enforce_wall_clock = kwargs.pop("enforce_wall_clock", False)
     wall_clock_deadline = kwargs.pop("wall_clock_deadline", None)
     if not enforce_wall_clock:
@@ -271,7 +508,19 @@ def chat_completion(
     threading.Thread(target=context.run, args=(call_in_context,),
                      name="llm-optional-stage", daemon=True).start()
     try:
-        succeeded, result = results.get(timeout=max(0.0, deadline - time.perf_counter()))
+        while True:
+            check_request_cancelled(stage)
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise Empty
+            try:
+                succeeded, result = results.get(timeout=min(0.05, remaining))
+                break
+            except Empty:
+                continue
+    except RequestCancelled:
+        guard.cancel()
+        raise
     except Empty:
         # 尽力关闭已取得响应头的单次HTTP响应；尚未取得头时晚到钩子也会关闭。
         # 已发送的调用不能撤销计费，但绝不消费晚到结果或启动新重试。
@@ -333,11 +582,17 @@ def _chat_completion(
 
     while True:
         try:
+            check_request_cancelled(stage)
             remaining = deadline - time.perf_counter()
             if remaining <= 0 or (_cancelled is not None and _cancelled.is_set()):
                 raise TimeoutError("model request budget exhausted")
             request_kwargs["timeout"] = min(request_timeout, remaining)
-            response = client.chat.completions.create(**request_kwargs)
+            registry = current_request_control()
+            if registry is None:
+                response = client.chat.completions.create(**request_kwargs)
+            else:
+                with registry.model_attempt(stage):
+                    response = client.chat.completions.create(**request_kwargs)
             if request_kwargs.get("stream"):
                 registry = _stream_registry.get()
                 if registry is not None:
@@ -347,6 +602,7 @@ def _chat_completion(
             observability.log_stage("llm_%s" % tier, elapsed_ms)
             return response
         except Exception as exc:
+            check_request_cancelled()
             remaining = deadline - time.perf_counter()
             if (
                 not connection_reset_retried
@@ -367,7 +623,13 @@ def _chat_completion(
             if (should_retry and retry_fits
                     and not (_cancelled is not None and _cancelled.is_set())):
                 attempt += 1
-                time.sleep(min(config.FAST_LLM_RETRY_DELAY, remaining))
+                delay = min(config.FAST_LLM_RETRY_DELAY, remaining)
+                control = current_request_control()
+                if control is None:
+                    time.sleep(delay)
+                else:
+                    control.cancelled.wait(delay)
+                    control.check()
                 continue
 
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -414,11 +676,15 @@ class _TextStream(Iterator[str]):
         return self
 
     def __next__(self) -> str:
+        if self._registry is not None:
+            self._registry.check()
         if self._closed:
             raise StopIteration
         try:
             while True:
                 chunk = next(self._iterator)
+                if self._registry is not None:
+                    self._registry.check()
                 choices = getattr(chunk, "choices", None)
                 if not choices:
                     continue

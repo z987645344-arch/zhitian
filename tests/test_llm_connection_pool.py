@@ -50,6 +50,22 @@ class _ProbeHandler(BaseHTTPRequestHandler):
             "authorization": self.headers.get("Authorization"),
             "cookie": self.headers.get("Cookie"),
         })
+        blocked = getattr(self.server, "block_nonstream", None)
+        if blocked and not payload.get("stream"):
+            if blocked == "body":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                self.wfile.flush()
+            self.server.waiting_nonstream.set()
+            try:
+                assert self.connection.recv(1) == b""
+            except OSError:
+                pass
+            self.server.peer_closed_at = time.perf_counter()
+            self.server.peer_disconnected.set()
+            return
         if payload.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -148,6 +164,64 @@ def test_repeated_calls_reuse_one_connection(local_provider):
     for _ in range(5):
         assert llm_provider.extract_text(_complete()) == "ok"
     assert local_provider.accept_count == 1
+
+
+@pytest.mark.parametrize("local_provider", [False, True], indirect=True, ids=["http", "tls"])
+@pytest.mark.parametrize("blocked", ["headers", "body"])
+def test_disconnect_interrupts_nonstream_before_headers_and_during_body(local_provider, blocked):
+    local_provider.block_nonstream = blocked
+    local_provider.waiting_nonstream = threading.Event()
+    control = llm_provider.StreamRegistry()
+    result = []
+    def call():
+        try:
+            with llm_provider.use_stream_registry(control):
+                _complete()
+        except BaseException as exc:
+            result.append(exc)
+    worker = threading.Thread(target=call)
+    worker.start()
+    assert local_provider.waiting_nonstream.wait(3)
+    shared_client = llm_provider._get_shared_http_client()
+    started = time.perf_counter()
+    control.cancel("nonstream-probe")
+    worker.join(.5)
+    assert not worker.is_alive()
+    assert len(result) == 1 and isinstance(result[0], llm_provider.RequestCancelled)
+    assert local_provider.peer_disconnected.wait(.5)
+    assert local_provider.peer_closed_at - started < .5
+    assert control.model_calls == control.interrupted_calls == 1
+    assert not shared_client.is_closed
+    assert llm_provider._get_shared_http_client() is shared_client
+    local_provider.block_nonstream = None
+    # 共享池没有被关闭，下一请求正常。
+    assert llm_provider.extract_text(_complete()) == "ok"
+
+
+def test_disconnect_interrupts_inflight_web_search_before_headers(local_provider):
+    from layers import web_search_provider
+    local_provider.block_nonstream = "headers"
+    local_provider.waiting_nonstream = threading.Event()
+    control = llm_provider.StreamRegistry()
+    errors = []
+    def call():
+        try:
+            with llm_provider.use_stream_registry(control):
+                provider = web_search_provider.TavilyProvider("test-key")
+                provider._client.base_url = config.DEEPSEEK_BASE_URL + "/search"
+                provider.search("test")
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=call)
+    worker.start()
+    assert local_provider.waiting_nonstream.wait(3)
+    control.cancel("web-probe")
+    worker.join(.5)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], llm_provider.RequestCancelled)
+    assert local_provider.peer_disconnected.wait(.5)
+    assert len(local_provider.requests) == 1  # 不重试，也不再发新搜索
+    assert control.model_calls == 0 and control.interrupted_calls == 1
 
 
 def test_different_keys_and_set_cookie_never_cross_requests(local_provider):

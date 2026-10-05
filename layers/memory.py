@@ -52,7 +52,11 @@ DOCUMENT_COLLECTION_NAME = "zhitian_documents"
 DEFAULT_VECTOR_ROLE = "assistant"
 MESSAGE_TYPE_CHAT = "chat"
 MESSAGE_TYPE_FILE_DELIVERY = "file_delivery"
-VALID_MESSAGE_TYPES = {MESSAGE_TYPE_CHAT, MESSAGE_TYPE_FILE_DELIVERY}
+MESSAGE_TYPE_INTERRUPTED_USER = "interrupted_user"
+MESSAGE_TYPE_INTERRUPTED = "interrupted"
+INTERRUPTED_MESSAGE = "回答已中断"
+VALID_MESSAGE_TYPES = {MESSAGE_TYPE_CHAT, MESSAGE_TYPE_FILE_DELIVERY,
+                       MESSAGE_TYPE_INTERRUPTED_USER, MESSAGE_TYPE_INTERRUPTED}
 IMPORTANCE_LEVEL_HIGH = "high"
 IMPORTANCE_LEVEL_NORMAL = "normal"
 LOW_INFORMATION_PHRASES = {
@@ -188,8 +192,8 @@ def save_message(
     content: str,
     attachment_ids: Optional[List[str]] = None,
     message_type: str = MESSAGE_TYPE_CHAT,
-) -> None:
-    """保存一条对话记录到SQLite"""
+) -> int:
+    """保存一条对话记录到SQLite，返回行号用于精确标记请求取消。"""
     _validate_message(session_id, role, content)
     normalized_message_type = _validate_message_type(message_type, role)
     timestamp = utc_now_naive().isoformat()
@@ -203,7 +207,7 @@ def save_message(
                 """,
                 (session_id, timestamp)
             )
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO conversations (
                     session_id, role, content, timestamp, attachment_ids,
@@ -219,6 +223,7 @@ def save_message(
                     normalized_message_type,
                 )
             )
+            return cursor.lastrowid
     except Exception as e:
         logger.error("SQLite保存消息失败：session_id=%s role=%s error_type=%s", session_id, role, type(e).__name__)
         raise
@@ -252,6 +257,29 @@ def get_history(session_id: str, limit: int = 10) -> list[dict]:
     return history
 
 
+def mark_interrupted_turn(session_id: str, user_message_id: int,
+                          assistant_message_id: Optional[int] = None) -> None:
+    """整轮取消：保留用户原话，仅移除本请求的助手成品，原子写入中断标记。
+
+    用户与标记都带类型，历史截断、并发轮次交错时也不会误把旧问题送入模型。
+    不按文字猜测/去重，不改变普通失败轮次保留用户事实的规则。
+    """
+    with _connect() as conn:
+        row = conn.execute("SELECT message_type FROM conversations WHERE id=? AND session_id=? AND role='user'",
+                           (user_message_id, session_id)).fetchone()
+        if row is None or row["message_type"] == MESSAGE_TYPE_INTERRUPTED_USER:
+            return
+        conn.execute("UPDATE conversations SET message_type=? WHERE id=?",
+                     (MESSAGE_TYPE_INTERRUPTED_USER, user_message_id))
+        if assistant_message_id is not None:
+            conn.execute("DELETE FROM conversations WHERE id=? AND session_id=? AND role='assistant'",
+                         (assistant_message_id, session_id))
+        timestamp = utc_now_naive().isoformat()
+        conn.execute("INSERT INTO conversations (session_id,role,content,timestamp,message_type) VALUES (?,'assistant',?,?,?)",
+                     (session_id, INTERRUPTED_MESSAGE, timestamp, MESSAGE_TYPE_INTERRUPTED))
+        conn.execute("UPDATE sessions SET last_active=? WHERE session_id=?", (timestamp, session_id))
+
+
 def get_session_history(session_id: str) -> list[dict]:
     """读取指定session的完整对话历史"""
     if not session_id:
@@ -261,7 +289,7 @@ def get_session_history(session_id: str) -> list[dict]:
         with _connect() as conn:
             rows = conn.execute(
                 """
-                SELECT role, content, timestamp, attachment_ids
+                SELECT role, content, timestamp, attachment_ids, message_type
                 FROM conversations
                 WHERE session_id = ?
                 ORDER BY id ASC
@@ -278,6 +306,7 @@ def get_session_history(session_id: str) -> list[dict]:
             "content": row["content"],
             "timestamp": row["timestamp"],
             "attachment_ids": _parse_attachment_ids(row["attachment_ids"]),
+            "message_type": row["message_type"],
         }
         for row in rows
     ]
@@ -387,6 +416,7 @@ def maybe_save_to_vector(
     tier: str = "fast"
 ) -> None:
     """按重要性过滤后写入Chroma长期向量记忆。"""
+    llm_provider.check_request_cancelled("memory_importance")
     started_at = time.perf_counter()
     is_important, importance_level = _judge_message_importance(
         content,
@@ -405,6 +435,7 @@ def maybe_save_to_vector(
     if not is_important:
         return
     with _chroma_lock:
+        llm_provider.check_request_cancelled("memory_write")
         save_to_vector(
             session_id,
             content,
@@ -512,6 +543,7 @@ def search_memory(
     strict_session: bool = False
 ) -> list[str]:
     """语义检索长期记忆，可选择严格限制在当前session内。"""
+    llm_provider.check_request_cancelled("memory_retrieval")
     if not query:
         return []
     if strict_session and not session_id:
@@ -549,6 +581,7 @@ def search_memory(
 
 def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[str]:
     """只检索指定session的长期记忆，不补充其他session"""
+    llm_provider.check_request_cancelled("memory_retrieval")
     if not query or not session_id:
         return []
 
@@ -719,6 +752,7 @@ def search_documents(
     request_deadline: Optional[float] = None,
 ) -> list[dict]:
     """从本地文档Collection检索相关内容，合并BM25与向量两个独立候选源。"""
+    llm_provider.check_request_cancelled("document_search")
     if not query:
         return []
     if additional_query and additional_query != query and config.RAG_FOLLOWUP_EXTRA_TOP_K > 0:
@@ -1709,6 +1743,10 @@ def _validate_message_type(message_type: str, role: str) -> str:
         raise ValueError("message_type不受支持")
     if normalized == MESSAGE_TYPE_FILE_DELIVERY and role != "assistant":
         raise ValueError("file_delivery只允许用于assistant消息")
+    if normalized == MESSAGE_TYPE_INTERRUPTED and role != "assistant":
+        raise ValueError("interrupted只允许用于assistant消息")
+    if normalized == MESSAGE_TYPE_INTERRUPTED_USER and role != "user":
+        raise ValueError("interrupted_user只允许用于user消息")
     return normalized
 
 

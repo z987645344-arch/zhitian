@@ -7,6 +7,53 @@ const vm = require('node:vm');
 const apiSource = fs.readFileSync(path.join(__dirname, '../web_client/js/api.js'), 'utf8');
 const chatSource = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
 
+test('刷新历史显示持久化中断标记，不显示半截回答，用户问题仍可见', () => {
+  const calls = [];
+  const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},
+    addBubble: (...args) => calls.push(args) });
+  const start = chatSource.indexOf('  function renderHistory(');
+  const end = chatSource.indexOf('  // 引用来源', start);
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  const render = vm.runInContext('renderHistory', sandbox);
+  render([{ role: 'user', content: '测试问题', message_type: 'interrupted_user' },
+    { role: 'assistant', content: '回答已中断', message_type: 'interrupted' }]);
+  assert.deepEqual(calls.map(args => args.slice(0, 3)), [
+    ['user', '测试问题', ''], ['assistant', '回答已中断', 'interrupted']]);
+  assert.doesNotMatch(calls.flat().join(''), /半截回答/);
+});
+
+test('SSE无DONE的EOF或读错误都表示中断，不能当作回答完成', async () => {
+  for (const readError of [false, true]) {
+    let reads = 0, done = 0, interrupted = 0;
+    const sandbox = vm.createContext({ window: {}, localStorage: { getItem: () => 'test-token' }, TextDecoder,
+      fetch: async () => ({ ok: true, status: 200, body: { getReader: () => ({ read: async () => {
+        if (reads++ === 0) return { done: false, value: new TextEncoder().encode('data: {"chunk":"半截回答"}\n\n') };
+        if (readError) throw new Error('network stopped');
+        return { done: true };
+      } }) } }) });
+    vm.runInContext(apiSource, sandbox);
+    await vm.runInContext('API', sandbox).chatStream('session', '测试请求', 'expert', [], {
+      onDone: () => done++, onInterrupted: () => interrupted++,
+    });
+    assert.equal(done, 0);
+    assert.equal(interrupted, 1);
+  }
+});
+
+test('中断显示替换半截正文并移除未完成的来源和文件', () => {
+  const start = chatSource.indexOf('  function renderInterrupted(');
+  const end = chatSource.indexOf('  // 引用来源', start);
+  const sandbox = vm.createContext({});
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  const flags = [], removed = [], body = { innerHTML: '半截回答' };
+  const bubble = { classList: { remove: item => flags.push('remove:' + item), add: item => flags.push('add:' + item) },
+    querySelectorAll: () => [{ remove: () => removed.push(1) }, { remove: () => removed.push(2) }] };
+  vm.runInContext('renderInterrupted', sandbox)(bubble, body);
+  assert.equal(body.textContent, '回答已中断');
+  assert.deepEqual(flags, ['remove:pending', 'add:interrupted']);
+  assert.deepEqual(removed, [1, 2]);
+});
+
 test('无分数的补取来源标为同节补充，正常相关度包括零分均如实显示', () => {
   function element() { return { children: [], appendChild(child) { this.children.push(child); },
     append(...children) { this.children.push(...children); } }; }

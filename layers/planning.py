@@ -67,6 +67,7 @@ REACT_LIMIT_NOTICE = "基于目前提供的资料回答，可能不够全面。"
 
 
 class AgentState(TypedDict):
+    request_cancel: Optional[llm_provider.StreamRegistry]
     source_policy: source_policy.SourcePolicy
     evidence_state: str
     evidence_checked: bool
@@ -358,6 +359,7 @@ COMPLEX_TOOL_NAMES = {"search_web", "search_documents", "list_documents", "llm_c
 
 def classify_node(state: AgentState) -> AgentState:
     """classify节点：调用所选模型的 Function Call 判断意图。"""
+    llm_provider.check_request_cancelled("classify", state)
     if state.get("stream_prepared") and state.get("intent"):
         return state
     started_at = time.perf_counter()
@@ -424,6 +426,7 @@ def classify_node(state: AgentState) -> AgentState:
 
 def retrieve_node(state: AgentState) -> AgentState:
     """retrieve节点：从Chroma检索语义相关的长期记忆"""
+    llm_provider.check_request_cancelled("retrieve", state)
     if state.get("stream_prepared"):
         return state
     started_at = time.perf_counter()
@@ -443,6 +446,7 @@ def retrieve_node(state: AgentState) -> AgentState:
 
 def plan_node(state: AgentState) -> AgentState:
     """plan node: ensure there is one pending task for the current round."""
+    llm_provider.check_request_cancelled("plan", state)
     if len(state["tasks"]) > state["round_count"]:
         return state
     task = _guard_source_task(state, _task_from_intent(state, order=len(state["tasks"]) + 1))
@@ -452,6 +456,7 @@ def plan_node(state: AgentState) -> AgentState:
 
 def execute_node(state: AgentState) -> AgentState:
     """execute node: run the next unexecuted task."""
+    llm_provider.check_request_cancelled("execute", state)
     if state["round_count"] >= len(state["tasks"]):
         state["error"] = "没有可执行的任务"
         return state
@@ -478,6 +483,7 @@ def execute_node(state: AgentState) -> AgentState:
 
 def reflect_node(state: AgentState) -> AgentState:
     """reflect node: decide whether another bounded tool round is needed."""
+    llm_provider.check_request_cancelled("reflect", state)
     started_at = time.perf_counter()
     decision = should_continue_react(state)
     observability.log_stage("reflect_model", int((time.perf_counter() - started_at) * 1000))
@@ -493,6 +499,7 @@ def reflect_node(state: AgentState) -> AgentState:
 
 def complex_plan_node(state: AgentState) -> AgentState:
     """Generate the initial bounded linear task list for an expert request."""
+    llm_provider.check_request_cancelled("complex_plan", state)
     if _complex_budget_exhausted(state):
         return _mark_complex_timeout(state)
     started_at = time.perf_counter()
@@ -527,6 +534,7 @@ def complex_plan_node(state: AgentState) -> AgentState:
 
 def execute_complex_node(state: AgentState) -> AgentState:
     """Execute exactly one task from the expert linear plan."""
+    llm_provider.check_request_cancelled("execute_complex", state)
     if _complex_budget_exhausted(state):
         return _mark_complex_timeout(state)
     pointer = state["current_task_pointer"]
@@ -570,6 +578,7 @@ def execute_complex_node(state: AgentState) -> AgentState:
 
 def checkpoint_node(state: AgentState) -> AgentState:
     """Apply one global replan opportunity and one local adjustment per task position."""
+    llm_provider.check_request_cancelled("checkpoint", state)
     _append_layer_trace(state, "checkpoint")
     if _complex_budget_exhausted(state):
         return _mark_complex_timeout(state)
@@ -658,6 +667,7 @@ def checkpoint_node(state: AgentState) -> AgentState:
 
 def complex_respond_node(state: AgentState) -> AgentState:
     """Synthesize all expert subtask results into one response."""
+    llm_provider.check_request_cancelled("complex_respond", state)
     started_at = time.perf_counter()
     state["citations"] = _dedupe_citations(state["citations"])
     if state["error"] == "complex_task_timeout" or _complex_budget_exhausted(state):
@@ -680,6 +690,7 @@ def complex_respond_node(state: AgentState) -> AgentState:
                 system_modules.prompt_prefix(
                     "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
                     "明确说明失败或证据不足的部分，不得编造未提供的信息。"
+                    + source_policy.DOCUMENT_PRESENTATION_PROMPT
                 ),
                 execution.conversation_history_messages(state["session_id"]) + [
                 {
@@ -727,6 +738,7 @@ def complex_respond_node(state: AgentState) -> AgentState:
 
 def respond_node(state: AgentState) -> AgentState:
     """respond节点：读取执行结果并生成最终响应"""
+    llm_provider.check_request_cancelled("respond", state)
     started_at = time.perf_counter()
     if state["intent"] == "clarify":
         state["response"] = state["clarification"]
@@ -920,6 +932,7 @@ def _new_agent_state(
     tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]] = None,
 ) -> AgentState:
     return AgentState(
+        request_cancel=llm_provider.current_request_control(),
         source_policy=source_policy.classify_policy(message),
         evidence_state="failed",
         evidence_checked=False,
@@ -2112,6 +2125,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
     messages = cache_friendly_messages(
         system_modules.prompt_prefix(
             "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。"
+            + source_policy.DOCUMENT_PRESENTATION_PROMPT
         ),
         execution.conversation_history_messages(state["session_id"]) + [
         {

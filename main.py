@@ -2,6 +2,7 @@
 # 知天（zhitian）FastAPI主入口
 
 import asyncio
+import anyio
 import codecs
 import hmac
 import json
@@ -23,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette._utils import create_collapsing_task_group
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -37,6 +39,53 @@ from utils.time_values import UTCJSONResponse as JSONResponse, serialize_api_tim
 
 logger = get_logger("main", console_info_prefix="[graphrag] ")
 audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
+
+
+class RequestStreamingResponse(StreamingResponse):
+    """始终监听disconnect；send失败也明确关闭生成器，不依赖GC或心跳。
+
+    Starlette的ASGI>=2.4分支只通过send错误发现断开，长阶段可能等到
+    下一次15秒心跳。此处沿用其任务组监听机制，所有ASGI版本立即传递取消。
+    """
+
+    def __init__(self, *args, request_control=None, trace_id="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_control = request_control
+        self.trace_id = trace_id
+        self.response_complete = False
+
+    async def stream_response(self, send) -> None:
+        try:
+            await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+            async for chunk in self.body_iterator:
+                if not isinstance(chunk, (bytes, memoryview)):
+                    chunk = chunk.encode(self.charset)
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            # DONE已交付，但在记忆任务完成前保持HTTP响应打开。Uvicorn在
+            # more_body=False之后receive也返回disconnect，不能把正常完成误当离开。
+            if self.background is not None:
+                await self.background()
+            if self.request_control is not None and self.request_control.cancelled.is_set():
+                return
+            self.response_complete = True
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        except OSError:
+            if self.request_control is not None:
+                self.request_control.cancel(self.trace_id)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
+    async def __call__(self, scope, receive, send) -> None:
+        async with create_collapsing_task_group() as group:
+            async def stream_and_background():
+                await self.stream_response(send)
+                group.cancel_scope.cancel()
+            group.start_soon(stream_and_background)
+            await self.listen_for_disconnect(receive)
+            if self.request_control is not None and not self.response_complete:
+                self.request_control.cancel(self.trace_id)
+            group.cancel_scope.cancel()
 
 
 def _read_application_version() -> str:
@@ -1641,7 +1690,8 @@ async def chat_stream(
         mode
     )
     chat_request.mode = mode
-    return StreamingResponse(
+    request_control = llm_provider.StreamRegistry()
+    return RequestStreamingResponse(
         _chat_stream_events_with_heartbeat(
             chat_request,
             current_user,
@@ -1650,8 +1700,11 @@ async def chat_stream(
             attachment_context,
             chat_request.attachment_ids,
             api_key,
+            request_control=request_control,
         ),
         background=background_tasks,
+        request_control=request_control,
+        trace_id=trace_id,
         media_type="text/event-stream"
     )
 
@@ -3438,8 +3491,9 @@ def _chat_stream_events(
             if not has_error:
                 if request_status == "success" and final_data:
                     background_tasks.add_task(
-                        llm_provider.run_with_api_key,
+                        llm_provider.run_request_background,
                         api_key,
+                        llm_provider.current_request_control(),
                         memory.maybe_save_to_vector,
                         perception_output.session_id,
                         "user",
@@ -3447,8 +3501,9 @@ def _chat_stream_events(
                         "fast"
                     )
                     background_tasks.add_task(
-                        llm_provider.run_with_api_key,
+                        llm_provider.run_request_background,
                         api_key,
+                        llm_provider.current_request_control(),
                         memory.maybe_save_to_vector,
                         perception_output.session_id,
                         "assistant",
@@ -3699,8 +3754,9 @@ def _chat_stream_events(
         yield _sse_data({"chunk": "[DONE]"})
         if not has_error and status == "success" and final_data:
             background_tasks.add_task(
-                llm_provider.run_with_api_key,
+                llm_provider.run_request_background,
                 api_key,
+                llm_provider.current_request_control(),
                 memory.maybe_save_to_vector,
                 perception_output.session_id,
                 "user",
@@ -3709,8 +3765,9 @@ def _chat_stream_events(
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
-                    llm_provider.run_with_api_key,
+                    llm_provider.run_request_background,
                     api_key,
+                    llm_provider.current_request_control(),
                     memory.maybe_save_to_vector,
                     perception_output.session_id,
                     "assistant",
@@ -3748,12 +3805,15 @@ async def _chat_stream_events_with_heartbeat(
     attachment_context: List[str],
     attachment_ids: List[str],
     api_key: str,
+    request_control=None,
 ):
     """Run blocking stream work separately so long stages can emit SSE heartbeats."""
     loop = asyncio.get_running_loop()
     event_queue = asyncio.Queue()
     disconnected = threading.Event()
-    stream_registry = llm_provider.StreamRegistry()
+    stream_registry = request_control or llm_provider.StreamRegistry()
+    completed = False
+    drained = False
 
     def produce() -> None:
         api_key_token = llm_provider.bind_request_api_key(api_key)
@@ -3780,7 +3840,10 @@ async def _chat_stream_events_with_heartbeat(
                             break
                         loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
             finally:
-                llm_provider.close_stream(event_stream)
+                with llm_provider.use_stream_registry(stream_registry):
+                    llm_provider.close_stream(event_stream)
+        except llm_provider.RequestCancelled:
+            pass  # 已断开，取消不是失败SSE，也不启动兜底。
         except BaseException as exc:
             loop.call_soon_threadsafe(event_queue.put_nowait, ("error", exc))
         finally:
@@ -3802,14 +3865,30 @@ async def _chat_stream_events_with_heartbeat(
 
             if event_type == "event":
                 yield payload
+                # 只有消费者成功发送后再确认DONE；send失败时仍标整轮中断。
+                if '"chunk": "[DONE]"' in payload:
+                    completed = True
             elif event_type == "error":
                 raise payload
             else:
+                completed = True
+                drained = True
                 break
     finally:
-        disconnected.set()
-        stream_registry.close_all()
-        await producer_task
+        if not drained:
+            disconnected.set()
+            stream_registry.cancel(trace_id)
+        # ASGI断开会取消整个任务组；屏蔽外层取消，只等待已中断的线程收尾落库。
+        # 不等供应商下一个块，socket已经shutdown；不关闭共享Client。
+        with anyio.CancelScope(shield=True):
+            await producer_task
+            if not completed:
+                with llm_provider.use_stream_registry(stream_registry):
+                    if stream_registry.history_user_id is None:
+                        _save_user_history_turn(request, current_user)
+                    memory.mark_interrupted_turn(request.session_id,
+                                                 stream_registry.history_user_id,
+                                                 stream_registry.history_assistant_id)
 
 
 def _prepare_stream_state(
@@ -3945,7 +4024,10 @@ def _save_user_history_turn(request: ChatRequest, current_user: dict) -> None:
     在生成结束后保存，避免本轮消息提前进入历史而在模型输入中重复出现。
     """
     auth.bind_session(request.session_id, current_user["user_id"])
-    memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
+    message_id = memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
+    control = llm_provider.current_request_control()
+    if control is not None:
+        control.history_user_id = message_id
 
 
 def _should_save_assistant_answer(content: str, has_error: bool, state: dict) -> bool:
@@ -3990,14 +4072,17 @@ def _save_assistant_history_message(
 ) -> None:
     """保存assistant历史；普通消息保持原调用形状兼容既有测试桩。"""
     if message_type == memory.MESSAGE_TYPE_FILE_DELIVERY:
-        memory.save_message(
+        message_id = memory.save_message(
             session_id,
             "assistant",
             content,
             message_type=message_type,
         )
-        return
-    memory.save_message(session_id, "assistant", content)
+    else:
+        message_id = memory.save_message(session_id, "assistant", content)
+    control = llm_provider.current_request_control()
+    if control is not None:
+        control.history_assistant_id = message_id
 
 
 def _build_stream_system_prompt(context: list[str]) -> str:

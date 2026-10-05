@@ -301,8 +301,17 @@
     }
     history.forEach((item) => {
       const role = item.role === 'user' ? 'user' : 'assistant';
-      addBubble(role, String(item.content || ''), '', item.attachment_filenames || []);
+      const interrupted = item.message_type === 'interrupted';
+      addBubble(role, interrupted ? '回答已中断' : String(item.content || ''),
+        interrupted ? 'interrupted' : '', item.attachment_filenames || []);
     });
+  }
+
+  function renderInterrupted(bubble, body) {
+    bubble.classList.remove('pending');
+    bubble.classList.add('interrupted');
+    body.textContent = '回答已中断';
+    bubble.querySelectorAll('.citations, .generated-file-card').forEach((item) => item.remove());
   }
 
   // 引用来源如实展示后端字段：文件名、doc_id前8位与相关度分数。
@@ -684,6 +693,11 @@
             bubble.classList.add('failed');
             body.textContent = '本次没有返回内容，请重试。';
           }
+        },
+        onInterrupted() {
+          answer = '';
+          streamFailed = true;
+          renderInterrupted(bubble, body);
         },
       });
     } catch (error) {

@@ -255,7 +255,14 @@ const API = (() => {
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
       while (true) {
-        const { value, done } = await reader.read();
+        let next;
+        try {
+          next = await reader.read();
+        } catch (error) {
+          handlers.onInterrupted?.();
+          return;
+        }
+        const { value, done } = next;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const blocks = buffer.split('\n\n');
@@ -341,7 +348,8 @@ const API = (() => {
           }
         }
       }
-      handlers.onDone?.();
+      // EOF不等于服务端DONE：不能把半截正文当成完整回答。
+      handlers.onInterrupted?.();
     },
   };
 })();

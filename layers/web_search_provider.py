@@ -2,6 +2,7 @@
 """External web search provider abstraction and Tavily implementation."""
 
 import time
+from contextvars import copy_context
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from typing import Optional
@@ -11,10 +12,34 @@ from pydantic import BaseModel
 from tavily import TavilyClient
 
 import config
+from layers import llm_provider
 from utils.logger import get_logger
 
 
 logger = get_logger("web_search_provider")
+
+
+class _CancellableTavilyClient(TavilyClient):
+    """保留SDK的搜索请求字段；SSE请求用可逐响应取消的HTTP传输。"""
+
+    def _search(self, query, search_depth="basic", topic="general", days=2, max_results=5,
+                include_domains=None, exclude_domains=None, include_answer=False,
+                include_raw_content=False, include_images=False, use_cache=True):
+        control = llm_provider.current_request_control()
+        if control is None:
+            return super()._search(query, search_depth, topic, days, max_results,
+                                   include_domains, exclude_domains, include_answer,
+                                   include_raw_content, include_images, use_cache)
+        payload = dict(query=query, search_depth=search_depth, topic=topic, days=days,
+                       max_results=max_results, include_domains=include_domains or None,
+                       exclude_domains=exclude_domains or None, include_answer=include_answer,
+                       include_raw_content=include_raw_content, include_images=include_images,
+                       api_key=self.api_key, use_cache=use_cache)
+        with control.model_attempt("web_search", model=False):
+            response = llm_provider._get_shared_http_client().post(
+                self.base_url, json=payload, headers=self.headers, timeout=100)
+            response.raise_for_status()
+            return response.json()
 
 MAX_RETRIES = 1
 RETRY_DELAY_SECONDS = 1.0
@@ -43,12 +68,14 @@ class TavilyProvider(WebSearchProvider):
         api_key: str,
         deadline: Optional[float] = None,
     ) -> None:
-        self._client = TavilyClient(api_key=api_key)
+        self._client = (_CancellableTavilyClient if llm_provider.current_request_control()
+                        else TavilyClient)(api_key=api_key)
         self._deadline = deadline
 
     def search(self, query: str) -> list[SearchCandidate]:
         last_error = None
         for attempt in range(MAX_RETRIES + 1):
+            llm_provider.check_request_cancelled("web_search")
             try:
                 timeout = min(
                     SEARCH_CALL_TIMEOUT_SECONDS,
@@ -68,6 +95,7 @@ class TavilyProvider(WebSearchProvider):
                 _log_success(candidates)
                 return candidates
             except Exception as exc:
+                llm_provider.check_request_cancelled()
                 last_error = exc
                 logger.warning(
                     "Tavily调用失败：attempt=%s error_type=%s",
@@ -77,7 +105,12 @@ class TavilyProvider(WebSearchProvider):
                 if attempt < MAX_RETRIES:
                     if self._deadline and _remaining_budget(self._deadline) <= RETRY_DELAY_SECONDS:
                         break
-                    time.sleep(RETRY_DELAY_SECONDS)
+                    control = llm_provider.current_request_control()
+                    if control is None:
+                        time.sleep(RETRY_DELAY_SECONDS)
+                    else:
+                        control.cancelled.wait(RETRY_DELAY_SECONDS)
+                        control.check()
         raise last_error
 
 
@@ -134,9 +167,20 @@ def classify_source_tier(url: str) -> str:
 
 def _run_with_timeout(func, timeout: float, **kwargs):
     executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(func, **kwargs)
+    context = copy_context()
+    future = executor.submit(context.run, func, **kwargs)
     try:
-        return future.result(timeout=timeout)
+        deadline = time.perf_counter() + timeout
+        while True:
+            llm_provider.check_request_cancelled("web_search")
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                raise TimeoutError()
+            try:
+                return future.result(timeout=min(0.05, remaining))
+            except TimeoutError:
+                if future.done():
+                    raise
     except TimeoutError as exc:
         future.cancel()
         raise TimeoutError("工具调用超时：%s秒" % timeout) from exc

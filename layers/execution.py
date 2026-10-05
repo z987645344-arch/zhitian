@@ -439,6 +439,7 @@ def local_evidence_is_strong(metadata: dict) -> bool:
 
 def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
     """统一工具调用入口"""
+    llm_provider.check_request_cancelled("execute_" + tool, state)
     if tool not in TOOL_REGISTRY:
         return ToolResult(tool=tool, status="error", data="", error_msg=f"未知工具：{tool}")
 
@@ -570,6 +571,7 @@ def _search_web(
     _execution_state: Optional[dict] = None,
 ) -> str:
     """联网搜索：先优化搜索query，再调用Tavily并整理成自然语言回复"""
+    llm_provider.check_request_cancelled("web_search", _execution_state)
     if not source_policy.source_gate(_execution_state, "web").allowed:
         return _source_blocked_answer(_execution_state)
     if not _has_valid_key(config.TAVILY_API_KEY, "TAVILY"):
@@ -722,6 +724,7 @@ def stream_search_result(
     total_budget: Optional[float] = None,
 ) -> Iterator[str]:
     """流式联网搜索：Tavily完成后用所选模型逐chunk整理搜索结果。"""
+    llm_provider.check_request_cancelled("web_search", execution_state)
     if not source_policy.source_gate(execution_state, "web").allowed:
         yield _source_blocked_answer(execution_state)
         return
@@ -907,6 +910,7 @@ def _search_documents(
     _execution_state: Optional[dict] = None,
 ) -> ToolResult:
     """检索已上传的本地文档并整理为自然语言。"""
+    llm_provider.check_request_cancelled("document_search", _execution_state)
     verified_doc_ids = auth.get_verified_doc_ids()
     diagnostics = memory.SearchDiagnostics()
     effective_rerank_enabled = rerank_enabled and not deepseek_circuit_open(_execution_state)
@@ -1811,7 +1815,19 @@ def _open_llm_stream_with_first_content_timeout(
     worker.start()
     # 依据Future是否完成区分墙钟超时与工作线程异常。Python 3.11起
     # futures.TimeoutError是内置TimeoutError的别名，不能用except区分二者。
-    done, _ = wait_for_futures([result], timeout=wait_seconds)
+    wait_deadline = time.perf_counter() + wait_seconds
+    while True:
+        try:
+            llm_provider.check_request_cancelled(stage_name)
+        except llm_provider.RequestCancelled:
+            cancelled.set()
+            with holder_lock:
+                response = response_holder["response"]
+            llm_provider.close_stream(response)
+            raise
+        done, _ = wait_for_futures([result], timeout=min(0.05, max(0.0, wait_deadline - time.perf_counter())))
+        if done or time.perf_counter() >= wait_deadline:
+            break
     if not done:
         cancelled.set()
         with holder_lock:
@@ -2143,10 +2159,14 @@ def conversation_history_messages(
     """原样读取最近10条用户/助手消息，不摘要、不提升为system指令。"""
     history = memory.get_history(session_id, limit=10) if session_id else []
     excluded_types = {
+        memory.MESSAGE_TYPE_INTERRUPTED_USER,
+        memory.MESSAGE_TYPE_INTERRUPTED,
+    }
+    excluded_types.update(
         str(item).strip()
         for item in (excluded_history_message_types or [])
         if str(item).strip()
-    }
+    )
     return [
         {"role": item["role"], "content": item["content"]}
         for item in history
