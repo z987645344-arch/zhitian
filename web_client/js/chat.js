@@ -325,10 +325,11 @@
       const meta = document.createElement('span');
       meta.className = 'meta';
       const docId = String(item.doc_id || '');
-      const score = Number(item.score);
+      const hasScore = item.score !== undefined && item.score !== null && item.score !== '';
+      const score = hasScore ? Number(item.score) : NaN;
       meta.textContent = [
         docId ? `文档 ${docId.slice(0, 8)}` : '',
-        Number.isFinite(score) ? `相关度 ${score.toFixed(3)}` : '',
+        Number.isFinite(score) ? `相关度 ${score.toFixed(3)}` : (!hasScore ? '同节补充' : ''),
         Number.isFinite(Number(item.chunk_index)) ? `资料位置 #${Number(item.chunk_index)}` : '',
       ].filter(Boolean).join(' · ');
       row.append(name, meta);

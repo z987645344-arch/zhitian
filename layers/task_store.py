@@ -28,7 +28,7 @@ _task_lock = threading.RLock()
 # 任务状态机：
 #   pending    已建档、后台尚未开始
 #   processing 后台处理中（重启后这批会被判为interrupted）
-#   done       成功，result_doc_id可用
+#   done       当时入库成功；对应文档可能随后删除，任务作为历史保留
 #   failed     处理失败，error_message记录原因
 #   interrupted 进程重启时发现的半成品，其残留数据会被清理
 TASK_STATUSES = ("pending", "processing", "done", "failed", "interrupted")
@@ -99,15 +99,43 @@ def init_db() -> None:
             """
         )
         # 去重只在组织内生效：不同组织的知识库本就隔离，跨组织去重没有意义。
-        # 只对done状态建唯一性——失败/中断的任务不应挡住用户重试，
-        # 因此用部分索引而不是普通唯一索引。
+        # 历史done任务不能永久占用哈希：删除文档后允许原样重传。
+        # SQLite索引不能关联documents，改用数据库触发器原子地保护仍存在的
+        # 文档，保持并发入库只有一个任务完成；不删除或改写历史任务。
+        legacy_unique = any(
+            row["name"] == "idx_upload_tasks_dedup" and row["unique"]
+            for row in conn.execute("PRAGMA index_list(upload_tasks)")
+        )
+        if legacy_unique:
+            conn.execute("DROP INDEX idx_upload_tasks_dedup")
         conn.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_upload_tasks_dedup
+            CREATE INDEX IF NOT EXISTS idx_upload_tasks_dedup
             ON upload_tasks(file_hash, organization_id)
             WHERE status = 'done' AND file_hash != ''
             """
         )
+        # 沿用索引名：旧代码的CREATE UNIQUE INDEX IF NOT EXISTS会忽略它，
+        # 避免回滚时因多次上传的历史done记录而在启动阶段建唯一索引失败。
+        for operation in ("INSERT", "UPDATE"):
+            conn.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS upload_tasks_live_dedup_{operation.lower()}
+                BEFORE {operation} ON upload_tasks
+                WHEN NEW.status = 'done' AND NEW.file_hash != ''
+                  AND EXISTS (SELECT 1 FROM documents WHERE doc_id = NEW.result_doc_id)
+                  AND EXISTS (
+                    SELECT 1 FROM upload_tasks AS task
+                    JOIN documents AS document ON document.doc_id = task.result_doc_id
+                    WHERE task.status = 'done' AND task.file_hash = NEW.file_hash
+                      AND task.organization_id IS NEW.organization_id
+                      AND task.task_id != NEW.task_id
+                  )
+                BEGIN
+                    SELECT RAISE(ABORT, 'duplicate live document content');
+                END
+                """
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_upload_tasks_status ON upload_tasks(status)"
         )
@@ -131,14 +159,15 @@ def _row_to_task(row: sqlite3.Row) -> UploadTask:
 
 
 def find_done_by_hash(file_hash: str, organization_id: Optional[int]) -> Optional[UploadTask]:
-    """查同组织内是否已有相同内容且成功入库的任务。"""
+    """查同组织内相同内容的已完成任务，且其文档当前仍存在。"""
     if not file_hash:
         return None
     with _task_lock, _connect() as conn:
         row = conn.execute(
             """
-            SELECT * FROM upload_tasks
-            WHERE file_hash = ? AND organization_id IS ? AND status = 'done'
+            SELECT task.* FROM upload_tasks AS task
+            JOIN documents AS document ON document.doc_id = task.result_doc_id
+            WHERE task.file_hash = ? AND task.organization_id IS ? AND task.status = 'done'
             LIMIT 1
             """,
             (file_hash, organization_id),

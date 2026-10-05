@@ -7,6 +7,30 @@ const vm = require('node:vm');
 const apiSource = fs.readFileSync(path.join(__dirname, '../web_client/js/api.js'), 'utf8');
 const chatSource = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
 
+test('无分数的补取来源标为同节补充，正常相关度包括零分均如实显示', () => {
+  function element() { return { children: [], appendChild(child) { this.children.push(child); },
+    append(...children) { this.children.push(...children); } }; }
+  const sandbox = vm.createContext({ document: { createElement: element }, scrollToBottom: () => {} });
+  const start = chatSource.indexOf('  function renderCitations(');
+  const end = chatSource.indexOf('  function renderToolStatus(', start);
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  const render = vm.runInContext('renderCitations', sandbox);
+  for (const [item, expected] of [[{}, '同节补充'], [{ score: null }, '同节补充'],
+    [{ score: '' }, '同节补充'], [{ score: 0 }, '相关度 0.000'],
+    [{ score: .625 }, '相关度 0.625'], [{ score: 'invalid' }, '']]) {
+    const bubble = element();
+    bubble.querySelector = () => null;
+    render(bubble, [{ source: '<script>source</script>', doc_id: 'abcdefgh1234', chunk_index: 2, ...item }]);
+    const row = bubble.children[0].children[1];
+    assert.equal(row.children[0].textContent, '<script>source</script>');
+    assert.ok(row.children[1].textContent.includes('资料位置 #2'));
+    assert.ok(row.children[1].textContent.includes('文档 abcdefgh'));
+    if (expected) assert.ok(row.children[1].textContent.includes(expected));
+    else assert.doesNotMatch(row.children[1].textContent, /同节补充|相关度/);
+    if (expected === '同节补充') assert.doesNotMatch(row.children[1].textContent, /相关度|NaN/);
+  }
+});
+
 test('实际SSE解析传递来源详情，正文与DONE不受影响，不转发额外内容', async () => {
   const events = [
     { type: 'source_policy', source: 'public', time_sensitivity: 'general', only_materials: false,
