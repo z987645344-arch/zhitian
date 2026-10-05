@@ -150,17 +150,11 @@ INTENT_TOOLS = [
             "description": (
                 "仅在来源闸门允许时，用于联网核实公开且需要最新信息的问题。"
                 "本工具只表示一个单一搜索目标；如果用户要求分别检索多个对象后比较或汇总，应调用declare_complex_task。"
-                "query_hint是搜索方向提示，不必重写完整query。"
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "query_hint": {
-                        "type": "string",
-                        "description": "需要联网核实的公开信息与时间范围"
-                    }
-                },
-                "required": ["query_hint"]
+                "properties": {},
+                "required": []
             }
         }
     },
@@ -179,13 +173,8 @@ INTENT_TOOLS = [
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "query_hint": {
-                        "type": "string",
-                        "description": "本地文档检索方向，例如主要内容、某个术语、某段资料"
-                    }
-                },
-                "required": ["query_hint"]
+                "properties": {},
+                "required": []
             }
         }
     },

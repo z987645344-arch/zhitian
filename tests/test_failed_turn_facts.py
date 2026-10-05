@@ -14,7 +14,7 @@ from layers import auth, execution, llm_provider, memory, planning, source_polic
 
 def response(text="", tool=False):
     calls = [SimpleNamespace(function=SimpleNamespace(
-        name="search_documents", arguments=json.dumps({"query_hint": "检索词", "query": "检索词"}),
+        name="search_documents", arguments=json.dumps({"query": "检索词"}),
     ))] if tool else []
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=calls))])
 

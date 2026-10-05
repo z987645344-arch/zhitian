@@ -129,11 +129,11 @@ def test_function_call_reasoning_is_parsed_without_tool_specific_fallback():
     decision = planning._build_classify_decision([
         {
             "name": "search_web",
-            "arguments": {"query_hint": "news", "reasoning": "需要查询实时信息"},
+            "arguments": {"reasoning": "需要查询实时信息"},
         }
     ])
     missing = planning._build_classify_decision([
-        {"name": "search_documents", "arguments": {"query_hint": "internal"}}
+        {"name": "search_documents", "arguments": {}}
     ])
 
     assert decision["decision_reasoning"] == "需要查询实时信息"
@@ -142,6 +142,54 @@ def test_function_call_reasoning_is_parsed_without_tool_specific_fallback():
         "reasoning" in item["function"]["parameters"]["properties"]
         for item in planning.INTENT_TOOLS
     )
+
+
+@pytest.mark.parametrize("tool_name", ["search_web", "search_documents"])
+def test_intent_search_schema_has_no_dead_query_parameter(tool_name):
+    tool = next(item["function"] for item in planning.INTENT_TOOLS
+                if item["function"]["name"] == tool_name)
+    params = tool["parameters"]
+    assert set(params["properties"]) == {"reasoning", "source_classification"}
+    assert params["required"] == ["source_classification"]
+    assert "query_hint" not in json.dumps(tool, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("tool_name", ["search_web", "search_documents"])
+@pytest.mark.parametrize("json_arguments", [False, True])
+def test_legacy_query_hint_is_safely_ignored(monkeypatch, tool_name, json_arguments):
+    classification = {
+        "source": "public", "time_sensitivity": "current_value",
+        "only_materials": False, "non_factual": False,
+    }
+    arguments = {"reasoning": "先核验资料", "source_classification": classification}
+    monkeypatch.setattr(planning.system_modules, "prompt_prefix", lambda text: text)
+    monkeypatch.setattr(execution, "conversation_history_messages", lambda session_id: [])
+
+    def classify_with(extra_arguments):
+        payload = {**arguments, **extra_arguments}
+        raw = json.dumps(payload, ensure_ascii=False) if json_arguments else payload
+        response = {"choices": [{"message": {"tool_calls": [{"function": {
+            "name": tool_name, "arguments": raw,
+        }}]}}]}
+        monkeypatch.setattr(planning.llm_provider, "chat_completion", lambda **kwargs: response)
+        parsed = planning._extract_tool_calls(response)
+        assert parsed[0]["arguments"]["reasoning"] == arguments["reasoning"]
+        assert parsed[0]["arguments"]["source_classification"] == classification
+        decision = planning._classify_with_model("当前公开信息是什么？", tier="expert")
+        state = _state(decision["intent"])
+        state["message"] = "当前公开信息是什么？"
+        state["attachment_context"] = ""
+        state["source_policy"] = decision["source_policy"]
+        assert decision["source_policy"].classification_valid
+        task = planning._task_from_intent(state, 1)
+        assert task.params["query"] == state["message"]
+        assert "query_hint" not in task.params
+        return decision, task
+
+    baseline = classify_with({})
+    legacy = classify_with({"query_hint": "旧模型提供但不应使用的查询"})
+    assert legacy == baseline
+    assert legacy[0]["decision_reasoning"] == arguments["reasoning"]
 
 
 def test_attachment_signal_routes_empty_message_to_direct_answer(monkeypatch):
