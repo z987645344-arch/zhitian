@@ -267,7 +267,6 @@ def test_document_answer_first_content_timeout_ignores_non_content_activity(monk
 
 def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
     state = planning._new_agent_state("document-budget-clamp", "问题", "expert")
-    state["complex_deadline"] = time.perf_counter() + 0.04
     context = execution.DocumentAnswerContext(
         query="问题",
         tier="expert",
@@ -284,6 +283,33 @@ def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monk
         "chat_completion",
         Mock(return_value=response),
     )
+    original_open = execution._open_llm_stream_with_first_content_timeout
+    original_remaining = execution.remaining_request_budget
+    close_times = []
+    original_close = response.close
+
+    def timed_close():
+        close_times.append(time.perf_counter())
+        original_close()
+
+    monkeypatch.setattr(response, "close", timed_close)
+
+    def budget_at_stream_start(execution_state, limit):
+        # 40ms只测建流/首正文，不把SQLite历史与提示词准备混入关闭断言。
+        # 原测试在慢机器上准备阶段即耗尽预算、Mock调用为0，却要求关闭未创建的流。
+        if execution_state is state:
+            state["complex_deadline"] = time.perf_counter() + 0.04
+        return original_remaining(execution_state, limit)
+
+    monkeypatch.setattr(execution, "remaining_request_budget", budget_at_stream_start)
+    opened_at = []
+
+    def timed_open(*args, **kwargs):
+        opened_at.append(time.perf_counter())
+        assert 0 < args[3] <= 0.04
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_open_llm_stream_with_first_content_timeout", timed_open)
 
     started_at = time.perf_counter()
     chunks = list(execution._answer_from_documents(
@@ -298,6 +324,21 @@ def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monk
     assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
     assert state["degradation_reasons"] == ["document_first_content_timeout"]
     assert response.closed.wait(0.5)
+    execution.llm_provider.chat_completion.assert_called_once()
+    assert close_times[0] - opened_at[0] < 0.5
+
+
+def test_document_budget_exhausted_before_open_creates_no_stream(monkeypatch):
+    state = planning._new_agent_state("document-budget-expired", "问题", "expert")
+    state["complex_deadline"] = time.perf_counter() - 1
+    context = execution.DocumentAnswerContext(query="问题", tier="expert", candidates=[
+        execution.DocumentAnswerCandidate(content="可信资料", source="资料.pdf", score=0.9)])
+    completion = Mock()
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", completion)
+    assert list(execution._answer_from_documents(context, tier="expert", timeout=5,
+                _execution_state=state)) == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
+    assert state["degradation_reasons"] == ["document_first_content_timeout"]
+    completion.assert_not_called()
 
 
 def test_search_documents_collects_stream_for_non_streaming_chat_contract(monkeypatch):

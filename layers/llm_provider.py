@@ -2,6 +2,7 @@
 """Thin DeepSeek adapter for fast and expert model tiers."""
 
 import errno
+import socket
 import threading
 import time
 from http.cookiejar import CookieJar, DefaultCookiePolicy
@@ -117,6 +118,22 @@ def use_stream_registry(registry: StreamRegistry) -> Iterator[None]:
 
 
 def _close_raw_stream(stream: Any) -> None:
+    response = stream if isinstance(stream, httpx.Response) else getattr(stream, "response", None)
+    if isinstance(response, httpx.Response) and not response.is_closed:
+        # 当前共享池使用HTTP/1.1；只中断本响应的连接，不关闭其他用户的池。
+        # Linux跨线程close(fd)并不打断正在recv的线程：本地隔离实测30/30仍
+        # 等待读超时约1.90秒，peer也未收到EOF。先shutdown再close使取消
+        # 独立于下一个正文块/读超时；正常消费完的响应已closed，不破坏keep-alive。
+        network_stream = response.extensions.get("network_stream")
+        get_info = getattr(network_stream, "get_extra_info", None)
+        try:
+            connection = get_info("socket") if callable(get_info) else None
+            if connection is not None:
+                connection.shutdown(socket.SHUT_RDWR)
+        except OSError as exc:
+            # 读取线程可能已抢先关闭/断开同一socket，这两种竞态即已达成取消。
+            if exc.errno not in {errno.EBADF, errno.ENOTCONN}:
+                logger.warning("中断模型连接失败：error_type=%s", type(exc).__name__)
     close = getattr(stream, "close", None)
     if callable(close):
         try:
