@@ -1032,36 +1032,48 @@ def _run_fast_state(state: AgentState) -> AgentState:
             return state
 
         selected_evidence = ""
+        evidence_model_calls = 0
         if task.tool == "search_documents":
             evidence_started_at = time.perf_counter()
             try:
-                evidence_deadline = (deadline - config.FAST_FINAL_ANSWER_RESERVE_SECONDS
-                                     - llm_provider.OPTIONAL_STAGE_HANDOFF_SECONDS)
-                evidence_budget = evidence_deadline - time.perf_counter()
-                if evidence_budget <= 0:
-                    raise TimeoutError("final answer reserve leaves no evidence budget")
-                evidence_response = llm_provider.chat_completion(
-                    _build_fast_evidence_messages(state, result),
-                    tier="fast",
-                    stage="fast_evidence_filter",
-                    response_format={"type": "json_object"},
-                    timeout=min(config.FAST_LLM_TIMEOUT, evidence_budget),
-                    total_budget=evidence_budget,
-                    require_full_retry_budget=True,
-                    enforce_wall_clock=True,
-                    wall_clock_deadline=evidence_deadline,
-                )
-                selection = _parse_fast_evidence_selection(evidence_response)
-                selected_evidence, selected_citations = _select_fast_evidence(
-                    result,
-                    selection.used_candidate_ids if selection.evidence_sufficient else [],
-                )
-                if selection.evidence_sufficient and (not selected_evidence or not selected_citations):
-                    raise ValueError("invalid selected evidence")
-                if not selection.evidence_sufficient and selection.used_candidate_ids:
-                    raise ValueError("inconsistent evidence decision")
-                evidence_state = "partial" if selection.reason.startswith("partial:") else "hit"
-                source_policy.set_evidence(state, evidence_state if selection.evidence_sufficient else "miss")
+                # 只有成功的空检索可确定未命中；异常和附件仍走原有路径。
+                # 与真正筛选共用编号解析，不用模型判断一个空候选集合。
+                if (result.status == "success" and not state.get("attachment_context")
+                        and not _fast_evidence_blocks(result)):
+                    selection = FastEvidenceSelection(
+                        evidence_sufficient=False, used_candidate_ids=[], reason="miss:no_candidates",
+                    )
+                    selected_citations = []
+                    source_policy.set_evidence(state, "miss")
+                else:
+                    evidence_deadline = (deadline - config.FAST_FINAL_ANSWER_RESERVE_SECONDS
+                                         - llm_provider.OPTIONAL_STAGE_HANDOFF_SECONDS)
+                    evidence_budget = evidence_deadline - time.perf_counter()
+                    if evidence_budget <= 0:
+                        raise TimeoutError("final answer reserve leaves no evidence budget")
+                    evidence_model_calls = 1
+                    evidence_response = llm_provider.chat_completion(
+                        _build_fast_evidence_messages(state, result),
+                        tier="fast",
+                        stage="fast_evidence_filter",
+                        response_format={"type": "json_object"},
+                        timeout=min(config.FAST_LLM_TIMEOUT, evidence_budget),
+                        total_budget=evidence_budget,
+                        require_full_retry_budget=True,
+                        enforce_wall_clock=True,
+                        wall_clock_deadline=evidence_deadline,
+                    )
+                    selection = _parse_fast_evidence_selection(evidence_response)
+                    selected_evidence, selected_citations = _select_fast_evidence(
+                        result,
+                        selection.used_candidate_ids if selection.evidence_sufficient else [],
+                    )
+                    if selection.evidence_sufficient and (not selected_evidence or not selected_citations):
+                        raise ValueError("invalid selected evidence")
+                    if not selection.evidence_sufficient and selection.used_candidate_ids:
+                        raise ValueError("inconsistent evidence decision")
+                    evidence_state = "partial" if selection.reason.startswith("partial:") else "hit"
+                    source_policy.set_evidence(state, evidence_state if selection.evidence_sufficient else "miss")
             except Exception as exc:
                 source_policy.set_evidence(state, "failed")
                 execution.add_degradation_reason(
@@ -1104,8 +1116,9 @@ def _run_fast_state(state: AgentState) -> AgentState:
                     state["response"] = source_policy.refusal_for(state)
                 state["citations"] = []
                 logger.info(
-                    "fast路径完成：session_id=%s model_calls=2 tool=%s evidence_sufficient=false",
+                    "fast路径完成：session_id=%s model_calls=%s tool=%s evidence_sufficient=false",
                     state["session_id"],
+                    1 + evidence_model_calls,
                     task.tool,
                 )
                 return state
@@ -1148,7 +1161,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
         logger.info(
             "fast路径完成：session_id=%s model_calls=%s tool=%s",
             state["session_id"],
-            3 if task.tool == "search_documents" else 2,
+            2 + evidence_model_calls,
             task.tool
         )
         return state
@@ -1254,9 +1267,9 @@ def _parse_fast_evidence_selection(response: object) -> FastEvidenceSelection:
     return FastEvidenceSelection(**payload)
 
 
-def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple[str, list[Citation]]:
-    """Select numbered candidate blocks and matching citations without semantic hard-coding."""
-    blocks = {
+def _fast_evidence_blocks(result: ToolResult) -> dict[int, str]:
+    """Share the same nonempty numbered candidates between empty checks and selection."""
+    return {
         int(match.group(1)): match.group(2).strip()
         for match in re.finditer(
             r"(?ms)^\[(\d+)\]\s*(.*?)(?=^\[\d+\]\s*|\Z)",
@@ -1264,6 +1277,11 @@ def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple
         )
         if match.group(2).strip()
     }
+
+
+def _select_fast_evidence(result: ToolResult, candidate_ids: list[int]) -> tuple[str, list[Citation]]:
+    """Select numbered candidate blocks and matching citations without semantic hard-coding."""
+    blocks = _fast_evidence_blocks(result)
     source_citations = _dedupe_citations(result.citations or [])
     selected_blocks = []
     selected = []

@@ -123,13 +123,13 @@ def test_fast_public_miss_uses_existing_call_draft_without_web(current, monkeypa
     request = state(mode="fast", current=current)
     model_responses = iter([
         response(classification=classified(current=current), draft="通用答案"),
-        {"choices": [{"message": {"content": '{"evidence_sufficient":false,"used_candidate_ids":[],"reason":"无相关资料"}'}}]},
     ])
     no_external[1].side_effect = lambda *_a, **_kw: next(model_responses)
     monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
     monkeypatch.setattr(planning.mcp_client, "call_tool", lambda *_a, **_kw: execution.ToolResult(tool="search_documents", status="success", data=policy.REFUSAL))
     result = planning._run_fast_state(request)
-    assert no_external[1].call_count == 2
+    assert no_external[1].call_count == 1
+    assert result["evidence_state"] == "miss"
     assert result["response"] == policy.FAST_LATEST_UNVERIFIED if current else result["response"].startswith(policy.FAST_GENERAL_NOTE)
     no_external[0].assert_not_called()
 
@@ -510,8 +510,7 @@ def test_fast_general_answer_never_uses_tool_selection_prose(draft, monkeypatch,
     if draft is None:
         args.pop("general_answer")
     first["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = json.dumps(args)
-    replies = iter([first, {"choices": [{"message": {"content":
-        '{"evidence_sufficient":false,"used_candidate_ids":[],"reason":"miss:没有相关资料"}'}}]}])
+    replies = iter([first])
     no_external[1].side_effect = lambda *_a, **_kw: next(replies)
     monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
     monkeypatch.setattr(planning.mcp_client, "call_tool", lambda *_a, **_kw: execution.ToolResult(
@@ -520,7 +519,178 @@ def test_fast_general_answer_never_uses_tool_selection_prose(draft, monkeypatch,
     assert result["response"] == policy.REFUSAL
     assert "我先查一下知识库" not in result["response"]
     assert result["degradation_reasons"] == ["fast_general_answer_failed"]
-    assert no_external[1].call_count == 2
+    assert no_external[1].call_count == 1
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("data", ["", " \n ", policy.REFUSAL, "[1] \n\n[2] \n"])
+@pytest.mark.parametrize("source,current,only", [
+    ("internal", False, False), ("uncertain", False, False),
+    ("public", False, False), ("public", True, False), ("public", False, True),
+])
+def test_fast_successful_empty_candidates_skip_filter_and_keep_source_gate(
+    data, source, current, only, monkeypatch, no_external,
+):
+    request = state(mode="fast", source=source, current=current, only=only)
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    no_external[1].side_effect = None
+    no_external[1].return_value = response(
+        classification=classified(source, current, only), draft="通用知识备用答案",
+    )
+    monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
+        tool="search_documents", status="success", data=data,
+    )))
+
+    result = planning._run_fast_state(request)
+
+    assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == ["fast_tool_selection"]
+    assert result["evidence_state"] == "miss"
+    assert result["evidence_checked"] is True
+    assert result["citations"] == []
+    assert result["degradation_reasons"] == []
+    if source == "public" and not current and not only:
+        assert result["response"] == policy.FAST_GENERAL_NOTE + "\n\n通用知识备用答案"
+        assert result["answer_source"] == "general"
+    else:
+        expected = policy.FAST_LATEST_UNVERIFIED if source == "public" and current else policy.REFUSAL
+        assert result["response"] == expected
+        assert result["answer_source"] == "refusal"
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError("fixture failure"), TimeoutError("fixture timeout")])
+def test_fast_empty_retrieval_failure_is_not_a_miss(failure, monkeypatch, no_external):
+    request = state(mode="fast")
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    no_external[1].side_effect = None
+    no_external[1].return_value = response(draft="不允许使用的通用知识")
+    if failure is None:
+        monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
+            tool="search_documents", status="error", data="", error_msg="fixture failure",
+        )))
+    else:
+        # 走真实工具适配器：检索异常由执行层转为error，不伪装成功的空检索。
+        monkeypatch.setattr(execution, "_search_documents", Mock(side_effect=failure))
+        monkeypatch.setattr(execution, "RETRY_DELAY", 0)
+
+    result = planning._run_fast_state(request)
+
+    assert result["evidence_state"] == "failed"
+    assert result["error"]
+    assert result["response"] == "抱歉，知识库处理失败，请稍后重试"
+    assert "不允许使用的通用知识" not in result["response"]
+    assert not policy.source_gate(result, "general").allowed
+    assert not policy.source_gate(result, "web").allowed
+    assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == ["fast_tool_selection"]
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("first_content", ["附件资料的成品回答", ""])
+def test_fast_attachment_empty_retrieval_keeps_existing_path(first_content, monkeypatch, no_external):
+    request = state(mode="fast", source="internal")
+    request.update(attachment_context=["本轮附件正文"], attachment_ids=["fixture-attachment"])
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    replies = iter([
+        response(classification=classified("internal"), content=first_content),
+        {"choices": [{"message": {"content":
+            '{"evidence_sufficient":false,"used_candidate_ids":[],"reason":"miss:没有相关资料"}'}}]},
+    ])
+    no_external[1].side_effect = lambda *_a, **_kw: next(replies)
+    monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
+        tool="search_documents", status="success", data="",
+    )))
+
+    result = planning._run_fast_state(request)
+
+    expected_stages = ["fast_tool_selection"] if first_content else ["fast_tool_selection", "fast_evidence_filter"]
+    assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == expected_stages
+    assert result["response"] == (first_content or policy.REFUSAL)
+    assert result["evidence_state"] == ("hit" if first_content else "miss")
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("with_citation", [True, False])
+def test_fast_numbered_candidate_keeps_filter_request_and_validation(with_citation, monkeypatch, no_external):
+    request = state(mode="fast", source="internal")
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    replies = iter([
+        response(classification=classified("internal")),
+        {"choices": [{"message": {"content":
+            '{"evidence_sufficient":true,"used_candidate_ids":[1],"reason":"hit:资料充分"}'}}]},
+        {"choices": [{"message": {"content": "有依据的回答"}}]},
+    ])
+    no_external[1].side_effect = lambda *_a, **_kw: next(replies)
+    citation = execution.Citation(doc_id="fixture-doc", source="测试材料", chunk_index=0, score=.8)
+    monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
+        tool="search_documents", status="success", data="[1] 完整候选正文，不截断",
+        citations=[citation] if with_citation else [],
+    )))
+
+    result = planning._run_fast_state(request)
+
+    filter_call = no_external[1].call_args_list[1]
+    assert filter_call.kwargs["stage"] == "fast_evidence_filter"
+    assert "[1] 完整候选正文，不截断" in filter_call.args[0][-1]["content"]
+    assert filter_call.kwargs["response_format"] == {"type": "json_object"}
+    assert filter_call.kwargs["timeout"] == planning.config.FAST_LLM_TIMEOUT
+    assert filter_call.kwargs["require_full_retry_budget"] is True
+    assert filter_call.kwargs["enforce_wall_clock"] is True
+    assert filter_call.kwargs["total_budget"] <= (
+        planning.config.FAST_REQUEST_TIMEOUT - planning.config.FAST_FINAL_ANSWER_RESERVE_SECONDS
+        - planning.llm_provider.OPTIONAL_STAGE_HANDOFF_SECONDS
+    )
+    assert planning.config.stage_thinking_kwargs("fast_evidence_filter") == {}
+    if with_citation:
+        assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == [
+            "fast_tool_selection", "fast_evidence_filter", "fast_result_generation",
+        ]
+        assert result["evidence_state"] == "hit"
+        assert result["response"] == "有依据的回答"
+        assert result["citations"] == [citation]
+    else:
+        assert no_external[1].call_count == 2
+        assert result["evidence_state"] == "failed"
+        assert result["degradation_reasons"] == ["fast_evidence_filter_failed"]
+        assert result["response"] == policy.REFUSAL
+    no_external[0].assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize("source", ["internal", "public"])
+def test_fast_empty_retrieval_http_and_saved_history_keep_source_policy(
+    path, source, client, auth_headers, monkeypatch, no_external,
+):
+    import uuid
+    from layers import memory
+
+    headers, _ = auth_headers("customer")
+    session = uuid.uuid4().hex
+    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+    monkeypatch.setattr(memory, "maybe_save_to_vector", lambda *_a, **_kw: None)
+    no_external[1].side_effect = None
+    no_external[1].return_value = response(classification=classified(source), draft="通用知识备用答案")
+    monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
+        tool="search_documents", status="success", data="",
+    )))
+
+    received = client.post(path, headers=headers, json={
+        "session_id": session, "message": "测试请求", "mode": "fast",
+    })
+
+    assert received.status_code == 200
+    if path.endswith("stream"):
+        events = [json.loads(line[6:]) for line in received.text.splitlines() if line.startswith("data: ")]
+        answer = "".join(event.get("chunk", "") for event in events if event.get("chunk") != "[DONE]")
+        assert next(e for e in events if e.get("type") == "request_status")["status"] == "success"
+    else:
+        answer = received.json()["data"]
+    expected = (policy.FAST_GENERAL_NOTE + "\n\n通用知识备用答案"
+                if source == "public" else policy.knowledge_refusal())
+    assert answer == expected
+    assert answer.count(policy.FAST_GENERAL_NOTE) == (1 if source == "public" else 0)
+    saved = client.get("/memory/" + session, headers=headers).json()["history"]
+    assert [item["content"] for item in saved if item["role"] == "assistant"] == [expected]
+    assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == ["fast_tool_selection"]
     no_external[0].assert_not_called()
 
 
