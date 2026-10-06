@@ -2407,7 +2407,13 @@
 - fast、普通文档、附件、复杂汇总及历史润色共用文档展示规则，增加禁止对用户使用“检索结果”“证据”“候选”，保留来源闸门、来源备注、拒答语义、预算和推理设置。非流式/chat仍不感知访客断开；旧代码不认识中断类型，回滚后将失去整轮上下文排除保护，历史数据本身仍可读取。
 - 新增40项后端确定性取消、ASGI断开、后台取消、持久化历史及回环HTTP/TLS连接测试；项目3.12的run_tests.bat -q为1272 passed、5 deselected、既有Starlette警告1条，500.46秒；网页JS为12 passed，py_compile通过。默认data的16个文件大小、mtime与SHA-256及指挥师文档前后完全一致，未放宽断言或新增跳过。全程零付费，仅本地提交，不推送、不打标、不改VERSION。生产需重建API与web客户端；远程CI、真实浏览器及供应商停止生成/计费未实测，不能视为已验证。
 
-## 未发布
+## 2026-10-06 存档 v4.17.1 —— 纯修（x.y.Z）：升级 LangGraph 依赖组修复 langgraph-sdk 漏洞 CVE-2026-104873；精简专家意图工具参数（删除未使用的 query_hint）
+
+- 按`git log v4.17..HEAD`核对，覆盖两个提交：`e616a1c`（删除专家意图工具未使用的query_hint，保留决策理由、来源分类及旧输出兼容）；`18d4c9b`（升级最小未撤回LangGraph依赖组并配套锁定websockets，消除SDK资源授权漏洞）。以下原“未发布”工作条目完整保留，VERSION从4.17.0更新为4.17.1。
+- 应用依赖变化：langgraph 1.0.10→1.2.4、langgraph-prebuilt 1.0.8→1.1.0、langgraph-sdk 0.3.15→0.4.4、websockets 17.2→16.0；checkpoint、langchain-core、langsmith及其余应用依赖保持原锁定，不启用新的v2返回格式。
+- 部署注意：只重建API镜像，不改`.env`；合并部署后用几个真实问题核对意图分类是否正常；回滚换回v4.17镜像即可。本轮不部署，不把本机验证表述为生产已生效。
+- 本机Python 3.12环境对齐：urllib3 2.7.0→2.8.0、pip 25.0.1→官方当前修复版26.2.1；升级前后均178个包，仅这两项变化，pip check通过。以UTF-8模式完整解析requirements并审计155个依赖，urllib3 2.8.0及langgraph-sdk 0.4.4均无漏洞记录；不加忽略参数时仅剩chromadb 0.5.0的3条既有漏洞，扫描退出码1，不改门禁或例外。新旧包清单、差异与原始报告保留在被忽略的backups/archive-v4.17.1-20261006目录。
+- 项目Python 3.12的`run_tests.bat -q`为1278 passed、5 deselected、既有Starlette警告1条，433.09秒；未放宽断言或新增跳过。默认data的16个文件大小、mtime与SHA-256前后完全一致，指挥师`docs/claude_memory.md`原样随存档提交。全程零付费，不改应用代码或requirements，不推送、不打标；本存档提交的远程CI与部署尚未执行。
 
 ### 2026-10-06 删除专家意图工具的未使用查询提示参数
 
