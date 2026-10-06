@@ -31,7 +31,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
-from layers import source_policy
+from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
 from utils import observability
@@ -941,7 +941,10 @@ def _ensure_session_owner_or_404(session_id: str, current_user: dict) -> None:
 
 
 def _bind_or_verify_session(session_id: str, current_user: dict) -> None:
-    auth.bind_session(session_id, current_user["user_id"])
+    try:
+        auth.bind_session(session_id, current_user["user_id"])
+    except auth.SessionClaimRejected:
+        raise HTTPException(status_code=403, detail="无权访问该session") from None
     _ensure_session_owner(session_id, current_user)
 
 
@@ -1601,6 +1604,7 @@ async def chat(
                 perception_output.session_id,
                 final_data,
                 assistant_message_type,
+                owner_user_id=current_user["user_id"],
             )
         if not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data:
             background_tasks.add_task(
@@ -1610,7 +1614,8 @@ async def chat(
                 perception_output.session_id,
                 "user",
                 perception_output.message,
-                mode
+                mode,
+                current_user["user_id"],
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
@@ -1620,7 +1625,8 @@ async def chat(
                     perception_output.session_id,
                     "assistant",
                     final_data,
-                    mode
+                    mode,
+                    current_user["user_id"],
                 )
         response_data = output.format_response(
             session_id=perception_output.session_id,
@@ -2058,6 +2064,7 @@ async def upload_chat_attachment(
             text,
             filename,
             file_id=persistent_file_id,
+            owner_user_id=current_user["user_id"],
         )
         logger.info(
             "聊天附件解析完成：session_id_len=%s attachment_id=%s char_count=%s format=%s",
@@ -3482,6 +3489,7 @@ def _chat_stream_events(
             if _should_save_assistant_answer(final_data, has_error, final_state):
                 _save_assistant_history_message(
                     perception_output.session_id, final_data, assistant_message_type,
+                    owner_user_id=current_user["user_id"],
                 )
             yield _sse_data({"type": "source_policy", **source_policy.source_details(final_state)})
             yield _sse_data({"chunk": final_data})
@@ -3498,7 +3506,8 @@ def _chat_stream_events(
                         perception_output.session_id,
                         "user",
                         perception_output.message,
-                        "fast"
+                        "fast",
+                        current_user["user_id"],
                     )
                     background_tasks.add_task(
                         llm_provider.run_request_background,
@@ -3508,7 +3517,8 @@ def _chat_stream_events(
                         perception_output.session_id,
                         "assistant",
                         final_data,
-                        "fast"
+                        "fast",
+                        current_user["user_id"],
                     )
             request_status = (
                 "degraded"
@@ -3748,6 +3758,7 @@ def _chat_stream_events(
                 perception_output.session_id,
                 final_data,
                 assistant_message_type,
+                owner_user_id=current_user["user_id"],
             )
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data(_request_status_event(state, has_error).model_dump())
@@ -3761,7 +3772,8 @@ def _chat_stream_events(
                 perception_output.session_id,
                 "user",
                 perception_output.message,
-                perception_output.mode
+                perception_output.mode,
+                current_user["user_id"],
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
@@ -3772,7 +3784,8 @@ def _chat_stream_events(
                     perception_output.session_id,
                     "assistant",
                     final_data,
-                    perception_output.mode
+                    perception_output.mode,
+                    current_user["user_id"],
                 )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), request.session_id, type(e).__name__)
@@ -4017,13 +4030,14 @@ def _assistant_history_message_type(state: dict) -> str:
     return memory.MESSAGE_TYPE_CHAT
 
 
+@session_records.serialized_change
 def _save_user_history_turn(request: ChatRequest, current_user: dict) -> None:
     """已通过认证/额度/附件检查的请求，无论生成结果如何都保留并绑定。
 
     每次提交是一轮独立事件，不按文本去重：重试和有意重复无法可靠区分。
     在生成结束后保存，避免本轮消息提前进入历史而在模型输入中重复出现。
     """
-    auth.bind_session(request.session_id, current_user["user_id"])
+    _bind_or_verify_session(request.session_id, current_user)
     message_id = memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
     control = llm_provider.current_request_control()
     if control is not None:
@@ -4065,12 +4079,16 @@ def _should_save_assistant_answer(content: str, has_error: bool, state: dict) ->
     return content.strip() not in notices
 
 
+@session_records.serialized_change
 def _save_assistant_history_message(
     session_id: str,
     content: str,
     message_type: str,
+    *,
+    owner_user_id: Optional[str] = None,
 ) -> None:
     """保存assistant历史；普通消息保持原调用形状兼容既有测试桩。"""
+    auth.ensure_session_writer(session_id, owner_user_id)
     if message_type == memory.MESSAGE_TYPE_FILE_DELIVERY:
         message_id = memory.save_message(
             session_id,

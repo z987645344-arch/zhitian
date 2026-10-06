@@ -21,7 +21,7 @@ from chromadb.api.client import SharedSystemClient
 from pydantic import BaseModel
 from rank_bm25 import BM25Okapi
 import config
-from layers import chroma_sync, db_schema_version, embedding, llm_provider, retrieval_query, document_sections
+from layers import chroma_sync, db_schema_version, embedding, llm_provider, retrieval_query, document_sections, session_records
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages
@@ -186,6 +186,7 @@ def init_db() -> None:
         raise
 
 
+@session_records.serialized_change
 def save_message(
     session_id: str,
     role: str,
@@ -257,6 +258,7 @@ def get_history(session_id: str, limit: int = 10) -> list[dict]:
     return history
 
 
+@session_records.serialized_change
 def mark_interrupted_turn(session_id: str, user_message_id: int,
                           assistant_message_id: Optional[int] = None) -> None:
     """整轮取消：保留用户原话，仅移除本请求的助手成品，原子写入中断标记。
@@ -413,9 +415,13 @@ def maybe_save_to_vector(
     session_id: str,
     role: str,
     content: str,
-    tier: str = "fast"
+    tier: str = "fast",
+    owner_user_id: Optional[str] = None,
 ) -> None:
     """按重要性过滤后写入Chroma长期向量记忆。"""
+    from layers import auth
+    with session_records.SESSION_RECORD_LOCK:
+        auth.ensure_session_writer(session_id, owner_user_id)
     llm_provider.check_request_cancelled("memory_importance")
     started_at = time.perf_counter()
     is_important, importance_level = _judge_message_importance(
@@ -434,23 +440,26 @@ def maybe_save_to_vector(
     )
     if not is_important:
         return
-    with _chroma_lock:
+    # save_to_vector内部按“会话锁→Chroma锁”取得锁，不能反过来先拿Chroma锁。
+    with session_records.SESSION_RECORD_LOCK:
         llm_provider.check_request_cancelled("memory_write")
-        save_to_vector(
-            session_id,
-            content,
-            role=role,
-            importance_level=importance_level
-        )
+        kwargs = {"role": role, "importance_level": importance_level}
+        if owner_user_id is not None:
+            kwargs["owner_user_id"] = owner_user_id
+        save_to_vector(session_id, content, **kwargs)
 
 
+@session_records.serialized_change
 def save_to_vector(
     session_id: str,
     content: str,
     role: str = DEFAULT_VECTOR_ROLE,
-    importance_level: str = IMPORTANCE_LEVEL_NORMAL
+    importance_level: str = IMPORTANCE_LEVEL_NORMAL,
+    owner_user_id: Optional[str] = None,
 ) -> None:
     """写入Chroma长期向量记忆"""
+    from layers import auth
+    auth.ensure_session_writer(session_id, owner_user_id)
     if not session_id:
         raise ValueError("session_id不能为空")
     if not content:
@@ -1642,6 +1651,7 @@ def hard_delete_days(importance_level: str) -> int:
     return max(1, int(config.MEMORY_HARD_DELETE_NORMAL_DAYS))
 
 
+@session_records.serialized_change
 def clear_session(session_id: str) -> bool:
     """清空两层记忆但保留session元数据和用户归属。"""
     if not session_id:
@@ -1655,6 +1665,7 @@ def clear_session(session_id: str) -> bool:
     return _clear_vector_session(session_id)
 
 
+@session_records.serialized_change
 def delete_session_full(session_id: str) -> bool:
     """彻底删除会话记录、归属和长期向量；返回向量清理是否完整。"""
     if not session_id:

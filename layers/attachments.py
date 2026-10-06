@@ -9,6 +9,7 @@ from typing import Dict, Optional
 from pydantic import BaseModel
 
 import config
+from layers import session_records
 
 
 class AttachmentRecord(BaseModel):
@@ -24,12 +25,16 @@ _attachment_lock = threading.RLock()
 _attachments: Dict[str, Dict[str, AttachmentRecord]] = {}
 
 
+@session_records.serialized_change
 def save_attachment(
     session_id: str,
     text: str,
     filename: str,
     file_id: str = "",
+    owner_user_id: Optional[str] = None,
 ) -> AttachmentRecord:
+    from layers import auth
+    auth.ensure_session_writer(session_id, owner_user_id)
     record = AttachmentRecord(
         attachment_id=file_id or str(uuid.uuid4()),
         file_id=file_id,
@@ -51,6 +56,13 @@ def get_attachment(session_id: str, attachment_id: str) -> Optional[AttachmentRe
         return record.model_copy(deep=True) if record else None
 
 
+def has_session_records(session_id: str) -> bool:
+    """仅检查缓存是否有记录，不取正文、不清理过期记录（保守拒绝认领）。"""
+    with _attachment_lock:
+        return bool(_attachments.get(session_id))
+
+
+@session_records.serialized_change
 def clear_session(session_id: str) -> None:
     with _attachment_lock:
         _attachments.pop(session_id, None)

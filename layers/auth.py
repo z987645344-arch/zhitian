@@ -15,11 +15,12 @@ import bcrypt
 import jwt
 
 import config
-from layers import db_schema_version
+from layers import db_schema_version, session_records
 from layers.db_transaction import transaction
 from utils.logger import get_logger
 
 logger = get_logger("auth")
+session_audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
 
 USERS_DB_PATH = os.path.join(config.BASE_DIR, "data", "users.db")
 VALID_ROLES = {"customer", "employee", "reviewer", "developer"}
@@ -1168,12 +1169,64 @@ def reset_user_password(user_id: str) -> Optional[str]:
     return plaintext
 
 
+class SessionClaimRejected(Exception):
+    """无主会话有记录或无法安全检查；HTTP 出口使用统一的归属拒绝。"""
+
+
+class SessionWriteRejected(PermissionError):
+    """旧请求不得向已换主人的会话写入数据。"""
+
+
+def ensure_session_writer(session_id: str, user_id: Optional[str]) -> None:
+    """在会话变更锁内复核写入身份；无绑定的内部写入会生成不可认领的记录。
+
+    没有用户上下文的内部存储调用保留兼容性。HTTP所有写入携带用户身份；
+    归属删除与认领也用同一把锁，不能在本检查和实际写入之间换主人。
+    """
+    if not session_id or user_id is None:
+        return
+    with _connect() as conn:
+        foreign = conn.execute(
+            "SELECT 1 FROM user_sessions WHERE session_id=? AND user_id!=? LIMIT 1",
+            (session_id, user_id),
+        ).fetchone()
+    if foreign is not None:
+        session_audit_logger.info(
+            "[audit] session_write_rejected session_id_len=%s reason=owner_changed", len(session_id)
+        )
+        raise SessionWriteRejected()
+
+
+@session_records.serialized_change
 def bind_session(session_id: str, user_id: str) -> None:
-    """仅绑定尚无主人的会话；调用方随后校验归属，不能追加第二个主人。"""
+    """只有无主且没有任何记录的新会话可认领；调用方随后校验归属。"""
     if not session_id or not user_id:
         return
     try:
         with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM user_sessions WHERE session_id=? LIMIT 1",
+                            (session_id,)).fetchone() is not None:
+                return
+            # 与所有进程内会话写入/删除共用锁；SQLite写事务串行化首次绑定。
+            # 延迟导入避免 auth/memory 的模块初始化循环。
+            from layers import attachments
+            try:
+                occupied = attachments.has_session_records(session_id) or session_records.has_persistent_records(
+                    session_id, config.HISTORY_DB_PATH,
+                    os.path.join(config.BASE_DIR, "data", "files.db"),
+                    os.path.join(config.VECTORDB_PATH, "chroma.sqlite3"),
+                )
+            except Exception:
+                session_audit_logger.info(
+                    "[audit] session_claim_rejected session_id_len=%s reason=record_check_failed", len(session_id)
+                )
+                raise SessionClaimRejected() from None
+            if occupied:
+                session_audit_logger.info(
+                    "[audit] session_claim_rejected session_id_len=%s reason=unowned_session_has_records", len(session_id)
+                )
+                raise SessionClaimRejected()
             conn.execute(
                 """
                 INSERT OR IGNORE INTO user_sessions (session_id, user_id)
@@ -1185,6 +1238,8 @@ def bind_session(session_id: str, user_id: str) -> None:
                 # 单条写SQL由SQLite串行化，不作易产生竞态的“先查再插”。
                 (session_id, user_id, session_id)
             )
+    except SessionClaimRejected:
+        raise
     except Exception as e:
         logger.error(
             "绑定用户会话失败：session_id_len=%s user_id_len=%s error_type=%s",
@@ -1429,6 +1484,7 @@ def list_verified_documents(
         raise
 
 
+@session_records.serialized_change
 def delete_session_binding(session_id: str) -> bool:
     """删除session归属记录，供会话彻底删除流程复用。"""
     if not session_id:

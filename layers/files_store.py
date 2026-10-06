@@ -15,6 +15,7 @@ from typing import List, Optional, Union
 from pydantic import BaseModel
 
 import config
+from layers import session_records
 
 
 _files_lock = threading.RLock()
@@ -137,6 +138,7 @@ def _file_path(record: UserFile) -> str:
     )
 
 
+@session_records.serialized_change
 def save_file(
     owner_user_id: str,
     source_type: str,
@@ -150,6 +152,9 @@ def save_file(
     generation_engine_version: Optional[str] = None,
 ) -> str:
     """复制文件并写入元数据；任一步失败都会回滚已创建的磁盘文件。"""
+    if session_id:
+        from layers import auth
+        auth.ensure_session_writer(session_id, owner_user_id)
     owner = str(owner_user_id or "")
     if not _SAFE_COMPONENT.fullmatch(owner):
         raise ValueError("invalid_owner_user_id")
