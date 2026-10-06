@@ -2416,3 +2416,11 @@
 - 离线使用本地BGE分词器（关闭截断，不是DeepSeek计费口径）估算：固定分类提示词1927字符/1410 token不变；完整工具定义按紧凑JSON统计由7760字符/4519 token减为7567字符/4378 token，合计约减少141输入token；不包含动态语气、规范、日期及历史。
 - 既有意图分类回放中，字段存在时query_hint连同JSON键与分隔符的平均边际输出量估算：C2-a为26.50 token（28条），C2-b为27.70 token（23条），提示词版本对照旧版22.43 token（7条）、新版23.75 token（8条）；各版本分开统计，不把隐藏推理token或端到端节省计入。无新增模型或联网调用。
 - 项目Python 3.12的run_tests.bat -q为1278 passed、5 deselected、既有Starlette警告1条，446.41秒；定向测试82 passed，未放宽断言或新增跳过。默认data的16个文件大小、mtime与SHA-256及指挥师文档哈希前后完全一致，临时测量脚本已清理。本轮零付费，不改VERSION、不推送、不打标、不部署；部署注意：工具参数精简，合并部署后观察分类是否正常，真实分类影响及远程CI尚未验证。
+
+### 2026-10-06 升级最小LangGraph依赖组，消除SDK资源授权漏洞
+
+- requirements锁定langgraph 1.2.4、prebuilt 1.1.0、sdk 0.4.4，消除CVE-2026-104873；checkpoint 4.1.1、langchain-core 1.5.3、langsmith 0.10.15保持不变。官方PyPI元数据确认1.2.2仍限制sdk<0.4，1.2.3因合并策略回归被撤回，1.2.4是允许修复版SDK的最低未撤回稳定版；不登记漏洞例外，不修改门禁。
+- SDK 0.4.4要求websockets>=14,<17，因此配套锁定16.0并从17.2降级。项目3.12环境升级前后均178个包，仅上述4个版本变化；完整新旧清单与差异保留在被忽略的backups/langgraph-upgrade-20261006目录，Chroma、NumPy、ONNX等其余依赖逐项不变。
+- 干净的Python 3.12环境只安装依赖组和审计工具，pip check与langgraph.prebuilt真实导入通过；pip-audit 2.10.1中目标CVE及其GHSA别名均为0条，LangGraph相关包无漏洞记录。全环境扫描仍报告未改动的pip 25.0.1和urllib3 2.7.0漏洞，退出码为1，不将目标漏洞消除表述为全扫描通过，也不顺手升级其他包或增加例外。
+- 项目Python 3.12的run_tests.bat -q为1278 passed、5 deselected、既有Starlette警告1条，544.01秒；最终锁定文件更新后追加定向143 passed，图编排、检查点自环、反思、取消及中断相关测试全部通过，业务代码与测试断言不改。默认data的16个文件大小、mtime与SHA-256及指挥师文档哈希前后完全一致，本轮模型与联网付费调用0。
+- 升级说明新增的v2输出格式为可选项，现有graph.invoke仍使用默认v1字典返回；持久化错误恢复、DeltaChannel等新能力未启用，项目compile仍不传checkpointer。只更新依赖锁定及本工作条目，不改VERSION、不推送、不打标、不部署；容器构建、远程CI与生产生效尚待后续核验，不能据本机回归承诺整体安全门禁已绿。

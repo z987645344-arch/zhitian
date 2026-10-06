@@ -8,17 +8,18 @@ pydantic==2.13.4
 # F31：LangGraph依赖组整体升级，消除langgraph/langchain-core/langsmith的
 # 20条已知漏洞（OSV.dev实测：升级后这6个包均为0条）。
 # langgraph 1.x起把checkpoint/prebuilt/sdk拆为独立包并强制安装，依赖面由3个
-# 扩到6个，因此一并精确锁定，避免传递依赖自行漂移。其中langgraph-sdk必须
-# >=0.3.15（CVE-2026-48776修复线）——0.1.1时代该包未安装、此前按错误映射
-# 处理，升级后它成为真实安装包，这条约束开始生效。
-langgraph==1.0.10
+# 扩到6个，因此一并精确锁定，避免传递依赖自行漂移。SDK 0.4.4修复
+# CVE-2026-104873；主包1.2.2仍限制SDK<0.4，1.2.3因合并策略回归被撤回，
+# 因此选允许SDK 0.4.4的最低未撤回稳定版1.2.4，不启用新的v2返回格式。
+langgraph==1.2.4
 langchain-core==1.5.3
 langsmith==0.10.15
 langgraph-checkpoint==4.1.1
-# 1.0.9起引用主包1.1.3才提供的ExecutionInfo；保持langgraph 1.0.10时
-# 必须配套1.0.8（主包声明的最低版本），pip check不会发现这类运行时不兼容。
-langgraph-prebuilt==1.0.8
-langgraph-sdk==0.3.15
+# 主包1.2.4要求prebuilt>=1.1.0,<1.2.0；保持最低配套版本并实测真实模块导入。
+langgraph-prebuilt==1.1.0
+langgraph-sdk==0.4.4
+# SDK 0.4.4要求websockets>=14,<17；锁定16.0，避免解析到不兼容的17.x。
+websockets==16.0
 chromadb==0.5.0
 # F32：chromadb 0.5.0 声明 numpy>=1.22.5 无上界，干净环境会解析到 NumPy 2.x，
 # 而其代码使用 NumPy 2 已移除的 np.float_，import 即 AttributeError；pip check
