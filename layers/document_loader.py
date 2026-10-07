@@ -5,6 +5,8 @@ import os
 import re
 
 from docx import Document
+from docx.table import Table, _Cell
+from docx.text.paragraph import Paragraph
 
 from layers.file_processing.models import FileProcessingRequest, FileTaskType
 from layers.file_processing.pdf import pdf_processor as _pdf_processor_registration
@@ -13,6 +15,22 @@ from layers.file_processing.runtime import get_file_processor_registry
 
 LONG_PARAGRAPH_RATIO = 1.5
 SENTENCE_END_PATTERN = re.compile(r"[^。！？.!?]+[。！？.!?]*")
+
+
+class _DocxText(str):
+    """Plain text with transient table boundaries; nothing extra is persisted."""
+    def __new__(cls, text, tables):
+        value = super().__new__(cls, text)
+        value.tables = tables
+        return value
+
+
+class _DocxChunk(str):
+    """Keep original text for section mapping when a table header is repeated."""
+    def __new__(cls, text, source_text):
+        value = super().__new__(cls, text)
+        value.source_text = source_text
+        return value
 
 
 def load_document(file_path: str) -> str:
@@ -67,7 +85,28 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
     if current.strip():
         chunks.append(current.strip())
 
-    return [chunk for chunk in chunks if chunk.strip()]
+    chunks = [chunk for chunk in chunks if chunk.strip()]
+    return _repeat_docx_headers(text, chunks, safe_chunk_size) if isinstance(text, _DocxText) else chunks
+
+
+def _repeat_docx_headers(text, chunks, chunk_size):
+    # 表格跨块后不能只剩值而丢掉列名。只在块从表体开始时补完整表头，
+    # 不改正文的其他格式；超长表头不反复复制，也不截断其原始内容。
+    normalize = lambda value: re.sub(r"\s+", "", value)
+    normalized = normalize(text)
+    cursor = 0
+    result = []
+    for chunk in chunks:
+        needle = normalize(chunk)
+        start = normalized.find(needle, cursor)
+        headers = []
+        if start >= 0:
+            for body_start, end, header in text.tables:
+                if body_start <= start < end and len(header) < chunk_size:
+                    headers.append(header)
+            cursor = start + len(needle)
+        result.append(_DocxChunk("\n".join(headers + [chunk]), chunk) if headers else chunk)
+    return result
 
 
 def _split_paragraphs(text: str) -> list[str]:
@@ -155,4 +194,72 @@ def _read_pdf(file_path: str) -> str:
 
 def _read_docx(file_path: str) -> str:
     document = Document(file_path)
-    return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
+    pieces, tables = [], []
+    normalized_offset = 0
+    for block in document.iter_inner_content():
+        if isinstance(block, Paragraph):
+            if block.text.strip():
+                pieces.append(block.text)
+                normalized_offset += len(re.sub(r"\s+", "", block.text))
+        else:
+            rows = list(_docx_table_rows(block))
+            if not rows:
+                continue
+            header_rows = []
+            for row, is_header in rows:
+                if not is_header:
+                    break
+                header_rows.append(row)
+            # 未显式标注重复表头时，按常见表格约定保留首个非空行作列名。
+            header_rows = header_rows or [rows[0][0]]
+            header = "\n".join(header_rows)
+            start = normalized_offset + len(re.sub(r"\s+", "", header))
+            for row, _ in rows:
+                pieces.append(row)
+                normalized_offset += len(re.sub(r"\s+", "", row))
+            tables.append((start, normalized_offset, header))
+    return _DocxText("\n".join(pieces), tables)
+
+
+def iter_docx_text_blocks(document):
+    """Yield (text, paragraph style) in the same body order as extraction.
+
+    Table content belongs to the surrounding body section, never promotes cell
+    formatting to document headings. Shared by the section metadata mapper.
+    """
+    for block in document.iter_inner_content():
+        if isinstance(block, Paragraph):
+            if block.text.strip():
+                yield block.text, str(block.style.style_id if block.style else "")
+        else:
+            for text, _ in _docx_table_rows(block):
+                yield text, ""
+
+
+def _docx_table_rows(table):
+    for row in table.rows:
+        cells = []
+        # row.cells repeats merged-cell aliases. Walk physical cells instead;
+        # vertical continuations retain an empty column, not the restart text.
+        for tc in row._tr.tc_lst:
+            if tc.vMerge == "continue":
+                cells.append("")
+                continue
+            cell = _Cell(tc, table)
+            parts = []
+            for block in cell.iter_inner_content():
+                if isinstance(block, Paragraph):
+                    content = " ".join(block.text.split())
+                    if content:
+                        parts.append(content)
+                elif isinstance(block, Table):
+                    parts.extend(text for text, _ in _docx_table_rows(block))
+            cells.append(" ; ".join(parts))
+        if any(cells):
+            marker = row._tr.trPr.find(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tblHeader"
+            ) if row._tr.trPr is not None else None
+            header = marker is not None and marker.get(
+                "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "true"
+            ) not in {"0", "false", "off"}
+            yield " | ".join(cells).strip(), header

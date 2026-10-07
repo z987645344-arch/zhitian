@@ -60,18 +60,16 @@ def chunk_section_paths(text: str, chunks: list[str], *, source_path: str = "",
         if events and events[0][1] == 1:
             title = events[0][2]
     elif suffix == ".docx" and source_path:
+        from layers.document_loader import iter_docx_text_blocks
         document = Document(source_path)
         offset = 0
-        for paragraph in document.paragraphs:
-            if not paragraph.text.strip():
-                continue
-            style_id = str(paragraph.style.style_id if paragraph.style else "")
+        for block_text, style_id in iter_docx_text_blocks(document):
             if style_id == "Title":
-                title = paragraph.text.strip()
+                title = block_text.strip()
             hit = re.fullmatch(r"Heading([12])", style_id)
             if hit:
-                events.append((offset, int(hit.group(1)), paragraph.text.strip()))
-            offset += len(paragraph.text) + 1
+                events.append((offset, int(hit.group(1)), block_text.strip()))
+            offset += len(block_text) + 1
     if not events or not title:
         return [""] * len(chunks)
 
@@ -103,7 +101,7 @@ def chunk_section_paths(text: str, chunks: list[str], *, source_path: str = "",
     result = []
     cursor = 0
     for index, chunk in enumerate(chunks):
-        needle = normalize(chunk)
+        needle = normalize(getattr(chunk, "source_text", chunk) if suffix == ".docx" else chunk)
         start = normalized.find(needle, cursor) if needle else -1
         if start < 0:
             logger.warning("切片小节映射不可用：chunk_index=%s error_type=ChunkPositionNotFound", index)
