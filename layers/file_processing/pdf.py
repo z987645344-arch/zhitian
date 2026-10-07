@@ -34,6 +34,10 @@ from layers.file_processing.models import (
 )
 from layers.file_processing.quality import FileQualityChecker
 from layers.file_processing.runtime import register_processor_once
+from layers.file_processing.runner import (
+    TaskWorkspace, task_scope, budget_lock, run_python_worker,
+    FileTaskTimeout, FileTaskCancelled, cleanup_artifact, cleanup_task_directory,
+)
 from layers.pdf_text import extract_pdf_page_text
 from utils.logger import get_logger
 
@@ -166,6 +170,48 @@ class PdfProcessor(FileProcessor):
         }
 
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
+        """解析、渲染与质量校验都在可终止进程里，不留下迟到线程。"""
+        workspace = TaskWorkspace()
+        keep = False
+        try:
+            with task_scope(request.resource_budget.max_execution_seconds or None) as scope:
+                scope.emit("preparing")
+                work = request.model_copy(deep=True)
+                work.output_dir = str(workspace.path / "outputs")
+                work.output_path = str(workspace.path / "outputs" / "result.pdf")
+                with budget_lock(_pdf_processing_lock, scope):
+                    scope.emit("recognizing")
+                    data = run_python_worker("pdf", work.model_dump(mode="json"), workspace, scope)
+                result = FileProcessingResult.model_validate(data)
+                if not result.success:
+                    return result
+                # Worker已通过质量门，导出之前再检查取消/总预算。
+                scope.check()
+                if request.task_type == FileTaskType.CONVERT:
+                    keep = True
+                elif result.artifacts:
+                    if request.output_dir:
+                        os.makedirs(request.output_dir, exist_ok=True)
+                    for artifact in result.artifacts:
+                        destination = (request.output_path if request.task_type == FileTaskType.MERGE
+                                       else os.path.join(request.output_dir, os.path.basename(artifact.output_path)))
+                        os.makedirs(os.path.dirname(destination), exist_ok=True)
+                        shutil.copyfile(artifact.output_path, destination)
+                        artifact.output_path = destination
+                return result
+        except FileTaskTimeout:
+            return FileProcessingResult(success=False, status=FileProcessingStatus.TIMEOUT,
+                                        error_type="timeout", error_message="PDF处理超时，请稍后重试")
+        except FileTaskCancelled:
+            from layers import llm_provider
+            llm_provider.check_request_cancelled("pdf_processing")
+            return FileProcessingResult(success=False, status=FileProcessingStatus.CANCELLED,
+                                        error_type="cancelled", error_message="文件任务已取消")
+        finally:
+            if not keep:
+                workspace.cleanup()
+
+    def _execute_inline(self, request: FileProcessingRequest) -> FileProcessingResult:
         try:
             validation = self._validate_sources(request)
             if validation is not None:
@@ -185,7 +231,7 @@ class PdfProcessor(FileProcessor):
                     request.max_pages,
                 )
             if request.task_type == FileTaskType.CONVERT:
-                return self._convert(request.source_paths[0], request.target_format)
+                return self._convert(request.source_paths[0], request.target_format, request.output_dir)
             return self._failed("unsupported_task", "不支持的PDF任务")
         except ValueError as exc:
             self._cleanup_failed_request(request)
@@ -228,6 +274,8 @@ class PdfProcessor(FileProcessor):
     ) -> QualityCheckResult:
         if not result.success:
             return QualityCheckResult(passed=False)
+        if result.quality_checked:
+            return QualityCheckResult(passed=True, artifact=result.artifacts[0] if result.artifacts else None)
         if request.task_type in {FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT, FileTaskType.EXTRACT_TABLES}:
             return QualityCheckResult(passed=True)
         issues: List[QualityIssue] = []
@@ -253,32 +301,14 @@ class PdfProcessor(FileProcessor):
         result: FileProcessingResult,
     ) -> None:
         paths = [artifact.output_path for artifact in result.artifacts]
-        conversion_dirs = {
-            os.path.dirname(path)
-            for path in paths
-            if os.path.basename(os.path.dirname(path)).startswith("conversion_")
-        }
         for path in paths:
-            if os.path.isfile(path) and os.path.dirname(path) not in conversion_dirs:
-                os.remove(path)
-        for directory in conversion_dirs:
-            shutil.rmtree(directory)
-        if request.output_dir and os.path.isdir(request.output_dir):
-            try:
-                os.rmdir(request.output_dir)
-            except OSError as exc:
-                logger.warning(
-                    "PDF临时目录清理异常：error_type=%s",
-                    type(exc).__name__,
-                )
+            cleanup_artifact(path)
 
     @staticmethod
     def _cleanup_failed_request(request: FileProcessingRequest) -> None:
         try:
-            if request.output_path and os.path.isfile(request.output_path):
-                os.remove(request.output_path)
-            if request.output_dir and os.path.isdir(request.output_dir):
-                shutil.rmtree(request.output_dir)
+            if request.output_dir:
+                cleanup_artifact(os.path.join(request.output_dir, "output"))
         except OSError as exc:
             logger.warning("PDF失败产物清理异常：error_type=%s", type(exc).__name__)
 
@@ -419,12 +449,9 @@ class PdfProcessor(FileProcessor):
             artifacts.append(self._artifact(output_path, "pdf"))
         return self._success(artifacts=artifacts, page_count=page_count)
 
-    def _convert(self, source_path: str, target_format: str) -> FileProcessingResult:
+    def _convert(self, source_path: str, target_format: str, output_dir=None) -> FileProcessingResult:
         started_at = time.perf_counter()
-        output_dir = os.path.join(
-            os.path.dirname(source_path),
-            "conversion_%s" % uuid.uuid4().hex,
-        )
+        output_dir = output_dir or str(TaskWorkspace().path / "outputs")
         os.makedirs(output_dir, exist_ok=False)
         output_path = os.path.join(
             output_dir,
@@ -441,7 +468,7 @@ class PdfProcessor(FileProcessor):
                 else:
                     return self._failed("invalid_target", "不支持的PDF转换目标")
             if not os.path.isfile(output_path):
-                shutil.rmtree(output_dir)
+                cleanup_artifact(output_path)
                 return self._failed("output_missing", "未生成转换文件")
             logger.info(
                 "文档转换完成：source_ext=.pdf target=%s status=success elapsed_ms=%s",
@@ -450,7 +477,7 @@ class PdfProcessor(FileProcessor):
             )
             return self._success(artifacts=[self._artifact(output_path, target_format)])
         except Exception:
-            shutil.rmtree(output_dir, ignore_errors=True)
+            # 父运行器先终止并回收工作进程，再按身份清理整个任务目录。
             raise
 
     @staticmethod

@@ -24,6 +24,10 @@ from layers.file_processing.runtime import (
     current_file_entry,
 )
 from layers.file_processing.registry import CapabilityNotFoundError, EngineUnavailableError
+from layers.file_processing.runner import (
+    TaskWorkspace, FileTaskCancelled, FileTaskTimeout, budget_lock, task_scope,
+    current_scope, run_process, cleanup_artifact, cleanup_task_directory,
+)
 from utils.logger import get_logger
 
 
@@ -36,6 +40,7 @@ class ConversionStatus(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
+    CANCELLED = "CANCELLED"
 
 
 class ConversionResult(BaseModel):
@@ -52,6 +57,7 @@ def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds:
     """Convert one local file through headless soffice under a process-wide lock."""
     started_at = time.perf_counter()
     output_dir = ""
+    workspace = None
     source_ext = os.path.splitext(source_path or "")[1].lower()
     target = (target_format or "").lower().lstrip(".")
     try:
@@ -72,11 +78,8 @@ def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds:
                 "not_configured",
             )
 
-        output_dir = os.path.join(
-            os.path.dirname(source_path),
-            "conversion_%s" % uuid.uuid4().hex,
-        )
-        os.makedirs(output_dir, exist_ok=False)
+        workspace = TaskWorkspace()
+        output_dir = str(workspace.path)
         # 每次转换使用独立配置目录，禁止命令借现存、未经隔离的 soffice
         # 进程执行。仅 soffice 子进程树禁网，API 进程仍可访问模型供应商。
         profile_url = (Path(output_dir) / "lo-profile").resolve().as_uri()
@@ -92,19 +95,16 @@ def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds:
             output_dir,
             source_path,
         ]
-        with _conversion_lock:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                close_fds=True,
-                timeout=min(value for value in (max(1, config.CONVERSION_TIMEOUT_SECONDS), timeout_seconds) if value > 0),
-            )
-        if completed.returncode == 126:
+        with task_scope(seconds=min(value for value in
+                (max(1, config.CONVERSION_TIMEOUT_SECONDS), timeout_seconds) if value > 0)) as scope:
+            with budget_lock(_conversion_lock, scope):
+                scope.emit("converting")
+                returncode = run_process(command, workspace, scope)
+        if returncode == 126:
             _cleanup_directory(output_dir)
             logger.error("LibreOffice网络隔离不可用：source_ext=%s target=%s", source_ext, target)
             return _failed("LibreOffice网络隔离不可用", source_ext, target, "sandbox_unavailable")
-        if completed.returncode != 0:
+        if returncode != 0:
             _cleanup_directory(output_dir)
             return _failed("LibreOffice转换失败", source_ext, target, "process_failed")
 
@@ -124,7 +124,7 @@ def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds:
             converted_from_format=source_ext.lstrip("."),
             converted_to_format=target,
         )
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, FileTaskTimeout):
         _cleanup_directory(output_dir)
         _log_conversion(source_ext, target, "timeout", started_at)
         return ConversionResult(
@@ -135,6 +135,15 @@ def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds:
             error_type="timeout",
             error_msg="文档转换超时，请稍后重试",
         )
+    except FileTaskCancelled:
+        _cleanup_directory(output_dir)
+        _log_conversion(source_ext, target, "cancelled", started_at)
+        # 请求取消继续交给v4.17中断轮次处理，不进入生成Markdown的兜底。
+        from layers import llm_provider
+        llm_provider.check_request_cancelled("file_conversion")
+        return ConversionResult(success=False, status=ConversionStatus.CANCELLED,
+            converted_from_format=source_ext.lstrip("."), converted_to_format=target,
+            error_type="cancelled", error_msg="文件任务已取消")
     except Exception as exc:
         _cleanup_directory(output_dir)
         logger.warning(
@@ -167,18 +176,17 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
         return _failed("不支持的转换组合", ".pdf", target, "unsupported_conversion")
     except EngineUnavailableError as exc:
         return _failed(str(exc), ".pdf", target, "engine_unavailable")
-    result = processor.execute(request)
+    result = processor.execute_task(request)
     if not result.success:
         messages = {
             "invalid_source": "待转换文件不存在",
             "invalid_target": "不支持的PDF转换目标",
             "file_too_large": "文件超过转换大小限制",
         }
-        return _failed(
+        return ConversionResult(success=False, status=ConversionStatus(result.status.value),
+            converted_from_format="pdf", converted_to_format=target,
+            error_type=result.error_type or "conversion_failed", error_msg=
             messages.get(result.error_type, "PDF内容提取或重建失败"),
-            ".pdf",
-            target,
-            result.error_type or "conversion_failed",
         )
     quality = processor.validate_output(request, result)
     if not quality.passed or quality.artifact is None:
@@ -202,15 +210,7 @@ def cleanup_conversion_output(output_path: str) -> None:
     """Remove a successful conversion artifact and its private output directory."""
     if not output_path:
         return
-    output_dir = os.path.dirname(output_path)
-    if os.path.basename(output_dir).startswith("conversion_"):
-        _cleanup_directory(output_dir)
-        return
-    try:
-        if os.path.isfile(output_path):
-            os.remove(output_path)
-    except OSError as exc:
-        logger.warning("转换产物清理失败：error_type=%s", type(exc).__name__)
+    cleanup_artifact(output_path)
 
 
 def _resolve_soffice_path() -> str:
@@ -225,7 +225,7 @@ def _cleanup_directory(path: str) -> None:
     if not path:
         return
     try:
-        shutil.rmtree(path, ignore_errors=False)
+        cleanup_task_directory(path)
     except FileNotFoundError:
         return
     except OSError as exc:
@@ -285,7 +285,7 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
         return _failed("不支持的转换组合", source_ext, target, "unsupported_conversion")
     except EngineUnavailableError as exc:
         return _failed(str(exc), source_ext, target, "engine_unavailable")
-    result = processor.execute(request)
+    result = processor.execute_task(request)
     if not result.success:
         return ConversionResult(
             success=False,

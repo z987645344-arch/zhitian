@@ -88,7 +88,7 @@ def test_preview_parse_failure_returns_422(
     assert response.json()["detail"] == "文件内容解析失败"
 
 
-def test_preview_timeout_retries_once_and_returns_422(
+def test_preview_timeout_stops_without_retry_and_returns_422(
     client, auth_headers, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
@@ -96,14 +96,13 @@ def test_preview_timeout_retries_once_and_returns_422(
     file_id = _save(user["user_id"], "pdf", b"fake-pdf")
     calls = []
 
-    async def fake_wait_for(awaitable, timeout):
-        calls.append(timeout)
-        awaitable.close()
+    async def fake_file_thread(function, *args, **kwargs):
+        calls.append(function)
         raise asyncio.TimeoutError
 
-    monkeypatch.setattr(main.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(main, "_run_file_thread", fake_file_thread)
     response = client.get("/files/%s/preview" % file_id, headers=headers)
 
     assert response.status_code == 422
     assert response.json()["detail"] == "文件预览解析超时"
-    assert len(calls) == 2
+    assert len(calls) == 1

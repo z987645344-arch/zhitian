@@ -35,6 +35,7 @@ from layers.file_processing.models import FileEntry
 from layers.file_processing.runtime import run_for_entry
 from layers.file_processing.runtime import get_file_processor_registry
 from layers.file_processing import service as file_service
+from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
@@ -297,6 +298,11 @@ async def lifespan(app: FastAPI):
     resource_admission.log_startup_state()
     _recover_interrupted_tasks()
     # 文件引擎只降级文件能力；冒烟线程不阻塞启动、聊天及/ready。
+    try:
+        logger.info("[file-task] stale_directories_cleaned=%d", cleanup_stale_tasks())
+    except (OSError, ValueError) as exc:
+        # 文件工作目录异常不能使聊天服务无法启动；文件能力冒烟会单独失败。
+        logger.warning("文件任务遗留清理未完成：error_type=%s", type(exc).__name__)
     get_file_processor_registry().start_probes()
     with _request_gate_lock:
         _accepting_requests = True
@@ -1853,16 +1859,32 @@ def _get_owned_user_file(
     return record, file_path
 
 
+async def _run_file_thread(function, *args, deadline=None):
+    """取消后等待文件运行器真正回收进程，而不是丢下仍占资源的线程。"""
+    cancellation = threading.Event()
+    def run():
+        seconds = None if deadline is None else max(0, deadline - time.monotonic())
+        with task_scope(seconds, cancellation=cancellation):
+            return function(*args)
+    task = asyncio.create_task(asyncio.to_thread(run))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        cancellation.set()
+        try:
+            await asyncio.shield(task)
+        except BaseException:
+            pass
+        raise
+
+
 async def _extract_file_preview(file_path: str) -> str:
     """在线程池内解析文件；Level1重试1次，单次预算复用转换超时。"""
     timeout_seconds = max(1, config.CONVERSION_TIMEOUT_SECONDS)
     last_error_type = "preview_failed"
     for attempt in range(2):
         try:
-            content = await asyncio.wait_for(
-                asyncio.to_thread(document_loader.load_document, file_path),
-                timeout=timeout_seconds,
-            )
+            content = await _run_file_thread(document_loader.load_document, file_path)
             if content.startswith("错误："):
                 last_error_type = "parse_failed"
                 if attempt == 0:
@@ -1871,8 +1893,7 @@ async def _extract_file_preview(file_path: str) -> str:
             return content
         except asyncio.TimeoutError:
             last_error_type = "timeout"
-            if attempt == 0:
-                continue
+            break
         except HTTPException:
             raise
         except Exception as e:
@@ -2033,7 +2054,7 @@ async def upload_chat_attachment(
                     return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
             return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
 
-        conversion, text = await asyncio.to_thread(_run_attachment_work)
+        conversion, text = await _run_file_thread(_run_attachment_work)
         if conversion is not None and (not conversion.success or not conversion.output_path):
             return JSONResponse(
                 status_code=422,
@@ -2182,7 +2203,7 @@ async def convert_tool_file(
             with heavy_task_limits.occupy_slot():
                 return conversion_fn(temp_path, target_format)
 
-        conversion = await asyncio.to_thread(_convert_with_admission)
+        conversion = await _run_file_thread(_convert_with_admission)
         if not conversion.success or not conversion.output_path:
             status_code = 422
             return JSONResponse(
@@ -2293,10 +2314,7 @@ async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
                 with heavy_task_limits.occupy_slot():
                     return operation(*args)
 
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_run_with_admission),
-                timeout=timeout_seconds,
-            )
+            result = await _run_file_thread(_run_with_admission)
         except heavy_task_limits.HeavyTaskRejected:
             raise
         except asyncio.TimeoutError:
@@ -2313,7 +2331,7 @@ async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
             attempt + 1,
             result.error_type or "other",
         )
-        if result.error_type in {"encrypted_pdf", "too_many_pages"}:
+        if result.error_type in {"encrypted_pdf", "too_many_pages", "timeout", "cancelled"}:
             break
     return last_result
 
@@ -2343,12 +2361,8 @@ async def merge_pdf_tool_files(
 
     operation_id = str(uuid.uuid4())
     temp_paths = []
-    output_path = os.path.join(
-        config.BASE_DIR,
-        "data",
-        "tmp_uploads",
-        "%s_merged.pdf" % operation_id,
-    )
+    workspace = TaskWorkspace()
+    output_path = str(workspace.path / "merged.pdf")
     try:
         for index, upload in enumerate(files):
             safe_name = _safe_upload_filename(upload.filename or "")
@@ -2398,7 +2412,7 @@ async def merge_pdf_tool_files(
             await upload.close()
         for temp_path in temp_paths:
             _remove_temp_upload(temp_path)
-        _remove_temp_upload(output_path)
+        workspace.cleanup()
 
 
 @app.post("/tools/pdf/split", response_model=PdfSplitResponse)
@@ -2413,12 +2427,8 @@ async def split_pdf_tool_file(
 
     operation_id = str(uuid.uuid4())
     temp_path = ""
-    output_dir = os.path.join(
-        config.BASE_DIR,
-        "data",
-        "tmp_uploads",
-        "%s_split" % operation_id,
-    )
+    workspace = TaskWorkspace()
+    output_dir = str(workspace.path / "outputs")
     saved_file_ids = []
     try:
         temp_path = _save_temp_upload(file, operation_id, filename)
@@ -2480,7 +2490,7 @@ async def split_pdf_tool_file(
     finally:
         await file.close()
         _remove_temp_upload(temp_path)
-        shutil.rmtree(output_dir, ignore_errors=True)
+        workspace.cleanup()
 
 
 @app.post("/documents/upload")
@@ -2535,18 +2545,20 @@ async def upload_document(
     ingest_handed_off = False
     # 全局槽位：占不到立刻429，不排队。与上面的try:之间不允许插入任何可能
     # 抛异常的语句，否则会漏掉release。
+    processing_deadline = time.monotonic() + config.CONVERSION_TIMEOUT_SECONDS
     heavy_task_limits.acquire_slot()
     try:
         temp_path = _save_temp_upload(file, doc_id, filename)
         parse_path = temp_path
         if suffix in config.CONVERTIBLE_EXTENSIONS:
             target_format = "docx" if suffix == ".doc" else "pdf"
-            conversion = await asyncio.to_thread(
+            conversion = await _run_file_thread(
                 run_for_entry,
                 FileEntry.UPLOAD_AUTO,
                 converter.convert_file,
                 temp_path,
                 target_format,
+                deadline=processing_deadline,
             )
             if conversion.status != converter.ConversionStatus.SUCCESS or not conversion.output_path:
                 status_code = 422
@@ -2564,7 +2576,8 @@ async def upload_document(
         # save_document内部已用layers/chroma_sync.CHROMA_LOCK这把进程内RLock
         # 保护Chroma写入（memory.py的_chroma_lock即该锁），换到工作线程后该锁
         # 才真正开始发挥串行化作用，不需要额外加锁。
-        text = await asyncio.to_thread(run_for_entry, FileEntry.UPLOAD_AUTO, document_loader.load_document, parse_path)
+        text = await _run_file_thread(run_for_entry, FileEntry.UPLOAD_AUTO, document_loader.load_document,
+                                     parse_path, deadline=processing_deadline)
         if text.startswith("错误："):
             return {
                 "status": "error",
@@ -3381,13 +3394,12 @@ def _file_media_type(file_format: str) -> str:
 
 
 def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
-    temp_dir = os.path.join(config.BASE_DIR, "data", "tmp_uploads")
-    os.makedirs(temp_dir, exist_ok=True)
     suffix = os.path.splitext(filename)[1].lower()
-    temp_path = os.path.join(temp_dir, f"{doc_id}{suffix}")
     max_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
     file.file.seek(0)
     _validate_upload_content(file, suffix)
+    workspace = TaskWorkspace()
+    temp_path = str(workspace.path / ("source" + suffix))
     total_bytes = 0
     try:
         with open(temp_path, "wb") as f:
@@ -3463,8 +3475,7 @@ def _remove_temp_upload(temp_path: str) -> None:
     if not temp_path:
         return
     try:
-        if os.path.isfile(temp_path):
-            os.remove(temp_path)
+        cleanup_artifact(temp_path)
     except Exception as e:
         logger.warning("临时上传文件删除失败：path_len=%s error_type=%s", len(temp_path), type(e).__name__)
 
@@ -3887,7 +3898,7 @@ async def _chat_stream_events_with_heartbeat(
             finally:
                 with llm_provider.use_stream_registry(stream_registry):
                     llm_provider.close_stream(event_stream)
-        except llm_provider.RequestCancelled:
+        except (llm_provider.RequestCancelled, FileTaskCancelled):
             pass  # 已断开，取消不是失败SSE，也不启动兜底。
         except BaseException as exc:
             loop.call_soon_threadsafe(event_queue.put_nowait, ("error", exc))

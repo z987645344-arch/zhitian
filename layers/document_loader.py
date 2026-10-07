@@ -14,6 +14,7 @@ from layers.file_processing.runtime import get_file_processor_registry
 from layers.file_processing.runtime import register_processor_once
 from layers.file_processing.runtime import current_file_entry
 from layers.file_processing.document_text import DocumentTextProcessor
+from layers.file_processing.runner import FileTaskTimeout
 
 
 LONG_PARAGRAPH_RATIO = 1.5
@@ -48,6 +49,8 @@ def load_document(file_path: str) -> str:
         if suffix in {".txt", ".md", ".pdf", ".docx"}:
             return _read_registered_document(file_path, suffix.lstrip("."))
         return f"错误：不支持的文档格式：{suffix or '无扩展名'}"
+    except FileTaskTimeout:
+        raise
     except Exception as e:
         return f"错误：文档解析失败：{e}"
 
@@ -190,7 +193,9 @@ def _read_registered_document(file_path: str, source_format: str) -> str:
         source_format=source_format,
     )
     processor, _ = get_file_processor_registry().resolve(request)
-    result = processor.execute(request)
+    result = processor.execute_task(request)
+    if result.error_type == "timeout":
+        raise FileTaskTimeout("document_parse_timeout")
     if not result.success:
         raise ValueError(result.error_message or result.error_type or "PDF文件解析失败")
     return result.text

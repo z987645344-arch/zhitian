@@ -23,15 +23,15 @@ def test_convert_file_success(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
     (tmp_path / "soffice.exe").write_bytes(b"stub")
 
-    def run(command, **kwargs):
+    def run(command, workspace, scope):
         output_dir = command[command.index("--outdir") + 1]
         output_path = os.path.join(output_dir, "input.docx")
         document = Document()
         document.add_paragraph("converted")
         document.save(output_path)
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        return 0
 
-    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(converter, "run_process", run)
     result = converter.convert_file(str(source), "docx")
 
     assert result.success is True
@@ -51,12 +51,12 @@ def test_soffice_runs_under_network_filter_with_private_profile(tmp_path, monkey
     monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(soffice))
     observed = {}
 
-    def run(command, **kwargs):
+    def run(command, workspace, scope):
         observed["command"] = command
-        observed["kwargs"] = kwargs
-        return SimpleNamespace(returncode=126, stdout=b"", stderr=b"")
+        observed["scope"] = scope
+        return 126
 
-    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(converter, "run_process", run)
     result = converter.convert_file(str(source), "docx")
 
     command = observed["command"]
@@ -65,8 +65,8 @@ def test_soffice_runs_under_network_filter_with_private_profile(tmp_path, monkey
     assert command[2] == str(soffice)
     profile_arg = next(part for part in command if part.startswith("-env:UserInstallation="))
     assert profile_arg.startswith("-env:UserInstallation=file:")
-    assert "conversion_" in profile_arg
-    assert observed["kwargs"]["close_fds"] is True
+    assert "task_" in profile_arg
+    assert observed["scope"].deadline > 0
     assert result.success is False
     assert result.error_type == "sandbox_unavailable"
     assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
@@ -77,13 +77,13 @@ def test_convert_file_failure_cleans_partial_output(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
     (tmp_path / "soffice.exe").write_bytes(b"stub")
 
-    def run(command, **kwargs):
+    def run(command, workspace, scope):
         output_dir = command[command.index("--outdir") + 1]
         with open(os.path.join(output_dir, "partial.docx"), "wb") as output:
             output.write(b"partial")
-        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"failed")
+        return 1
 
-    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(converter, "run_process", run)
     result = converter.convert_file(str(source), "docx")
 
     assert result.success is False
@@ -97,13 +97,14 @@ def test_convert_file_timeout_cleans_partial_output(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
     (tmp_path / "soffice.exe").write_bytes(b"stub")
 
-    def run(command, **kwargs):
+    def run(command, workspace, scope):
         output_dir = command[command.index("--outdir") + 1]
         with open(os.path.join(output_dir, "partial.docx"), "wb") as output:
             output.write(b"partial")
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        from layers.file_processing.runner import FileTaskTimeout
+        raise FileTaskTimeout("timeout")
 
-    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(converter, "run_process", run)
     result = converter.convert_file(str(source), "docx")
 
     assert result.success is False
@@ -137,15 +138,15 @@ def test_libreoffice_wrapper_matches_legacy_success_result(tmp_path, monkeypatch
     monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
     (tmp_path / "soffice.exe").write_bytes(b"stub")
 
-    def run(command, **kwargs):
+    def run(command, workspace, scope):
         output_dir = command[command.index("--outdir") + 1]
         output_path = os.path.join(output_dir, "input.docx")
         document = Document()
         document.add_paragraph("中文转换对比")
         document.save(output_path)
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        return 0
 
-    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(converter, "run_process", run)
     legacy = converter._convert_file_impl(str(source), "docx")
     wrapped = converter.convert_file(str(source), "docx")
 

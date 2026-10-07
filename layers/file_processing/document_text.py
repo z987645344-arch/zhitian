@@ -50,7 +50,18 @@ class DocumentTextProcessor(FileProcessor):
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
         if request.max_input_size_bytes > 0 and os.path.getsize(request.source_paths[0]) > request.max_input_size_bytes:
             raise ValueError("文件超过提取大小限制")
-        text = self._readers[request.source_format](request.source_paths[0])
+        if request.source_format == "docx":
+            from layers.file_processing.runner import TaskWorkspace, task_scope, run_python_worker
+            from layers.document_loader import _DocxText
+            workspace = TaskWorkspace()
+            try:
+                with task_scope(request.resource_budget.max_execution_seconds or None) as scope:
+                    data = run_python_worker("document", dict(path=request.source_paths[0]), workspace, scope)
+                    text = _DocxText(data["text"], data["tables"])
+            finally:
+                workspace.cleanup()
+        else:
+            text = self._readers[request.source_format](request.source_paths[0])
         result = FileProcessingResult(success=True, status=FileProcessingStatus.SUCCESS, text=text)
         # Pydantic验证为字符串后保留既有str子类携带的瞬时表格边界；不写入数据库。
         result.text = text

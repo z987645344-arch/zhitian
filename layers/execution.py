@@ -30,6 +30,7 @@ from layers.file_processing.runtime import (
 )
 from layers.file_processing.models import FileEntry
 from layers.file_processing.service import conversion_availability
+from layers.file_processing.runner import task_scope, FileTaskTimeout, FileTaskCancelled, TaskWorkspace
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -1280,10 +1281,7 @@ def _convert_document(
             attempt + 1,
             conversion.error_type or "conversion_failed",
         )
-        if (
-            conversion.status == converter.ConversionStatus.TIMEOUT
-            and time.perf_counter() >= deadline
-        ):
+        if conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}:
             break
         if conversion.error_type == "heavy_task_busy":
             break
@@ -1347,27 +1345,13 @@ def _run_conversion_with_agent_budget(
     target_format: str,
     timeout_seconds: float,
 ) -> converter.ConversionResult:
-    """限制Agent附件转换等待时间；超时后的临时产物由回调清理。"""
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-convert")
-    def _convert_with_admission():
-        with heavy_task_limits.occupy_slot():
-            return run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
-
-    future = executor.submit(_convert_with_admission)
+    """同步等待可终止运行器回收进程，之后才释放槽位与预留。"""
     try:
-        done, _ = wait_for_futures([future], timeout=max(0.001, timeout_seconds))
-        if not done:
-            future.add_done_callback(_cleanup_late_conversion_result)
-            logger.warning(
-                "附件转换达到Agent预算：target_format=%s budget_ms=%s",
-                target_format,
-                int(max(0.0, timeout_seconds) * 1000),
-            )
-            return _agent_conversion_timeout(
-                os.path.splitext(source_path or "")[1].lstrip("."),
-                target_format,
-            )
-        return future.result()
+        with task_scope(seconds=max(0.001, timeout_seconds)):
+            with heavy_task_limits.occupy_slot():
+                return run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
+    except FileTaskTimeout:
+        return _agent_conversion_timeout(os.path.splitext(source_path or "")[1].lstrip("."), target_format)
     except heavy_task_limits.HeavyTaskRejected as exc:
         return converter.ConversionResult(
             success=False,
@@ -1377,23 +1361,6 @@ def _run_conversion_with_agent_budget(
             error_type=exc.code,
             error_msg=exc.message,
         )
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-
-
-def _cleanup_late_conversion_result(future: Future) -> None:
-    if future.cancelled():
-        return
-    try:
-        result = future.result()
-    except Exception as exc:
-        logger.warning(
-            "超时附件转换后台结束：status=failed error_type=%s",
-            type(exc).__name__,
-        )
-        return
-    converter.cleanup_conversion_output(result.output_path or "")
-    logger.info("超时附件转换后台产物已清理：status=cleaned")
 
 
 def _agent_conversion_timeout(
@@ -1455,9 +1422,8 @@ def generate_file(
         )
 
     processing_task_id = str(uuid.uuid4())
-    work_root = os.path.join(config.BASE_DIR, "data", "tmp_generated")
-    os.makedirs(work_root, exist_ok=True)
-    output_dir = tempfile.mkdtemp(prefix="generate_", dir=work_root)
+    workspace = TaskWorkspace()
+    output_dir = str(workspace.path)
     initial_format = requested_format if requested_format in {"md", "txt"} else "md"
     initial_filename = "%s.%s" % (clean_hint, initial_format)
     initial_path = os.path.join(output_dir, initial_filename)
@@ -1469,7 +1435,7 @@ def generate_file(
         requested_format,
     )
     if write_error:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        workspace.cleanup()
         return GenerateFileResult(
             success=False,
             file_id=file_id,
@@ -1493,14 +1459,14 @@ def generate_file(
                 generation_engine_version="1",
             )
         except Exception as exc:
-            shutil.rmtree(output_dir, ignore_errors=True)
+            workspace.cleanup()
             return GenerateFileResult(
                 success=False,
                 char_count=len(text),
                 error_type=type(exc).__name__,
                 requested_format=requested_format,
             )
-        shutil.rmtree(output_dir, ignore_errors=True)
+        workspace.cleanup()
         _log_generated_file(
             session_id,
             file_id,
@@ -1523,6 +1489,10 @@ def generate_file(
         with heavy_task_limits.occupy_slot():
             conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
         converted_path = conversion.output_path or ""
+        if conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}:
+            workspace.cleanup()
+            return GenerateFileResult(success=False, char_count=len(text),
+                error_type=conversion.error_type, requested_format=requested_format)
         if not conversion.success or not converted_path:
             conversion_error = conversion.error_type or "conversion_failed"
         else:
@@ -1545,7 +1515,7 @@ def generate_file(
                 requested_format,
                 len(text),
             )
-            shutil.rmtree(output_dir, ignore_errors=True)
+            workspace.cleanup()
             return GenerateFileResult(
                 success=True,
                 file_id=file_id,
@@ -1555,13 +1525,16 @@ def generate_file(
                 delivered_format=requested_format,
             )
     except heavy_task_limits.HeavyTaskRejected as exc:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        workspace.cleanup()
         return GenerateFileResult(
             success=False,
             char_count=len(text),
             error_type=exc.code,
             requested_format=requested_format,
         )
+    except (FileTaskCancelled, llm_provider.RequestCancelled):
+        workspace.cleanup()
+        raise
     except Exception as exc:
         conversion_error = type(exc).__name__
     finally:
@@ -1581,14 +1554,14 @@ def generate_file(
             generation_engine_version="1",
         )
     except Exception as exc:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        workspace.cleanup()
         return GenerateFileResult(
             success=False,
             char_count=len(text),
             error_type=type(exc).__name__,
             requested_format=requested_format,
         )
-    shutil.rmtree(output_dir, ignore_errors=True)
+    workspace.cleanup()
     logger.warning(
         "生成文件格式转换降级：session_id_len=%s file_id=%s requested_format=%s delivered_format=md error_type=%s",
         len(session_id),
@@ -1694,7 +1667,7 @@ def _write_generated_text(
         ),
     )
     processor, _ = get_file_processor_registry().resolve(request)
-    result = processor.execute(request)
+    result = processor.execute_task(request)
     if not result.success:
         return result.error_type or "file_write_failed"
     quality = processor.validate_output(request, result)

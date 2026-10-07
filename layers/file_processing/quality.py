@@ -49,6 +49,27 @@ class FileQualityChecker:
         minimum_paragraphs: int = 0,
         minimum_worksheets: int = 0,
     ) -> QualityCheckResult:
+        # 重开PDF/Office本身也可能卡在第三方解析器中，不能留在API线程里。
+        if profile != QualityProfile.TEXT and not getattr(config, "FILE_PROCESSING_WORKER", False):
+            from layers.file_processing.runner import TaskWorkspace, task_scope, run_python_worker
+            workspace = TaskWorkspace()
+            try:
+                with task_scope() as scope:
+                    scope.emit("validating")
+                    data = run_python_worker("quality", dict(
+                        artifact=dict(artifact.model_dump(mode="json"), output_path=artifact.output_path),
+                        profile=profile.value,
+                        limits=dict(max_size_bytes=max_size_bytes, minimum_pages=minimum_pages,
+                                    minimum_paragraphs=minimum_paragraphs,
+                                    minimum_worksheets=minimum_worksheets)), workspace, scope)
+                    checked = QualityCheckResult.model_validate(data)
+                    if checked.artifact:
+                        for name in ("size_bytes", "page_count", "paragraph_count", "worksheet_count"):
+                            setattr(artifact, name, getattr(checked.artifact, name))
+                        checked.artifact = artifact
+                    return checked
+            finally:
+                workspace.cleanup()
         issues: List[QualityIssue] = []
         path = artifact.output_path
         if not os.path.isfile(path):

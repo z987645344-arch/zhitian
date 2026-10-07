@@ -143,6 +143,8 @@ class LibreOfficeProcessor(FileProcessor):
     ) -> QualityCheckResult:
         if not result.success or not result.artifacts:
             return QualityCheckResult(passed=False)
+        if result.quality_checked:
+            return QualityCheckResult(passed=True, artifact=result.artifacts[0])
         return self._quality_checker.validate(
             result.artifacts[0],
             _QUALITY_PROFILES[request.target_format],

@@ -97,6 +97,7 @@ class FileProcessingStatus(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
+    CANCELLED = "CANCELLED"
 
 
 class QualityProfile(str, Enum):
@@ -181,6 +182,7 @@ class FileProcessingResult(BaseModel):
     page_count: int = 0
     error_type: str = ""
     error_message: str = ""
+    quality_checked: bool = Field(default=False, exclude=True)
 
 
 class ProcessorCapability(BaseModel):

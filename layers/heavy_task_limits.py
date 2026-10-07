@@ -159,9 +159,10 @@ def acquire_ingest_slot() -> None:
     finally里调用`release_ingest_slot()`。
     """
     global _ingest_running
-    _ingest_slots.acquire()
-    amount = config.INGEST_TASK_MEMORY_RESERVE_MIB
     deadline = time.monotonic() + config.INGEST_MEMORY_WAIT_SECONDS
+    if not _ingest_slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise HeavyTaskRejected("ingest_queue_timeout", "入库排队超时，请稍后重试")
+    amount = config.INGEST_TASK_MEMORY_RESERVE_MIB
     committed = False
     reserved = False
     try:

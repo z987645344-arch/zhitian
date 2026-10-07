@@ -46,7 +46,7 @@ def split_pdf(
 
 def _execute_pdf_operation(request: FileProcessingRequest) -> PdfOperationResult:
     processor, _ = get_file_processor_registry().resolve(request)
-    result = processor.execute(request)
+    result = processor.execute_task(request)
     if not result.success:
         return PdfOperationResult(
             success=False,

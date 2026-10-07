@@ -92,13 +92,14 @@ def test_unimplemented_edit_and_encrypted_formats_are_not_supported(task, encryp
 
 def test_adapter_execution_interface_accepts_future_cancel_and_progress(tmp_path, monkeypatch):
     processor = converter._libreoffice_processor
-    execute = Mock(return_value=object())
+    from layers.file_processing.models import FileProcessingResult
+    execute = Mock(return_value=FileProcessingResult(success=False, status="FAILED"))
     monkeypatch.setattr(processor, "execute", execute)
     request = FileProcessingRequest(task_type="convert", source_format="doc", target_format="pdf")
     progress = Mock()
     assert processor.execute_task(request, cancellation=threading.Event(), progress=progress) is execute.return_value
     execute.assert_called_once_with(request)
-    progress.assert_not_called()  # 本阶段接口预留，不假装已经有真实进度。
+    progress.assert_not_called()  # 没有执行的桩不编造阶段或计数。
 
 
 def test_libreoffice_obeys_explicit_execution_budget_without_global_mutation(tmp_path, monkeypatch):

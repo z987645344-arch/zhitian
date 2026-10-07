@@ -341,10 +341,10 @@ def test_generate_file_conversion_failure_preserves_markdown_fallback(tmp_path, 
         calls.append((source_path, target_format))
         return ConversionResult(
             success=False,
-            status=ConversionStatus.TIMEOUT,
+            status=ConversionStatus.FAILED,
             converted_from_format="md",
             converted_to_format=target_format,
-            error_type="timeout",
+            error_type="process_failed",
             error_msg="conversion timed out",
         )
 
@@ -363,7 +363,7 @@ def test_generate_file_conversion_failure_preserves_markdown_fallback(tmp_path, 
     assert result.success is True
     assert result.requested_format == "pdf"
     assert result.delivered_format == "md"
-    assert result.conversion_error_type == "timeout"
+    assert result.conversion_error_type == "process_failed"
     assert result.download_filename.endswith(".md")
     assert open(output_path, encoding="utf-8").read() == "# Fallback report"
 
