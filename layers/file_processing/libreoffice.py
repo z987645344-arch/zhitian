@@ -2,6 +2,7 @@
 """LibreOffice稳定转换链路的统一处理器包装。"""
 
 from typing import Callable, List
+import os
 
 from layers.file_processing.base import FileProcessor
 from layers.file_processing.models import (
@@ -25,6 +26,11 @@ _QUALITY_PROFILES = {
     "pdf": QualityProfile.PDF,
     "docx": QualityProfile.DOCX,
 }
+# 既有上传/手动/附件格式，以及生成文件路径实际使用的MD/TXT；不声明任意源格式。
+LIBREOFFICE_SOURCES = {
+    "pdf": ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "md", "txt"],
+    "docx": ["doc", "md", "txt"],
+}
 class LibreOfficeProcessor(FileProcessor):
     name = "libreoffice"
     adapter_version = "1"
@@ -43,9 +49,9 @@ class LibreOfficeProcessor(FileProcessor):
     def capabilities(self) -> List[ProcessorCapability]:
         return [
             ProcessorCapability(
-                capability_id="libreoffice.any.%s" % target_format,
+                capability_id="libreoffice.to_%s" % target_format,
                 processor_name=self.name,
-                source_formats=["*"],
+                source_formats=LIBREOFFICE_SOURCES[target_format],
                 target_formats=[target_format],
                 task_types=[FileTaskType.CONVERT],
                 asynchronous=True,
@@ -62,11 +68,17 @@ class LibreOfficeProcessor(FileProcessor):
         return (
             request.task_type == FileTaskType.CONVERT
             and request.target_format in _MIME_TYPES
+            and request.source_format in LIBREOFFICE_SOURCES[request.target_format]
         )
 
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
         source_path = request.source_paths[0] if request.source_paths else ""
-        legacy = self._conversion_delegate(source_path, request.target_format)
+        if (request.max_input_size_bytes > 0 and os.path.isfile(source_path)
+                and os.path.getsize(source_path) > request.max_input_size_bytes):
+            return FileProcessingResult(success=False, status=FileProcessingStatus.FAILED,
+                error_type="file_too_large", error_message="文件超过转换大小限制")
+        kwargs = {"timeout_seconds": request.resource_budget.max_execution_seconds} if request.resource_budget.max_execution_seconds > 0 else {}
+        legacy = self._conversion_delegate(source_path, request.target_format, **kwargs)
         status = FileProcessingStatus(str(legacy.status.value))
         if not legacy.success or not legacy.output_path:
             return FileProcessingResult(

@@ -9,6 +9,9 @@ from layers.file_processing.models import (
     FileProcessingResult,
     ProcessorCapability,
     QualityCheckResult,
+    CancellationSignal,
+    EngineProbeResult,
+    ProgressCallback,
 )
 
 
@@ -24,6 +27,16 @@ class FileProcessor(ABC):
     @abstractmethod
     def supports(self, request: FileProcessingRequest) -> bool:
         """确认本处理器是否支持结构化请求。"""
+
+    def probe_ready(self) -> EngineProbeResult:
+        """具体适配器必须做真实冒烟；没有实现不能宣称就绪。"""
+        return EngineProbeResult(success=False, reason="probe_not_implemented")
+
+    def execute_task(self, request: FileProcessingRequest, *,
+                     cancellation: CancellationSignal = None,
+                     progress: ProgressCallback = None) -> FileProcessingResult:
+        """统一入口；取消/进度仅定义接口，第二阶段再实现传播，不宣称已支持。"""
+        return self.execute(request)
 
     @abstractmethod
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:

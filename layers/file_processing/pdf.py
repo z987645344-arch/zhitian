@@ -74,7 +74,7 @@ class PdfProcessor(FileProcessor):
             ProcessorCapability(
                 capability_id="pdf.extract_text",
                 target_formats=[],
-                task_types=[FileTaskType.EXTRACT_TEXT],
+                task_types=[FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT],
                 output_mime_types=["text/plain"],
                 knowledge_base_eligible=True,
                 quality_profile=QualityProfile.PDF,
@@ -136,6 +136,7 @@ class PdfProcessor(FileProcessor):
         if request.task_type == FileTaskType.CONVERT:
             return request.target_format in {"docx", "xlsx", "pptx"}
         return request.task_type in {
+            FileTaskType.EXTRACT,
             FileTaskType.EXTRACT_TEXT,
             FileTaskType.EXTRACT_TABLES,
             FileTaskType.RENDER_PAGES,
@@ -148,7 +149,7 @@ class PdfProcessor(FileProcessor):
             validation = self._validate_sources(request)
             if validation is not None:
                 return validation
-            if request.task_type == FileTaskType.EXTRACT_TEXT:
+            if request.task_type in {FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT}:
                 return self._extract_text(request.source_paths[0])
             if request.task_type == FileTaskType.EXTRACT_TABLES:
                 return self._extract_tables(request.source_paths[0])
@@ -206,7 +207,7 @@ class PdfProcessor(FileProcessor):
     ) -> QualityCheckResult:
         if not result.success:
             return QualityCheckResult(passed=False)
-        if request.task_type in {FileTaskType.EXTRACT_TEXT, FileTaskType.EXTRACT_TABLES}:
+        if request.task_type in {FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT, FileTaskType.EXTRACT_TABLES}:
             return QualityCheckResult(passed=True)
         issues: List[QualityIssue] = []
         for artifact in result.artifacts:
@@ -280,7 +281,9 @@ class PdfProcessor(FileProcessor):
                     if document.needs_pass:
                         return self._failed("encrypted_pdf", "PDF已加密")
                     total_pages += document.page_count
-                    if total_pages > config.MAX_PDF_PROCESSING_PAGES:
+                    page_limit = min(value for value in (config.MAX_PDF_PROCESSING_PAGES, request.max_pages)
+                                     if value > 0)
+                    if total_pages > page_limit:
                         return self._failed(
                             "too_many_pages", "PDF页数超过处理上限", total_pages
                         )
@@ -289,7 +292,7 @@ class PdfProcessor(FileProcessor):
                     } and request.target_format in {"png", "pptx"}:
                         scale = 1.5
                         for page in document:
-                            self._validate_page_pixels(page, scale)
+                            self._validate_page_pixels(page, scale, request.resource_budget.max_pixels)
         except ValueError as exc:
             if str(exc) in {"too_many_pixels", "encrypted_pdf"}:
                 message = (
@@ -304,17 +307,18 @@ class PdfProcessor(FileProcessor):
         return None
 
     @staticmethod
-    def _validate_page_pixels(page, scale: float = 1.0) -> None:
+    def _validate_page_pixels(page, scale: float = 1.0, pixel_budget: int = 0) -> None:
         """在分配渲染缓冲区前检查页面输出尺寸及内嵌图片的解码尺寸。"""
         rect = page.rect
         rendered_pixels = (
             math.ceil(rect.width * scale) * math.ceil(rect.height * scale)
         )
-        if rendered_pixels > config.MAX_IMAGE_PIXELS:
+        pixel_limit = min(value for value in (config.MAX_IMAGE_PIXELS, pixel_budget) if value > 0)
+        if rendered_pixels > pixel_limit:
             raise ValueError("too_many_pixels")
         for image in page.get_images(full=True):
             width, height = int(image[2]), int(image[3])
-            if width > 0 and height > 0 and width * height > config.MAX_IMAGE_PIXELS:
+            if width > 0 and height > 0 and width * height > pixel_limit:
                 raise ValueError("too_many_pixels")
 
     def _extract_text(self, source_path: str) -> FileProcessingResult:

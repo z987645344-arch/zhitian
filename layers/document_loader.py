@@ -11,6 +11,9 @@ from docx.text.paragraph import Paragraph
 from layers.file_processing.models import FileProcessingRequest, FileTaskType
 from layers.file_processing.pdf import pdf_processor as _pdf_processor_registration
 from layers.file_processing.runtime import get_file_processor_registry
+from layers.file_processing.runtime import register_processor_once
+from layers.file_processing.runtime import current_file_entry
+from layers.file_processing.document_text import DocumentTextProcessor
 
 
 LONG_PARAGRAPH_RATIO = 1.5
@@ -42,12 +45,8 @@ def load_document(file_path: str) -> str:
 
     suffix = os.path.splitext(file_path)[1].lower()
     try:
-        if suffix in {".txt", ".md"}:
-            return _read_text_file(file_path)
-        if suffix == ".pdf":
-            return _read_pdf(file_path)
-        if suffix == ".docx":
-            return _read_docx(file_path)
+        if suffix in {".txt", ".md", ".pdf", ".docx"}:
+            return _read_registered_document(file_path, suffix.lstrip("."))
         return f"错误：不支持的文档格式：{suffix or '无扩展名'}"
     except Exception as e:
         return f"错误：文档解析失败：{e}"
@@ -180,10 +179,15 @@ def _read_text_file(file_path: str) -> str:
 
 
 def _read_pdf(file_path: str) -> str:
+    return _read_registered_document(file_path, "pdf")
+
+
+def _read_registered_document(file_path: str, source_format: str) -> str:
     request = FileProcessingRequest(
-        task_type=FileTaskType.EXTRACT_TEXT,
+        task_type=FileTaskType.EXTRACT,
+        entry=current_file_entry(),
         source_paths=[file_path],
-        source_format="pdf",
+        source_format=source_format,
     )
     processor, _ = get_file_processor_registry().resolve(request)
     result = processor.execute(request)
@@ -263,3 +267,10 @@ def _docx_table_rows(table):
                 "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val", "true"
             ) not in {"0", "false", "off"}
             yield " | ".join(cells).strip(), header
+
+
+register_processor_once(DocumentTextProcessor({
+    "txt": lambda path: _read_text_file(path),
+    "md": lambda path: _read_text_file(path),
+    "docx": lambda path: _read_docx(path),
+}))

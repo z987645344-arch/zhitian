@@ -69,6 +69,8 @@ class FileProcessorRegistry:
         capability: ProcessorCapability,
         request: FileProcessingRequest,
     ) -> bool:
+        if request.encrypted or request.entry not in capability.entries:
+            return False
         if request.task_type not in capability.task_types:
             return False
         if (

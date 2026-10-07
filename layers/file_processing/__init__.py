@@ -13,6 +13,8 @@ from layers.file_processing.models import (
     QualityCheckResult,
     QualityIssue,
     QualityProfile,
+    FileEntry, FileTaskKind, FileTaskSpec, ResourceBudget, EngineType,
+    EngineStatus, EngineState, EngineProbeResult, FileTaskProgress,
 )
 from layers.file_processing.quality import FileQualityChecker
 from layers.file_processing.registry import (
@@ -35,4 +37,6 @@ __all__ = [
     "QualityCheckResult",
     "QualityIssue",
     "QualityProfile",
+    "FileEntry", "FileTaskKind", "FileTaskSpec", "ResourceBudget", "EngineType",
+    "EngineStatus", "EngineState", "EngineProbeResult", "FileTaskProgress",
 ]

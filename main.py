@@ -31,6 +31,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
+from layers.file_processing.models import FileEntry
+from layers.file_processing.runtime import run_for_entry
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
@@ -2006,8 +2008,8 @@ async def upload_chat_attachment(
         def _run_attachment_work():
             if suffix in config.CONVERTIBLE_EXTENSIONS or suffix == ".pdf":
                 with heavy_task_limits.occupy_slot():
-                    return _convert_and_load_attachment()
-            return _convert_and_load_attachment()
+                    return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
+            return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
 
         conversion, text = await asyncio.to_thread(_run_attachment_work)
         if conversion is not None and (not conversion.success or not conversion.output_path):
@@ -2511,6 +2513,8 @@ async def upload_document(
         if suffix in config.CONVERTIBLE_EXTENSIONS:
             target_format = "docx" if suffix == ".doc" else "pdf"
             conversion = await asyncio.to_thread(
+                run_for_entry,
+                FileEntry.UPLOAD_AUTO,
                 converter.convert_file,
                 temp_path,
                 target_format,
@@ -2531,7 +2535,7 @@ async def upload_document(
         # save_document内部已用layers/chroma_sync.CHROMA_LOCK这把进程内RLock
         # 保护Chroma写入（memory.py的_chroma_lock即该锁），换到工作线程后该锁
         # 才真正开始发挥串行化作用，不需要额外加锁。
-        text = await asyncio.to_thread(document_loader.load_document, parse_path)
+        text = await asyncio.to_thread(run_for_entry, FileEntry.UPLOAD_AUTO, document_loader.load_document, parse_path)
         if text.startswith("错误："):
             return {
                 "status": "error",

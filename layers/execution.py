@@ -25,8 +25,10 @@ from layers.file_processing.models import (
 from layers.file_processing.native_text import NativeTextProcessor
 from layers.file_processing.runtime import (
     get_file_processor_registry,
+    run_for_entry,
     register_processor_once,
 )
+from layers.file_processing.models import FileEntry
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -1352,7 +1354,7 @@ def _run_conversion_with_agent_budget(
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-convert")
     def _convert_with_admission():
         with heavy_task_limits.occupy_slot():
-            return conversion_fn(source_path, target_format)
+            return run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
 
     future = executor.submit(_convert_with_admission)
     try:
@@ -1522,7 +1524,7 @@ def generate_file(
     converted_path = ""
     try:
         with heavy_task_limits.occupy_slot():
-            conversion = converter.convert_file(initial_path, requested_format)
+            conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
         converted_path = conversion.output_path or ""
         if not conversion.success or not converted_path:
             conversion_error = conversion.error_type or "conversion_failed"

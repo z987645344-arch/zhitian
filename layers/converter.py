@@ -21,7 +21,9 @@ from layers.file_processing.pdf import get_pdf_processing_lock
 from layers.file_processing.runtime import (
     get_file_processor_registry,
     register_processor_once,
+    current_file_entry,
 )
+from layers.file_processing.registry import CapabilityNotFoundError
 from utils.logger import get_logger
 
 
@@ -46,7 +48,7 @@ class ConversionResult(BaseModel):
     error_msg: str = ""
 
 
-def _convert_file_impl(source_path: str, target_format: str) -> ConversionResult:
+def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds: float = 0) -> ConversionResult:
     """Convert one local file through headless soffice under a process-wide lock."""
     started_at = time.perf_counter()
     output_dir = ""
@@ -96,7 +98,7 @@ def _convert_file_impl(source_path: str, target_format: str) -> ConversionResult
                 capture_output=True,
                 check=False,
                 close_fds=True,
-                timeout=max(1, config.CONVERSION_TIMEOUT_SECONDS),
+                timeout=min(value for value in (max(1, config.CONVERSION_TIMEOUT_SECONDS), timeout_seconds) if value > 0),
             )
         if completed.returncode == 126:
             _cleanup_directory(output_dir)
@@ -152,13 +154,17 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
     max_bytes = max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024
     request = FileProcessingRequest(
         task_type=FileTaskType.CONVERT,
+        entry=current_file_entry(),
         source_paths=[source_path] if source_path else [],
         source_format="pdf",
         target_format=target,
         max_input_size_bytes=max_bytes,
         max_output_size_bytes=max_bytes,
     )
-    processor, _ = get_file_processor_registry().resolve(request)
+    try:
+        processor, _ = get_file_processor_registry().resolve(request)
+    except CapabilityNotFoundError:
+        return _failed("不支持的转换组合", ".pdf", target, "unsupported_conversion")
     result = processor.execute(request)
     if not result.success:
         messages = {
@@ -264,6 +270,7 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
     target = (target_format or "").lower().lstrip(".")
     request = FileProcessingRequest(
         task_type=FileTaskType.CONVERT,
+        entry=current_file_entry(),
         source_paths=[source_path] if source_path else [],
         source_format=source_ext,
         target_format=target,
@@ -272,8 +279,8 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
     )
     try:
         processor, _ = get_file_processor_registry().resolve(request)
-    except LookupError:
-        return _convert_file_impl(source_path, target_format)
+    except CapabilityNotFoundError:
+        return _failed("不支持的转换组合", source_ext, target, "unsupported_conversion")
     result = processor.execute(request)
     if not result.success:
         return ConversionResult(
