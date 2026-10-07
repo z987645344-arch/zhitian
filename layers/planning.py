@@ -387,6 +387,8 @@ def classify_node(state: AgentState) -> AgentState:
         state["intent"] == "chat" and not source_policy.source_gate(state, "direct").allowed
     ):
         state["intent"] = "document"
+    if state["intent"] == "chat":
+        source_policy.record_source(state, "conversation", "non_factual")
     state["is_complex_task"] = state["intent"] == "complex_task"
     state["clarification"] = decision.get("clarification", "")
     state["filename_hint"] = str(decision.get("filename_hint", "") or "")
@@ -925,8 +927,8 @@ def _new_agent_state(
         source_policy=source_policy.classify_policy(message),
         evidence_state="failed",
         evidence_checked=False,
-        answer_source="knowledge",
-        source_reason="knowledge_first",
+        answer_source="unknown",
+        source_reason="source_not_recorded",
         web_failed=False,
         session_id=session_id,
         owner_user_id=owner_user_id,

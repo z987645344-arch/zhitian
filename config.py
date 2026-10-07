@@ -392,7 +392,10 @@ RERANK_CANDIDATE_COUNT = int(os.getenv("RERANK_CANDIDATE_COUNT", "10"))
 # 本机真实精排测量中fast档最慢为8.83秒；暂以12秒留出松弛，仍需生产实测复核。
 RERANK_TIMEOUT = float(os.getenv("RERANK_TIMEOUT", "12.0"))
 MEMORY_MIN_LENGTH = int(os.getenv("MEMORY_MIN_LENGTH", "6"))
-MEMORY_IMPORTANCE_TIMEOUT = float(os.getenv("MEMORY_IMPORTANCE_TIMEOUT", "3.0"))
+# 已有评测76次：基线34次P90=5.946s、最大8.345s（含重试），B2最大5.568s；
+# 来源backups/eval/{baseline-ae3d27d-20261001,multiturn-B2-20261002-runs}。
+# 后台可选记忆判断给10秒余量，超时不重试；不改变thinking或回答预算。
+MEMORY_IMPORTANCE_TIMEOUT = float(os.getenv("MEMORY_IMPORTANCE_TIMEOUT", "10.0"))
 MEMORY_DECAY_HALFLIFE_HIGH_DAYS = int(os.getenv("MEMORY_DECAY_HALFLIFE_HIGH_DAYS", "90"))
 MEMORY_DECAY_HALFLIFE_NORMAL_DAYS = int(os.getenv("MEMORY_DECAY_HALFLIFE_NORMAL_DAYS", "14"))
 MEMORY_FADE_OUT_HIGH_DAYS = int(os.getenv("MEMORY_FADE_OUT_HIGH_DAYS", "365"))

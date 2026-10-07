@@ -272,6 +272,70 @@ def test_explicit_direct_answer_is_only_non_factual(non_factual, monkeypatch):
     assert result["intent"] == ("chat" if non_factual else "document")
 
 
+@pytest.mark.parametrize("request_state", [None, {}, {"answer_source": ""}])
+def test_missing_answer_source_is_neutral(request_state):
+    details = policy.source_details(request_state)
+    assert details["answer_source"] == "unknown"
+    assert details["reason"] == "source_not_recorded"
+
+
+def test_new_request_does_not_claim_knowledge_before_answering():
+    request = planning._new_agent_state("source-test", "测试请求", "expert")
+    assert policy.source_details(request)["answer_source"] == "unknown"
+
+
+@pytest.mark.parametrize("source", ["knowledge", "general", "web", "refusal"])
+def test_recorded_answer_sources_are_unchanged(source):
+    request = state()
+    policy.record_source(request, source, "existing_reason")
+    details = policy.source_details(request)
+    assert details["answer_source"] == source
+    assert details["reason"] == "existing_reason"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_shared_direct_reply_records_conversation_source(stream, monkeypatch):
+    request = state(source="internal")
+    request["source_policy"] = policy.classify_policy("你好", classified(source="internal", non_factual=True))
+    monkeypatch.setattr(execution, "_build_model_messages", lambda *_a, **_kw: [])
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", lambda *_a, **_kw: response(content="您好"))
+    monkeypatch.setattr(execution.llm_provider, "iter_text", lambda _response: iter(["您好"]))
+    answer = execution._llm_chat("你好", stream=stream, _execution_state=request)
+    assert ("".join(answer) if stream else answer) == "您好"
+    assert policy.source_details(request)["answer_source"] == "conversation"
+
+
+@pytest.mark.parametrize("mode", ["fast", "expert"])
+@pytest.mark.parametrize("path", ["/chat", "/chat/stream"])
+def test_greeting_source_is_conversation_in_http_and_sse(mode, path, client, auth_headers, monkeypatch):
+    import uuid
+    from layers import memory
+    headers, _ = auth_headers("customer")
+    monkeypatch.setattr(planning, "_load_classify_context", lambda *_a: [])
+    monkeypatch.setattr(memory, "search_memory", lambda *_a, **_kw: [])
+    monkeypatch.setattr(memory, "maybe_save_to_vector", lambda *_a, **_kw: None)
+    classification = classified(source="internal", non_factual=True)
+
+    def model(*_args, **kwargs):
+        if kwargs.get("tools"):
+            return response(tool="direct_answer", classification=classification, content="您好，请问有什么可以帮您？")
+        assert kwargs.get("stage") == planning.config.LLMStage.DIRECT_CHAT_REASONING
+        if kwargs.get("stream"):
+            return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="您好，请问有什么可以帮您？"))])])
+        return response(content="您好，请问有什么可以帮您？")
+
+    monkeypatch.setattr(execution.llm_provider, "chat_completion", model)
+    received = client.post(path, headers=headers, json={"session_id": uuid.uuid4().hex, "message": "你好", "mode": mode})
+    assert received.status_code == 200
+    if path.endswith("stream"):
+        events = [json.loads(line[6:]) for line in received.text.splitlines() if line.startswith("data: ")]
+        details = [event for event in events if event.get("type") == "source_policy"]
+        assert details
+        assert all(event["answer_source"] == "conversation" for event in details)
+    else:
+        assert received.json()["source_policy"]["answer_source"] == "conversation"
+
+
 def test_note_is_server_owned_and_idempotent():
     request = state(mode="fast")
     policy.record_source(request, "general", "fast_general")

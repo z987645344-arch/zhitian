@@ -145,7 +145,8 @@ test('实际详情只显示访客可理解的依据，API详细字段不显示�
   render({ querySelectorAll: () => [row] }, { source: 'internal', time_sensitivity: 'general',
     only_materials: false, classification_valid: true, evidence: 'weak', answer_source: 'knowledge', reason: 'knowledge_weak' });
   assert.equal(detail.textContent, '依据：知识库资料');
-  for (const [source, expected] of [['web', '依据：联网搜索'], ['refusal', '未找到依据']]) {
+  for (const [source, expected] of [['web', '依据：联网搜索'], ['refusal', '未找到依据'],
+    ['conversation', '依据：本次对话'], ['unknown', '依据：暂未标明'], [undefined, '依据：暂未标明']]) {
     render({ querySelectorAll: () => [row] }, { answer_source: source });
     assert.equal(detail.textContent, expected);
   }

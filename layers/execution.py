@@ -2106,6 +2106,12 @@ def _llm_chat(
         answer = _source_blocked_answer(_execution_state)
         return iter([answer]) if stream else answer
 
+    if (_execution_state is not None and not search_results
+            and not _execution_state.get("attachment_context")
+            and _source_grounded is not _SUPPLIED_CONTEXT_AUTHORITY
+            and source_policy.source_gate(_execution_state, "direct").allowed):
+        source_policy.record_source(_execution_state, "conversation", "non_factual")
+
     if search_results:
         messages = _build_search_answer_messages(
             _original_user_question(original_question or message, _execution_state),

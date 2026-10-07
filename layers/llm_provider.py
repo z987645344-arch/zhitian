@@ -572,7 +572,12 @@ def _chat_completion(
         http_client=_get_shared_http_client(),
     )
     request_kwargs["model"] = _model_name(tier)
-    max_timeout_retries = config.FAST_LLM_TIMEOUT_RETRIES if tier == "fast" else 0
+    # 后台记忆判定失败只是不写长期记忆，不为可选写入反复付费。
+    # SDK本身max_retries=0；仅此阶段禁用适配层的超时重试。
+    max_timeout_retries = (
+        config.FAST_LLM_TIMEOUT_RETRIES
+        if tier == "fast" and stage != config.LLMStage.MEMORY_IMPORTANCE else 0
+    )
     started_at = time.perf_counter()
     default_budget = request_timeout * (max_timeout_retries + 1)
     default_budget += config.FAST_LLM_RETRY_DELAY * max_timeout_retries

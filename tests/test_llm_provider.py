@@ -47,6 +47,29 @@ def test_fast_rate_limit_does_not_retry(monkeypatch):
     assert create.call_count == 1
 
 
+def test_memory_importance_timeout_never_retries_but_other_stages_still_do(monkeypatch):
+    timeout_error = type("APITimeoutError", (Exception,), {})
+    create = Mock(side_effect=[timeout_error(), {"choices": [{"message": {"content": "ok"}}]}])
+    sleep = Mock()
+    monkeypatch.setattr(llm_provider.config, "DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(llm_provider.config, "FAST_LLM_TIMEOUT_RETRIES", 3)
+    monkeypatch.setattr(llm_provider.config, "FAST_LLM_RETRY_DELAY", 0.01)
+    monkeypatch.setattr(llm_provider, "OpenAI", lambda **kwargs: _client_with_create(create))
+    monkeypatch.setattr(llm_provider.time, "sleep", sleep)
+    with pytest.raises(timeout_error):
+        llm_provider.chat_completion([], tier="fast", stage=llm_provider.config.LLMStage.MEMORY_IMPORTANCE, timeout=10.0)
+    create.assert_called_once()
+    sleep.assert_not_called()
+    assert create.call_args.kwargs["timeout"] == pytest.approx(10.0, abs=0.1)
+    # 同一适配层、其他阶段仍保留原来的超时重试，不靠改全局重试配置实现。
+    create.reset_mock(side_effect=True)
+    create.side_effect = [timeout_error(), {"choices": [{"message": {"content": "ok"}}]}]
+    result = llm_provider.chat_completion([], tier="fast", stage=llm_provider.config.LLMStage.DIRECT_CHAT_REASONING, timeout=10.0)
+    assert llm_provider.extract_text(result) == "ok"
+    assert create.call_count == 2
+    sleep.assert_called_once()
+
+
 def test_tiers_select_distinct_deepseek_models(monkeypatch):
     models = []
 

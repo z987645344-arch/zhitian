@@ -394,9 +394,9 @@
       .find((item) => item.dataset.executionKey === 'source_policy-source_policy');
     if (!row) return;
     const basis = { knowledge: '依据：知识库资料', general: '依据：通用知识（未联网）',
-      web: '依据：联网搜索', conversation: '依据：本次对话', refusal: '未找到依据' };
+      web: '依据：联网搜索', conversation: '依据：本次对话', refusal: '未找到依据', unknown: '依据：暂未标明' };
     row.querySelector('.execution-name').textContent = '回答依据';
-    row.querySelector('.execution-detail').textContent = basis[event.answer_source] || '未找到依据';
+    row.querySelector('.execution-detail').textContent = basis[event.answer_source] || basis.unknown;
     scrollToBottom();
   }
 

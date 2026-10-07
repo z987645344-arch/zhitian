@@ -135,8 +135,8 @@ def record_source(state: Optional[dict], source: str, reason: str) -> None:
 def source_details(state: Optional[dict]) -> dict:
     policy = get_policy(state)
     return {**policy.model_dump(), "evidence": (state or {}).get("evidence_state", "failed"),
-            "answer_source": (state or {}).get("answer_source", "knowledge"),
-            "reason": (state or {}).get("source_reason", "knowledge_first")}
+            "answer_source": (state or {}).get("answer_source") or "unknown",
+            "reason": (state or {}).get("source_reason") or "source_not_recorded"}
 
 
 def annotate_answer(answer: str, state: Optional[dict]) -> str:
