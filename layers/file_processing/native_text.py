@@ -124,5 +124,5 @@ class NativeTextProcessor(FileProcessor):
         result: FileProcessingResult,
     ) -> None:
         for artifact in result.artifacts:
-            if os.path.isfile(artifact.output_path):
-                os.remove(artifact.output_path)
+            from layers.file_processing.runner import cleanup_artifact
+            cleanup_artifact(artifact.output_path)

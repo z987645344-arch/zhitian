@@ -66,6 +66,9 @@ def main():
         converter.run_process = run
         slots_before = heavy_task_limits.slots_in_use()
         reserved_before = resource_admission.reserved_bytes()
+        before_processes = [item for item in processes()
+                            if any(name in item["executable"] for name in ("oosplash", "soffice.bin"))]
+        assert not before_processes
         started = time.monotonic()
         with runner.task_scope(3), heavy_task_limits.occupy_slot():
             result = converter.convert_file(str(source), "pdf")
@@ -81,13 +84,63 @@ def main():
         assert not list(runner.task_root().glob("task_*"))
         converter.run_process = original
         print(json.dumps(dict(result=result.status.value, elapsed_seconds=time.monotonic() - started,
-            processes_before=[], processes_during=during, processes_after=leftovers,
+            processes_before=before_processes, processes_during=during, processes_after=leftovers,
             slots_before=slots_before, slots_after=heavy_task_limits.slots_in_use(),
             reserved_before=reserved_before, reserved_after=resource_admission.reserved_bytes(),
             memory_before=baseline.current_bytes, memory_peak=max(item.current_bytes for item in snapshots),
             memory_after=after.current_bytes,
             adjusted_before=baseline.limit_bytes - baseline.available_bytes,
             adjusted_after=after.limit_bytes - after.available_bytes), ensure_ascii=False))
+
+        # 同一隔离容器确认正常转换，及独立PDF解析进程的额外内存。
+        document = Document()
+        document.add_paragraph("Normal local conversion after timeout")
+        document.save(source)
+        with heavy_task_limits.occupy_slot():
+            normal = converter.convert_file(str(source), "pdf")
+        assert normal.success, normal.error_type
+        print(json.dumps(dict(normal_conversion=normal.status.value,
+            stages=[event.stage for event in normal.progress_events])))
+        converter.cleanup_conversion_output(normal.output_path)
+        import fitz
+        from layers.file_processing.pdf import pdf_processor
+        from layers.file_processing.models import FileProcessingRequest
+        pdf_path = Path(directory) / "pages.pdf"
+        with fitz.open() as pdf:
+            for index in range(150):
+                pdf.new_page().insert_text((72, 72), "Local page %d" % index)
+            pdf.save(pdf_path)
+        worker_before = resource_admission.read_cgroup_memory()[0]
+        worker_memory, worker_rss = [], []
+        def measured_run(command, workspace, scope, on_poll=None):
+            def poll():
+                if on_poll:
+                    on_poll()
+                worker_memory.append(resource_admission.read_cgroup_memory()[0])
+                for process in workspace.processes:
+                    try:
+                        status = Path("/proc/%s/status" % process.pid).read_text()
+                        line = next(line for line in status.splitlines() if line.startswith("VmRSS:"))
+                        worker_rss.append(int(line.split()[1]) * 1024)
+                    except (OSError, StopIteration):
+                        pass
+            return original_run(command, workspace, scope, on_poll=poll)
+        original_run = runner.run_process
+        runner.run_process = measured_run
+        try:
+            parsed = pdf_processor.execute_task(FileProcessingRequest(task_type="extract", source_format="pdf",
+                source_paths=[str(pdf_path)]))
+        finally:
+            runner.run_process = original_run
+        assert parsed.success and parsed.page_count == 150
+        assert not list(runner.task_root().glob("task_*"))
+        worker_after = resource_admission.read_cgroup_memory()[0]
+        print(json.dumps(dict(pdf_pages=parsed.page_count, worker_peak_rss=max(worker_rss),
+            memory_before=worker_before.current_bytes,
+            memory_peak=max(item.current_bytes for item in worker_memory),
+            memory_after=worker_after.current_bytes,
+            adjusted_peak_increment=max(item.limit_bytes - item.available_bytes for item in worker_memory)
+                - (worker_before.limit_bytes - worker_before.available_bytes))))
 
 
 if __name__ == "__main__":

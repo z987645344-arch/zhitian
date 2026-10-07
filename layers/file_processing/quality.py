@@ -162,6 +162,22 @@ class FileQualityChecker:
                 document = Document(artifact.output_path)
                 artifact.paragraph_count = len(document.paragraphs)
                 text_samples.extend(item.text for item in document.paragraphs)
+                from docx.table import _Cell
+                def table_text(table):
+                    for row in table.rows:
+                        for tc in row._tr.tc_lst:
+                            if tc.vMerge == "continue":
+                                continue
+                            cell = _Cell(tc, table)
+                            for paragraph in cell.paragraphs:
+                                if paragraph.text.strip():
+                                    yield paragraph.text
+                            for nested in cell.tables:
+                                yield from table_text(nested)
+                for table in document.tables:
+                    values = list(table_text(table))
+                    artifact.paragraph_count += len(values)
+                    text_samples.extend(values)
             elif profile == QualityProfile.XLSX:
                 workbook = load_workbook(artifact.output_path, read_only=True, data_only=True)
                 try:

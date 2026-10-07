@@ -37,6 +37,7 @@ from layers.file_processing.runtime import register_processor_once
 from layers.file_processing.runner import (
     TaskWorkspace, task_scope, budget_lock, run_python_worker,
     FileTaskTimeout, FileTaskCancelled, cleanup_artifact, cleanup_task_directory,
+    emit_progress,
 )
 from layers.pdf_text import extract_pdf_page_text
 from utils.logger import get_logger
@@ -149,6 +150,10 @@ class PdfProcessor(FileProcessor):
                     output_mime_types=[_MIME_TYPES[target]],
                     knowledge_base_eligible=True,
                     quality_profile=_QUALITY_PROFILES[target],
+                    output_description=("版式为页面图片，不可编辑" if target == "pptx" else
+                                        "仅导出可靠表格；无可靠表格时明确失败" if target == "xlsx" else
+                                        "提取文字重建，不保证原始版式"),
+                    editable_output=target != "pptx",
                     **common,
                 )
                 for target in ("docx", "xlsx", "pptx")
@@ -171,6 +176,7 @@ class PdfProcessor(FileProcessor):
 
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
         """解析、渲染与质量校验都在可终止进程里，不留下迟到线程。"""
+        started_at = time.perf_counter()
         workspace = TaskWorkspace()
         keep = False
         try:
@@ -189,6 +195,9 @@ class PdfProcessor(FileProcessor):
                 scope.check()
                 if request.task_type == FileTaskType.CONVERT:
                     keep = True
+                    # 子进程不初始化文件日志；父进程保留既有完成日志口径。
+                    logger.info("文档转换完成：source_ext=.pdf target=%s status=success elapsed_ms=%s",
+                                request.target_format, int((time.perf_counter() - started_at) * 1000))
                 elif result.artifacts:
                     if request.output_dir:
                         os.makedirs(request.output_dir, exist_ok=True)
@@ -243,7 +252,10 @@ class PdfProcessor(FileProcessor):
                 "too_many_pages": "PDF页数超过处理上限",
                 "too_many_pixels": "PDF页面或图片像素超过处理上限",
                 "invalid_pdf": "PDF文件损坏",
+                "no_reliable_tables": "PDF中没有找到可靠表格，无法转换为Excel；可改为提取文字或转换为Word",
             }
+            if str(exc) == "no_reliable_tables":
+                error_type = "no_reliable_tables"
             return self._failed(error_type, messages[error_type])
         except Exception as exc:
             self._cleanup_failed_request(request)
@@ -380,6 +392,7 @@ class PdfProcessor(FileProcessor):
                 text = extract_pdf_page_text(page)
                 if text.strip():
                     texts.append(text)
+                emit_progress("recognizing", page.page_number, page_count, "pages")
         return self._success(text="\n\n".join(texts), page_count=page_count)
 
     def _extract_tables(self, source_path: str) -> FileProcessingResult:
@@ -392,6 +405,7 @@ class PdfProcessor(FileProcessor):
                         [None if value is None else str(value) for value in row or []]
                         for row in table
                     ])
+                emit_progress("recognizing", page.page_number, page_count, "pages")
         return self._success(tables=tables, page_count=page_count)
 
     def _render_pages(self, source_path: str, output_dir: str) -> FileProcessingResult:
@@ -404,6 +418,7 @@ class PdfProcessor(FileProcessor):
                 output_path = os.path.join(output_dir, "page_%s.png" % page_index)
                 page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(output_path)
                 artifacts.append(self._artifact(output_path, "png"))
+                emit_progress("converting", page_index, len(document), "pages")
         finally:
             document.close()
         return self._success(artifacts=artifacts, page_count=len(artifacts))
@@ -411,10 +426,11 @@ class PdfProcessor(FileProcessor):
     def _merge(self, source_paths: List[str], output_path: str) -> FileProcessingResult:
         writer = PdfWriter()
         try:
-            for source_path in source_paths:
+            for source_index, source_path in enumerate(source_paths, 1):
                 reader = self._reader(source_path)
                 for page in reader.pages:
                     writer.add_page(page)
+                emit_progress("converting", source_index, len(source_paths), "files")
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "wb") as output_file:
                 writer.write(output_file)
@@ -447,6 +463,7 @@ class PdfProcessor(FileProcessor):
             finally:
                 writer.close()
             artifacts.append(self._artifact(output_path, "pdf"))
+            emit_progress("converting", index, page_count, "pages")
         return self._success(artifacts=artifacts, page_count=page_count)
 
     def _convert(self, source_path: str, target_format: str, output_dir=None) -> FileProcessingResult:
@@ -489,6 +506,7 @@ class PdfProcessor(FileProcessor):
                     document.add_page_break()
                 for line in extract_pdf_page_text(page).splitlines():
                     document.add_paragraph(line)
+                emit_progress("converting", page_index + 1, len(pdf.pages), "pages")
         document.save(output_path)
 
     @staticmethod
@@ -497,22 +515,24 @@ class PdfProcessor(FileProcessor):
         workbook.remove(workbook.active)
         with pdfplumber.open(source_path) as pdf:
             for page_index, page in enumerate(pdf.pages, start=1):
-                sheet = workbook.create_sheet("Page %s" % page_index)
-                row_index = 1
                 tables = page.extract_tables() or []
-                if tables:
-                    for table in tables:
+                reliable = [table for table in tables if len(table) >= 2
+                            and len(table[0] or []) >= 2
+                            and all(len(row or []) == len(table[0]) for row in table)
+                            and any(value for value in table[0])
+                            and any(value for row in table[1:] for value in row)]
+                if reliable:
+                    sheet = workbook.create_sheet("Page %s" % page_index)
+                    row_index = 1
+                    for table in reliable:
                         for row in table:
                             for column_index, value in enumerate(row or [], start=1):
                                 sheet.cell(row=row_index, column=column_index, value=value or "")
                             row_index += 1
                         row_index += 1
-                else:
-                    for line in extract_pdf_page_text(page).splitlines():
-                        sheet.cell(row=row_index, column=1, value=line)
-                        row_index += 1
+                emit_progress("converting", page_index, len(pdf.pages), "pages")
         if not workbook.sheetnames:
-            workbook.create_sheet("Page 1")
+            raise ValueError("no_reliable_tables")
         workbook.save(output_path)
 
     @staticmethod
@@ -539,6 +559,7 @@ class PdfProcessor(FileProcessor):
                     height=presentation.slide_height,
                 )
                 os.remove(image_path)
+                emit_progress("converting", page_index, len(document), "pages")
         finally:
             document.close()
         presentation.save(output_path)

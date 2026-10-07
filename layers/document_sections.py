@@ -38,6 +38,20 @@ def chunk_section_paths(text: str, chunks: list[str], *, source_path: str = "",
     读取同一批段落的样式，不向提取正文插入标题或前缀。
     """
     suffix = os.path.splitext(source_path or source_name)[1].lower()
+    if suffix == ".docx" and source_path:
+        import config
+        if not getattr(config, "FILE_PROCESSING_WORKER", False):
+            # 样式读取会重开OOXML，同样放在可终止工作进程，不能留迟到解析线程。
+            from layers.file_processing.runner import TaskWorkspace, task_scope, run_python_worker
+            workspace = TaskWorkspace()
+            try:
+                with task_scope() as scope:
+                    return run_python_worker("sections", dict(text=str(text),
+                        chunks=[dict(text=str(chunk), source_text=getattr(chunk, "source_text", str(chunk)))
+                                for chunk in chunks], source_path=source_path,
+                        source_name=source_name), workspace, scope)
+            finally:
+                workspace.cleanup()
     events = []
     title = os.path.splitext(os.path.basename(source_name or source_path))[0]
     if suffix == ".md" or markdown:

@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import Field
 
 import config
 from layers.file_processing.libreoffice import LibreOfficeProcessor
-from layers.file_processing.models import FileProcessingRequest, FileTaskType
+from layers.file_processing.models import FileProcessingRequest, FileTaskType, FileTaskProgress
 from layers.file_processing.pdf import get_pdf_processing_lock
 from layers.file_processing.runtime import (
     get_file_processor_registry,
@@ -51,6 +52,7 @@ class ConversionResult(BaseModel):
     converted_to_format: str = ""
     error_type: str = ""
     error_msg: str = ""
+    progress_events: list[FileTaskProgress] = Field(default_factory=list)
 
 
 def _convert_file_impl(source_path: str, target_format: str, *, timeout_seconds: float = 0) -> ConversionResult:
@@ -186,7 +188,8 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
         return ConversionResult(success=False, status=ConversionStatus(result.status.value),
             converted_from_format="pdf", converted_to_format=target,
             error_type=result.error_type or "conversion_failed", error_msg=
-            messages.get(result.error_type, "PDF内容提取或重建失败"),
+            messages.get(result.error_type, result.error_message or "PDF内容提取或重建失败"),
+            progress_events=result.progress_events,
         )
     quality = processor.validate_output(request, result)
     if not quality.passed or quality.artifact is None:
@@ -203,6 +206,7 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
         output_path=quality.artifact.output_path,
         converted_from_format="pdf",
         converted_to_format=target,
+        progress_events=result.progress_events,
     )
 
 
@@ -294,6 +298,7 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
             converted_to_format=target,
             error_type=result.error_type,
             error_msg=result.error_message,
+            progress_events=result.progress_events,
         )
     quality = processor.validate_output(request, result)
     if not quality.passed or quality.artifact is None:
@@ -310,4 +315,5 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
         output_path=quality.artifact.output_path,
         converted_from_format=source_ext.lstrip("."),
         converted_to_format=target,
+        progress_events=result.progress_events,
     )

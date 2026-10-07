@@ -84,6 +84,13 @@ class FileTaskProgress(BaseModel):
     stage: str
     processed: int = Field(default=0, ge=0)
     total: Optional[int] = Field(default=None, ge=0)
+    unit: str = "items"
+
+    @model_validator(mode="after")
+    def validate_count(self):
+        if self.total is not None and self.processed > self.total:
+            raise ValueError("processed_exceeds_total")
+        return self
 
 
 class CancellationSignal(Protocol):
@@ -98,6 +105,7 @@ class FileProcessingStatus(str, Enum):
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
     CANCELLED = "CANCELLED"
+    DEGRADED = "DEGRADED"
 
 
 class QualityProfile(str, Enum):
@@ -183,6 +191,23 @@ class FileProcessingResult(BaseModel):
     error_type: str = ""
     error_message: str = ""
     quality_checked: bool = Field(default=False, exclude=True)
+    degradation_code: str = ""
+    user_notice: str = ""
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_outcome(self):
+        if self.status == FileProcessingStatus.DEGRADED:
+            from layers.file_processing.degradation import DEGRADATIONS
+            if not self.success or self.degradation_code not in DEGRADATIONS:
+                raise ValueError("unregistered_degradation")
+            if self.user_notice != DEGRADATIONS[self.degradation_code]:
+                raise ValueError("degradation_notice_required")
+        elif self.degradation_code or self.user_notice:
+            raise ValueError("degradation_status_required")
+        if self.success != (self.status in {FileProcessingStatus.SUCCESS, FileProcessingStatus.DEGRADED}):
+            raise ValueError("inconsistent_file_outcome")
+        return self
 
 
 class ProcessorCapability(BaseModel):
@@ -201,6 +226,9 @@ class ProcessorCapability(BaseModel):
     quality_profile: QualityProfile
     entries: List[FileEntry] = Field(default_factory=lambda: list(FileEntry))
     engine_type: EngineType = EngineType.DOCUMENT
+    output_description: str = ""
+    editable_output: Optional[bool] = None
+    registered_degradations: List[str] = Field(default_factory=list)
 
     @field_validator("source_formats", "target_formats", mode="before")
     @classmethod

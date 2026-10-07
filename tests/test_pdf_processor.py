@@ -57,6 +57,15 @@ def test_document_loader_uses_pdf_processor_and_shared_text_core(
     source_path = tmp_path / "source.pdf"
     _write_pdf(source_path)
     calls = []
+    from layers.file_processing import pdf
+    original_worker = pdf.run_python_worker
+    def worker(kind, *args):
+        calls.append(kind)
+        return original_worker(kind, *args)
+    monkeypatch.setattr(pdf, "run_python_worker", worker)
+    assert document_loader.load_document(str(source_path)) == "PDF processor marker"
+    assert calls == ["pdf"]
+    calls.clear()
 
     def extract(page):
         calls.append(page.page_number)
@@ -64,13 +73,18 @@ def test_document_loader_uses_pdf_processor_and_shared_text_core(
 
     monkeypatch.setattr("layers.file_processing.pdf.extract_pdf_page_text", extract)
 
-    assert document_loader.load_document(str(source_path)) == "共享核心提取结果"
+    # 父进程mock不能穿过进程边界；另外验证工作进程的内联核心使用共享提取器。
+    result = pdf.pdf_processor._execute_inline(FileProcessingRequest(task_type=FileTaskType.EXTRACT,
+        source_paths=[str(source_path)], source_format="pdf"))
+    assert result.text == "共享核心提取结果"
     assert calls == [1]
 
 
 def test_pdf_processor_extracts_tables_and_renders_pages(tmp_path):
     source_path = tmp_path / "source.pdf"
-    output_dir = tmp_path / "rendered"
+    from layers.file_processing.runner import TaskWorkspace
+    workspace = TaskWorkspace()
+    output_dir = workspace.path / "rendered"
     _write_pdf(source_path)
     registry = get_file_processor_registry()
 

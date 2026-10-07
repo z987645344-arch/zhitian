@@ -237,26 +237,29 @@ def test_convert_document_does_not_retry_when_memory_admission_rejects(
     attachments.clear_session("session-low-memory")
 
 
-def test_convert_document_agent_budget_returns_timeout_and_cleans_late_output(
+def test_convert_document_agent_budget_stops_task_without_late_output(
     tmp_path,
     monkeypatch,
 ):
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     record = _store_attachment(tmp_path, "session-budget", OWNER_A)
-    output_dir = tmp_path / "conversion_late"
+    from layers.file_processing.runner import TaskWorkspace, current_scope
+    workspace = TaskWorkspace()
+    output_dir = workspace.path
     output_path = output_dir / "converted.pdf"
 
     def slow_convert(source_path, target_format):
-        time.sleep(0.08)
-        output_dir.mkdir(exist_ok=True)
-        output_path.write_bytes(b"%PDF-late")
-        return ConversionResult(
-            success=True,
-            status=ConversionStatus.SUCCESS,
-            output_path=str(output_path),
-            converted_from_format="xlsx",
-            converted_to_format="pdf",
-        )
+        # 新契约的适配器服从任务预算；真实进程树终止另由runner用例验证。
+        try:
+            target_time = time.monotonic() + 0.08
+            while time.monotonic() < target_time:
+                current_scope().check()
+                time.sleep(0.001)
+            output_path.write_bytes(b"%PDF-late")
+            return ConversionResult(success=True, status=ConversionStatus.SUCCESS,
+                output_path=str(output_path), converted_from_format="xlsx", converted_to_format="pdf")
+        finally:
+            workspace.cleanup()
 
     monkeypatch.setattr(converter, "convert_file", slow_convert)
     started_at = time.perf_counter()

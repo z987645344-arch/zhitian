@@ -32,6 +32,7 @@ from slowapi.middleware import SlowAPIMiddleware
 import uvicorn
 import config
 from layers.file_processing.models import FileEntry
+from layers.file_processing.models import FileTaskProgress
 from layers.file_processing.runtime import run_for_entry
 from layers.file_processing.runtime import get_file_processor_registry
 from layers.file_processing import service as file_service
@@ -191,15 +192,18 @@ def _run_ingest_task(
 
     def _record_written_batch(processed: int, total: int) -> None:
         task_store.update_task(
-            task_id, processed_chunks=processed, progress=processed * 100 // total
+            task_id, processed_chunks=processed, progress=processed * 100 // total,
+            file_progress=FileTaskProgress(stage="ingesting", processed=processed, total=total, unit="chunks")
         )
 
     # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
     try:
+        task_store.update_task(task_id, file_progress=FileTaskProgress(stage="queued", total=total_chunks, unit="chunks"))
         heavy_task_limits.acquire_ingest_slot()
     except heavy_task_limits.HeavyTaskRejected as exc:
         try:
-            task_store.update_task(task_id, status="failed", error_message=exc.message)
+            task_store.update_task(task_id, status="failed", error_message=exc.message,
+                                   file_progress=FileTaskProgress(stage="failed", total=total_chunks, unit="chunks"))
         finally:
             heavy_task_limits.release_reserved_ingest_slot()
         logger.warning("入库内存准入超时：task_id=%s code=%s", task_id[:8], exc.code)
@@ -208,6 +212,7 @@ def _run_ingest_task(
         task_store.update_task(
             task_id, status="processing", total_chunks=total_chunks, progress=0,
             processed_chunks=0, result_doc_id=doc_id,
+            file_progress=FileTaskProgress(stage="ingesting", total=total_chunks, unit="chunks"),
         )
         last_error = None
         for attempt in (1, 2):
@@ -223,6 +228,9 @@ def _run_ingest_task(
                 )
                 if count != total_chunks:
                     raise RuntimeError("入库切片数与预期不一致")
+                task_store.update_task(task_id, processed_chunks=count, progress=count * 100 // total_chunks,
+                    file_progress=FileTaskProgress(stage="validating",
+                    processed=count, total=total_chunks, unit="chunks"))
                 auth.register_document(
                     doc_id,
                     source,
@@ -236,6 +244,7 @@ def _run_ingest_task(
                     progress=100,
                     processed_chunks=count,
                     result_doc_id=doc_id,
+                    file_progress=FileTaskProgress(stage="completed", processed=count, total=total_chunks, unit="chunks"),
                 )
                 logger.info("入库任务完成：task_id=%s chunks=%s", task_id[:8], count)
                 return
@@ -247,12 +256,14 @@ def _run_ingest_task(
                 )
                 # 重试前先清掉可能写了一半的切片，避免第二次写入产生重复
                 _purge_partial_document(doc_id)
-                task_store.update_task(task_id, processed_chunks=0, progress=0)
+                task_store.update_task(task_id, processed_chunks=0, progress=0,
+                    file_progress=FileTaskProgress(stage="ingesting", total=total_chunks, unit="chunks"))
         task_store.update_task(
             task_id,
             status="failed",
             error_message="入库失败（%s），请重试" % type(last_error).__name__,
             result_doc_id="",
+            file_progress=FileTaskProgress(stage="failed", total=total_chunks, unit="chunks"),
         )
     finally:
         # 必须在最外层：覆盖成功return、两次重试、以及任何未预期异常。
@@ -548,6 +559,7 @@ class ChatResponse(BaseModel):
     citations: list[execution.Citation] = Field(default_factory=list)
     reasoning: Optional[str] = None
     source_policy: Optional[dict] = None
+    file_progress: List[FileTaskProgress] = Field(default_factory=list)
 
 
 class ChatFileEvent(BaseModel):
@@ -659,6 +671,7 @@ class ToolConversionResponse(BaseModel):
     # F36：error_type是给程序判断的稳定标识，detail补一句可直接展示给用户的
     # 说明（例如超限时带上具体的MB数），前端无需自己拼限制值。
     detail: str = ""
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
 
 
 class PdfToolFile(BaseModel):
@@ -673,12 +686,14 @@ class PdfMergeResponse(BaseModel):
     download_filename: str
     download_url: str
     page_count: int
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
 
 
 class PdfSplitResponse(BaseModel):
     success: bool
     files: List[PdfToolFile]
     page_count: int
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
 
 
 class ChatAttachmentResponse(BaseModel):
@@ -689,6 +704,7 @@ class ChatAttachmentResponse(BaseModel):
     error_type: str = ""
     # F36：同ToolConversionResponse，detail用于直接展示给用户的可读说明
     detail: str = ""
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
 
 
 class UserFileListItem(BaseModel):
@@ -1668,6 +1684,7 @@ async def chat(
         reasoning = final_state.get("decision_reasoning") if mode == "expert" else None
         response_data["reasoning"] = reasoning
         response_data["source_policy"] = source_policy.source_details(final_state)
+        response_data["file_progress"] = final_state.get("file_task_progress_events", [])
         logger.info(
             "/chat决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
             trace_id,
@@ -1859,32 +1876,62 @@ def _get_owned_user_file(
     return record, file_path
 
 
-async def _run_file_thread(function, *args, deadline=None):
+async def _run_file_thread(function, *args, deadline=None, progress_callback=None, http_request=None):
     """取消后等待文件运行器真正回收进程，而不是丢下仍占资源的线程。"""
     cancellation = threading.Event()
     def run():
         seconds = None if deadline is None else max(0, deadline - time.monotonic())
-        with task_scope(seconds, cancellation=cancellation):
-            return function(*args)
+        with task_scope(seconds, cancellation=cancellation, progress=progress_callback) as scope:
+            result = function(*args)
+            scope.check()
+            successful = getattr(result, "success", not (isinstance(result, str) and result.startswith("错误：")))
+            if successful:
+                scope.emit("completed", 1, 1)
+            if hasattr(result, "progress_events"):
+                result.progress_events = scope.events
+            return result
     task = asyncio.create_task(asyncio.to_thread(run))
+    async def watch_disconnect():
+        # 只在上传正文已读完后启动；不与multipart读取争抢ASGI receive。
+        while not task.done():
+            if await http_request.is_disconnected():
+                cancellation.set()
+                return
+            await asyncio.sleep(.05)
+    watcher = asyncio.create_task(watch_disconnect()) if http_request is not None else None
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
         cancellation.set()
-        try:
-            await asyncio.shield(task)
-        except BaseException:
-            pass
+        # ASGI任务组可能重复取消：清理等待本身也要屏蔽，不能提前释放资源。
+        with anyio.CancelScope(shield=True):
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+        if task.done() and not task.cancelled():
+            task.exception()  # 消费工作线程的取消/超时结果，避免未检索异常。
         raise
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+            with anyio.CancelScope(shield=True):
+                try:
+                    await watcher
+                except asyncio.CancelledError:
+                    pass
 
 
-async def _extract_file_preview(file_path: str) -> str:
+async def _extract_file_preview(file_path: str, http_request=None) -> str:
     """在线程池内解析文件；Level1重试1次，单次预算复用转换超时。"""
     timeout_seconds = max(1, config.CONVERSION_TIMEOUT_SECONDS)
     last_error_type = "preview_failed"
     for attempt in range(2):
         try:
-            content = await _run_file_thread(document_loader.load_document, file_path)
+            content = await _run_file_thread(document_loader.load_document, file_path, http_request=http_request)
             if content.startswith("错误："):
                 last_error_type = "parse_failed"
                 if attempt == 0:
@@ -1908,6 +1955,7 @@ async def _extract_file_preview(file_path: str) -> str:
 
 @app.get("/files/{file_id}/preview")
 async def preview_user_file(
+    request: Request,
     file_id: str,
     current_user: dict = Depends(get_current_user),
 ):
@@ -1920,7 +1968,7 @@ async def preview_user_file(
     if record.format not in previewable_formats:
         raise HTTPException(status_code=400, detail="该格式暂不支持预览")
     try:
-        content = await _extract_file_preview(file_path)
+        content = await _extract_file_preview(file_path, http_request=request)
     except HTTPException:
         raise
     except Exception as e:
@@ -1995,6 +2043,7 @@ async def delete_user_file(
 
 @app.post("/chat/attachments", response_model=ChatAttachmentResponse)
 async def upload_chat_attachment(
+    request: Request,
     session_id: str = Form(...),
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
@@ -2034,8 +2083,11 @@ async def upload_chat_attachment(
     upload_id = str(uuid.uuid4())
     temp_path = ""
     converted_path = ""
+    file_progress = []
     try:
         temp_path = _save_temp_upload(file, upload_id, filename)
+        file_progress.append(FileTaskProgress(stage="uploaded", processed=os.path.getsize(temp_path),
+                                             total=os.path.getsize(temp_path), unit="bytes"))
         def _convert_and_load_attachment():
             parse_path = temp_path
             conversion = None
@@ -2054,7 +2106,8 @@ async def upload_chat_attachment(
                     return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
             return run_for_entry(FileEntry.AGENT_CHAT, _convert_and_load_attachment)
 
-        conversion, text = await _run_file_thread(_run_attachment_work)
+        conversion, text = await _run_file_thread(_run_attachment_work, progress_callback=file_progress.append,
+                                                 http_request=request)
         if conversion is not None and (not conversion.success or not conversion.output_path):
             return JSONResponse(
                 status_code=422,
@@ -2123,6 +2176,7 @@ async def upload_chat_attachment(
             attachment_id=record.attachment_id,
             original_filename=filename,
             char_count=record.char_count,
+            progress_events=file_progress,
         )
     except heavy_task_limits.HeavyTaskRejected as exc:
         return JSONResponse(
@@ -2152,6 +2206,7 @@ async def upload_chat_attachment(
 
 @app.post("/tools/convert", response_model=ToolConversionResponse)
 async def convert_tool_file(
+    request: Request,
     file: UploadFile = File(...),
     target_format: Optional[str] = Form(default=None),
     current_user: dict = Depends(get_current_user),
@@ -2203,7 +2258,7 @@ async def convert_tool_file(
             with heavy_task_limits.occupy_slot():
                 return conversion_fn(temp_path, target_format)
 
-        conversion = await _run_file_thread(_convert_with_admission)
+        conversion = await _run_file_thread(_convert_with_admission, http_request=request)
         if not conversion.success or not conversion.output_path:
             status_code = 422
             return JSONResponse(
@@ -2214,6 +2269,7 @@ async def convert_tool_file(
                     converted_to_format=conversion.converted_to_format or target_format,
                     error_type=conversion.error_type or "conversion_failed",
                     detail=conversion.error_msg or "文件转换失败",
+                    progress_events=conversion.progress_events,
                 ).model_dump(),
             )
         converted_path = conversion.output_path
@@ -2246,6 +2302,8 @@ async def convert_tool_file(
             converted_from_format=source_format,
             converted_to_format=target_format,
             download_url="/files/%s" % file_id,
+            progress_events=[FileTaskProgress(stage="uploaded", processed=os.path.getsize(temp_path),
+                total=os.path.getsize(temp_path), unit="bytes"), *conversion.progress_events],
         )
     except heavy_task_limits.HeavyTaskRejected as exc:
         return JSONResponse(
@@ -2301,7 +2359,7 @@ def _pdf_error_detail(error_type: Optional[str]) -> str:
     }.get(error_type or "", "PDF处理失败")
 
 
-async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
+async def _run_pdf_operation(operation, *args, http_request=None) -> pdf_tools.PdfOperationResult:
     """Level1：失败重试1次；单次超时复用转换任务预算。"""
     timeout_seconds = max(1, config.CONVERSION_TIMEOUT_SECONDS)
     last_result = pdf_tools.PdfOperationResult(
@@ -2314,7 +2372,7 @@ async def _run_pdf_operation(operation, *args) -> pdf_tools.PdfOperationResult:
                 with heavy_task_limits.occupy_slot():
                     return operation(*args)
 
-            result = await _run_file_thread(_run_with_admission)
+            result = await _run_file_thread(_run_with_admission, http_request=http_request)
         except heavy_task_limits.HeavyTaskRejected:
             raise
         except asyncio.TimeoutError:
@@ -2344,6 +2402,7 @@ def _pdf_output_name(filename: str, prefix: str = "") -> str:
 
 @app.post("/tools/pdf/merge", response_model=PdfMergeResponse)
 async def merge_pdf_tool_files(
+    request: Request,
     files: List[UploadFile] = File(...),
     current_user: dict = Depends(get_current_user),
 ):
@@ -2369,7 +2428,7 @@ async def merge_pdf_tool_files(
             temp_paths.append(
                 _save_temp_upload(upload, "%s_%s" % (operation_id, index), safe_name)
             )
-        result = await _run_pdf_operation(pdf_tools.merge_pdfs, temp_paths, output_path)
+        result = await _run_pdf_operation(pdf_tools.merge_pdfs, temp_paths, output_path, http_request=request)
         if not result.success:
             raise HTTPException(
                 status_code=422,
@@ -2399,6 +2458,7 @@ async def merge_pdf_tool_files(
             download_filename=download_filename,
             download_url="/files/%s" % file_id,
             page_count=result.page_count,
+            progress_events=result.progress_events,
         )
     except heavy_task_limits.HeavyTaskRejected as exc:
         raise HTTPException(status_code=429, detail=exc.message) from None
@@ -2417,6 +2477,7 @@ async def merge_pdf_tool_files(
 
 @app.post("/tools/pdf/split", response_model=PdfSplitResponse)
 async def split_pdf_tool_file(
+    request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
 ):
@@ -2437,6 +2498,7 @@ async def split_pdf_tool_file(
             temp_path,
             output_dir,
             max(1, config.PDF_SPLIT_MAX_PAGES),
+            http_request=request,
         )
         if not result.success:
             status_code = 400 if result.error_type == "too_many_pages" else 422
@@ -2477,6 +2539,7 @@ async def split_pdf_tool_file(
             success=True,
             files=response_files,
             page_count=result.page_count,
+            progress_events=result.progress_events,
         )
     except heavy_task_limits.HeavyTaskRejected as exc:
         raise HTTPException(status_code=429, detail=exc.message) from None
@@ -2546,9 +2609,11 @@ async def upload_document(
     # 全局槽位：占不到立刻429，不排队。与上面的try:之间不允许插入任何可能
     # 抛异常的语句，否则会漏掉release。
     processing_deadline = time.monotonic() + config.CONVERSION_TIMEOUT_SECONDS
+    file_progress = []
     heavy_task_limits.acquire_slot()
     try:
         temp_path = _save_temp_upload(file, doc_id, filename)
+        file_progress.append(FileTaskProgress(stage="uploaded", processed=len(payload), total=len(payload), unit="bytes"))
         parse_path = temp_path
         if suffix in config.CONVERTIBLE_EXTENSIONS:
             target_format = "docx" if suffix == ".doc" else "pdf"
@@ -2559,6 +2624,8 @@ async def upload_document(
                 temp_path,
                 target_format,
                 deadline=processing_deadline,
+                progress_callback=file_progress.append,
+                http_request=request,
             )
             if conversion.status != converter.ConversionStatus.SUCCESS or not conversion.output_path:
                 status_code = 422
@@ -2577,7 +2644,8 @@ async def upload_document(
         # 保护Chroma写入（memory.py的_chroma_lock即该锁），换到工作线程后该锁
         # 才真正开始发挥串行化作用，不需要额外加锁。
         text = await _run_file_thread(run_for_entry, FileEntry.UPLOAD_AUTO, document_loader.load_document,
-                                     parse_path, deadline=processing_deadline)
+                                     parse_path, deadline=processing_deadline, progress_callback=file_progress.append,
+                                     http_request=request)
         if text.startswith("错误："):
             return {
                 "status": "error",
@@ -2587,8 +2655,9 @@ async def upload_document(
 
         chunks = await asyncio.to_thread(document_loader.chunk_text, text)
         from layers.document_sections import chunk_section_paths
-        section_paths = await asyncio.to_thread(chunk_section_paths, text, chunks,
-                                               source_path=parse_path, source_name=filename)
+        section_paths = await _run_file_thread(
+            lambda: chunk_section_paths(text, chunks, source_path=parse_path, source_name=filename),
+            deadline=processing_deadline, progress_callback=file_progress.append, http_request=request)
         if not chunks:
             raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
         # F37：切分成本可忽略，向量化才是大头，因此在向量化之前按切片数拒绝。
@@ -2633,35 +2702,33 @@ async def upload_document(
             "converted_from": converted_from,
             "chunks": len(chunks),
             "trust_level": "pending",
+            "file_progress": [event.model_dump(mode="json") for event in file_progress
+                              if event.stage != "completed"],
         }
         # 只有走到这里，BackgroundTasks才一定会执行、队列位才一定由
         # _run_ingest_task的finally归还。这两行之间不允许插入任何会抛的语句。
         ingest_handed_off = True
         return accepted_body
     finally:
-        # 同步槽位先还：后面的清理动作再怎么出问题都不该让它泄漏。
-        heavy_task_limits.release_slot()
-        # 队列位：预留过、但后台任务没能挂上时由这里归还。异常穿出端点会让
-        # FastAPI返回500且BackgroundTasks不执行，_run_ingest_task的
-        # release_ingest_slot永远不会跑。两条归还路径由ingest_handed_off
-        # 互斥，不会重复归还。
-        if ingest_reserved and not ingest_handed_off:
-            heavy_task_limits.release_reserved_ingest_slot()
-        # 三个清理动作各自兜住异常：它们都是清理，任何一个都不该把一个已经
-        # accepted的请求变成500，也不该因为自己抛了就让后面两个不执行——
-        # 那会让临时文件与转换产物一并泄漏。
+        # 文件运行器已等待进程树退出；按身份清理后才归还槽位/内存。
+        # 上传句柄关闭放在资源归还之后，避免异步取消打断资源归还。
+        try:
+            try:
+                converter.cleanup_conversion_output(converted_path)
+            except Exception as exc:
+                logger.warning("上传清理：删除转换产物失败 error_type=%s", type(exc).__name__)
+            try:
+                _remove_temp_upload(temp_path)
+            except Exception as exc:
+                logger.warning("上传清理：删除临时文件失败 error_type=%s", type(exc).__name__)
+        finally:
+            heavy_task_limits.release_slot()
+            if ingest_reserved and not ingest_handed_off:
+                heavy_task_limits.release_reserved_ingest_slot()
         try:
             await file.close()
         except Exception as exc:
             logger.warning("上传清理：关闭文件失败 error_type=%s", type(exc).__name__)
-        try:
-            converter.cleanup_conversion_output(converted_path)
-        except Exception as exc:
-            logger.warning("上传清理：删除转换产物失败 error_type=%s", type(exc).__name__)
-        try:
-            _remove_temp_upload(temp_path)
-        except Exception as exc:
-            logger.warning("上传清理：删除临时文件失败 error_type=%s", type(exc).__name__)
 
 
 @app.post("/knowledge/input")
@@ -2760,13 +2827,15 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
             yield _sse_data({"status": "failed", "error_message": "无权查看该任务"})
             return
 
-        signature = (task.status, task.progress, task.processed_chunks)
+        signature = (task.status, task.progress, task.processed_chunks,
+                     task.file_progress.model_dump_json() if task.file_progress else None)
         if signature != last_signature:
             payload = {
                 "status": task.status,
                 "progress": task.progress,
                 "processed_chunks": task.processed_chunks,
                 "total_chunks": task.total_chunks,
+                "file_progress": task.file_progress.model_dump(mode="json") if task.file_progress else None,
             }
             if task.error_message:
                 payload["error_message"] = task.error_message
@@ -3874,6 +3943,10 @@ async def _chat_stream_events_with_heartbeat(
     def produce() -> None:
         api_key_token = llm_provider.bind_request_api_key(api_key)
         def emit_tool_event(event: execution.ToolStatusEvent) -> None:
+            if isinstance(event, FileTaskProgress):
+                loop.call_soon_threadsafe(event_queue.put_nowait,
+                    ("event", _sse_data({"file_progress": event.model_dump(mode="json")})))
+                return
             loop.call_soon_threadsafe(
                 event_queue.put_nowait,
                 ("event", _sse_data(event.model_dump())),

@@ -14,14 +14,16 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait as wait_for_futu
 from contextvars import copy_context
 from typing import Callable, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, model_validator
 import config
 from layers import attachments, auth, converter, document_usage, files_store, heavy_task_limits, llm_provider, memory, system_modules, web_search_provider, source_policy, retrieval_query
 from layers.file_processing.models import (
     FileOwnershipContext,
     FileProcessingRequest,
     FileTaskType,
+    FileProcessingStatus, FileTaskProgress,
 )
+from layers.file_processing.degradation import office_markdown_degradation
 from layers.file_processing.native_text import NativeTextProcessor
 from layers.file_processing.runtime import (
     get_file_processor_registry,
@@ -161,6 +163,7 @@ class ToolStatusEvent(BaseModel):
 
 
 DEGRADATION_REASON_CODES = {
+    "file_generation_degraded",
     "web_low_relevance",
     "fast_general_answer_failed",
     "fast_evidence_filter_timeout",
@@ -214,6 +217,22 @@ class GenerateFileResult(BaseModel):
     delivered_format: str = ""
     conversion_error_type: Optional[str] = None
     blocked_by_content_taint: bool = False
+    status: FileProcessingStatus = FileProcessingStatus.SUCCESS
+    degradation_code: str = ""
+    user_notice: str = ""
+    progress_events: list[FileTaskProgress] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_outcome(self):
+        if not self.success:
+            self.status = (FileProcessingStatus.TIMEOUT if self.error_type == "timeout" else
+                           FileProcessingStatus.CANCELLED if self.error_type == "cancelled" else
+                           FileProcessingStatus.FAILED)
+        if self.degradation_code:
+            from layers.file_processing.models import FileProcessingResult
+            FileProcessingResult(success=self.success, status=self.status,
+                                 degradation_code=self.degradation_code, user_notice=self.user_notice)
+        return self
 
 
 class ConvertDocumentResult(BaseModel):
@@ -477,7 +496,18 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
             elif tool in {"search_documents", "llm_chat"}:
                 result = func(**params, _execution_state=state)
             else:
-                result = func(**params)
+                if tool in {"generate_file", "convert_document"}:
+                    def report_file_progress(event):
+                        if state is not None:
+                            state.setdefault("file_task_progress_events", []).append(event.model_dump(mode="json"))
+                            sink = state.get("tool_event_sink")
+                            if callable(sink):
+                                sink(event)
+                    with task_scope(seconds=DEFAULT_CONVERT_DOCUMENT_BUDGET_SECONDS,
+                                    progress=report_file_progress):
+                        result = func(**params)
+                else:
+                    result = func(**params)
             if isinstance(result, ToolResult):
                 elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                 new_reasons = [
@@ -503,6 +533,8 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
                     )
                 return result
             if isinstance(result, GenerateFileResult):
+                if result.status == FileProcessingStatus.DEGRADED:
+                    add_degradation_reason(state, "file_generation_degraded")
                 tool_result = ToolResult(
                     tool=tool,
                     status="success" if result.success else "error",
@@ -513,7 +545,7 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
                 emit_tool_status(
                     state,
                     tool,
-                    "succeeded" if result.success else "failed",
+                    "degraded" if result.status == FileProcessingStatus.DEGRADED else "succeeded" if result.success else "failed",
                     elapsed_ms=int((time.perf_counter() - started_at) * 1000),
                 )
                 return tool_result
@@ -1347,9 +1379,15 @@ def _run_conversion_with_agent_budget(
 ) -> converter.ConversionResult:
     """同步等待可终止运行器回收进程，之后才释放槽位与预留。"""
     try:
-        with task_scope(seconds=max(0.001, timeout_seconds)):
+        with task_scope(seconds=max(0.001, timeout_seconds)) as scope:
             with heavy_task_limits.occupy_slot():
-                return run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
+                result = run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
+                try:
+                    scope.check()
+                except (FileTaskTimeout, FileTaskCancelled):
+                    converter.cleanup_conversion_output(result.output_path or "")
+                    raise
+                return result
     except FileTaskTimeout:
         return _agent_conversion_timeout(os.path.splitext(source_path or "")[1].lstrip("."), target_format)
     except heavy_task_limits.HeavyTaskRejected as exc:
@@ -1384,6 +1422,20 @@ def generate_file(
     output_format: Literal["md", "txt", "pdf", "docx"] = "md",
     owner_user_id: str = "",
 ) -> GenerateFileResult:
+    with task_scope() as scope:
+        scope.emit("preparing")
+        try:
+            result = _generate_file_impl(content, session_id, filename_hint, output_format, owner_user_id)
+            scope.check()
+        except FileTaskTimeout:
+            result = GenerateFileResult(success=False, error_type="timeout", requested_format=output_format)
+        scope.emit("completed" if result.success else result.status.value.lower(),
+                   1 if result.success else 0, 1 if result.success else None, "files")
+        result.progress_events = scope.events
+        return result
+
+
+def _generate_file_impl(content, session_id, filename_hint, output_format, owner_user_id):
     """将Agent正文写入当前session的可下载文件，不提供任意文件读取能力。"""
     text = content if isinstance(content, str) else str(content or "")
     if len(text) > 200000:
@@ -1428,12 +1480,16 @@ def generate_file(
     initial_filename = "%s.%s" % (clean_hint, initial_format)
     initial_path = os.path.join(output_dir, initial_filename)
     file_id = ""
-    write_error = _write_generated_text(
-        initial_path,
-        text,
-        session_id,
-        requested_format,
-    )
+    try:
+        write_error = _write_generated_text(
+            initial_path,
+            text,
+            session_id,
+            requested_format,
+        )
+    except BaseException:
+        workspace.cleanup()
+        raise
     if write_error:
         workspace.cleanup()
         return GenerateFileResult(
@@ -1489,7 +1545,8 @@ def generate_file(
         with heavy_task_limits.occupy_slot():
             conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
         converted_path = conversion.output_path or ""
-        if conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}:
+        if (conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}
+                or conversion.error_type in {"unsupported_conversion", "heavy_task_busy"}):
             workspace.cleanup()
             return GenerateFileResult(success=False, char_count=len(text),
                 error_type=conversion.error_type, requested_format=requested_format)
@@ -1535,6 +1592,9 @@ def generate_file(
     except (FileTaskCancelled, llm_provider.RequestCancelled):
         workspace.cleanup()
         raise
+    except FileTaskTimeout:
+        workspace.cleanup()
+        raise
     except Exception as exc:
         conversion_error = type(exc).__name__
     finally:
@@ -1577,6 +1637,7 @@ def generate_file(
         requested_format=requested_format,
         delivered_format="md",
         conversion_error_type=conversion_error or "conversion_failed",
+        **office_markdown_degradation(conversion_error or "conversion_failed"),
     )
 
 

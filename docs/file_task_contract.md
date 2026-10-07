@@ -1,4 +1,4 @@
-# 文件任务第一阶段契约
+# 文件任务契约
 
 任务入口为`upload_auto`、`app_manual`、`agent_chat`；任务类型为`extract`、`convert`、`edit`。
 `FileTaskSpec`和`ResourceBudget`不依赖文件后缀，为文档、图片、音频、视频留接口；目前只有文档引擎。
@@ -36,4 +36,18 @@ TXT/MD/DOCX原生提取与PDF提取也按注册表裁决；原有读取算法和
 
 任务总预算包含排队、等锁、执行及产物重开校验。LibreOffice在Linux独立进程组中执行，Windows工作进程在恢复前加入kill-on-close Job Object；超时/取消先终止整个组并等待退出，再归还锁、槽位与内存预留。取消接入v4.17请求信号，超时与取消不重试、不走Markdown降级。
 PDF解析/渲染/重建、Office质量重开及DOCX提取使用独立Python工作进程，只加载解析依赖，不加载API、Chroma或ONNX；工作进程同样可终止。IPC使用本任务目录内的JSON，不通过pickle加载外部数据。后台入库槽位与内存等待共用有限等待预算。
+
+聊天SSE沿用请求级取消信号。转换、附件上传、预览、PDF合并/拆分及文档上传预处理的HTTP入口在读完请求正文后监听断开；断开置同一个任务取消信号，等待工作进程/线程完成清理，重复取消不能跳过等待。上传已返回accepted后的后台入库是持久化任务，不因客户端离开取消。非流式/chat的整条模型链仍不感知断开，维持v4.17的已知限制。
 任务目录位于当前用户的系统临时目录私有服务根目录，有服务名、任务UUID、随机身份、拥有者PID/创建时间及登记进程身份。清理不接受任意目录，拒绝符号链接、身份不符或仍有进程的目录；启动时只清理能证明拥有者及登记进程均失效的目录，无法判定则保留。旧版无身份目录不自动删除。
+
+## 质量、降级与进度
+
+`FileProcessingResult`明确区分SUCCESS、FAILED、事先登记的DEGRADED；TIMEOUT和CANCELLED为不同终止结果，不能触发格式降级。DEGRADED必须带登记原因码及原样的面向用户说明。Office生成普通失败转Markdown使用`office_generation_to_markdown`，Agent最终状态标降级并说明未生成原目标格式；超时、取消和资源拒绝不转Markdown。
+
+所有非文本产物在独立工作进程内重开校验，DOCX质量计数包含合并/嵌套表格中的正文。PDF→XLSX只导出至少两行两列、结构一致且具有非空表头/正文的表格；无可靠表格明确失败，建议提取文字或转Word，不把逐行文字冒充表格。PDF→PPTX能力预先声明页面图片、不可编辑。
+
+统一进度为`{stage, processed, total, unit}`，未知总量为null。真实上传字节、解析/渲染页数、合并文件数、入库已写切片数分别使用bytes/pages/files/chunks，不编造百分比。queued/preparing/recognizing/converting/validating/completed与failed/timeout/cancelled表示真实阶段；嵌套步骤不能提前宣告整次任务完成。
+
+聊天SSE增加`file_progress`事件，非流式聊天返回`file_progress`列表；手动转换、PDF合并/拆分和聊天附件返回`progress_events`，上传accepted返回预处理的`file_progress`。上传任务表新增可空TEXT列`file_progress`保存最新阶段，任务SSE保留既有字段并增加同名对象，实际切片数核对通过后才done/completed。旧库启动时自动加列，旧代码忽略额外列。
+
+每任务启动一个按需Python工作进程（不常驻、无API/ONNX/Chroma）；150页普通PDF的隔离容器测量额外有效内存峰值约80.7MiB，工作进程峰值RSS约130.3MiB，并非恶意文档的最坏上限，仍依赖既有内存准入及页数/像素限制。Linux终止等待所有非僵尸组成员退出，Windows等待Job内活动进程数归零；容器需有init回收已退出孤儿，避免僵尸PID积累。

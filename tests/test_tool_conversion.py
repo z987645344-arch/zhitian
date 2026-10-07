@@ -133,6 +133,9 @@ def test_tool_conversion_success_download_permissions_and_source_cleanup(
         "detail": "",
         "error_type": "",
         "download_url": "/files/%s" % payload["file_id"],
+        "progress_events": [{"stage": "uploaded", "processed": len(_xlsx_bytes()),
+                            "total": len(_xlsx_bytes()), "unit": "bytes"},
+                            {"stage": "completed", "processed": 1, "total": 1, "unit": "items"}],
     }
     assert captured_paths and not os.path.exists(captured_paths[0])
     assert auth.list_documents() == before_documents
@@ -169,6 +172,11 @@ def test_pdf_to_office_three_targets_use_real_reconstruction(
             data={"target_format": target_format},
             files={"file": ("source.pdf", _pdf_bytes(), "application/pdf")},
         )
+        if target_format == "xlsx":
+            assert response.status_code == 422
+            assert response.json()["error_type"] == "no_reliable_tables"
+            assert not response.json()["file_id"]
+            continue
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["converted_from_format"] == "pdf"

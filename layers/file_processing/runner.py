@@ -159,6 +159,8 @@ class TaskScope:
         self.deadline = time.monotonic() + max(0, float(seconds))
         self.cancellation = cancellation
         self.progress = progress
+        self.events = []
+        self.parent = None
 
     def check(self):
         if self.cancellation is not None and self.cancellation.is_set():
@@ -166,14 +168,22 @@ class TaskScope:
         if time.monotonic() >= self.deadline:
             raise FileTaskTimeout("file_task_timeout")
 
-    def emit(self, stage, processed=0, total=None):
+    def emit(self, stage, processed=0, total=None, unit="items"):
+        from layers.file_processing.models import FileTaskProgress
+        event = FileTaskProgress(stage=stage, processed=processed, total=total, unit=unit)
+        self.events.append(event)
         if self.progress:
-            from layers.file_processing.models import FileTaskProgress
-            self.progress(FileTaskProgress(stage=stage, processed=processed, total=total))
+            self.progress(event)
 
 
 def current_scope():
     return _scope.get()
+
+
+def emit_progress(stage, processed=0, total=None, unit="items"):
+    scope = current_scope()
+    if scope is not None:
+        scope.emit(stage, processed, total, unit)
 
 
 @contextmanager
@@ -186,9 +196,11 @@ def task_scope(seconds=None, cancellation=None, progress=None):
     scope = TaskScope(config.CONVERSION_TIMEOUT_SECONDS if seconds is None else seconds,
                       cancellation, progress)
     if previous:
+        scope.parent = previous
         scope.deadline = min(scope.deadline, previous.deadline)
         scope.cancellation = cancellation or previous.cancellation
         scope.progress = progress or previous.progress
+        scope.events = previous.events
     token = _scope.set(scope)
     try:
         scope.check()
@@ -259,6 +271,24 @@ def terminate_process_group(process):
         except ProcessLookupError:
             pass
     process.wait()
+    if os.name != "nt":
+        # wait()仅等待组长；后代必须也停止运行后才能归还任务资源。
+        # 僵尸已不执行、无地址空间，等待其由容器init回收不属于任务资源占用。
+        while True:
+            running = False
+            for path in Path("/proc").iterdir():
+                if not path.name.isdigit():
+                    continue
+                try:
+                    fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+                    if int(fields[2]) == process.pid and fields[0] not in {"Z", "X"}:
+                        running = True
+                        break
+                except (OSError, ValueError, IndexError):
+                    continue
+            if not running:
+                break
+            time.sleep(0.01)
 
 
 class WindowsJob:
@@ -300,6 +330,24 @@ class WindowsJob:
 
     def close(self):
         if self.handle:
+            from ctypes import wintypes
+            class Accounting(ctypes.Structure):
+                _fields_ = [(name, ctypes.c_int64) for name in
+                            ("user", "kernel", "period_user", "period_kernel")] + [
+                            (name, wintypes.DWORD) for name in
+                            ("faults", "total", "active", "terminated")]
+            self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            self.kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+            self.kernel.TerminateJobObject(self.handle, 1)
+            while True:
+                accounting = Accounting()
+                if not self.kernel.QueryInformationJobObject(self.handle, 1,
+                        ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+                    raise OSError("file_task_job_exit_unconfirmed")
+                if not accounting.active:
+                    break
+                time.sleep(0.01)
             self.kernel.CloseHandle(self.handle)
             self.handle = None
 
@@ -340,11 +388,27 @@ def run_process(command, workspace, scope, on_poll=None):
 def run_python_worker(kind, payload, workspace, scope):
     request = workspace.path / "request.json"
     result = workspace.path / "result.json"
+    progress_path = workspace.path / "progress.jsonl"
+    offset = 0
+    def forward_progress():
+        nonlocal offset
+        if not progress_path.exists():
+            return
+        with progress_path.open(encoding="utf-8") as source:
+            source.seek(offset)
+            while True:
+                line = source.readline()
+                if not line or not line.endswith("\n"):
+                    break
+                event = json.loads(line)
+                scope.emit(event["stage"], event["processed"], event["total"], event["unit"])
+                offset = source.tell()
     limits = {key: getattr(config, key) for key in ("MAX_PDF_PROCESSING_PAGES", "MAX_IMAGE_PIXELS")}
     request.write_text(json.dumps(dict(kind=kind, payload=payload, limits=limits),
                                   ensure_ascii=False), encoding="utf-8")
     code = run_process([sys.executable, str(Path(__file__).with_name("worker.py")),
-                        str(request), str(result)], workspace, scope)
+                        str(request), str(result)], workspace, scope, on_poll=forward_progress)
+    forward_progress()
     if code != 0 or not result.exists():
         raise RuntimeError("file_worker_failed")
     return json.loads(result.read_text(encoding="utf-8"))

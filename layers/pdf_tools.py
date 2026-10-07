@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from layers.file_processing.models import FileProcessingRequest, FileTaskType
+from layers.file_processing.models import FileProcessingRequest, FileTaskType, FileTaskProgress
 from layers.file_processing.pdf import pdf_processor as _pdf_processor_registration
 from layers.file_processing.runtime import get_file_processor_registry
 
@@ -15,6 +15,7 @@ class PdfOperationResult(BaseModel):
     output_paths: List[str] = Field(default_factory=list)
     page_count: int = 0
     error_type: Optional[str] = None
+    progress_events: List[FileTaskProgress] = Field(default_factory=list)
 
 
 def merge_pdfs(source_paths: List[str], output_path: str) -> PdfOperationResult:
@@ -52,17 +53,20 @@ def _execute_pdf_operation(request: FileProcessingRequest) -> PdfOperationResult
             success=False,
             page_count=result.page_count,
             error_type=result.error_type or "invalid_pdf",
+            progress_events=result.progress_events,
         )
-    quality = processor.validate_output(request, result)
-    if not quality.passed:
+    quality = None if result.quality_checked else processor.validate_output(request, result)
+    if quality is not None and not quality.passed:
         processor.cleanup(request, result)
         return PdfOperationResult(
             success=False,
             page_count=result.page_count,
             error_type=quality.issues[0].code if quality.issues else "quality_check_failed",
+            progress_events=result.progress_events,
         )
     return PdfOperationResult(
         success=True,
         output_paths=[artifact.output_path for artifact in result.artifacts],
         page_count=result.page_count,
+        progress_events=result.progress_events,
     )

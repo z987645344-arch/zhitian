@@ -99,7 +99,9 @@ def test_adapter_execution_interface_accepts_future_cancel_and_progress(tmp_path
     progress = Mock()
     assert processor.execute_task(request, cancellation=threading.Event(), progress=progress) is execute.return_value
     execute.assert_called_once_with(request)
-    progress.assert_not_called()  # 没有执行的桩不编造阶段或计数。
+    assert progress.call_count == 1
+    assert progress.call_args.args[0].stage == "failed"
+    assert progress.call_args.args[0].total is None
 
 
 def test_libreoffice_obeys_explicit_execution_budget_without_global_mutation(tmp_path, monkeypatch):

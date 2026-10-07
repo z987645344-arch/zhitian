@@ -150,9 +150,10 @@ def test_libreoffice_wrapper_matches_legacy_success_result(tmp_path, monkeypatch
     legacy = converter._convert_file_impl(str(source), "docx")
     wrapped = converter.convert_file(str(source), "docx")
 
-    assert wrapped.model_dump(exclude={"output_path"}) == legacy.model_dump(
-        exclude={"output_path"}
+    assert wrapped.model_dump(exclude={"output_path", "progress_events"}) == legacy.model_dump(
+        exclude={"output_path", "progress_events"}
     )
+    assert wrapped.progress_events[-1].stage == "completed"
     assert Document(wrapped.output_path).paragraphs[0].text == "中文转换对比"
     converter.cleanup_conversion_output(legacy.output_path or "")
     converter.cleanup_conversion_output(wrapped.output_path or "")
@@ -164,4 +165,5 @@ def test_libreoffice_wrapper_matches_legacy_failure_result(tmp_path):
     legacy = converter._convert_file_impl(missing, "docx")
     wrapped = converter.convert_file(missing, "docx")
 
-    assert wrapped == legacy
+    assert wrapped.model_dump(exclude={"progress_events"}) == legacy.model_dump(exclude={"progress_events"})
+    assert wrapped.progress_events[-1].stage == "failed"

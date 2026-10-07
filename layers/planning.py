@@ -1888,7 +1888,8 @@ def _respond_with_generated_file(state: AgentState) -> None:
     delivered_format = str(metadata.get("delivered_format", "") or "")
     prefix = ""
     if requested_format and delivered_format and requested_format != delivered_format:
-        prefix = "目标格式转换失败，已降级交付Markdown文件。\n"
+        from layers.file_processing.degradation import DEGRADATIONS, OFFICE_TO_MARKDOWN
+        prefix = DEGRADATIONS[OFFICE_TO_MARKDOWN] + "\n"
     state["response"] = "%s文件已生成：%s\n下载地址：%s" % (
         prefix,
         download_filename,

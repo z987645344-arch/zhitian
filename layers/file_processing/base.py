@@ -48,24 +48,35 @@ class FileProcessor(ABC):
                     checked = self.validate_output(request, result)
                     if not checked.passed:
                         self.cleanup(request, result)
+                        scope.emit("failed")
                         return FileProcessingResult(success=False, status=FileProcessingStatus.FAILED,
                             error_type=checked.issues[0].code if checked.issues else "quality_check_failed",
-                            error_message="处理产物质量检查未通过")
+                            error_message="处理产物质量检查未通过", progress_events=scope.events)
                     result.quality_checked = True
                 scope.check()
+                if result.success:
+                    # 嵌套适配器只报告真实阶段，整次任务由最外层在校验后报完成。
+                    if scope.parent is None:
+                        scope.emit("completed", len(result.artifacts) or 1, len(result.artifacts) or 1)
+                else:
+                    scope.emit("cancelled" if result.status == FileProcessingStatus.CANCELLED else
+                               "timeout" if result.status == FileProcessingStatus.TIMEOUT else "failed")
+                result.progress_events = scope.events
                 return result
             except FileTaskTimeout:
                 if result:
                     self.cleanup(request, result)
+                scope.emit("timeout")
                 return FileProcessingResult(success=False, status=FileProcessingStatus.TIMEOUT,
-                    error_type="timeout", error_message="文件任务超时，请稍后重试")
+                    error_type="timeout", error_message="文件任务超时，请稍后重试", progress_events=scope.events)
             except FileTaskCancelled:
                 if result:
                     self.cleanup(request, result)
                 from layers import llm_provider
                 llm_provider.check_request_cancelled("file_task")
+                scope.emit("cancelled")
                 return FileProcessingResult(success=False, status=FileProcessingStatus.CANCELLED,
-                    error_type="cancelled", error_message="文件任务已取消")
+                    error_type="cancelled", error_message="文件任务已取消", progress_events=scope.events)
 
     @abstractmethod
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:

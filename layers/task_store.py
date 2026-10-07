@@ -12,6 +12,7 @@
 """
 
 import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -20,6 +21,7 @@ from utils.time_values import utc_now_naive
 from typing import List, Optional
 
 from pydantic import BaseModel
+from layers.file_processing.models import FileTaskProgress
 
 import config
 
@@ -52,6 +54,7 @@ class UploadTask(BaseModel):
     updated_at: str = ""
     error_message: str = ""
     result_doc_id: str = ""
+    file_progress: Optional[FileTaskProgress] = None
 
 
 def _database_path() -> str:
@@ -98,6 +101,9 @@ def init_db() -> None:
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(upload_tasks)")}
+        if "file_progress" not in columns:
+            conn.execute("ALTER TABLE upload_tasks ADD COLUMN file_progress TEXT")
         # 去重只在组织内生效：不同组织的知识库本就隔离，跨组织去重没有意义。
         # 历史done任务不能永久占用哈希：删除文档后允许原样重传。
         # SQLite索引不能关联documents，改用数据库触发器原子地保护仍存在的
@@ -153,9 +159,11 @@ def compute_content_hash(payload: bytes) -> str:
 
 
 def _row_to_task(row: sqlite3.Row) -> UploadTask:
-    return UploadTask(**{k: (row[k] if row[k] is not None else
+    data = {k: (row[k] if row[k] is not None else
                              ("" if k not in ("organization_id",) else None))
-                         for k in row.keys()})
+                         for k in row.keys()}
+    data["file_progress"] = json.loads(data["file_progress"]) if data.get("file_progress") else None
+    return UploadTask(**data)
 
 
 def find_done_by_hash(file_hash: str, organization_id: Optional[int]) -> Optional[UploadTask]:
@@ -220,6 +228,7 @@ def update_task(
     processed_chunks: Optional[int] = None,
     error_message: Optional[str] = None,
     result_doc_id: Optional[str] = None,
+    file_progress: Optional[FileTaskProgress] = None,
 ) -> None:
     sets, params = ["updated_at = ?"], [utc_now_naive().isoformat()]
     for column, value in (
@@ -233,6 +242,9 @@ def update_task(
             sets.append("%s = ?" % column)
             params.append(value)
     params.append(task_id)
+    if file_progress is not None:
+        sets.append("file_progress = ?")
+        params.insert(-1, file_progress.model_dump_json())
     with _task_lock, _connect() as conn:
         conn.execute(
             "UPDATE upload_tasks SET %s WHERE task_id = ?" % ", ".join(sets),
