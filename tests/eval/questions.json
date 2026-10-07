@@ -1615,8 +1615,8 @@
           "source_location": "docx_table"
         }
       ],
-      "known_issue": "docx_table_not_extracted",
-      "grounding_note": "答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
+      "known_issue": "docx_table_not_extracted（已修复，修复提交 affe8fe）",
+      "grounding_note": "原缺陷说明（affe8fe 修复前）：答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
     },
     {
       "id": "S22",
@@ -1644,8 +1644,8 @@
           "source_location": "docx_table"
         }
       ],
-      "known_issue": "docx_table_not_extracted",
-      "grounding_note": "答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
+      "known_issue": "docx_table_not_extracted（已修复，修复提交 affe8fe）",
+      "grounding_note": "原缺陷说明（affe8fe 修复前）：答案仅在DOCX表格中；当前_read_docx只读取paragraphs，该表不会进入切片。sources文字稿仅供审核，禁止入库。保留期望正确答案，用于基线暴露提取缺陷，不能将这道题改判为应当拒答。"
     },
     {
       "id": "U01",
