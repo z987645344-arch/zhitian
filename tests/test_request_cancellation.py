@@ -3,6 +3,7 @@
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -17,20 +18,40 @@ from layers import execution, llm_provider, memory, planning, source_policy, web
 def test_disconnect_interrupts_active_stage_and_stops_followups(stage, monkeypatch, caplog, client, auth_headers):
     headers, user = auth_headers()
     # 此用例测“已经进入调用后的取消”，而非HTTP/TLS客户端冷初始化。
-    # Windows冷初始化实测1.07–1.69秒，可能超过下方1秒的桩就位等待；
-    # 先完成纯本地准备（不发请求），断开后0.5秒关闭的原断言不变。
+    # Windows冷初始化实测1.07–1.69秒，先完成纯本地准备（不发请求）。
+    # 关闭预算仍为0.5秒，但从实际请求取消开始计时，不包含就位/调度/落库。
     llm_provider._get_shared_http_client()
     entered, interrupted = threading.Event(), threading.Event()
+    release_read = threading.Event()
+    timing = {}
+    original_cancel = llm_provider.StreamRegistry.cancel
+    watchdogs = []
+
+    def cancel(control, trace_id):
+        timing["cancel_requested"] = time.perf_counter()
+        # 仅用于失败时释放桩读取线程，避免测试自身挂住；不当作成功中断。
+        watchdog = threading.Timer(.5, release_read.set)
+        watchdogs.append(watchdog)
+        watchdog.start()
+        return original_cancel(control, trace_id)
+
+    monkeypatch.setattr(llm_provider.StreamRegistry, "cancel", cancel)
+
+    def shutdown(_how):
+        timing["socket_shutdown"] = time.perf_counter()
+        interrupted.set()
+        release_read.set()
     calls = []
     controls = []
 
     def create(**kwargs):
         calls.append(kwargs)
         network = SimpleNamespace(get_extra_info=lambda _: SimpleNamespace(
-            shutdown=lambda _: interrupted.set()), close=lambda: None)
+            shutdown=shutdown), close=release_read.set)
         llm_provider._request_call_guard.get().attach(network)
         entered.set()
-        assert interrupted.wait(2), "取消必须立即中断本次调用，不等供应商超时"
+        # 供应商读取没有自行起算的2秒期限：控制线程尚未请求取消时不能误报。
+        release_read.wait()
         raise OSError("connection shut down")
 
     monkeypatch.setattr(llm_provider, "OpenAI", lambda **_: SimpleNamespace(
@@ -58,12 +79,20 @@ def test_disconnect_interrupts_active_stage_and_stops_followups(stage, monkeypat
                                                         "cancel-test", [], [], "test-key")
         assert await stream.__anext__() == "started"
         assert await asyncio.to_thread(entered.wait, 1)
-        await asyncio.wait_for(stream.aclose(), .5)
+        try:
+            await stream.aclose()
+        finally:
+            release_read.set()
+            for watchdog in watchdogs:
+                watchdog.cancel()
 
     asyncio.run(disconnect())
     assert len(calls) == 1 and not web_calls
     assert controls[0].cancelled.is_set()
     assert interrupted.is_set()
+    assert 0 <= timing["socket_shutdown"] - timing["cancel_requested"] < .5, (
+        "取消后必须在0.5秒内shutdown本响应socket，不含准备和持久化耗时"
+    )
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[cancel]")]
     assert lines == [f"[cancel] trace_id=cancel-test reason=client_disconnected stage={stage} model_calls=1 interrupted_calls=1"]
     assert request.message not in lines[0]
@@ -75,6 +104,41 @@ def test_disconnect_interrupts_active_stage_and_stops_followups(stage, monkeypat
     assert restored.json()["count"] == 2
     assert execution.conversation_history_messages(request.session_id) == []
     assert memory.list_session_summaries([request.session_id])[0]["message_count"] == 2
+
+
+def test_disconnect_clock_excludes_controller_scheduling(monkeypatch, caplog, client, auth_headers):
+    """控制端迟2.2秒才收到事件，不能耗尽尚未发生的取消预算。"""
+    original = main._chat_stream_events_with_heartbeat
+
+    async def delayed(*args, **kwargs):
+        stream = original(*args, **kwargs)
+        try:
+            async for event in stream:
+                if event == "started":
+                    await asyncio.sleep(2.2)
+                yield event
+        finally:
+            await stream.aclose()
+
+    monkeypatch.setattr(main, "_chat_stream_events_with_heartbeat", delayed)
+    test_disconnect_interrupts_active_stage_and_stops_followups(
+        "react_reflection", monkeypatch, caplog, client, auth_headers
+    )
+
+
+def test_disconnect_clock_still_rejects_late_socket_shutdown(monkeypatch, caplog, client, auth_headers):
+    """反向验证：真实shutdown迟于0.5秒仍必须失败，不能只等到收尾成功。"""
+    original = llm_provider._shutdown_network_stream
+
+    def late(network):
+        time.sleep(.6)
+        return original(network)
+
+    monkeypatch.setattr(llm_provider, "_shutdown_network_stream", late)
+    with pytest.raises(AssertionError, match="0.5秒内shutdown"):
+        test_disconnect_interrupts_active_stage_and_stops_followups(
+            "react_reflection", monkeypatch, caplog, client, auth_headers
+        )
 
 
 @pytest.mark.parametrize("node", [planning.classify_node, planning.retrieve_node, planning.plan_node,
