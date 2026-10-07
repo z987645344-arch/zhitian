@@ -232,10 +232,9 @@ ALLOWED_UPLOAD_EXTENSIONS = {".txt", ".md", ".pdf", ".docx"}.union(
 )
 CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT_SECONDS", "30"))
 MAX_CONVERSION_FILE_SIZE_MB = MAX_UPLOAD_SIZE_MB
-LIBREOFFICE_PATH = os.getenv(
-    "LIBREOFFICE_PATH",
-    r"C:\Program Files\LibreOffice\program\soffice.exe",
-)
+# 独立转换服务；未配置只关闭LO文件能力，不影响聊天/ready。
+CONVERSION_SERVICE_URL = os.getenv("CONVERSION_SERVICE_URL", "")
+CONVERSION_SERVICE_KEY = os.getenv("CONVERSION_SERVICE_KEY", "")
 
 # 重资源端点（/documents/upload、/knowledge/input）的并发闸门。
 # 这两个端点会串行占用LibreOffice转换锁、解析PDF、跑嵌入模型并写Chroma，

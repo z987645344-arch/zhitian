@@ -153,22 +153,23 @@ docker compose logs --tail 200 zhitian-api
 
 ## 6. LibreOffice转换失败
 
-可能原因：`LIBREOFFICE_PATH`错误、soffice不可执行、`appuser`无法写HOME/XDG配置或临时目录、tmpfs 256 MiB耗尽、输入格式损坏、30秒转换超时、中文字体缺失，或进程级网络隔离不可用。
+可能原因：独立转换服务不可达、CONVERSION_SERVICE_URL/共享密钥配置错误、服务冒烟失败、appuser无法写临时目录、tmpfs 256 MiB耗尽、输入格式损坏、30秒总预算耗尽、中文字体缺失，或进程级网络隔离不可用。API镜像不再安装soffice。
 
 定位：
 
 ```bash
-docker compose exec zhitian-api sh -c 'whoami; echo "$LIBREOFFICE_PATH"; test -x "$LIBREOFFICE_PATH"; "$LIBREOFFICE_PATH" --version'
-docker compose exec zhitian-api sh -c 'ls -ld "$HOME" "$XDG_CONFIG_HOME" /app/data/tmp_uploads; test -w "$XDG_CONFIG_HOME"; test -w /app/data/tmp_uploads'
+docker compose exec zhitian-converter sh -c 'whoami; test -x /usr/bin/soffice; /usr/bin/soffice --version; test -w /tmp'
+docker compose exec zhitian-api sh -c 'test -n "$CONVERSION_SERVICE_URL" && echo url=configured; test -n "$CONVERSION_SERVICE_KEY" && echo key=configured'
 SERVER_PUBLIC_IP="$(sed -n 's/^SERVER_PUBLIC_IP=//p' .env | head -n 1 | tr -d '\r')"
 test -n "$SERVER_PUBLIC_IP"
 curl --fail --silent --show-error "http://${SERVER_PUBLIC_IP}/api/ready"
 docker compose logs --tail 200 zhitian-api
+docker compose logs --tail 200 zhitian-converter
 ```
 
-Compose应覆盖`LIBREOFFICE_PATH=/usr/bin/soffice`，容器用户应为`appuser`，配置目录和tmpfs可写。转换必须在Linux容器内经应用入口运行：隔离器会限制soffice进程创建网络socket；非Linux环境直接调用转换会以`sandbox_unavailable`拒绝，不支持在Windows宿主机上用`.venv`直接转换。若出现“LibreOffice网络隔离不可用”，检查镜像内`libseccomp2`和容器安全限制，不要改成直接运行soffice绕过隔离。ready只验证可执行文件，不验证隔离器或具体文档质量；修复后必须用一份包含已知中文句子的DOCX/XLSX/PPTX做真实转换并核对文字层，不以“命令能启动”代替中文无乱码验收。
+服务器.env的独立共享密钥只显式注入API和转换服务，不打印密钥。转换执行在Linux独立服务中，非root、只读根与tmpfs可写；API（包括Windows本机开发）只能经远程适配器调用，不支持本机soffice旁路。转换服务子进程沙箱不可用时拒绝转换，不得绕过；控制服务就绪来自一次真实DOCX→PDF冒烟，健康检查不重复冒烟。API /ready只以SQLite、Chroma决定，转换失败不应使聊天停机。修复后仍需用包含已知中文句子的DOCX/XLSX/PPTX实际转换并核对文字层，命令能启动不等于质量合格。
 
-已解决标准：`/api/ready`中`libreoffice=true`，真实中文文档转换成功且文本正确，日志没有权限、超时或临时目录错误。
+已解决标准：已登录用户的/file-processing/engines中libreoffice为ready，真实中文文档转换成功且文本正确；故障时能力接口如实显示原因，API仍可就绪。开发者可通过/file-processing/engines/libreoffice/recheck通知转换服务重做冒烟。
 
 ## 7. 反向代理转发异常
 
@@ -204,7 +205,7 @@ docker version
 & ".\zhitian\.venv\Scripts\python.exe" --version
 ```
 
-如果本机用户环境正常而Codex沙盒失败，应改用获准的本机用户上下文或绝对路径复验，不要临时下载另一个Python并据此改项目依赖。宿主机`.venv`可运行权威回归，但不能代替Linux容器里的真实LibreOffice转换验证；在Windows上直接调用转换会被隔离器拒绝。容器部署本身应使用Docker镜像，不依赖宿主机`.venv`。
+如果本机用户环境正常而Codex沙盒失败，应改用获准的本机用户上下文或绝对路径复验，不要临时下载另一个Python并据此改项目依赖。宿主机`.venv`可运行权威回归，但不能代替Linux独立转换容器的真实验证；Windows API只能连接该服务，不能直接调用宿主机soffice。容器部署本身应使用Docker镜像，不依赖宿主机`.venv`。
 
 已解决标准：同一用户上下文能稳定执行Docker/Compose和项目Python版本检查，后续验证记录明确命令身份与路径。
 

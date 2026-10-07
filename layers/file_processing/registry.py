@@ -57,11 +57,16 @@ class FileProcessorRegistry:
 
     def engine_states(self) -> List[EngineState]:
         with self._lock:
-            return [state.model_copy(deep=True) for state in self._states.values()]
+            names = list(self._states)
+        return [self.engine_state(name) for name in names]
 
     def engine_state(self, name: str) -> EngineState:
         with self._lock:
-            return self._states[name].model_copy(deep=True)
+            state = self._states[name].model_copy(deep=True)
+            processor = self._processors[name]
+        # 远程引擎以控制服务当前真实就绪为准；此处不执行转换/冒烟。
+        refresh = getattr(processor, "runtime_state", None)
+        return refresh(state) if refresh else state
 
     def _begin_probe(self, name: str) -> bool:
         with self._lock:

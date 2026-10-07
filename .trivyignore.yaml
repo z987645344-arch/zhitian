@@ -2,9 +2,11 @@
 # Baseline: Backend Container CI run 35955469586, commit 228fb86, 2026-09-24.
 # 13 short-lived exceptions re-reviewed on 2026-10-03 against CI run 37105816744.
 # Each ID is package-scoped; new packages/versions and new CVEs must fail the gate.
+# images is evaluated against each raw image report; generated Trivy files keep the same PURLs and expiry.
 reviewed_at: 2026-09-24
 vulnerabilities:
   - id: CVE-2025-69720
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/libncursesw6@6.5%2B20250216-2?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libtinfo6@6.5%2B20250216-2?arch=amd64&distro=debian-13.7"
@@ -16,6 +18,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-12064
+    images: [converter]
     purls:
       - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
@@ -25,6 +28,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-16742
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/libsystemd0@257.13-1~deb13u1?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libudev1@257.13-1~deb13u1?arch=amd64&distro=debian-13.7"
@@ -34,6 +38,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-24882
+    images: [converter]
     purls:
       - "pkg:deb/debian/dirmngr@2.4.7-21%2Bdeb13u1%2Bb5?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/gnupg-l10n@2.4.7-21%2Bdeb13u1?arch=all&distro=debian-13.7"
@@ -48,6 +53,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-36849
+    images: [converter]
     purls:
       - "pkg:deb/debian/libtiff6@4.7.0-3%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -57,6 +63,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libtiff6 安装版本 4.7.0-3+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-36849）：trixie 无修复，forky 的 4.7.2-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-45830
+    images: [api]
     purls:
       - "pkg:pypi/chromadb@0.5.0"
     expired_at: 2026-12-23
@@ -66,6 +73,7 @@ vulnerabilities:
     pip_audit_id: PYSEC-2026-3813
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-45831
+    images: [api]
     purls:
       - "pkg:pypi/chromadb@0.5.0"
     expired_at: 2026-12-23
@@ -75,6 +83,7 @@ vulnerabilities:
     pip_audit_id: PYSEC-2026-3815
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-45833
+    images: [api]
     purls:
       - "pkg:pypi/chromadb@0.5.0"
     expired_at: 2026-12-23
@@ -84,6 +93,7 @@ vulnerabilities:
     pip_audit_id: PYSEC-2026-3814
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-52490
+    images: [converter]
     purls:
       - "pkg:deb/debian/libtiff6@4.7.0-3%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     expired_at: 2026-12-23
@@ -92,6 +102,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-54369
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/libacl1@2.3.2-2%2Bb1?arch=amd64&distro=debian-13.7"
     expired_at: 2026-12-23
@@ -100,6 +111,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-66046
+    images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -109,6 +121,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-66046）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-6653
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -118,6 +131,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-6653）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-74860
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -127,6 +141,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-74860）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-76642
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
       - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
@@ -143,6 +158,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-76956
+    images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -152,6 +168,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-76956）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-76957
+    images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -161,6 +178,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-76957）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-78408
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
       - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
@@ -177,6 +195,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-78409
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
       - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
@@ -193,6 +212,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-78410
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/bsdutils@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7&epoch=1"
       - "pkg:deb/debian/libblkid1@2.41.5-0%2Bdeb13u1?arch=amd64&distro=debian-13.7"
@@ -209,6 +229,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-8286
+    images: [converter]
     purls:
       - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
@@ -218,6 +239,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-8458
+    images: [converter]
     purls:
       - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
@@ -227,6 +249,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86138
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -236,6 +259,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86138）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86139
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -245,6 +269,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86139）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86140
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -254,6 +279,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86140）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86142
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -263,6 +289,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86142）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86143
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -272,6 +299,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86143）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-86144
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -281,6 +309,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86144）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-88806
+    images: [converter]
     purls:
       - "pkg:deb/debian/libx11-6@1.8.12-1?arch=amd64&distro=debian-13.7&epoch=2"
       - "pkg:deb/debian/libx11-data@1.8.12-1?arch=all&distro=debian-13.7&epoch=2"
@@ -290,6 +319,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-88807
+    images: [converter]
     purls:
       - "pkg:deb/debian/libxrender1@0.9.12-1?arch=amd64&distro=debian-13.7&epoch=1"
     expired_at: 2026-12-23
@@ -298,6 +328,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-8927
+    images: [converter]
     purls:
       - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
       - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u5?arch=amd64&distro=debian-13.7"
@@ -307,6 +338,7 @@ vulnerabilities:
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-93990
+    images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
     reviewed_at: 2026-10-03
@@ -316,6 +348,7 @@ vulnerabilities:
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-93990）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
   - id: CVE-2026-9538
+    images: [api, converter]
     purls:
       - "pkg:deb/debian/perl-base@5.40.1-6%2Bdeb13u1?arch=amd64&distro=debian-13.7"
     expired_at: 2026-12-23

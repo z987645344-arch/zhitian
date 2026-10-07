@@ -1,15 +1,13 @@
-# -*- coding: utf-8 -*-
-"""Offline tests for serialized LibreOffice conversion."""
+"""离线注册表/远程LO包装测试；外部进程安全另由服务协议与运行器覆盖。"""
 
 import os
-import subprocess
-import sys
-from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import Mock
 
-import config
+import pytest
 from docx import Document
 from layers import converter, execution, planning
+from layers.file_processing.runner import TaskWorkspace
 
 
 def _source_file(tmp_path):
@@ -20,150 +18,58 @@ def _source_file(tmp_path):
 
 def test_convert_file_success(tmp_path, monkeypatch):
     source = _source_file(tmp_path)
-    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
-    (tmp_path / "soffice.exe").write_bytes(b"stub")
-
-    def run(command, workspace, scope):
-        output_dir = command[command.index("--outdir") + 1]
-        output_path = os.path.join(output_dir, "input.docx")
+    def delegate(path, target, **kwargs):
+        workspace = TaskWorkspace()
+        output = workspace.path / "input.docx"
         document = Document()
         document.add_paragraph("converted")
-        document.save(output_path)
-        return 0
-
-    monkeypatch.setattr(converter, "run_process", run)
+        document.save(output)
+        return converter.ConversionResult(success=True, status="SUCCESS", output_path=str(output))
+    monkeypatch.setattr(converter._libreoffice_processor, "_conversion_delegate", delegate)
     result = converter.convert_file(str(source), "docx")
-
-    assert result.success is True
-    assert result.status == converter.ConversionStatus.SUCCESS
-    assert result.converted_from_format == "doc"
-    assert result.converted_to_format == "docx"
-    assert result.error_type == ""
-    assert result.output_path and os.path.isfile(result.output_path)
+    assert result.success and result.status == converter.ConversionStatus.SUCCESS
+    assert result.converted_from_format == "doc" and result.converted_to_format == "docx"
+    assert not result.error_type and os.path.isfile(result.output_path)
+    assert result.progress_events[-1].stage == "completed"
     converter.cleanup_conversion_output(result.output_path)
-    assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
+    assert not Path(result.output_path).exists()
 
 
-def test_soffice_runs_under_network_filter_with_private_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status,reason", [("FAILED", "process_failed"),
+    ("FAILED", "sandbox_unavailable"), ("TIMEOUT", "timeout"), ("CANCELLED", "cancelled")])
+def test_remote_failure_preserves_reason_and_leaves_no_partial_output(tmp_path, monkeypatch, status, reason):
     source = _source_file(tmp_path)
-    soffice = tmp_path / "soffice.exe"
-    soffice.write_bytes(b"stub")
-    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(soffice))
-    observed = {}
-
-    def run(command, workspace, scope):
-        observed["command"] = command
-        observed["scope"] = scope
-        return 126
-
-    monkeypatch.setattr(converter, "run_process", run)
+    delegate = Mock(return_value=converter.ConversionResult(success=False, status=status,
+        error_type=reason, error_msg="转换失败"))
+    monkeypatch.setattr(converter._libreoffice_processor, "_conversion_delegate", delegate)
     result = converter.convert_file(str(source), "docx")
-
-    command = observed["command"]
-    assert command[0] == sys.executable
-    assert Path(command[1]).name == "soffice_sandbox.py"
-    assert command[2] == str(soffice)
-    profile_arg = next(part for part in command if part.startswith("-env:UserInstallation="))
-    assert profile_arg.startswith("-env:UserInstallation=file:")
-    assert "task_" in profile_arg
-    assert observed["scope"].deadline > 0
-    assert result.success is False
-    assert result.error_type == "sandbox_unavailable"
-    assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
-
-
-def test_convert_file_failure_cleans_partial_output(tmp_path, monkeypatch):
-    source = _source_file(tmp_path)
-    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
-    (tmp_path / "soffice.exe").write_bytes(b"stub")
-
-    def run(command, workspace, scope):
-        output_dir = command[command.index("--outdir") + 1]
-        with open(os.path.join(output_dir, "partial.docx"), "wb") as output:
-            output.write(b"partial")
-        return 1
-
-    monkeypatch.setattr(converter, "run_process", run)
-    result = converter.convert_file(str(source), "docx")
-
-    assert result.success is False
-    assert result.status == converter.ConversionStatus.FAILED
-    assert result.error_type == "process_failed"
-    assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
-
-
-def test_convert_file_timeout_cleans_partial_output(tmp_path, monkeypatch):
-    source = _source_file(tmp_path)
-    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
-    (tmp_path / "soffice.exe").write_bytes(b"stub")
-
-    def run(command, workspace, scope):
-        output_dir = command[command.index("--outdir") + 1]
-        with open(os.path.join(output_dir, "partial.docx"), "wb") as output:
-            output.write(b"partial")
-        from layers.file_processing.runner import FileTaskTimeout
-        raise FileTaskTimeout("timeout")
-
-    monkeypatch.setattr(converter, "run_process", run)
-    result = converter.convert_file(str(source), "docx")
-
-    assert result.success is False
-    assert result.status == converter.ConversionStatus.TIMEOUT
-    assert result.error_type == "timeout"
-    assert not [path for path in tmp_path.iterdir() if path.name.startswith("conversion_")]
+    assert not result.success and result.status.value == status
+    assert result.error_type == reason and result.output_path is None
+    assert result.progress_events[-1].stage in {"failed", "timeout", "cancelled"}
+    assert source.read_bytes() == b"office source"
 
 
 def test_convert_document_is_registered_for_expert_only():
     assert execution.TOOL_REGISTRY["convert_document"] == "_convert_document"
-    exposed_tools = {
-        function["function"]["name"]
-        for function in planning.INTENT_TOOLS
-        if function.get("function")
-    }
-    fast_tools = {
-        function["function"]["name"]
-        for function in planning.FAST_TOOLS
-        if function.get("function")
-    }
-    assert "convert_document" in exposed_tools
-    assert "convert_document" not in fast_tools
+    exposed = {item["function"]["name"] for item in planning.INTENT_TOOLS if item.get("function")}
+    fast = {item["function"]["name"] for item in planning.FAST_TOOLS if item.get("function")}
+    assert "convert_document" in exposed and "convert_document" not in fast
 
 
-def test_pdf_reconstruction_does_not_share_libreoffice_lock():
-    assert converter._pdf_conversion_lock is not converter._conversion_lock
+def test_pdf_reconstruction_does_not_share_remote_serial_queue():
+    from layers.file_processing.remote_libreoffice import RemoteLibreOfficeProcessor
+    assert isinstance(converter._libreoffice_processor, RemoteLibreOfficeProcessor)
+    assert not hasattr(converter, "_conversion_lock")
+    assert not hasattr(converter, "_convert_file_impl")
 
 
-def test_libreoffice_wrapper_matches_legacy_success_result(tmp_path, monkeypatch):
+def test_wrapper_rejects_invalid_remote_artifact(tmp_path, monkeypatch):
     source = _source_file(tmp_path)
-    monkeypatch.setattr(config, "LIBREOFFICE_PATH", str(tmp_path / "soffice.exe"))
-    (tmp_path / "soffice.exe").write_bytes(b"stub")
-
-    def run(command, workspace, scope):
-        output_dir = command[command.index("--outdir") + 1]
-        output_path = os.path.join(output_dir, "input.docx")
-        document = Document()
-        document.add_paragraph("中文转换对比")
-        document.save(output_path)
-        return 0
-
-    monkeypatch.setattr(converter, "run_process", run)
-    legacy = converter._convert_file_impl(str(source), "docx")
-    wrapped = converter.convert_file(str(source), "docx")
-
-    assert wrapped.model_dump(exclude={"output_path", "progress_events"}) == legacy.model_dump(
-        exclude={"output_path", "progress_events"}
-    )
-    assert wrapped.progress_events[-1].stage == "completed"
-    assert Document(wrapped.output_path).paragraphs[0].text == "中文转换对比"
-    converter.cleanup_conversion_output(legacy.output_path or "")
-    converter.cleanup_conversion_output(wrapped.output_path or "")
-
-
-def test_libreoffice_wrapper_matches_legacy_failure_result(tmp_path):
-    missing = str(tmp_path / "missing.doc")
-
-    legacy = converter._convert_file_impl(missing, "docx")
-    wrapped = converter.convert_file(missing, "docx")
-
-    assert wrapped.model_dump(exclude={"progress_events"}) == legacy.model_dump(exclude={"progress_events"})
-    assert wrapped.progress_events[-1].stage == "failed"
+    workspace = TaskWorkspace()
+    output = workspace.path / "fake.docx"
+    output.write_bytes(b"not an Office file")
+    monkeypatch.setattr(converter._libreoffice_processor, "_conversion_delegate", lambda *a, **k:
+        converter.ConversionResult(success=True, status="SUCCESS", output_path=str(output)))
+    result = converter.convert_file(str(source), "docx")
+    assert not result.success and result.output_path is None
+    assert not workspace.path.exists()

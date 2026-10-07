@@ -7,81 +7,24 @@ permissions:
   contents: read
 
 jobs:
-  hnsw-wheel:
-    uses: ./.github/workflows/build-hnsw-wheel.yml
   integration:
-    needs: hnsw-wheel
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-
-    env:
-      # 当前5项integration中只有3项聊天/生成测试需要真实DeepSeek凭据；
-      # 两项LibreOffice转换测试不需要外部Secret。当前没有DirectMail集成用例。
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      JWT_SECRET_KEY: integration-ci-only-jwt-key-not-for-production-20260731
-      ENTERPRISE_PASSWORD_SEED: integration-ci-only-enterprise-seed-20260731
-
     steps:
-      - name: Check out source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Require integration secrets
-        shell: pwsh
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build both Python 3.12 images
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:DEEPSEEK_API_KEY)) {
-            throw "缺少GitHub仓库Secret：DEEPSEEK_API_KEY"
-          }
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Download verified CP312 wheel
-        uses: actions/download-artifact@v4
-        with:
-          name: chroma-hnswlib-0.7.3-cp312-win_amd64
-          path: hnsw-artifact
-
-      - name: Create project virtual environment
-        shell: pwsh
+          docker build -t conversion-integration-api .
+          docker build -f converter_service/Dockerfile -t conversion-integration-service .
+      - name: Run all five real integrations in isolated Linux containers
+        env:
+          ZHITIAN_INTEGRATION_MODEL_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          python -m venv .venv
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe scripts/build_hnsw_wheel.py --verify hnsw-artifact
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe -m pip install --no-deps (Get-ChildItem hnsw-artifact/*.whl).FullName
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe -m pip check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.venv\Scripts\python.exe scripts/check_runtime_versions.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Install LibreOffice for conversion integrations
-        shell: pwsh
-        run: |
-          choco install libreoffice-fresh --yes --no-progress
-          $candidates = @(
-            "C:\Program Files\LibreOffice\program\soffice.exe",
-            "C:\Program Files (x86)\LibreOffice\program\soffice.exe"
-          )
-          $soffice = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $soffice) {
-            throw "LibreOffice安装完成后仍未找到soffice.exe"
-          }
-          "LIBREOFFICE_PATH=$soffice" >> $env:GITHUB_ENV
-
-      - name: Run the five existing integration tests
-        shell: cmd
-        run: |
-          if not exist integration-results mkdir integration-results
-          call run_tests.bat -q -m integration --junitxml=integration-results/integration-junit.xml
-
+          set -euo pipefail
+          test -n "$ZHITIAN_INTEGRATION_MODEL_KEY"
+          mkdir -p integration-results
+          bash scripts/check_conversion_integration.sh conversion-integration-api conversion-integration-service --models \
+            2>&1 | tee integration-results/integration.log
       - name: Upload integration report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

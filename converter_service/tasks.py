@@ -29,8 +29,13 @@ class Job:
     finished_at: float = 0
 
     def snapshot(self):
+        # 下载完成/取消清理可与状态轮询交错，文件消失不是协议500错误。
+        try:
+            size = self.output.stat().st_size if self.output else 0
+        except FileNotFoundError:
+            size = 0
         return dict(task_id=self.id, status=self.status, reason=self.reason,
-            target_format=self.target, size_bytes=self.output.stat().st_size if self.output else 0,
+            target_format=self.target, size_bytes=size,
             progress_events=list(self.progress))
 
 
@@ -68,7 +73,7 @@ class TaskManager:
         if self.settings.valid_key():
             workspace = TaskWorkspace()
             try:
-                with task_scope(self.settings.timeout_seconds) as scope:
+                with task_scope(self.settings.timeout_seconds, cancellation=self.stopping) as scope:
                     with budget_lock(self.serial, scope):
                         source = workspace.path / "smoke.docx"
                         engine.write_smoke_docx(source)

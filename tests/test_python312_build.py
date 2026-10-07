@@ -157,7 +157,7 @@ def test_docker_runtime_only_installs_verified_wheel():
     assert "uninstall --yes setuptools wheel pip" in runtime
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "integration-manual.yml"])
+@pytest.mark.parametrize("name", ["ci.yml"])
 def test_windows_ci_reuses_wheel(name):
     text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)

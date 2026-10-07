@@ -67,7 +67,7 @@ def test_entry_scope_is_restored_after_nested_execution_and_failure():
 @pytest.mark.parametrize("source,target", [("exe", "pdf"), ("mp4", "pdf"), ("doc", "mp3"), ("xlsx", "docx")])
 def test_unknown_conversion_never_reaches_legacy_executor(source, target, tmp_path, monkeypatch):
     legacy = Mock(side_effect=AssertionError("must not bypass registry"))
-    monkeypatch.setattr(converter, "_convert_file_impl", legacy)
+    monkeypatch.setattr(converter._libreoffice_processor, "_conversion_delegate", legacy)
     result = converter.convert_file(str(tmp_path / ("source." + source)), target)
     assert not result.success
     assert result.error_type == "unsupported_conversion"

@@ -132,27 +132,24 @@ def test_native_engines_require_real_smoke_and_clean_artifacts(engine, monkeypat
     assert registry.probe_sync(engine).status == EngineStatus.FAILED
 
 
-def test_windows_libreoffice_cannot_claim_ready(monkeypatch):
-    import layers.file_processing.libreoffice as lo
-    monkeypatch.setattr(lo.sys, "platform", "win32")
-    assert get_file_processor_registry().probe_sync("libreoffice").reason == "linux_sandbox_required"
+def test_unconfigured_remote_libreoffice_cannot_claim_ready(monkeypatch):
+    import config
+    monkeypatch.setattr(config, "CONVERSION_SERVICE_URL", "")
+    assert get_file_processor_registry().probe_sync("libreoffice").reason == "conversion_service_not_configured_or_invalid"
 
 
-def test_libreoffice_smoke_checks_quality_and_releases_memory(monkeypatch):
-    import layers.file_processing.libreoffice as lo
-    from layers import resource_admission
-    from layers.file_processing.models import FileProcessingResult, QualityCheckResult
+def test_libreoffice_probe_reads_remote_smoke_not_local_conversion(monkeypatch):
+    import config
+    import httpx
+    from layers.file_processing import remote_libreoffice as remote
     processor = get_file_processor_registry()._processors["libreoffice"]
-    monkeypatch.setattr(lo.sys, "platform", "linux")
-    baseline = resource_admission._reserved_bytes
-    monkeypatch.setattr(processor, "execute_task", lambda request: FileProcessingResult(success=True, status="SUCCESS"))
-    monkeypatch.setattr(processor, "validate_output", lambda *args: QualityCheckResult(passed=False))
-    assert processor.probe_ready().reason == "quality_check_failed"
-    assert resource_admission._reserved_bytes == baseline
-    monkeypatch.setattr(processor, "execute_task", lambda *args: (_ for _ in ()).throw(RuntimeError()))
-    with pytest.raises(RuntimeError):
-        processor.probe_ready()
-    assert resource_admission._reserved_bytes == baseline
+    monkeypatch.setattr(config, "CONVERSION_SERVICE_URL", "http://converter.invalid:8001")
+    monkeypatch.setattr(config, "CONVERSION_SERVICE_KEY", "test-only-conversion-key-at-least-32")
+    monkeypatch.setattr(processor, "execute_task", lambda *a: (_ for _ in ()).throw(AssertionError("must not convert locally")))
+    original = httpx.Client
+    transport = httpx.MockTransport(lambda r: httpx.Response(503, json={"status": "failed", "reason": "sandbox_unavailable"}))
+    monkeypatch.setattr(remote.httpx, "Client", lambda **kwargs: original(transport=transport, **kwargs))
+    assert processor.probe_ready().reason == "sandbox_unavailable"
 
 
 def test_lifespan_starts_smoke_without_waiting(monkeypatch):
@@ -246,10 +243,14 @@ def test_recheck_requires_developer_and_returns_state(client, auth_headers, monk
     developer, _ = auth_headers("developer")
     registry = get_file_processor_registry()
     called = []
+    remote_calls = []
+    monkeypatch.setattr(registry._processors["libreoffice"], "request_remote_probe",
+        lambda: remote_calls.append("recheck"))
     monkeypatch.setattr(registry, "request_probe", lambda name: (called.append(name),
         EngineState(engine_name=name, reason="probe_running"))[1])
     response = client.post(url, headers=developer)
     assert response.status_code == 202 and response.json()["status"] == "pending"
+    assert remote_calls == ["recheck"]
     assert called == ["libreoffice"]
     assert client.post("/file-processing/engines/absent/recheck", headers=developer).status_code == 404
 

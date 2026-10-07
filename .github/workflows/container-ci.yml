@@ -63,6 +63,21 @@ jobs:
             --tag "${{ steps.image.outputs.version_tag }}" \
             --tag "${{ steps.image.outputs.commit_tag }}" \
             .
+          docker buildx build --pull --no-cache --load \
+            --file converter_service/Dockerfile \
+            --tag "zhitian-converter:sha-${{ steps.image.outputs.short_sha }}" .
+
+      - name: Verify isolated converter security and readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='zhitian-converter:sha-${{ steps.image.outputs.short_sha }}'
+          docker run --rm --network none --read-only --tmpfs /tmp:size=268435456,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python \
+            "$image" -m converter_service.probe | tee ci-reports/converter-probe.json
+          test "$(docker run --rm --entrypoint whoami "$image")" = appuser
+          docker run --rm --entrypoint sh "$image" -c \
+            'test ! -d /app/data && test ! -e /app/.env && ! command -v gcc && ! command -v g++'
 
       - name: Verify pinned runtime package versions
         shell: bash
@@ -174,6 +189,30 @@ jobs:
           print("chroma_ready=true")
           ' | tee -a ci-reports/app-import.txt
 
+      # 三种Office格式经API真实远程适配器与质量门；两个隔离容器，无业务卷。
+      - name: Verify remote Office conversion through API adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="conversion-ci-${{ steps.image.outputs.short_sha }}"
+          service="converter-ci-${{ steps.image.outputs.short_sha }}"
+          cleanup() { docker rm -f "$service" >/dev/null 2>&1 || true; docker network rm "$network" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker network create --internal "$network"
+          key='ci-only-independent-conversion-secret-32-bytes'
+          docker run -d --name "$service" --network "$network" --read-only --init \
+            --tmpfs /tmp:size=268435456,mode=1777 --memory 768m --cpus 1 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            -e CONVERSION_SERVICE_KEY="$key" 'zhitian-converter:sha-${{ steps.image.outputs.short_sha }}'
+          personal_key="$(printf '%s' 'ci-only-personal-key-secret-2026' | base64 | tr -d '\n')"
+          docker run --rm --network "$network" --entrypoint python \
+            -e CONVERSION_SERVICE_URL="http://${service}:8001" -e CONVERSION_SERVICE_KEY="$key" \
+            -e ENTERPRISE_PASSWORD_SEED=ci-remote-conversion \
+            -e JWT_SECRET_KEY=ci-only-remote-conversion-secret-at-least-32-bytes \
+            -e PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY="$personal_key" \
+            '${{ steps.image.outputs.version_tag }}' scripts/check_remote_conversion.py \
+            | tee ci-reports/remote-conversion.json
+
       - name: Set up Python for dependency audit
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -194,6 +233,13 @@ jobs:
       - name: Validate package-scoped vulnerability exceptions and expiry
         run: python scripts/vulnerability_exceptions.py validate
 
+      - name: Render per-image exception scopes from sole source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/vulnerability_exceptions.py trivy-ignore --image api > ci-reports/api-ignore.yaml
+          python scripts/vulnerability_exceptions.py trivy-ignore --image converter > ci-reports/converter-ignore.yaml
+
       - name: Audit Python dependencies
         id: pip_audit
         continue-on-error: true
@@ -201,7 +247,7 @@ jobs:
         run: |
           set -euo pipefail
           # The CVE/PYSEC mapping and expiry both come from .trivyignore.yaml.
-          python scripts/vulnerability_exceptions.py pip-ids > ci-reports/pip-exception-ids.txt
+          python scripts/vulnerability_exceptions.py pip-ids --image api > ci-reports/pip-exception-ids.txt
           mapfile -t ignored_ids < ci-reports/pip-exception-ids.txt
           ignore_args=()
           for id in "${ignored_ids[@]}"; do
@@ -238,7 +284,42 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: false
           exit-code: "1"
-          trivyignores: .trivyignore.yaml
+          trivyignores: ci-reports/api-ignore.yaml
+
+      - name: Audit converter Python dependencies
+        id: converter_pip_audit
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip_audit --progress-spinner off --format json \
+            --output ci-reports/converter-pip-audit.json --requirement converter_service/requirements.txt
+
+      - name: Scan converter and save full Trivy report
+        id: converter_trivy_report
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          image-ref: zhitian-converter:sha-${{ steps.image.outputs.short_sha }}
+          scanners: vuln
+          format: json
+          output: ci-reports/converter-trivy-image.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Enforce converter high and critical vulnerability policy
+        id: converter_trivy_gate
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          image-ref: zhitian-converter:sha-${{ steps.image.outputs.short_sha }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+          trivyignores: ci-reports/converter-ignore.yaml
 
       - name: Check vulnerability exceptions against current unfiltered scan
         if: always()
@@ -246,6 +327,7 @@ jobs:
         run: >-
           python scripts/vulnerability_exceptions.py check-scan
           --trivy-report-file ci-reports/trivy-image.json
+          --converter-report-file ci-reports/converter-trivy-image.json
 
       - name: Upload build and security reports
         if: always()
@@ -263,4 +345,7 @@ jobs:
           python scripts/vulnerability_exceptions.py check-outcomes \
             --pip-audit '${{ steps.pip_audit.outcome }}' \
             --trivy-report '${{ steps.trivy_report.outcome }}' \
-            --trivy-gate '${{ steps.trivy_gate.outcome }}'
+            --trivy-gate '${{ steps.trivy_gate.outcome }}' \
+            --converter-pip-audit '${{ steps.converter_pip_audit.outcome }}' \
+            --converter-trivy-report '${{ steps.converter_trivy_report.outcome }}' \
+            --converter-trivy-gate '${{ steps.converter_trivy_gate.outcome }}'

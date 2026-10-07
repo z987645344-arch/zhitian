@@ -94,9 +94,13 @@ def create_app(settings=None, manager=None):
             raise HTTPException(503, "engine_unavailable")
         if not manager.reserve():
             raise HTTPException(429, "queue_full")
-        workspace = TaskWorkspace()
+        workspace = None
         submitted = False
         try:
+            try:
+                workspace = TaskWorkspace()
+            except OSError:
+                raise HTTPException(503, "temporary_storage_unavailable")
             source = workspace.path / ("input." + source_format)
             size = 0
             with source.open("wb") as destination:
@@ -113,10 +117,15 @@ def create_app(settings=None, manager=None):
             submitted = True
             return result
         finally:
-            await file.close()
-            if not submitted:
-                workspace.cleanup()
-                manager.capacity.release()
+            try:
+                await file.close()
+            finally:
+                if not submitted:
+                    try:
+                        if workspace is not None:
+                            workspace.cleanup()
+                    finally:
+                        manager.capacity.release()
 
     def job_or_404(task_id):
         if len(task_id) != 32 or any(c not in "0123456789abcdef" for c in task_id):

@@ -54,6 +54,23 @@ def test_service_import_does_not_load_business_config_or_database():
     assert json.loads(completed.stdout.strip()) == []
 
 
+def test_shutdown_cancels_inflight_smoke_and_cleans_workspace():
+    entered = threading.Event()
+    workspace_paths = []
+    def hang(source, target, workspace, scope, settings):
+        workspace_paths.append(workspace.path)
+        entered.set()
+        while True:
+            scope.check()
+            time.sleep(.005)
+    manager = TaskManager(Settings(KEY), hang)
+    manager.start()
+    assert entered.wait(1)
+    manager.stop()
+    assert not manager.probe_thread.is_alive()
+    assert workspace_paths and all(not path.exists() for path in workspace_paths)
+
+
 def test_protocol_auth_smoke_download_and_cleanup():
     client, manager = ready_client()
     with client:
@@ -94,6 +111,26 @@ def test_input_limit_body_limit_and_output_type():
         assert client.post("/v1/tasks", headers={"X-Conversion-Key": KEY,
             "Content-Length": "999999"}, content=b"a").status_code == 413
         assert not manager.jobs
+
+
+def test_temporary_storage_failure_releases_reserved_queue_capacity(monkeypatch):
+    import importlib
+    service_app = importlib.import_module("converter_service.app")
+    client, manager = ready_client(Settings(KEY, queue_limit=0))
+    with client:
+        wait_ready(manager)
+        def no_storage():
+            raise OSError("synthetic storage full")
+        with monkeypatch.context() as patch:
+            patch.setattr(service_app, "TaskWorkspace", no_storage)
+            for _ in range(3):
+                response = submit(client)
+                assert response.status_code == 503
+                assert response.json()["detail"] == "temporary_storage_unavailable"
+                assert not manager.jobs
+        response = submit(client)
+        assert response.status_code == 202
+        assert manager.get(response.json()["task_id"]).done.wait(2)
 
 
 def test_failed_smoke_does_not_break_health():
@@ -152,6 +189,18 @@ def test_output_size_and_type_gate(tmp_path):
         output.write_bytes(data)
         with pytest.raises(ValueError):
             engine.validate_artifact(output, "pdf", limit)
+
+
+def test_status_snapshot_during_artifact_cleanup_is_not_server_error(tmp_path):
+    from converter_service.tasks import Job
+    from types import SimpleNamespace
+    artifact = tmp_path / "removed.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+    job = Job(SimpleNamespace(), None, "pdf", time.monotonic() + 1,
+              status="cancelled", output=artifact)
+    artifact.unlink()
+    result = job.snapshot()
+    assert result["status"] == "cancelled" and result["size_bytes"] == 0
 
 
 def test_engine_uses_only_fixed_args_and_second_stage_process_runner(monkeypatch):

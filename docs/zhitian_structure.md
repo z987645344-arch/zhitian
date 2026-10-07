@@ -24,7 +24,8 @@ zhitian/
 ├── main.py                     FastAPI入口、认证依赖、核心HTTP/SSE契约
 ├── config.py                   环境变量与运行参数
 ├── requirements.txt            Python 3.12精确依赖
-├── Dockerfile                  非root生产镜像、LibreOffice、中文字体、嵌入资产
+├── Dockerfile                  非rootAPI镜像与嵌入资产，不含LibreOffice
+├── converter_service/          独立内部HTTP转换服务、最小镜像与真实沙箱探针
 ├── VERSION                     应用版本唯一来源（OpenAPI与根路由读取）
 ├── layers/
 │   ├── auth.py                 账号、JWT、RBAC、文档权威元数据
@@ -37,7 +38,7 @@ zhitian/
 │   ├── document_loader.py      文档解析与切片
 │   ├── embedding.py            bge-small-zh-v1.5 ONNX嵌入
 │   ├── graph_store.py          可选GraphRAG关系存储
-│   ├── converter.py            LibreOffice格式转换
+│   ├── converter.py            注册表裁决与远程LibreOffice适配器入口
 │   ├── pdf_text.py/pdf_tools.py PDF文本、合并与拆分
 │   ├── attachments.py          聊天附件临时文本上下文
 │   ├── files_store.py          用户持久文件库

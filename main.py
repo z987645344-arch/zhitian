@@ -1083,9 +1083,18 @@ async def file_engines(current_user: dict = Depends(get_current_user)):
 
 @app.post("/file-processing/engines/{engine_name}/recheck", status_code=202)
 async def recheck_file_engine(engine_name: str, current_user: dict = Depends(require_developer)):
+    import httpx
     registry = get_file_processor_registry()
     if not registry.has_processor(engine_name):
         raise HTTPException(status_code=404, detail="文件引擎不存在")
+    processor = registry._processors.get(engine_name)
+    remote_probe = getattr(processor, "request_remote_probe", None)
+    if remote_probe:
+        try:
+            await asyncio.to_thread(remote_probe)
+        except (ValueError, httpx.HTTPError):
+            # 远端不可达仍由能力状态展示，不把聊天/API就绪一起判失败。
+            return registry.engine_state(engine_name).model_dump(mode="json")
     return registry.request_probe(engine_name).model_dump(mode="json")
 
 

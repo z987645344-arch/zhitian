@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Real local LibreOffice conversion coverage; excluded from CI by integration mark."""
+"""Real remote LibreOffice coverage; run in the isolated Linux conversion CI job."""
 
 import io
 import os
-import subprocess
+import shutil
 
 import pytest
-from docx import Document
 
 import config
 from layers import auth, memory, task_store
@@ -16,82 +15,31 @@ from tests.conftest import grant_work_organization
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-FODP_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
-<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
- xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
- xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
- xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
- xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"
- office:mimetype="application/vnd.oasis.opendocument.presentation" office:version="1.2">
- <office:styles/>
- <office:automatic-styles>
-  <style:page-layout style:name="PM1"><style:page-layout-properties svg:width="28cm" svg:height="21cm"/></style:page-layout>
-  <style:style style:name="dp1" style:family="drawing-page"/>
-  <style:style style:name="gr1" style:family="graphic"/>
- </office:automatic-styles>
- <office:master-styles><style:master-page style:name="Default" style:page-layout-name="PM1" draw:style-name="dp1"/></office:master-styles>
- <office:body><office:presentation>
-  <draw:page draw:name="page1" draw:style-name="dp1" draw:master-page-name="Default">
-   <draw:frame draw:style-name="gr1" svg:width="20cm" svg:height="3cm" svg:x="1cm" svg:y="1cm">
-    <draw:text-box><text:p>真实PPTX转换验证内容</text:p></draw:text-box>
-   </draw:frame>
-  </draw:page>
- </office:presentation></office:body>
-</office:document>
-"""
 
 
-def _require_soffice() -> str:
-    path = config.LIBREOFFICE_PATH
-    if not path or not os.path.isfile(path):
-        pytest.skip("本机未配置可用的LIBREOFFICE_PATH")
+def _require_remote_service() -> str:
+    path = os.environ.get("FILE_CONVERSION_FIXTURES_DIR", "")
+    assert path and os.path.isdir(path), "run scripts/check_conversion_integration.sh"
     from layers.file_processing.runtime import get_file_processor_registry
     registry = get_file_processor_registry()
-    for state in registry.engine_states():
-        checked = registry.probe_sync(state.engine_name)
+    for name in ("libreoffice", "document_text"):
+        checked = registry.probe_sync(name)
         assert checked.status.value == "ready", checked.reason
     return path
 
 
-def _soffice_convert(soffice: str, source_path: str, target: str, output_dir: str) -> str:
-    completed = subprocess.run(
-        [soffice, "--headless", "--convert-to", target, "--outdir", output_dir, source_path],
-        capture_output=True,
-        check=False,
-        timeout=30,
-    )
-    assert completed.returncode == 0
-    output_path = os.path.join(
-        output_dir,
-        "%s.%s" % (os.path.splitext(os.path.basename(source_path))[0], target),
-    )
-    assert os.path.isfile(output_path)
-    return output_path
-
-
 def _build_real_samples(tmp_path) -> list:
-    soffice = _require_soffice()
+    fixtures = _require_remote_service()
     source_dir = tmp_path / "sample_sources"
-    output_dir = tmp_path / "sample_outputs"
     source_dir.mkdir()
-    output_dir.mkdir()
-
-    docx_path = source_dir / "sample.docx"
-    document = Document()
-    document.add_paragraph("真实DOC转换验证内容")
-    document.save(docx_path)
-    doc_path = _soffice_convert(soffice, str(docx_path), "doc", str(output_dir))
-
-    csv_path = source_dir / "sample.csv"
-    csv_path.write_text("name,value\nknowledge,42\n", encoding="utf-8")
-    xls_path = _soffice_convert(soffice, str(csv_path), "xls", str(output_dir))
-    xlsx_path = _soffice_convert(soffice, str(csv_path), "xlsx", str(output_dir))
-
-    fodp_path = source_dir / "sample.fodp"
-    fodp_path.write_text(FODP_SAMPLE, encoding="utf-8")
-    ppt_path = _soffice_convert(soffice, str(fodp_path), "ppt", str(output_dir))
-    pptx_path = _soffice_convert(soffice, str(fodp_path), "pptx", str(output_dir))
-    return [str(docx_path), doc_path, xls_path, xlsx_path, ppt_path, pptx_path]
+    paths = []
+    for extension in ("docx", "doc", "xls", "xlsx", "ppt", "pptx"):
+        source = os.path.join(fixtures, "sample." + extension)
+        assert os.path.isfile(source), source
+        target = source_dir / ("sample." + extension)
+        shutil.copyfile(source, target)
+        paths.append(str(target))
+    return paths
 
 
 def test_real_soffice_uploads_doc_xlsx_and_pptx(

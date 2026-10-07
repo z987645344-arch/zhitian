@@ -184,6 +184,13 @@ def isolated_file_engine_states(monkeypatch, request):
 
     registry = get_file_processor_registry()
     integration = request.node.get_closest_marker("integration") is not None
+    if integration and os.environ.get("ZHITIAN_INTEGRATION_MODEL_KEY"):
+        # 手动付費作业显式传入；普通回归与零付费转换验证始终用虚构密钥。
+        monkeypatch.setattr(config, "DEEPSEEK_API_KEY", os.environ["ZHITIAN_INTEGRATION_MODEL_KEY"])
+    if not integration:
+        from layers.file_processing.remote_libreoffice import RemoteLibreOfficeProcessor
+        # 离线业务用例继续使用状态桩；远端协议/就绪专项显式恢复真实查询。
+        monkeypatch.setattr(RemoteLibreOfficeProcessor, "runtime_state", lambda self, cached: cached)
     monkeypatch.setattr(registry, "_states", {
         name: EngineState(engine_name=name, status=EngineStatus.PENDING if integration else EngineStatus.READY,
                           reason="not_checked" if integration else "",

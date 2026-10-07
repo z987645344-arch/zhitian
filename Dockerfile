@@ -64,7 +64,6 @@ FROM ${PYTHON_BASE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    LIBREOFFICE_PATH=/usr/bin/soffice \
     HOME=/home/appuser \
     XDG_CONFIG_HOME=/home/appuser/.config
 
@@ -74,14 +73,7 @@ RUN apt-get update \
     # 同一发行版内更新基础镜像已有包；仅install不会升级未列出的安全依赖。
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
-        fontconfig \
-        fonts-noto-cjk \
-        libseccomp2 \
         libgomp1 \
-        libreoffice-calc-nogui \
-        libreoffice-impress-nogui \
-        libreoffice-writer-nogui \
-    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt scripts/check_runtime_versions.py ./
@@ -95,7 +87,7 @@ RUN --mount=type=bind,from=hnsw-wheel,source=/wheels,target=/wheels,ro \
 
 RUN groupadd --system appuser \
     && useradd --system --gid appuser --create-home --home-dir /home/appuser appuser \
-    && mkdir -p /app/data /app/backups /home/appuser/.config/libreoffice \
+    && mkdir -p /app/data /app/backups /home/appuser/.config \
     && chown -R appuser:appuser /app /home/appuser
 
 COPY --chown=appuser:appuser . .
@@ -110,9 +102,8 @@ COPY --from=model-fetch --chown=appuser:appuser /export /app/models/bge-small-zh
 
 USER appuser
 
-# Windows 权威回归无法实际运行 Linux seccomp；镜像每次构建都执行容器内
-# 回环反证，确保改动转换链路后不会把外连悄悄放回来。
-RUN python tests/soffice_network_probe.py \
+# API不包含soffice；真实seccomp回环反证改在独立转换镜像中执行。
+RUN test ! -e /usr/bin/soffice \
     && test -z "$(find /app/data -mindepth 1 -print -quit)"
 
 EXPOSE 8000

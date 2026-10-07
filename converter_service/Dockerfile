@@ -15,6 +15,7 @@ COPY layers/__init__.py ./layers/
 COPY layers/soffice_sandbox.py ./layers/
 COPY layers/file_processing/__init__.py layers/file_processing/base.py layers/file_processing/models.py layers/file_processing/registry.py layers/file_processing/runner.py layers/file_processing/lo_capabilities.py layers/file_processing/degradation.py ./layers/file_processing/
 USER appuser
+RUN python -m converter_service.probe
 EXPOSE 8001
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health',timeout=2)"]

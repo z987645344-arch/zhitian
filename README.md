@@ -83,7 +83,7 @@ flowchart LR
 
 - Windows 10/11
 - Python 3.12（Windows x64）
-- LibreOffice（Office/PDF 转换需要）
+- 独立Linux LibreOffice转换服务（Office转换需要；不可用不影响聊天）
 - DeepSeek API Key；联网搜索另需 Tavily API Key
 - 阿里云 DirectMail AccessKey（可选，仅邮箱验证码功能需要）
 
@@ -136,7 +136,7 @@ DirectMail 三项凭据（`ALIYUN_ACCESS_KEY_ID`、`ALIYUN_ACCESS_KEY_SECRET`、
 服务默认监听 `http://localhost:8000`：
 
 - `GET /health`：进程存活
-- `GET /ready`：SQLite、Chroma与LibreOffice依赖就绪
+- `GET /ready`：SQLite、Chroma依赖就绪；文件引擎状态单独列出，不影响API就绪
 - `POST /auth/register`：注册测试账号
 - `POST /chat/stream`：SSE 对话主入口
 
