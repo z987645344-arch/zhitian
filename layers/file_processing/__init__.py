@@ -16,7 +16,6 @@ from layers.file_processing.models import (
     FileEntry, FileTaskKind, FileTaskSpec, ResourceBudget, EngineType,
     EngineStatus, EngineState, EngineProbeResult, FileTaskProgress,
 )
-from layers.file_processing.quality import FileQualityChecker
 from layers.file_processing.registry import (
     CapabilityNotFoundError,
     FileProcessorRegistry,
@@ -40,3 +39,11 @@ __all__ = [
     "FileEntry", "FileTaskKind", "FileTaskSpec", "ResourceBudget", "EngineType",
     "EngineStatus", "EngineState", "EngineProbeResult", "FileTaskProgress",
 ]
+
+
+def __getattr__(name):
+    # 最小转换服务复用运行器/模型，不加载API配置、PDF或Office解析依赖。
+    if name == "FileQualityChecker":
+        from layers.file_processing.quality import FileQualityChecker
+        return FileQualityChecker
+    raise AttributeError(name)

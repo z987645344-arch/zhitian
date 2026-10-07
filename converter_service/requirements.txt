@@ -1,0 +1,6 @@
+# 与API锁定版本一致；无业务/模型/向量/Office解析依赖。
+fastapi==0.141.1
+starlette==1.4.1
+pydantic==2.13.4
+uvicorn==0.51.0
+python-multipart==0.0.32

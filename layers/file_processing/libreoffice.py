@@ -33,10 +33,7 @@ _QUALITY_PROFILES = {
     "docx": QualityProfile.DOCX,
 }
 # 既有上传/手动/附件格式，以及生成文件路径实际使用的MD/TXT；不声明任意源格式。
-LIBREOFFICE_SOURCES = {
-    "pdf": ["doc", "docx", "xls", "xlsx", "ppt", "pptx", "md", "txt"],
-    "docx": ["doc", "md", "txt"],
-}
+from layers.file_processing.lo_capabilities import LIBREOFFICE_SOURCES
 class LibreOfficeProcessor(FileProcessor):
     name = "libreoffice"
     adapter_version = "1"

@@ -15,8 +15,6 @@ import time
 import uuid
 from contextlib import contextmanager
 
-import config
-
 
 class FileTaskCancelled(BaseException):
     """取消不属于可重试或可降级的处理错误。"""
@@ -193,7 +191,10 @@ def task_scope(seconds=None, cancellation=None, progress=None):
     provider = sys.modules.get("layers.llm_provider")
     control = provider.current_request_control() if provider is not None else None
     cancellation = cancellation or (control.cancelled if control is not None else None)
-    scope = TaskScope(config.CONVERSION_TIMEOUT_SECONDS if seconds is None else seconds,
+    if seconds is None:
+        import config
+        seconds = config.CONVERSION_TIMEOUT_SECONDS
+    scope = TaskScope(seconds,
                       cancellation, progress)
     if previous:
         scope.parent = previous
@@ -373,8 +374,9 @@ def run_process(command, workspace, scope, on_poll=None):
         scope.check()
         return process.returncode
     except (FileTaskTimeout, FileTaskCancelled) as exc:
-        from utils.logger import get_logger
-        get_logger("file_tasks").info("[file-task] task_id=%s result=%s",
+        # 独立转换服务不能导入业务config/logger；API已配置的日志通道仍接收此logger。
+        import logging
+        logging.getLogger("file_tasks").info("[file-task] task_id=%s result=%s",
                                      workspace.task_id, "cancelled" if isinstance(exc, FileTaskCancelled) else "timeout")
         raise
     finally:
@@ -386,6 +388,7 @@ def run_process(command, workspace, scope, on_poll=None):
 
 
 def run_python_worker(kind, payload, workspace, scope):
+    import config
     request = workspace.path / "request.json"
     result = workspace.path / "result.json"
     progress_path = workspace.path / "progress.jsonl"
