@@ -33,6 +33,8 @@ import uvicorn
 import config
 from layers.file_processing.models import FileEntry
 from layers.file_processing.runtime import run_for_entry
+from layers.file_processing.runtime import get_file_processor_registry
+from layers.file_processing import service as file_service
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
@@ -294,6 +296,8 @@ async def lifespan(app: FastAPI):
     _log_graphrag_startup_state()
     resource_admission.log_startup_state()
     _recover_interrupted_tasks()
+    # 文件引擎只降级文件能力；冒烟线程不阻塞启动、聊天及/ready。
+    get_file_processor_registry().start_probes()
     with _request_gate_lock:
         _accepting_requests = True
     try:
@@ -1023,26 +1027,44 @@ async def ready():
     """Check request-serving dependencies, distinct from the process liveness /health endpoint."""
     sqlite_ok = _check_sqlite_health()
     chroma_ok = _check_chroma_health()
-    libreoffice_ok = _check_libreoffice_health()
     payload = {
         "status": (
             "ready"
-            if sqlite_ok and chroma_ok and libreoffice_ok
+            if sqlite_ok and chroma_ok
             else "not_ready"
         ),
         "dependencies": {
             "sqlite": sqlite_ok,
             "chroma": chroma_ok,
-            "libreoffice": libreoffice_ok,
         },
+        "file_engines": [state.model_dump(mode="json") for state in get_file_processor_registry().engine_states()],
         "timestamp": utc_now_naive().isoformat(),
     }
     return JSONResponse(
         status_code=(
-            200 if sqlite_ok and chroma_ok and libreoffice_ok else 503
+            200 if sqlite_ok and chroma_ok else 503
         ),
         content=payload,
     )
+
+
+@app.get("/file-processing/capabilities")
+async def file_capabilities(source_format: str, entry: FileEntry = FileEntry.APP_MANUAL,
+                            current_user: dict = Depends(get_current_user)):
+    return file_service.capabilities(source_format, entry)
+
+
+@app.get("/file-processing/engines")
+async def file_engines(current_user: dict = Depends(get_current_user)):
+    return {"engines": [state.model_dump(mode="json") for state in get_file_processor_registry().engine_states()]}
+
+
+@app.post("/file-processing/engines/{engine_name}/recheck", status_code=202)
+async def recheck_file_engine(engine_name: str, current_user: dict = Depends(require_developer)):
+    registry = get_file_processor_registry()
+    if not registry.has_processor(engine_name):
+        raise HTTPException(status_code=404, detail="文件引擎不存在")
+    return registry.request_probe(engine_name).model_dump(mode="json")
 
 
 @app.post("/auth/register")
@@ -2127,6 +2149,12 @@ async def convert_tool_file(
                 error_type="unsupported_format",
             ).model_dump(),
         )
+    error_type, detail = file_service.conversion_availability(source_format, target_format)
+    if error_type:
+        await file.close()
+        return JSONResponse(status_code=422, content=ToolConversionResponse(success=False,
+            converted_from_format=source_format, converted_to_format=target_format,
+            error_type=error_type, detail=detail).model_dump())
     max_upload_bytes = max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024
     if file.size is not None and file.size > max_upload_bytes:
         await file.close()
@@ -2164,6 +2192,7 @@ async def convert_tool_file(
                     converted_from_format=conversion.converted_from_format or source_format,
                     converted_to_format=conversion.converted_to_format or target_format,
                     error_type=conversion.error_type or "conversion_failed",
+                    detail=conversion.error_msg or "文件转换失败",
                 ).model_dump(),
             )
         converted_path = conversion.output_path
@@ -3324,11 +3353,10 @@ def _conversion_target_for_suffix(
     requested_target: Optional[str] = None,
 ) -> str:
     target = (requested_target or "").lower().lstrip(".")
-    if suffix == ".pdf":
-        return target if target in {"docx", "xlsx", "pptx"} else ""
-    if suffix in config.TOOL_CONVERSION_EXTENSIONS:
-        return "pdf" if not target or target == "pdf" else ""
-    return ""
+    targets = get_file_processor_registry().conversion_targets(suffix, ready_only=False)
+    if not target and "pdf" in targets:
+        target = "pdf"
+    return target if target in targets else ""
 
 
 def _conversion_download_filename(filename: str, target_format: str) -> str:
@@ -4157,15 +4185,6 @@ def _check_chroma_health() -> bool:
     except Exception as e:
         logger.error("health Chroma检查失败：error_type=%s", type(e).__name__)
         return False
-
-
-def _check_libreoffice_health() -> bool:
-    soffice_path = (config.LIBREOFFICE_PATH or "").strip()
-    return bool(
-        soffice_path
-        and os.path.isfile(soffice_path)
-        and os.access(soffice_path, os.X_OK)
-    )
 
 
 def _count_sqlite_conversations() -> int:

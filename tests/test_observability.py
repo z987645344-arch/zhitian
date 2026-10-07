@@ -273,7 +273,6 @@ def test_chat_requests_are_recorded_in_recent_requests(
 def test_ready_returns_200_and_503_for_dependency_state(client, monkeypatch):
     monkeypatch.setattr("main._check_sqlite_health", lambda: True)
     monkeypatch.setattr("main._check_chroma_health", lambda: True)
-    monkeypatch.setattr("main._check_libreoffice_health", lambda: True)
     assert client.get("/ready").status_code == 200
 
     monkeypatch.setattr("main._check_sqlite_health", lambda: False)
@@ -282,7 +281,13 @@ def test_ready_returns_200_and_503_for_dependency_state(client, monkeypatch):
     assert response.json()["status"] == "not_ready"
 
     monkeypatch.setattr("main._check_sqlite_health", lambda: True)
-    monkeypatch.setattr("main._check_libreoffice_health", lambda: False)
+    from layers.file_processing.models import EngineState, EngineStatus
+    registry = main.get_file_processor_registry()
+    registry._states["libreoffice"] = EngineState(engine_name="libreoffice", status=EngineStatus.FAILED,
+                                                 reason="soffice_not_found")
     response = client.get("/ready")
-    assert response.status_code == 503
-    assert response.json()["dependencies"]["libreoffice"] is False
+    assert response.status_code == 200
+    assert "libreoffice" not in response.json()["dependencies"]
+    assert next(item for item in response.json()["file_engines"] if item["engine_name"] == "libreoffice")["status"] == "failed"
+    monkeypatch.setattr("main._check_chroma_health", lambda: False)
+    assert client.get("/ready").status_code == 503

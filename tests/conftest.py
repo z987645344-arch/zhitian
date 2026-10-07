@@ -172,6 +172,30 @@ def reset_rate_limiter():
     main.limiter.reset()
 
 
+@pytest.fixture(autouse=True)
+def isolated_file_engine_states(monkeypatch, request):
+    """离线业务测试使用已就绪的引擎桩，不隐式启动外部转换进程。
+
+    就绪专项测试会显式设置pending/failed并调用真实probe；integration不作就绪替身。
+    每个用例独立状态，避免重检线程及失败状态污染其他用例。
+    """
+    from layers.file_processing.models import EngineState, EngineStatus
+    from layers.file_processing.runtime import get_file_processor_registry
+
+    registry = get_file_processor_registry()
+    integration = request.node.get_closest_marker("integration") is not None
+    monkeypatch.setattr(registry, "_states", {
+        name: EngineState(engine_name=name, status=EngineStatus.PENDING if integration else EngineStatus.READY,
+                          reason="not_checked" if integration else "",
+                          last_checked_at=None if integration else "2026-10-07T00:00:00+00:00")
+        for name in registry._processors
+    })
+    monkeypatch.setattr(registry, "_probing", set())
+    monkeypatch.setattr(registry, "_threads", {})
+    yield
+    registry.wait_for_probes()
+
+
 @pytest.fixture
 def client():
     return TestClient(main.app)

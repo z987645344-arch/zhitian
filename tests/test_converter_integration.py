@@ -45,6 +45,11 @@ def _require_soffice() -> str:
     path = config.LIBREOFFICE_PATH
     if not path or not os.path.isfile(path):
         pytest.skip("本机未配置可用的LIBREOFFICE_PATH")
+    from layers.file_processing.runtime import get_file_processor_registry
+    registry = get_file_processor_registry()
+    for state in registry.engine_states():
+        checked = registry.probe_sync(state.engine_name)
+        assert checked.status.value == "ready", checked.reason
     return path
 
 

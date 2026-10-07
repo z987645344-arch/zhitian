@@ -3,6 +3,11 @@
 
 from typing import Callable, List
 import os
+import sys
+import tempfile
+from pathlib import Path
+
+import config
 
 from layers.file_processing.base import FileProcessor
 from layers.file_processing.models import (
@@ -14,6 +19,7 @@ from layers.file_processing.models import (
     ProcessorCapability,
     QualityCheckResult,
     QualityProfile,
+    EngineProbeResult,
 )
 from layers.file_processing.quality import FileQualityChecker
 
@@ -70,6 +76,35 @@ class LibreOfficeProcessor(FileProcessor):
             and request.target_format in _MIME_TYPES
             and request.source_format in LIBREOFFICE_SOURCES[request.target_format]
         )
+
+    def probe_ready(self) -> EngineProbeResult:
+        if sys.platform != "linux":
+            return EngineProbeResult(success=False, reason="linux_sandbox_required")
+        from docx import Document
+        from layers import resource_admission
+        with tempfile.TemporaryDirectory(prefix="zhitian-lo-smoke-") as directory:
+            source = Path(directory) / "smoke.docx"
+            document = Document()
+            document.add_paragraph("File engine smoke test")
+            document.save(source)
+            request = FileProcessingRequest(task_type=FileTaskType.CONVERT,
+                source_paths=[str(source)], source_format="docx", target_format="pdf",
+                max_output_size_bytes=1024 * 1024)
+            # 冒烟也预留内存；不导入heavy_task_limits/task_store，避免独立构建
+            # 探针初始化业务数据库。底层转换仍持有既有进程级串行锁。
+            amount = config.HEAVY_TASK_MEMORY_RESERVE_MIB
+            if not resource_admission.try_reserve(amount):
+                return EngineProbeResult(success=False, reason="memory_admission_rejected")
+            try:
+                result = self.execute_task(request)
+                try:
+                    quality = self.validate_output(request, result)
+                    return EngineProbeResult(success=result.success and quality.passed,
+                        reason=result.error_type or ("quality_check_failed" if not quality.passed else ""))
+                finally:
+                    self.cleanup(request, result)
+            finally:
+                resource_admission.release(amount)
 
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
         source_path = request.source_paths[0] if request.source_paths else ""

@@ -219,7 +219,9 @@ expert图当前包含：`classify`、`retrieve`、`plan`、`execute`、`reflect`
 
 | 接口族 | 代表端点 | 说明 |
 |--------|----------|------|
-| 存活/就绪 | `GET /health`、`GET /ready` | health检查进程层；ready检查SQLite、Chroma和LibreOffice，失败返回503 |
+| 存活/就绪 | `GET /health`、`GET /ready` | health检查进程层；ready只以SQLite、Chroma裁决503，文件引擎状态单列，不影响聊天就绪 |
+| 文件能力 | `GET /file-processing/capabilities`、`GET /file-processing/engines` | 已登录用户按源格式和入口读取当前可用任务、目标格式及引擎失败原因 |
+| 文件重检 | `POST /file-processing/engines/{engine_name}/recheck` | 开发者显式触发后台真实冒烟；pending/ready/failed，不在健康检查时重复转换 |
 | 认证 | `POST /auth/register`、`/auth/login`、`/auth/send-verification-code` | customer自助注册与企业角色申请/登录 |
 | 审批与治理 | `/developer/registration-requests/*`、`/reviewer/registration-requests/*`、`/developer/users/*` | 账号审批、禁用、启用、角色与密码治理 |
 | 对话 | `POST /chat`、`POST /chat/stream` | fast/expert，SSE流式事件 |

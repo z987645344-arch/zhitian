@@ -63,7 +63,8 @@ def test_tool_conversion_rejects_unsupported_format(
     response = client.post(
         "/tools/convert",
         headers=headers,
-        files={"file": ("notes.txt", b"plain text", "text/plain")},
+        # TXT现由注册表中的既有LibreOffice文本能力声明；用未登记格式验拒绝。
+        files={"file": ("notes.bin", b"plain text", "application/octet-stream")},
     )
 
     assert response.status_code == 400

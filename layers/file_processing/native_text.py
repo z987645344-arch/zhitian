@@ -3,6 +3,7 @@
 
 import os
 from typing import Callable, List
+import tempfile
 
 from layers.file_processing.base import FileProcessor
 from layers.file_processing.models import (
@@ -14,6 +15,7 @@ from layers.file_processing.models import (
     ProcessorCapability,
     QualityCheckResult,
     QualityProfile,
+    EngineProbeResult,
 )
 from layers.file_processing.quality import FileQualityChecker
 
@@ -57,6 +59,22 @@ class NativeTextProcessor(FileProcessor):
             request.task_type == FileTaskType.WRITE_TEXT
             and request.target_format in _TEXT_MIME_TYPES
         )
+
+    def probe_ready(self) -> EngineProbeResult:
+        with tempfile.TemporaryDirectory(prefix="zhitian-write-smoke-") as directory:
+            for file_format in _TEXT_MIME_TYPES:
+                request = FileProcessingRequest(task_type=FileTaskType.WRITE_TEXT,
+                    source_format=file_format, target_format=file_format,
+                    output_path=os.path.join(directory, "smoke." + file_format),
+                    content="File engine smoke test")
+                result = self.execute_task(request)
+                try:
+                    passed = result.success and self.validate_output(request, result).passed
+                    if not passed:
+                        return EngineProbeResult(success=False, reason=result.error_type or "smoke_quality_failed")
+                finally:
+                    self.cleanup(request, result)
+        return EngineProbeResult(success=True)
 
     def execute(self, request: FileProcessingRequest) -> FileProcessingResult:
         session_id = request.ownership.session_id if request.ownership else ""

@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import uuid
+import tempfile
 from typing import List, Optional
 
 import fitz
@@ -29,6 +30,7 @@ from layers.file_processing.models import (
     QualityCheckResult,
     QualityIssue,
     QualityProfile,
+    EngineProbeResult,
 )
 from layers.file_processing.quality import FileQualityChecker
 from layers.file_processing.runtime import register_processor_once
@@ -61,6 +63,25 @@ class PdfProcessor(FileProcessor):
     def __init__(self, max_size_bytes: int) -> None:
         self._max_size_bytes = max_size_bytes
         self._quality_checker = FileQualityChecker()
+
+    def probe_ready(self) -> EngineProbeResult:
+        with tempfile.TemporaryDirectory(prefix="zhitian-pdf-smoke-") as directory:
+            source = os.path.join(directory, "smoke.pdf")
+            with fitz.open() as document:
+                page = document.new_page()
+                page.insert_text((72, 72), "File engine smoke test")
+                document.save(source)
+            extracted = self.execute_task(FileProcessingRequest(task_type=FileTaskType.EXTRACT,
+                source_format="pdf", source_paths=[source]))
+            request = FileProcessingRequest(task_type=FileTaskType.CONVERT, source_paths=[source],
+                                            source_format="pdf", target_format="docx")
+            converted = self.execute_task(request)
+            try:
+                passed = (extracted.success and "File engine smoke test" in extracted.text
+                          and converted.success and self.validate_output(request, converted).passed)
+                return EngineProbeResult(success=passed, reason="" if passed else "smoke_quality_failed")
+            finally:
+                self.cleanup(request, converted)
 
     def capabilities(self) -> List[ProcessorCapability]:
         common = {

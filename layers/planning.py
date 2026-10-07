@@ -2,6 +2,7 @@
 # 规划层：LangGraph状态机调度意图分类、记忆检索、执行和响应生成
 
 import json
+import copy
 import re
 import time
 from typing import Callable, Literal, Optional, TypedDict
@@ -12,6 +13,7 @@ import config
 from layers import execution, llm_provider, memory, system_modules, source_policy
 from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
+from layers.file_processing.service import ready_conversion_targets
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -227,8 +229,7 @@ INTENT_TOOLS = [
             "description": (
                 "仅当用户明确要求转换本轮对话已经上传的一个附件时调用。"
                 "这是格式转换，不是读取、总结附件，也不是生成新内容。"
-                "支持PDF转Word(DOCX)、Excel(XLSX)或PPT(PPTX)，以及Word(DOC/DOCX)、"
-                "Excel(XLS/XLSX)、PPT(PPT/PPTX)转PDF；另外保留DOC转DOCX兼容能力。"
+                "可用源格式与目标格式由文件能力注册表和引擎就绪状态裁决，不支持时明确提示。"
                 "没有附件或同时存在多个附件时仍选择本工具，由系统提示用户上传或明确目标，禁止猜测附件。"
             ),
             "parameters": {
@@ -240,7 +241,6 @@ INTENT_TOOLS = [
                     },
                     "target_format": {
                         "type": "string",
-                        "enum": ["pdf", "docx", "xlsx", "pptx"],
                         "description": "用户明确要求的目标格式"
                     }
                 },
@@ -2042,6 +2042,22 @@ def _with_react_limit_notice(state: AgentState, response: str) -> str:
         return response
     return f"{notice}\n\n{response or ''}".strip()
 
+def _current_intent_tools():
+    """工具只给出意图；目标格式提示来自注册表当前状态，执行时再次校验。"""
+    tools = copy.deepcopy(INTENT_TOOLS)
+    targets = ready_conversion_targets()
+    for tool in tools:
+        function = tool["function"]
+        if function["name"] == "convert_document":
+            target = function["parameters"]["properties"]["target_format"]
+            if targets:
+                target["enum"] = targets
+                function["description"] += " 当前可用目标格式：%s。" % "、".join(targets)
+            else:
+                function["description"] += " 当前转换引擎尚未就绪，转换能力不可用；不得宣称转换成功。"
+    return tools
+
+
 def _classify_with_model(
     message: str,
     context: list[str] = None,
@@ -2102,7 +2118,7 @@ def _classify_with_model(
         ),
         tier=config.resolve_model_tier(tier, config.LLMStage.INTENT_CLASSIFICATION),
         stage=config.LLMStage.INTENT_CLASSIFICATION,
-        tools=INTENT_TOOLS,
+        tools=_current_intent_tools(),
         tool_choice="auto",
         timeout=(
             float(timeout)
@@ -2290,11 +2306,8 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
             requested_target = str(
                 arguments.get("target_format", "") or ""
             ).lower()
-            decision["conversion_target_format"] = (
-                requested_target
-                if requested_target in {"pdf", "docx", "xlsx", "pptx"}
-                else ""
-            )
+            # 保留用户意图；是否合法/就绪由执行时注册表裁决，不在这里另列格式表。
+            decision["conversion_target_format"] = requested_target
             decision["clarification"] = ""
             decision["decision_reasoning"] = _normalize_decision_reasoning(
                 arguments.get("reasoning")

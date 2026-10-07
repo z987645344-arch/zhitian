@@ -29,6 +29,7 @@ from layers.file_processing.runtime import (
     register_processor_once,
 )
 from layers.file_processing.models import FileEntry
+from layers.file_processing.service import conversion_availability
 from utils.logger import get_logger
 from utils import observability
 from utils.time_context import cache_friendly_messages, current_date_prompt
@@ -219,6 +220,7 @@ class ConvertDocumentResult(BaseModel):
     file_id: str = ""
     download_filename: str = ""
     error_type: str = ""
+    detail: str = ""
     blocked_by_content_taint: bool = False
 
 
@@ -519,7 +521,7 @@ def run(tool: str, params: dict, state: Optional[dict] = None) -> ToolResult:
                     tool=tool,
                     status="success" if result.success else "error",
                     data=result.model_dump_json(),
-                    error_msg=result.error_type if not result.success else "",
+                    error_msg=(result.detail or result.error_type) if not result.success else "",
                     metadata=result.model_dump(),
                 )
                 emit_tool_status(
@@ -1217,7 +1219,7 @@ def _list_documents() -> ToolResult:
 
 def _convert_document(
     attachment_id: str,
-    target_format: Literal["pdf", "docx", "xlsx", "pptx"],
+    target_format: str,
     session_id: str,
     owner_user_id: str,
     agent_budget_seconds: Optional[float] = None,
@@ -1234,19 +1236,11 @@ def _convert_document(
         return ConvertDocumentResult(success=False, error_type="forbidden")
     if source.session_id != session_id:
         return ConvertDocumentResult(success=False, error_type="session_mismatch")
-    allowed_targets = {
-        "pdf": {"docx", "xlsx", "pptx"},
-        "doc": {"pdf", "docx"},
-        "docx": {"pdf"},
-        "xls": {"pdf"},
-        "xlsx": {"pdf"},
-        "ppt": {"pdf"},
-        "pptx": {"pdf"},
-    }.get(source.format, set())
-    if target not in allowed_targets:
+    error_type, detail = conversion_availability(source.format, target, FileEntry.AGENT_CHAT)
+    if error_type:
         return ConvertDocumentResult(
             success=False,
-            error_type="unsupported_conversion",
+            error_type=error_type, detail=detail,
         )
     source_path = files_store.get_file_path(source)
     if source_path is None:
@@ -1293,6 +1287,8 @@ def _convert_document(
             break
         if conversion.error_type == "heavy_task_busy":
             break
+        if conversion.error_type in {"engine_unavailable", "unsupported_conversion"}:
+            break
         if attempt == 0:
             time.sleep(RETRY_DELAY)
     if conversion is None or not conversion.success or not converted_path:
@@ -1300,6 +1296,7 @@ def _convert_document(
             success=False,
             error_type=(conversion.error_type if conversion else "conversion_failed")
             or "conversion_failed",
+            detail=conversion.error_msg if conversion else "文件转换失败",
         )
 
     try:

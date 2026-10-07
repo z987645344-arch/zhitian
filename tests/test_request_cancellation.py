@@ -16,6 +16,10 @@ from layers import execution, llm_provider, memory, planning, source_policy, web
 @pytest.mark.parametrize("stage", ["intent_classification", "checkpoint_route", "react_reflection", "document_rerank", "document_answer"])
 def test_disconnect_interrupts_active_stage_and_stops_followups(stage, monkeypatch, caplog, client, auth_headers):
     headers, user = auth_headers()
+    # 此用例测“已经进入调用后的取消”，而非HTTP/TLS客户端冷初始化。
+    # Windows冷初始化实测1.07–1.69秒，可能超过下方1秒的桩就位等待；
+    # 先完成纯本地准备（不发请求），断开后0.5秒关闭的原断言不变。
+    llm_provider._get_shared_http_client()
     entered, interrupted = threading.Event(), threading.Event()
     calls = []
     controls = []

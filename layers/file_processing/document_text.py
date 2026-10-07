@@ -2,11 +2,14 @@
 """原生TXT/MD/DOCX提取适配器；读取算法与DOCX临时小节/表格定位保持原样。"""
 
 import os
+import tempfile
+from pathlib import Path
 
 from layers.file_processing.base import FileProcessor
 from layers.file_processing.models import (
     FileProcessingRequest, FileProcessingResult, FileProcessingStatus,
     FileTaskType, ProcessorCapability, QualityCheckResult, QualityProfile,
+    EngineProbeResult,
 )
 
 
@@ -23,6 +26,23 @@ class DocumentTextProcessor(FileProcessor):
             target_formats=["", "txt"], task_types=[FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT],
             asynchronous=False, max_size_bytes=0, requires_external_binary=False,
             output_mime_types=["text/plain"], knowledge_base_eligible=True, quality_profile=QualityProfile.TEXT)]
+
+    def probe_ready(self):
+        from docx import Document
+        with tempfile.TemporaryDirectory(prefix="zhitian-text-extract-smoke-") as directory:
+            for file_format in self._readers:
+                source = Path(directory) / ("smoke." + file_format)
+                if file_format == "docx":
+                    document = Document()
+                    document.add_paragraph("File engine smoke test")
+                    document.save(source)
+                else:
+                    source.write_text("File engine smoke test", encoding="utf-8")
+                result = self.execute_task(FileProcessingRequest(task_type=FileTaskType.EXTRACT,
+                    source_format=file_format, source_paths=[str(source)]))
+                if not self.validate_output(None, result).passed or "File engine smoke test" not in result.text:
+                    return EngineProbeResult(success=False, reason="smoke_quality_failed")
+        return EngineProbeResult(success=True)
 
     def supports(self, request):
         return request.source_format in self._readers and request.task_type in {FileTaskType.EXTRACT, FileTaskType.EXTRACT_TEXT}

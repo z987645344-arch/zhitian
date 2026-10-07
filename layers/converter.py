@@ -23,7 +23,7 @@ from layers.file_processing.runtime import (
     register_processor_once,
     current_file_entry,
 )
-from layers.file_processing.registry import CapabilityNotFoundError
+from layers.file_processing.registry import CapabilityNotFoundError, EngineUnavailableError
 from utils.logger import get_logger
 
 
@@ -162,9 +162,11 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
         max_output_size_bytes=max_bytes,
     )
     try:
-        processor, _ = get_file_processor_registry().resolve(request)
+        processor, _ = get_file_processor_registry().resolve(request, require_ready=True)
     except CapabilityNotFoundError:
         return _failed("不支持的转换组合", ".pdf", target, "unsupported_conversion")
+    except EngineUnavailableError as exc:
+        return _failed(str(exc), ".pdf", target, "engine_unavailable")
     result = processor.execute(request)
     if not result.success:
         messages = {
@@ -278,9 +280,11 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
         max_output_size_bytes=max(0, config.MAX_CONVERSION_FILE_SIZE_MB) * 1024 * 1024,
     )
     try:
-        processor, _ = get_file_processor_registry().resolve(request)
+        processor, _ = get_file_processor_registry().resolve(request, require_ready=True)
     except CapabilityNotFoundError:
         return _failed("不支持的转换组合", source_ext, target, "unsupported_conversion")
+    except EngineUnavailableError as exc:
+        return _failed(str(exc), source_ext, target, "engine_unavailable")
     result = processor.execute(request)
     if not result.success:
         return ConversionResult(

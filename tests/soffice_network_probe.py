@@ -89,6 +89,11 @@ def _linked_docx(source: Path, destination: Path, target: str) -> None:
 
 
 def run_probe() -> dict:
+    # 构建探针没有应用lifespan；显式做一次真实就绪冒烟，不绕过转换可用性闸门。
+    from layers.file_processing.runtime import get_file_processor_registry
+    registry = get_file_processor_registry()
+    state = registry.probe_sync("libreoffice")
+    assert state.status.value == "ready", "LibreOffice真实冒烟失败：" + state.reason
     # 反证隔离确已安装，而非恰好这份文档没有触发远程加载。
     sandbox = str(Path(converter.__file__).with_name("soffice_sandbox.py"))
     network_socket = subprocess.run(
