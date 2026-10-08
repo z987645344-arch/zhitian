@@ -245,6 +245,45 @@ def test_queue_wait_consumes_deadline():
             manager.serial.release()
 
 
+def test_created_task_expires_even_if_create_response_not_received(monkeypatch):
+    """Hold the response until the independently running server deadline expires.
+
+    Time advances only after submit/receipt at the server, not during cold startup.
+    The request budget is NOT restarted when the HTTP response becomes available.
+    """
+    client, manager = ready_client()
+    entered = threading.Event()
+    original = manager.submit
+    jobs = []
+    clock = [100.0]
+    def blocked(source, target, workspace, scope, settings):
+        if source.name == "smoke.docx":
+            return converted(source, target, workspace, scope, settings)
+        entered.set()
+        while True:
+            scope.check()
+            time.sleep(.005)
+    with client:
+        wait_ready(manager)
+        manager.convert = blocked
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        def delayed_response(*args):
+            snapshot = original(*args)
+            job = manager.get(snapshot["task_id"])
+            jobs.append(job)
+            assert entered.wait(2), "server must start before timeout is injected"
+            assert not job.done.is_set()
+            clock[0] += .08
+            assert job.done.wait(2)
+            assert job.status == "timeout" and not job.workspace.path.exists()
+            return snapshot
+        monkeypatch.setattr(manager, "submit", delayed_response)
+        response = submit(client, remaining_budget="0.08")
+        assert response.status_code == 202
+        assert jobs[0].deadline == pytest.approx(100.08)
+        assert jobs[0].status == "timeout"
+
+
 def test_output_size_and_type_gate(tmp_path):
     output = tmp_path / "test.pdf"
     for data, limit in [(b"fake-pdf", 100), (b"%PDF-1.4", 3)]:

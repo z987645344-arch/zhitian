@@ -74,7 +74,11 @@ def test_invalid_remote_artifact_is_not_success(transport, tmp_path, kind):
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_timeout_or_disconnect_forwards_cancel(transport, tmp_path, cancel):
+def test_timeout_or_disconnect_forwards_cancel(transport, tmp_path, cancel, monkeypatch):
+    # Only the timeout/cancellation AFTER creation is under test. SDK/transport
+    # initialization is not part of this assertion; production still budgets it.
+    clock = [100.0]
+    monkeypatch.setattr(remote.time, "monotonic", lambda: clock[0])
     source = tmp_path / "file.docx"
     source.write_bytes(b"fixture")
     event = threading.Event()
@@ -87,6 +91,8 @@ def test_timeout_or_disconnect_forwards_cancel(transport, tmp_path, cancel):
             return httpx.Response(200, json={"status": "cancelled"})
         if cancel:
             event.set()
+        else:
+            clock[0] += .08  # Expire the unchanged budget, after receiving task_id.
         return httpx.Response(200, json={"status": "running"})
     transport(respond)
     with task_scope(0.08 if not cancel else 2, cancellation=event):
@@ -97,6 +103,25 @@ def test_timeout_or_disconnect_forwards_cancel(transport, tmp_path, cancel):
             result = remote.remote_convert(str(source), "pdf")
             assert result.status.value == "TIMEOUT"
     assert any(path.endswith("/cancel") for path in calls)
+    assert calls[0] == "/v1/tasks"
+    assert calls.index("/v1/tasks/" + TASK) < calls.index("/v1/tasks/" + TASK + "/cancel")
+
+
+def test_creation_receives_remaining_budget_before_response_timeout(transport, tmp_path):
+    """No task_id response means no cancel URL; server owns the supplied deadline."""
+    source = tmp_path / "file.docx"
+    source.write_bytes(b"fixture")
+    calls = []
+    def respond(request):
+        calls.append(request.url.path)
+        assert request.url.path == "/v1/tasks"
+        body = request.read()
+        assert b'name="remaining_budget"' in body
+        raise httpx.ReadTimeout("response not received", request=request)
+    transport(respond)
+    result = remote.remote_convert(str(source), "pdf")
+    assert not result.success
+    assert calls == ["/v1/tasks"]  # No retry or new job; server deadline tested below.
 
 
 def test_unreachable_service_chat_ready_and_no_local_fallback(transport, monkeypatch,
