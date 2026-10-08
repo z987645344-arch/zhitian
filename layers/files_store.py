@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Union
@@ -243,7 +243,7 @@ def _get_legacy_file(file_id: str) -> Optional[UserFile]:
         normalized = str(uuid.UUID(str(file_id or "")))
     except (ValueError, TypeError, AttributeError):
         return None
-    with _files_lock, _connect() as conn:
+    with _files_lock, closing(_connect()) as conn:
         row = conn.execute(
             "SELECT * FROM user_files WHERE file_id = ?",
             (normalized,),
@@ -256,36 +256,68 @@ def _get_legacy_file_path(record: UserFile) -> Optional[str]:
     return path if os.path.isfile(path) else None
 
 
+def _legacy_disk_paths(record: UserFile):
+    """只接受旧文件库自己的标识/目录，不跟随链接清理。"""
+    if str(uuid.UUID(record.file_id)) != record.file_id:
+        raise ValueError("invalid_file_id")
+    if _normalize_format(record.format) != record.format:
+        raise ValueError("invalid_file_format")
+    path = Path(_file_path(record))
+    tombstone = Path(str(path) + ".deleting")
+    staging = Path(str(path) + ".tmp")
+    for item in (path, tombstone, staging, *path.parents):
+        if item.is_symlink() or item.is_junction():
+            raise ValueError("invalid_legacy_file_link")
+    root = Path(config.BASE_DIR) / "data" / "user_files"
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError("invalid_legacy_file_path")
+    return path, tombstone, staging
+
+
+def _remove_legacy_disk_files(record: UserFile) -> None:
+    path, tombstone, staging = _legacy_disk_paths(record)
+    # 先删除实体，再删元数据：任意中断点都保留可重试的记录。
+    # 同时收尾旧版本留下的.deleting；不存在等同已删，不做重命名/回滚。
+    for item in (path, tombstone, staging):
+        try:
+            item.unlink()
+        except FileNotFoundError:
+            pass
+    parent = path.parent
+    if parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+
+
 def _delete_legacy_file(file_id: str, requester_user_id: str) -> bool:
     with _files_lock:
         record = _get_legacy_file(file_id)
         if record is None or record.owner_user_id != requester_user_id:
             return False
-        path = _file_path(record)
-        tombstone = path + ".deleting"
         try:
-            if os.path.isfile(path):
-                os.replace(path, tombstone)
-            with _connect() as conn:
+            _remove_legacy_disk_files(record)
+            with closing(_connect()) as conn, conn:
                 cursor = conn.execute(
                     "DELETE FROM user_files WHERE file_id = ? AND owner_user_id = ?",
                     (record.file_id, requester_user_id),
                 )
                 if cursor.rowcount != 1:
-                    if os.path.isfile(tombstone):
-                        os.replace(tombstone, path)
                     return False
-            if os.path.isfile(tombstone):
-                os.remove(tombstone)
-            parent = Path(path).parent
-            if parent.is_dir() and not any(parent.iterdir()):
-                parent.rmdir()
-        except OSError:
-            if os.path.isfile(tombstone) and not os.path.isfile(path):
-                try:
-                    os.replace(tombstone, path)
-                except OSError:
-                    pass
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+        return True
+
+
+def _delete_legacy_orphan(file_id: str, owner_user_id: str, file_format: str) -> bool:
+    """离线维护专用；只删无任何元数据的规范旧文件，复用同一实体删除逻辑。"""
+    with _files_lock:
+        if _get_legacy_file(file_id) is not None:
+            return False
+        record = UserFile(file_id=file_id, owner_user_id=owner_user_id,
+                          source_type="attachment", original_filename="", format=file_format,
+                          size_bytes=0, created_at="")
+        try:
+            _remove_legacy_disk_files(record)
+        except (OSError, ValueError):
             return False
         return True
 

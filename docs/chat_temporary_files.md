@@ -23,6 +23,10 @@
 
 - 已有 `files.db` 与 `data/user_files/` 不自动删除；旧记录不再通过新 `/files` 接口列出或下载。历史文件显示已清理，历史问答内容本身不删除。
 - 建议部署前由统筹师先确认是否有必须保留的历史文件，告知用户另行保存；确认后在停机窗口按文件库登记逐项核对、一次性清理旧附件和产物及对应记录。旧备份中可能仍含原件，应另行按备份保留策略处理。本次不执行任何生产清理。
+- 用户已授权部署后统一清理旧永久聊天附件与Agent产物。维护命令为`python scripts/cleanup_legacy_chat_files.py --data-dir data`，默认dry-run，只报附件原件、生成产物、转换产物的条数/字节数，另报无元数据孤儿文件的数量/字节数，不报文件名、路径、ID或正文。
+- 在部署仓库先执行`docker compose stop zhitian-api`，再执行`docker compose run --rm --no-deps zhitian-api python scripts/cleanup_legacy_chat_files.py --data-dir data`核对dry-run。确认后，在同一命令末尾加`--delete --confirm-service-stopped`才会删除。清理期间保持API停止，不得并行启动；完成后才执行`docker compose up -d zhitian-api`。脚本检查本进程命名空间里的API进程、回环API端口及同Compose网络的API服务；检查失败或仍在运行就拒绝，停机确认参数不能绕过检查。
+- 有元数据的清理范围限于旧`files.db.user_files`中带会话的attachment/generated/converted，不动知识库、上传任务、聊天文字、新临时区或无会话的旧手动工具产物。孤儿只能位于`user_files/归属/UUID.格式`及其应用定义的`.tmp`、`.deleting`变体，必须无任何对应元数据；不递归删目录、不跟随链接，未知命名和嵌套目录均保留。孤儿无法再判断原来源，因此单独统计，不冒充某类产物。
+- 删除复用应用旧文件删除逻辑：先删实体（不存在算已删），再提交元数据删除。中断后重复执行即可完成剩余记录及规范孤儿；不会留下新孤儿。当前公开删除接口走新临时存储，不变更接口行为。清理不可恢复，回滚旧镜像不会恢复旧文件；旧备份另按保留策略处理。
 - `CHAT_ATTACHMENT_TTL_MINUTES` 默认从 30 改为 60；若部署环境显式配置了旧值，需同步调整。新增 `TEMP_FILE_TTL_MINUTES`、`TEMP_FILE_USER_QUOTA_MB`、`TEMP_FILE_GLOBAL_QUOTA_MB`。
 - 重建 API 与 web 客户端。回退旧代码会重新使用旧永久文件库；已被临时机制清理的新产物无法恢复。
 
