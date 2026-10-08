@@ -251,16 +251,44 @@ def test_langgraph_propagates_cancellation_without_fallback(monkeypatch):
     assert control.model_calls == 0
 
 
+@pytest.fixture
+def asgi_cancel_clock(monkeypatch):
+    """ASGI关闭计时不包含HTTP客户端冷初始化、发送正文和历史落库。"""
+    llm_provider._get_shared_http_client()
+    release, stopped = threading.Event(), threading.Event()
+    timing, watchdogs = {}, []
+    original = llm_provider.StreamRegistry.cancel
+
+    def cancel(control, trace_id):
+        timing.setdefault("requested", time.perf_counter())
+        timer = threading.Timer(1, release.set)
+        watchdogs.append(timer)
+        timer.start()
+        return original(control, trace_id)
+
+    def shutdown(_how):
+        timing["shutdown"] = time.perf_counter()
+        stopped.set()
+        release.set()
+
+    monkeypatch.setattr(llm_provider.StreamRegistry, "cancel", cancel)
+    yield release, stopped, timing, shutdown
+    release.set()
+    for timer in watchdogs:
+        timer.cancel()
+
+
 @pytest.mark.parametrize("spec", ["2.3", "2.4"])
-def test_real_asgi_disconnect_during_nonstream_stage(spec, monkeypatch, user_factory):
+def test_real_asgi_disconnect_during_nonstream_stage(spec, monkeypatch, user_factory, asgi_cancel_clock):
     user = user_factory()
-    entered, stopped = threading.Event(), threading.Event()
+    entered = threading.Event()
+    release, stopped, timing, shutdown = asgi_cancel_clock
     controls = []
     def create(**_kwargs):
         llm_provider._request_call_guard.get().attach(SimpleNamespace(
-            get_extra_info=lambda _: SimpleNamespace(shutdown=lambda _: stopped.set()), close=lambda: None))
+            get_extra_info=lambda _: SimpleNamespace(shutdown=shutdown), close=release.set))
         entered.set()
-        assert stopped.wait(2)
+        release.wait()
         raise OSError("shutdown")
     monkeypatch.setattr(llm_provider, "OpenAI", lambda **_: SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
@@ -282,22 +310,24 @@ def test_real_asgi_disconnect_during_nonstream_stage(spec, monkeypatch, user_fac
             pass
         response = main.RequestStreamingResponse(main._chat_stream_events_with_heartbeat(
             request, user, BackgroundTasks(), "asgi-cancel", [], [], "test-key"))
-        await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": spec}}, receive, send), 1)
+        await response({"type": "http", "asgi": {"spec_version": spec}}, receive, send)
     asyncio.run(serve())
     assert stopped.is_set() and controls[0].model_calls == 1
+    assert 0 <= timing["shutdown"] - timing["requested"] < 1
     assert execution.conversation_history_messages(request.session_id) == []
     assert memory.get_session_history(request.session_id)[-1]["content"] == "回答已中断"
 
 
-def test_disconnect_after_done_interrupts_background_without_erasing_complete_answer(monkeypatch, user_factory):
+def test_disconnect_after_done_interrupts_background_without_erasing_complete_answer(monkeypatch, user_factory, asgi_cancel_clock):
     user = user_factory()
-    entered, stopped = threading.Event(), threading.Event()
+    entered = threading.Event()
+    release, stopped, timing, shutdown = asgi_cancel_clock
     control = llm_provider.StreamRegistry()
     def create(**_kwargs):
         llm_provider._request_call_guard.get().attach(SimpleNamespace(
-            get_extra_info=lambda _: SimpleNamespace(shutdown=lambda _: stopped.set()), close=lambda: None))
+            get_extra_info=lambda _: SimpleNamespace(shutdown=shutdown), close=release.set))
         entered.set()
-        assert stopped.wait(2)
+        release.wait()
         raise OSError("shutdown")
     monkeypatch.setattr(llm_provider, "OpenAI", lambda **_: SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
@@ -321,9 +351,10 @@ def test_disconnect_after_done_interrupts_background_without_erasing_complete_an
         response = main.RequestStreamingResponse(main._chat_stream_events_with_heartbeat(
             request, user, background, "cancel-background", [], [], "test-key", request_control=control),
             background=background, request_control=control, trace_id="cancel-background")
-        await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send), 1)
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
     asyncio.run(serve())
     assert stopped.is_set() and control.model_calls == control.interrupted_calls == 1
+    assert 0 <= timing["shutdown"] - timing["requested"] < 1
     assert any(b"[DONE]" in event.get("body", b"") for event in sent)
     assert all(event.get("more_body", True) for event in sent)
     assert execution.conversation_history_messages(request.session_id) == [

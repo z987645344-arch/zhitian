@@ -133,6 +133,10 @@ def test_storage_check_error_fails_closed_and_logs_metadata_only(monkeypatch, ca
 
 @pytest.mark.parametrize("kind", ["history", "vector", "cache", "generated"])
 def test_record_write_cannot_enter_between_check_and_bind(monkeypatch, kind):
+    # 本用例测认领/写入互斥，不测Chroma冷启动。慢runner上的首次
+    # 初始化曾耗尽writer.result(5)；先就绪，仍保留原来的3/5秒动作时限。
+    if kind == "vector":
+        assert memory._get_chroma_collection().count() == 0
     session = uuid.uuid4().hex
     checked, attempting, completed = Event(), Event(), Event()
     original = session_records.has_persistent_records
@@ -186,6 +190,19 @@ def test_existing_record_writer_finishes_before_claim_check(monkeypatch):
         for task in tasks:
             task.result(timeout=5)
     assert not auth.verify_session_owner(session, "claimant")
+
+
+def test_vector_race_prepares_collection_before_worker_threads(monkeypatch):
+    import threading
+    original = memory._get_chroma_collection
+
+    def get_collection():
+        if memory._chroma_collection is None:
+            assert threading.current_thread() is threading.main_thread(), "冷初始化不能进入并发动作时限"
+        return original()
+
+    monkeypatch.setattr(memory, "_get_chroma_collection", get_collection)
+    test_record_write_cannot_enter_between_check_and_bind(monkeypatch, "vector")
 
 
 def test_rejected_claim_releases_lock_and_transaction():

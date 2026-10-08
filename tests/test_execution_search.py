@@ -34,6 +34,20 @@ SEARCH_CANDIDATES = [
 ]
 
 
+@pytest.fixture
+def stream_clock(monkeypatch):
+    """关闭时限从实际建流开始；不包含历史库/提示词/搜索准备。"""
+    opened = []
+    original = execution._open_llm_stream_with_first_content_timeout
+
+    def open_stream(*args, **kwargs):
+        opened.append(time.perf_counter())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(execution, "_open_llm_stream_with_first_content_timeout", open_stream)
+    return opened
+
+
 class ReasoningOnlyStream:
     """持续保持连接并产出非正文事件，直到调用方主动关闭。"""
 
@@ -225,7 +239,7 @@ def test_document_answer_empty_stream_returns_explicit_failure(monkeypatch):
     assert state["degradation_reasons"] == ["final_answer_failed"]
 
 
-def test_document_answer_first_content_timeout_ignores_non_content_activity(monkeypatch):
+def test_document_answer_first_content_timeout_ignores_non_content_activity(monkeypatch, stream_clock):
     state = planning._new_agent_state("document-no-content", "问题", "expert")
     state["complex_deadline"] = time.perf_counter() + 1.0
     context = execution.DocumentAnswerContext(
@@ -255,7 +269,7 @@ def test_document_answer_first_content_timeout_ignores_non_content_activity(monk
             timeout=5,
             _execution_state=state,
         ))
-    elapsed = time.perf_counter() - started_at
+    elapsed = time.perf_counter() - stream_clock[0]
 
     assert elapsed < 0.5
     assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
@@ -265,7 +279,7 @@ def test_document_answer_first_content_timeout_ignores_non_content_activity(monk
     assert response.closed.wait(0.5)
 
 
-def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
+def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monkeypatch, stream_clock):
     state = planning._new_agent_state("document-budget-clamp", "问题", "expert")
     context = execution.DocumentAnswerContext(
         query="问题",
@@ -318,7 +332,7 @@ def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monk
         timeout=5,
         _execution_state=state,
     ))
-    elapsed = time.perf_counter() - started_at
+    elapsed = time.perf_counter() - stream_clock[0]
 
     assert elapsed < 0.5
     assert chunks == [execution.ANSWER_GENERATION_FAILURE_MESSAGE]
@@ -326,6 +340,15 @@ def test_document_answer_first_content_timeout_is_clamped_by_request_budget(monk
     assert response.closed.wait(0.5)
     execution.llm_provider.chat_completion.assert_called_once()
     assert close_times[0] - opened_at[0] < 0.5
+
+
+def test_document_close_clock_excludes_slow_history_preparation(monkeypatch, stream_clock):
+    def slow_history(*_args, **_kwargs):
+        time.sleep(.6)
+        return []
+
+    monkeypatch.setattr(execution, "conversation_history_messages", slow_history)
+    test_document_answer_first_content_timeout_ignores_non_content_activity(monkeypatch, stream_clock)
 
 
 def test_document_budget_exhausted_before_open_creates_no_stream(monkeypatch):
@@ -553,7 +576,7 @@ def test_stream_search_summary_uses_shared_first_content_guard(monkeypatch):
     observation.assert_called_once_with("原始问题", "整理结果", "expert", state)
 
 
-def test_stream_search_first_content_timeout_ignores_non_content_activity(monkeypatch):
+def test_stream_search_first_content_timeout_ignores_non_content_activity(monkeypatch, stream_clock):
     _prepare_search(monkeypatch)
     state = planning._new_agent_state("search-no-content", "原始问题", "expert")
     _web_state(state)
@@ -573,7 +596,7 @@ def test_stream_search_first_content_timeout_ignores_non_content_activity(monkey
         tier="expert",
         execution_state=state,
     ))
-    elapsed = time.perf_counter() - started_at
+    elapsed = time.perf_counter() - stream_clock[0]
 
     assert elapsed < 0.5
     assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]
@@ -582,11 +605,13 @@ def test_stream_search_first_content_timeout_ignores_non_content_activity(monkey
     assert response.closed.wait(0.5)
 
 
-def test_stream_search_first_content_timeout_is_clamped_by_request_budget(monkeypatch):
+def test_stream_search_first_content_timeout_is_clamped_by_request_budget(monkeypatch, stream_clock):
     _prepare_search(monkeypatch)
     state = planning._new_agent_state("search-budget-clamp", "原始问题", "expert")
     _web_state(state)
-    state["complex_deadline"] = time.perf_counter() + 0.04
+    # 精确注入“步骤开始时剩余40ms”，不让本地准备先耗尽待测的预算。
+    monkeypatch.setattr(execution, "remaining_request_budget", lambda _state, limit: min(limit, .04))
+    monkeypatch.setattr(execution, "_remaining_budget", lambda _deadline: .04)
     response = ReasoningOnlyStream()
     monkeypatch.setattr(execution, "_rewrite_search_query", Mock(return_value="查询"))
     monkeypatch.setattr(execution.config, "FIRST_CONTENT_TIMEOUT", 5.0)
@@ -602,7 +627,7 @@ def test_stream_search_first_content_timeout_is_clamped_by_request_budget(monkey
         tier="expert",
         execution_state=state,
     ))
-    elapsed = time.perf_counter() - started_at
+    elapsed = time.perf_counter() - stream_clock[0]
 
     assert elapsed < 0.5
     assert chunks == ["已取得联网搜索结果，但模型整理超时，请稍后重试。"]

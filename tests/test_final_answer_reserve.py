@@ -140,6 +140,8 @@ def test_full_retry_with_sufficient_time_is_unchanged(monkeypatch, stage_timeout
 
 
 def test_wall_clock_bounds_live_non_content_activity_and_no_late_retry(monkeypatch):
+    # SDK共享客户端就绪不属于40ms的非正文活动窗口（不发任何请求）。
+    llm_provider._get_shared_http_client()
     started = threading.Event()
     release = threading.Event()
     ended = threading.Event()
