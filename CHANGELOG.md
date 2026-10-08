@@ -2579,3 +2579,10 @@
 - 原vector变体常规/加压各30次均未自然复现失败；注入5.2秒冷初始化后旧口径触发writer.result(5)，而绑定已在123.590毫秒完成、写入线程随后正常退出，未发现死锁。新口径同样慢初始化通过，另以确定性测试锁住主线程准备及慢历史准备不挤占关闭窗口。
 - 修正后20个相关变体常规/加压各重复30次，各600 passed、0失败；加压同时运行独立Chroma测试负载。实际取消到shutdown的P50/P90/最大值：常规0.011/0.029/0.084毫秒，加压0.009/0.018/0.048毫秒。任务总预算刻意包含启动/排队的用例保持不变；完整审查与逐次记录保存在被忽略的本地评测目录，不纳入提交。
 - 项目Python3.12的run_tests.bat -q：1498 passed、5 deselected、既有Starlette警告1条，641.00秒；未新增跳过或放宽断言。默认data的16个文件大小、修改时间和SHA-256前后完全一致，零付费，.venv与VERSION不改，指挥师文档原样保留且不暂存；远程CI待用户推送后验证。
+
+### 2026-10-08 转换服务任务终态INFO控制台日志
+
+- 每个转换任务收尾共用一次终态日志：[conversion] task_id=… source=… target=… result=success|failed|timeout|cancelled elapsed_ms=… output_bytes=…。用时包含上传和排队；只记任务ID、格式、结果、用时和输出大小，不记文件名、正文或异常内容，重复收尾不重复打印。
+- 控制服务使用独立INFO stderr通道，docker logs可见，不导入业务日志配置，uvicorn access log仍关闭。补充成功/失败/超时/取消四种结果、队列取消和重复收尾测试；协议与引擎就绪定向37 passed。
+- 本机隔离转换镜像真实DOCX→PDF成功，docker logs恰好一行终态：elapsed_ms=860.3、output_bytes=15034；禁网构建探针回环请求1→0，IPv4/IPv6 socket禁止、AF_UNIX允许。验证容器无业务卷、只读根、cap_drop ALL及no-new-privileges，用后停止移除。
+- 部署注意：此项需重建转换服务镜像，访问日志设置不变；未部署、未推送、不改VERSION，零付费。

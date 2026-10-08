@@ -13,6 +13,17 @@ from layers.file_processing.runner import (
 )
 
 
+# 控制服务独立于业务logger；INFO只走本服务stderr，uvicorn访问日志仍关闭。
+logger = logging.getLogger("conversion-service")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(console)
+
+
 @dataclass
 class Job:
     workspace: TaskWorkspace
@@ -27,6 +38,8 @@ class Job:
     cancelled: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
     finished_at: float = 0
+    started_at: float = field(default_factory=time.monotonic)
+    logged: bool = False
 
     def snapshot(self):
         # 下载完成/取消清理可与状态轮询交错，文件消失不是协议500错误。
@@ -86,14 +99,14 @@ class TaskManager:
         with self.lock:
             self.state = dict(status=result, reason=reason,
                 last_checked_at=datetime.now(timezone.utc).isoformat())
-        logging.getLogger("conversion-service").info("[conversion-engine] status=%s reason=%s", result, reason)
+        logger.info("[conversion-engine] status=%s reason=%s", result, reason)
 
     def reserve(self):
         self.reap()
         return not self.stopping.is_set() and self.capacity.acquire(blocking=False)
 
     def submit(self, workspace, source, target, started, budget):
-        job = Job(workspace, source, target, started + min(budget, self.settings.timeout_seconds))
+        job = Job(workspace, source, target, started + min(budget, self.settings.timeout_seconds), started_at=started)
         with self.lock:
             self.jobs[job.id] = job
             self.queue.put_nowait(job)
@@ -102,6 +115,19 @@ class TaskManager:
     def _progress(self, job, event):
         with self.lock:
             job.progress.append(event.model_dump(mode="json"))
+
+    def _finish(self, job):
+        """所有终态共用一次日志；计时包括上传与排队，不记录名称/正文/异常。"""
+        with self.lock:
+            if not job.logged:
+                job.finished_at = time.monotonic()
+                logger.info(
+                    "[conversion] task_id=%s source=%s target=%s result=%s elapsed_ms=%.1f output_bytes=%s",
+                    job.id, job.source.suffix.lower().lstrip("."), job.target, job.status,
+                    max(0, job.finished_at - job.started_at) * 1000, job.snapshot()["size_bytes"],
+                )
+                job.logged = True
+            job.done.set()
 
     def _work(self):
         from layers.file_processing.runner import budget_lock
@@ -136,8 +162,7 @@ class TaskManager:
                 if job.status != "success":
                     job.workspace.cleanup()
                     job.progress.append(dict(stage=job.status, processed=0, total=None, unit="files"))
-                job.finished_at = time.monotonic()
-                job.done.set()
+                self._finish(job)
                 self.queue.task_done()
 
     def get(self, task_id):
@@ -153,8 +178,7 @@ class TaskManager:
             if job.status == "queued":
                 job.status, job.reason = "cancelled", "cancelled"
                 job.workspace.cleanup()
-                job.finished_at = time.monotonic()
-                job.done.set()
+                self._finish(job)
         # 队列和正在运行的任务共用处理线程；最多一个正在运行的任务立即被打断。
         if not job.done.wait(self.settings.timeout_seconds + 1):
             raise RuntimeError("cancellation_unconfirmed")
@@ -197,5 +221,5 @@ class TaskManager:
         for job in jobs:
             if not job.done.is_set():
                 job.status = "cancelled"
-                job.done.set()
+                self._finish(job)
             self.release(job.id)

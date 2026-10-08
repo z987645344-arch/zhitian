@@ -20,6 +20,68 @@ from layers.file_processing.runner import TaskWorkspace, FileTaskTimeout, FileTa
 KEY = "test-only-independent-conversion-key-32-bytes"
 
 
+@pytest.fixture
+def conversion_records(monkeypatch):
+    import logging
+    from converter_service.tasks import logger
+    records = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    # 捕获本服务自身emit，不依赖TestClient/pytest根日志转发。
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, Capture()])
+    monkeypatch.setattr(logger, "propagate", False)
+    return records
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "timeout", "cancelled"])
+def test_task_terminal_console_log_once_and_without_filename_or_content(outcome, conversion_records):
+    import logging
+    from converter_service.tasks import logger
+
+    def convert(source, target, workspace, scope, settings):
+        if source.name == "smoke.docx" or outcome == "success":
+            return converted(source, target, workspace, scope, settings)
+        if outcome == "failed":
+            raise ValueError("secret-content-must-not-be-logged")
+        raise FileTaskTimeout() if outcome == "timeout" else FileTaskCancelled()
+
+    client, manager = ready_client(convert=convert)
+    with client:
+        wait_ready(manager)
+        response = submit(client)
+        job = manager.get(response.json()["task_id"])
+        assert job.done.wait(2)
+        manager._finish(job)  # 重复收尾不能重复打印。
+        lines = [r for r in conversion_records if r.getMessage().startswith("[conversion]")]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+        line = lines[0].getMessage()
+        assert f"task_id={job.id} source=docx target=pdf result={outcome}" in line
+        assert "elapsed_ms=" in line
+        expected_size = len(b"%PDF-1.4\nfixture") if outcome == "success" else 0
+        assert f"output_bytes={expected_size}" in line
+        assert not any(value in line for value in ["ignored.docx", "fixture", "secret-content", str(job.workspace.path)])
+        assert any(isinstance(handler, logging.StreamHandler) and handler.level == logging.INFO
+                   for handler in logger.handlers)
+
+
+def test_queued_cancel_is_logged_once(conversion_records):
+    manager = TaskManager(Settings(KEY))
+    workspace = TaskWorkspace()
+    source = workspace.path / "input.docx"
+    source.write_bytes(b"fixture")
+    assert manager.reserve()
+    task = manager.submit(workspace, source, "pdf", time.monotonic(), 1)
+    job = manager.get(task["task_id"])
+    assert manager.cancel(job.id)["status"] == "cancelled"
+    manager._finish(job)
+    lines = [r.getMessage() for r in conversion_records if r.getMessage().startswith("[conversion]")]
+    assert len(lines) == 1 and "result=cancelled" in lines[0]
+    assert not workspace.path.exists()
+
+
 def converted(source, target, workspace, scope, settings):
     scope.emit("converting")
     output = workspace.path / ("result." + target)
