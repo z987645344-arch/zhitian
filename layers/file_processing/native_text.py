@@ -16,6 +16,7 @@ from layers.file_processing.models import (
     QualityCheckResult,
     QualityProfile,
     EngineProbeResult,
+    FileEntry,
 )
 from layers.file_processing.quality import FileQualityChecker
 
@@ -51,12 +52,20 @@ class NativeTextProcessor(FileProcessor):
                 output_mime_types=list(_TEXT_MIME_TYPES.values()),
                 knowledge_base_eligible=True,
                 quality_profile=QualityProfile.TEXT,
-            )
+            ),
+            *[ProcessorCapability(capability_id="native_text.edit." + fmt,
+                processor_name=self.name, source_formats=[fmt], target_formats=[fmt],
+                task_types=[FileTaskType.EDIT], entries=[FileEntry.AGENT_CHAT],
+                asynchronous=False, max_size_bytes=800000, requires_external_binary=False,
+                output_mime_types=[_TEXT_MIME_TYPES[fmt]], knowledge_base_eligible=False,
+                quality_profile=QualityProfile.TEXT) for fmt in _TEXT_MIME_TYPES],
         ]
 
     def supports(self, request: FileProcessingRequest) -> bool:
         return (
-            request.task_type == FileTaskType.WRITE_TEXT
+            (request.task_type == FileTaskType.WRITE_TEXT or
+             (request.task_type == FileTaskType.EDIT and request.entry == FileEntry.AGENT_CHAT
+              and request.source_format == request.target_format))
             and request.target_format in _TEXT_MIME_TYPES
         )
 
@@ -112,6 +121,18 @@ class NativeTextProcessor(FileProcessor):
     ) -> QualityCheckResult:
         if not result.success or not result.artifacts:
             return QualityCheckResult(passed=False)
+        if request.task_type == FileTaskType.EDIT:
+            # 用户可以明确删除全部文字；空文本是合法编辑结果，不是生成失败。
+            # 重开并逐字校验，比只检查非空更严格，不改变普通生成的质量门。
+            try:
+                with open(request.output_path, "rb") as source:
+                    raw = source.read()
+                expected = (request.content or "").encode("utf-8")
+                passed = raw == expected and (not request.max_output_size_bytes or len(raw) <= request.max_output_size_bytes)
+                result.artifacts[0].size_bytes = len(raw)
+                return QualityCheckResult(passed=passed, artifact=result.artifacts[0] if passed else None)
+            except OSError:
+                return QualityCheckResult(passed=False)
         return self._quality_checker.validate(
             result.artifacts[0],
             QualityProfile.TEXT,

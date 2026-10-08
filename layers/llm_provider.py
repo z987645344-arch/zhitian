@@ -551,6 +551,8 @@ def _chat_completion(
                                     **thinking_options["extra_body"]}
         kwargs.update({key: value for key, value in thinking_options.items() if key != "extra_body"})
     total_budget = kwargs.pop("total_budget", None)
+    # 编辑的纠错轮次自己有界；禁止适配层再悄悄增加超时付费调用。
+    retry_timeouts = kwargs.pop("retry_timeouts", True)
     require_full_retry_budget = kwargs.pop("require_full_retry_budget", False)
     request_kwargs = {
         "messages": messages,
@@ -576,7 +578,7 @@ def _chat_completion(
     # SDK本身max_retries=0；仅此阶段禁用适配层的超时重试。
     max_timeout_retries = (
         config.FAST_LLM_TIMEOUT_RETRIES
-        if tier == "fast" and stage != config.LLMStage.MEMORY_IMPORTANCE else 0
+        if retry_timeouts and tier == "fast" and stage != config.LLMStage.MEMORY_IMPORTANCE else 0
     )
     started_at = time.perf_counter()
     default_budget = request_timeout * (max_timeout_retries + 1)

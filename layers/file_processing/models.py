@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class FileTaskType(str, Enum):
     EXTRACT = "extract"
-    EDIT = "edit"  # 仅定义；没有适配器登记时必须拒绝。
+    EDIT = "edit"  # 能力以显式登记为准；目前只实现 agent_chat 的 TXT/MD。
     WRITE_TEXT = "write_text"
     CONVERT = "convert"
     EXTRACT_TEXT = "extract_text"

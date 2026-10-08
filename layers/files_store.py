@@ -325,7 +325,7 @@ def _delete_legacy_orphan(file_id: str, owner_user_id: str, file_format: str) ->
 @session_records.serialized_change
 def save_file(owner_user_id, source_type, original_filename, file_bytes_or_path, format,
               session_id=None, organization_id=None, source_task_id=None,
-              generation_engine=None, generation_engine_version=None, trace_text=""):
+              generation_engine=None, generation_engine_version=None, trace_text="", edit_actions=()):
     """新文件只保存到临时区；旧永久记录留待部署方另行处理。"""
     from layers import auth, temporary_files
     from layers import llm_provider
@@ -351,8 +351,8 @@ def save_file(owner_user_id, source_type, original_filename, file_bytes_or_path,
         from layers import file_traces
         try:
             file_traces.save(session_id, record.original_filename, fmt, record.size_bytes,
-                operation="转换" if source_type == "converted" else "生成", owner=owner_user_id,
-                agent_answer=trace_text)
+                operation="编辑" if edit_actions else "转换" if source_type == "converted" else "生成", owner=owner_user_id,
+                agent_answer=trace_text, edit_actions=edit_actions)
         except BaseException:
             temporary_files.delete(file_id, owner_user_id)
             raise

@@ -159,7 +159,8 @@ class FileProcessorRegistry:
             item.update(available=state.status == EngineStatus.READY, engine=state.model_dump(mode="json"))
             item["operations"] = item.pop("task_types")
             item["task_types"] = sorted({"extract" if operation in {"extract", "extract_text", "extract_tables"}
-                                        else "convert" for operation in item["operations"]})
+                                        else "edit" if operation == "edit" else "convert"
+                                        for operation in item["operations"]})
             details.append(item)
         return details
 

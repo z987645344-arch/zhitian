@@ -21,7 +21,7 @@ def safe_name(name, fmt):
     return re.sub(r"[^\w\u4e00-\u9fff. -]", "_", name)[:30] or "文件." + fmt
 
 
-def save(session_id, filename, fmt, size, *, operation="上传", agent_answer="", owner=None):
+def save(session_id, filename, fmt, size, *, operation="上传", agent_answer="", owner=None, edit_actions=()):
     from layers import auth
     auth.ensure_session_writer(session_id, owner)
     operation = operation if operation in _OPERATIONS else "读取"
@@ -33,6 +33,9 @@ def save(session_id, filename, fmt, size, *, operation="上传", agent_answer=""
     if agent_answer:
         info["大意"] = "、".join(labels) or "已读取文件内容"
         info["改动"] = "完成" + operation if operation in {"生成", "转换", "编辑"} else "未修改原文件"
+    if operation == "编辑":
+        info["改动"] = "、".join(label for key, label in (("replace", "替换文字"),
+            ("insert_after", "插入文字"), ("delete", "删除文字")) if key in edit_actions) or "未修改"
     content = PREFIX + json.dumps(info, ensure_ascii=False, separators=(",", ":"))
     return memory.save_message(session_id, "assistant", content[:200], message_type=memory.MESSAGE_TYPE_FILE_TRACE)
 

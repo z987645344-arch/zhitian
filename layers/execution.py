@@ -163,6 +163,8 @@ class ToolStatusEvent(BaseModel):
 
 
 DEGRADATION_REASON_CODES = {
+    "text_edit_failed",
+    "text_edit_partial",
     "file_generation_degraded",
     "web_low_relevance",
     "fast_general_answer_failed",
@@ -189,6 +191,7 @@ DEGRADATION_REASON_CODES = {
 }
 
 TOOL_DISPLAY_CODES = {
+    "edit_document": "file_editing",
     "search_web": "web_search",
     "search_documents": "knowledge_search",
     "list_documents": "document_list",

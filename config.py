@@ -115,7 +115,7 @@ STAGE_REASONING_EFFORT = {
     name: _parse_reasoning_effort(os.getenv("LLM_THINKING_%s" % name.upper(),
                     "none" if name == LLMStage.OUTPUT_OBSERVATION.value else "high"))
     for name in [stage.value for stage in LLMStage] + [
-        "fast_tool_selection", "fast_evidence_filter", "fast_result_generation", "graph_extraction",
+        "fast_tool_selection", "fast_evidence_filter", "fast_result_generation", "graph_extraction", "text_edit_plan",
     ]
 }
 
@@ -229,6 +229,9 @@ MAX_PDF_PROCESSING_PAGES = max(1, int(os.getenv("MAX_PDF_PROCESSING_PAGES", "200
 # 单张图片及PDF栅格化页面上限；20MP约为RGB 60MiB，可限制压缩图片的解码膨胀。
 MAX_IMAGE_PIXELS = max(1, int(os.getenv("MAX_IMAGE_PIXELS", "20000000")))
 CHAT_ATTACHMENT_MAX_CHARS = int(os.getenv("CHAT_ATTACHMENT_MAX_CHARS", "50000"))
+TEXT_EDIT_MAX_CHARS = int(os.getenv("TEXT_EDIT_MAX_CHARS", "50000"))
+TEXT_EDIT_MAX_OPERATIONS = int(os.getenv("TEXT_EDIT_MAX_OPERATIONS", "20"))
+TEXT_EDIT_MAX_CHANGED_CHARS = int(os.getenv("TEXT_EDIT_MAX_CHANGED_CHARS", "20000"))
 CHAT_ATTACHMENT_TTL_MINUTES = int(os.getenv("CHAT_ATTACHMENT_TTL_MINUTES", "60"))
 TEMP_FILE_TTL_MINUTES = int(os.getenv("TEMP_FILE_TTL_MINUTES", "60"))
 TEMP_FILE_USER_QUOTA_MB = int(os.getenv("TEMP_FILE_USER_QUOTA_MB", "100"))

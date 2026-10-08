@@ -846,6 +846,7 @@ def run_graph_state(
     attachment_ids: Optional[list[str]] = None,
     prepared_state: Optional[AgentState] = None,
     tool_event_sink: Optional[Callable[[execution.ToolStatusEvent], None]] = None,
+    file_task_type: Optional[str] = None,
 ) -> AgentState:
     """运行规划层状态机并返回完整状态，供接口层判断降级和记忆写入。"""
     state = prepared_state or _new_agent_state(
@@ -861,6 +862,9 @@ def run_graph_state(
         state["stream_prepared"] = True
         if tool_event_sink is not None:
             state["tool_event_sink"] = tool_event_sink
+    if file_task_type == "edit":
+        from layers import text_edit
+        return text_edit.run(state)
     if mode == "fast":
         return _run_fast_state(state)
     if mode != "expert":

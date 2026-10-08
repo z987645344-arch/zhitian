@@ -27,7 +27,7 @@ def capabilities(source_format: str, entry=FileEntry.APP_MANUAL):
     return {"source_format": str(source_format or "").lower().lstrip("."), "entry": entry.value,
         "available_target_formats": registry.conversion_targets(source_format, entry),
         "available_task_types": sorted({kind for item in items if item["available"] for kind in item["task_types"]}),
-        "capabilities": items, "unsupported_task_types": ["edit"],
+        "capabilities": items, "unsupported_task_types": [] if any("edit" in item["task_types"] for item in items) else ["edit"],
         "reason": "" if items else "unsupported_format", "policy": entry_policy(entry).model_dump(mode="json")}
 
 

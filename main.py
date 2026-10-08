@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette._utils import create_collapsing_task_group
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -564,6 +564,7 @@ class ChatRequest(BaseModel):
     message: str
     mode: Optional[str] = "fast"
     attachment_ids: List[str] = Field(default_factory=list)
+    file_task_type: Optional[Literal["edit"]] = None
 
 
 class ChatResponse(BaseModel):
@@ -575,6 +576,7 @@ class ChatResponse(BaseModel):
     reasoning: Optional[str] = None
     source_policy: Optional[dict] = None
     file_progress: List[FileTaskProgress] = Field(default_factory=list)
+    files: List[dict] = Field(default_factory=list)
 
 
 class ChatFileEvent(BaseModel):
@@ -584,6 +586,16 @@ class ChatFileEvent(BaseModel):
     file_id: str
     download_filename: str
     file_type: str
+    edit_changes: Optional[List[dict]] = None
+    edit_issues: Optional[List[dict]] = None
+
+    @model_serializer(mode="wrap")
+    def serialize_file_event(self, handler):
+        data = handler(self)
+        for key in ("edit_changes", "edit_issues"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ChatRequestStatusEvent(BaseModel):
@@ -1655,6 +1667,7 @@ async def chat(
             extra_context=attachment_context,
             owner_user_id=current_user["user_id"],
             attachment_ids=chat_request.attachment_ids,
+            **({"file_task_type": "edit"} if chat_request.file_task_type == "edit" else {}),
         )
         layer_trace.extend(final_state.get("layer_trace", []))
         layer_trace = list(dict.fromkeys(layer_trace))
@@ -1677,7 +1690,7 @@ async def chat(
                 assistant_message_type,
                 owner_user_id=current_user["user_id"],
             )
-        if not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data:
+        if not chat_request.file_task_type and not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data:
             background_tasks.add_task(
                 llm_provider.run_with_api_key,
                 api_key,
@@ -1710,6 +1723,7 @@ async def chat(
         response_data["reasoning"] = reasoning
         response_data["source_policy"] = source_policy.source_details(final_state)
         response_data["file_progress"] = final_state.get("file_task_progress_events", [])
+        response_data["files"] = [event.model_dump() for event in _serialize_generated_file_events(final_state)]
         logger.info(
             "/chat决策理由：trace_id=%s reasoning_present=%s reasoning_len=%s",
             trace_id,
@@ -3770,15 +3784,16 @@ def _chat_stream_events(
             mode=request.mode
         )
         perception_output = perception.process(perception_input)
-        if perception_output.mode == "fast":
+        if perception_output.mode == "fast" or request.file_task_type == "edit":
             final_state = planning.run_graph_state(
                 perception_output.session_id,
                 perception_output.message,
-                mode="fast",
+                mode=perception_output.mode,
                 extra_context=attachment_context,
                 owner_user_id=current_user["user_id"],
                 attachment_ids=attachment_ids,
                 tool_event_sink=tool_event_sink,
+                **({"file_task_type": "edit"} if request.file_task_type == "edit" else {}),
             )
             final_data = source_policy.annotate_answer(final_state["response"], final_state)
             citations = _serialize_citations(final_state.get("citations", []))
@@ -3798,11 +3813,13 @@ def _chat_stream_events(
                 )
             yield _sse_data({"type": "source_policy", **source_policy.source_details(final_state)})
             yield _sse_data({"chunk": final_data})
+            for file_event in _serialize_generated_file_events(final_state):
+                yield _sse_data(file_event.model_dump())
             yield _sse_data({"type": "citations", "citations": citations})
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                if request_status == "success" and final_data:
+                if not request.file_task_type and request_status == "success" and final_data:
                     background_tasks.add_task(
                         llm_provider.run_request_background,
                         api_key,
@@ -4293,7 +4310,7 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
     for result in state.get("results", []) or []:
         if not isinstance(result, execution.ToolResult):
             continue
-        if result.tool not in {"generate_file", "convert_document"} or result.status != "success":
+        if result.tool not in {"generate_file", "convert_document", "edit_document"} or result.status != "success":
             continue
         metadata = result.metadata or {}
         file_id = str(metadata.get("file_id", "")).strip()
@@ -4311,6 +4328,8 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
                 file_id=file_id,
                 download_filename=download_filename,
                 file_type=file_type or "file",
+                edit_changes=metadata.get("edit_changes"),
+                edit_issues=metadata.get("edit_issues"),
             )
         )
     return events

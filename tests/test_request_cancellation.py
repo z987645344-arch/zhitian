@@ -14,7 +14,7 @@ import main
 from layers import execution, llm_provider, memory, planning, source_policy, web_search_provider
 
 
-@pytest.mark.parametrize("stage", ["intent_classification", "checkpoint_route", "react_reflection", "document_rerank", "document_answer"])
+@pytest.mark.parametrize("stage", ["intent_classification", "checkpoint_route", "react_reflection", "document_rerank", "document_answer", "text_edit_plan"])
 def test_disconnect_interrupts_active_stage_and_stops_followups(stage, monkeypatch, caplog, client, auth_headers):
     headers, user = auth_headers()
     # 此用例测“已经进入调用后的取消”，而非HTTP/TLS客户端冷初始化。

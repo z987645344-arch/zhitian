@@ -37,5 +37,5 @@ _POLICIES = {
 
 
 def entry_policy(entry: FileEntry) -> EntryPolicy:
-    # EDIT虽然在规范里预留，没有适配器时注册表仍明确拒绝。
+    # 入口允许任务不等于引擎支持；未登记的格式组合仍由注册表明确拒绝。
     return _POLICIES[FileEntry(entry)].model_copy(deep=True)
