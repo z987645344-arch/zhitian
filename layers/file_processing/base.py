@@ -38,6 +38,12 @@ class FileProcessor(ABC):
         """总预算与请求取消贯穿锁、工作进程及校验。"""
         from layers.file_processing.runner import task_scope, FileTaskTimeout, FileTaskCancelled
         from layers.file_processing.models import FileProcessingStatus
+        from layers.file_processing.input_guard import check_request_inputs, EncryptedFileError
+        try:
+            check_request_inputs(request)
+        except EncryptedFileError as exc:
+            return FileProcessingResult(success=False, status=FileProcessingStatus.FAILED,
+                                        error_type="encrypted_file", error_message=str(exc))
         result = None
         with task_scope(request.resource_budget.max_execution_seconds or None,
                         cancellation=cancellation, progress=progress) as scope:

@@ -1378,7 +1378,9 @@ def _run_conversion_with_agent_budget(
     timeout_seconds: float,
 ) -> converter.ConversionResult:
     """同步等待可终止运行器回收进程，之后才释放槽位与预留。"""
+    from layers.file_processing.input_guard import reject_encrypted, EncryptedFileError
     try:
+        reject_encrypted(source_path, os.path.splitext(source_path or "")[1])
         with task_scope(seconds=max(0.001, timeout_seconds)) as scope:
             with heavy_task_limits.occupy_slot():
                 result = run_for_entry(FileEntry.AGENT_CHAT, conversion_fn, source_path, target_format)
@@ -1388,6 +1390,10 @@ def _run_conversion_with_agent_budget(
                     converter.cleanup_conversion_output(result.output_path or "")
                     raise
                 return result
+    except EncryptedFileError as exc:
+        return converter.ConversionResult(success=False, status=converter.ConversionStatus.FAILED,
+            converted_from_format=os.path.splitext(source_path or "")[1].lstrip("."),
+            converted_to_format=target_format, error_type="encrypted_file", error_msg=str(exc))
     except FileTaskTimeout:
         return _agent_conversion_timeout(os.path.splitext(source_path or "")[1].lstrip("."), target_format)
     except heavy_task_limits.HeavyTaskRejected as exc:

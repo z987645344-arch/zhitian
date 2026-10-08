@@ -18,6 +18,7 @@ from layers.file_processing.runtime import (
     current_file_entry,
 )
 from layers.file_processing.registry import CapabilityNotFoundError, EngineUnavailableError
+from layers.file_processing.input_guard import EncryptedFileError
 from layers.file_processing.runner import (
     cleanup_artifact,
 )
@@ -63,6 +64,8 @@ def convert_pdf_to_office(source_path: str, target_format: str) -> ConversionRes
     )
     try:
         processor, _ = get_file_processor_registry().resolve(request, require_ready=True)
+    except EncryptedFileError as exc:
+        return _failed(str(exc), ".pdf", target, "encrypted_file")
     except CapabilityNotFoundError:
         return _failed("不支持的转换组合", ".pdf", target, "unsupported_conversion")
     except EngineUnavailableError as exc:
@@ -145,6 +148,8 @@ def convert_file(source_path: str, target_format: str) -> ConversionResult:
     )
     try:
         processor, _ = get_file_processor_registry().resolve(request, require_ready=True)
+    except EncryptedFileError as exc:
+        return _failed(str(exc), source_ext, target, "encrypted_file")
     except CapabilityNotFoundError:
         return _failed("不支持的转换组合", source_ext, target, "unsupported_conversion")
     except EngineUnavailableError as exc:

@@ -13,7 +13,7 @@ RUN groupadd --system appuser && useradd --system --gid appuser --create-home ap
 COPY converter_service/ ./converter_service/
 COPY layers/__init__.py ./layers/
 COPY layers/soffice_sandbox.py ./layers/
-COPY layers/file_processing/__init__.py layers/file_processing/base.py layers/file_processing/models.py layers/file_processing/registry.py layers/file_processing/runner.py layers/file_processing/lo_capabilities.py layers/file_processing/degradation.py ./layers/file_processing/
+COPY layers/file_processing/__init__.py layers/file_processing/base.py layers/file_processing/models.py layers/file_processing/registry.py layers/file_processing/runner.py layers/file_processing/lo_capabilities.py layers/file_processing/degradation.py layers/file_processing/input_guard.py ./layers/file_processing/
 USER appuser
 RUN python -m converter_service.probe
 EXPOSE 8001

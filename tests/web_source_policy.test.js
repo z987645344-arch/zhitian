@@ -243,6 +243,16 @@ test('接口失败不抛错；恢复就绪后的新一次选择可上传；超�
   assert.equal(harness.calls.uploads, 1);
 });
 
+test('附件加密的服务端可读原因显示给访客，不显示内部错误码', async () => {
+  const harness = uploadHarness(payload('ready'), { name: 'synthetic.docx', size: 1 });
+  harness.sandbox.API.uploadAttachment = async () => {
+    throw new Error('文件已加密，请去掉打开密码后再上传');
+  };
+  await harness.change();
+  assert.match(harness.sandbox.hint.textContent, /文件已加密，请去掉打开密码后再上传/);
+  assert.doesNotMatch(harness.sandbox.hint.textContent, /encrypted_file|invalid_file/);
+});
+
 test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数一致，模块在chat之前', async () => {
   assert.match(chat.slice(chat.indexOf('  async function initialize()')), /refreshFileCapabilities\(\);/);
   const requests = [];

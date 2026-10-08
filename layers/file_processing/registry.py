@@ -174,6 +174,8 @@ class FileProcessorRegistry:
         request: FileProcessingRequest,
         *, require_ready: bool = False,
     ) -> Tuple[FileProcessor, ProcessorCapability]:
+        from layers.file_processing.input_guard import check_request_inputs
+        check_request_inputs(request)
         candidates = [
             item
             for item in self._capabilities

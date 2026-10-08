@@ -36,6 +36,9 @@ from layers.file_processing.models import FileTaskProgress
 from layers.file_processing.runtime import run_for_entry
 from layers.file_processing.runtime import get_file_processor_registry
 from layers.file_processing import service as file_service
+from layers.file_processing.input_guard import (
+    reject_encrypted, EncryptedFileError, ENCRYPTED_FILE_MESSAGE,
+)
 from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
@@ -2199,13 +2202,15 @@ async def upload_chat_attachment(
             ).model_dump(),
         )
     except HTTPException as exc:
-        error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
+        error_type = ("encrypted_file" if exc.detail == ENCRYPTED_FILE_MESSAGE else
+                      "file_too_large" if exc.status_code == 413 else "invalid_file")
         return JSONResponse(
             status_code=exc.status_code,
             content=ChatAttachmentResponse(
                 success=False,
                 original_filename=filename,
                 error_type=error_type,
+                detail=exc.detail if error_type == "encrypted_file" else "",
             ).model_dump(),
         )
     finally:
@@ -2235,6 +2240,15 @@ async def convert_tool_file(
                 error_type="unsupported_format",
             ).model_dump(),
         )
+    # Password-to-open rejection precedes engine readiness and resource admission.
+    try:
+        if file.size is None or file.size <= max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024:
+            reject_encrypted(file.file, suffix)
+    except EncryptedFileError as exc:
+        await file.close()
+        return JSONResponse(status_code=422, content=ToolConversionResponse(success=False,
+            converted_from_format=source_format, converted_to_format=target_format,
+            error_type="encrypted_file", detail=str(exc)).model_dump())
     error_type, detail = file_service.conversion_availability(source_format, target_format)
     if error_type:
         await file.close()
@@ -2327,7 +2341,8 @@ async def convert_tool_file(
             ).model_dump(),
         )
     except HTTPException as exc:
-        error_type = "file_too_large" if exc.status_code == 413 else "invalid_file"
+        error_type = ("encrypted_file" if exc.detail == ENCRYPTED_FILE_MESSAGE else
+                      "file_too_large" if exc.status_code == 413 else "invalid_file")
         return JSONResponse(
             status_code=exc.status_code,
             content=ToolConversionResponse(
@@ -2335,6 +2350,7 @@ async def convert_tool_file(
                 converted_from_format=source_format,
                 converted_to_format=target_format,
                 error_type=error_type,
+                detail=exc.detail if error_type == "encrypted_file" else "",
             ).model_dump(),
         )
     except Exception as exc:
@@ -2599,6 +2615,17 @@ async def upload_document(
     payload = await file.read()
     await file.seek(0)
     file_hash = task_store.compute_content_hash(payload)
+    try:
+        reject_encrypted(payload, suffix)
+    except EncryptedFileError as exc:
+        # Rejected preprocessing is still a terminal upload-history record, without
+        # reserving an ingestion queue position or any conversion resources.
+        task = task_store.create_task("upload", file_hash, filename, organization_id,
+                                     current_user["user_id"])
+        task_store.update_task(task.task_id, status="failed", error_message=str(exc),
+            file_progress=FileTaskProgress(stage="failed", processed=0, total=None, unit="files"))
+        await file.close()
+        raise HTTPException(status_code=422, detail=str(exc))
     existing = task_store.find_done_by_hash(file_hash, organization_id)
     if existing:
         raise HTTPException(
@@ -3500,7 +3527,11 @@ def _save_temp_upload(file: UploadFile, doc_id: str, filename: str) -> str:
 
 
 def _validate_upload_content(file: UploadFile, suffix: str) -> None:
-    """Reject obvious extension spoofing without retaining or logging file content."""
+    """Reject encryption and obvious spoofing without retaining/logging content."""
+    try:
+        reject_encrypted(file.file, suffix)
+    except EncryptedFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     file.file.seek(0)
     header = file.file.read(8192)
     file.file.seek(0)

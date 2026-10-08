@@ -113,6 +113,11 @@ def create_app(settings=None, manager=None):
                     destination.write(data)
             if not size:
                 raise HTTPException(422, "empty_input")
+            from layers.file_processing.input_guard import reject_encrypted, EncryptedFileError
+            try:
+                reject_encrypted(source, source_format)
+            except EncryptedFileError as exc:
+                raise HTTPException(422, str(exc))
             result = manager.submit(workspace, source, target_format, started, remaining_budget)
             submitted = True
             return result

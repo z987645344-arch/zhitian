@@ -85,9 +85,13 @@ def test_libreoffice_declares_explicit_existing_pairs_including_generated_text()
 
 @pytest.mark.parametrize("task,encrypted", [(FileTaskType.EDIT, False), (FileTaskType.CONVERT, True)])
 def test_unimplemented_edit_and_encrypted_formats_are_not_supported(task, encrypted):
-    with pytest.raises(CapabilityNotFoundError):
+    from layers.file_processing.input_guard import EncryptedFileError, ENCRYPTED_FILE_MESSAGE
+    # Encryption now has its own actionable rejection, not "unsupported format".
+    with pytest.raises(EncryptedFileError if encrypted else CapabilityNotFoundError) as error:
         get_file_processor_registry().resolve(FileProcessingRequest(task_type=task,
             source_format="doc", target_format="pdf", encrypted=encrypted))
+    if encrypted:
+        assert str(error.value) == ENCRYPTED_FILE_MESSAGE
 
 
 def test_adapter_execution_interface_accepts_future_cancel_and_progress(tmp_path, monkeypatch):
