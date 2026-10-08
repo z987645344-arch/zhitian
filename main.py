@@ -2,6 +2,7 @@
 # 知天（zhitian）FastAPI主入口
 
 import asyncio
+import hashlib
 import anyio
 import codecs
 import hmac
@@ -39,6 +40,7 @@ from layers.file_processing import service as file_service
 from layers.file_processing.input_guard import (
     reject_encrypted, EncryptedFileError, ENCRYPTED_FILE_MESSAGE,
 )
+from layers import temporary_files, chat_originals, file_traces
 from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
@@ -86,15 +88,21 @@ class RequestStreamingResponse(StreamingResponse):
                 await self.body_iterator.aclose()
 
     async def __call__(self, scope, receive, send) -> None:
-        async with create_collapsing_task_group() as group:
-            async def stream_and_background():
-                await self.stream_response(send)
+        try:
+            async with create_collapsing_task_group() as group:
+                async def stream_and_background():
+                    await self.stream_response(send)
+                    group.cancel_scope.cancel()
+                group.start_soon(stream_and_background)
+                await self.listen_for_disconnect(receive)
+                if self.request_control is not None and not self.response_complete:
+                    self.request_control.cancel(self.trace_id)
                 group.cancel_scope.cancel()
-            group.start_soon(stream_and_background)
-            await self.listen_for_disconnect(receive)
-            if self.request_control is not None and not self.response_complete:
-                self.request_control.cancel(self.trace_id)
-            group.cancel_scope.cancel()
+        finally:
+            # 即使连接在生成器首次迭代之前断开，本轮原件也不能遗留。
+            cleanup = getattr(self, "round_original_cleanup", None)
+            if cleanup is not None:
+                cleanup()
 
 
 def _read_application_version() -> str:
@@ -318,6 +326,7 @@ async def lifespan(app: FastAPI):
         # 文件工作目录异常不能使聊天服务无法启动；文件能力冒烟会单独失败。
         logger.warning("文件任务遗留清理未完成：error_type=%s", type(exc).__name__)
     get_file_processor_registry().start_probes()
+    temporary_files.start_cleanup()
     with _request_gate_lock:
         _accepting_requests = True
     try:
@@ -329,6 +338,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        temporary_files.stop_cleanup()
         with _request_gate_lock:
             _accepting_requests = False
         deadline = time.monotonic() + max(0.0, config.SHUTDOWN_GRACE_PERIOD_SECONDS)
@@ -1016,12 +1026,12 @@ def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List
     """为历史消息补充可展示的附件文件名，不暴露其他用户文件。"""
     enriched = []
     for item in history:
+        if item.get("message_type") == memory.MESSAGE_TYPE_FILE_TRACE:
+            continue
         attachment_ids = item.get("attachment_ids") or []
         filenames = []
         for attachment_id in attachment_ids:
-            record = files_store.get_file(attachment_id)
-            if record is not None and record.owner_user_id == owner_user_id:
-                filenames.append(record.original_filename)
+            filenames.append("附件 · 原件已清理")
         enriched.append({**item, "attachment_filenames": filenames})
     return enriched
 
@@ -1804,6 +1814,8 @@ async def delete_memory_session(
     current_user: dict = Depends(get_current_user),
 ):
     _ensure_session_owner_or_404(session_id, current_user)
+    temporary_files.clear_session(session_id, current_user["user_id"])
+    attachments.clear_session(session_id)
     vector_cleanup_complete = memory.delete_session_full(session_id)
     response = {"deleted": True}
     if not vector_cleanup_complete:
@@ -1837,6 +1849,8 @@ async def delete_memory(session_id: str, current_user: dict = Depends(get_curren
     logger.info("收到DELETE /memory请求：session_id=%s", session_id)
     try:
         _ensure_session_owner(session_id, current_user)
+        temporary_files.clear_session(session_id, current_user["user_id"])
+        attachments.clear_session(session_id)
         cleared = memory.clear_session(session_id)
         if not cleared:
             return {
@@ -1878,14 +1892,14 @@ def _get_owned_user_file(
     """统一读取用户文件并校验owner；调用方决定是否隐藏越权状态。"""
     record = files_store.get_file(file_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=404, detail="文件已清理或不存在")
     if record.owner_user_id != current_user["user_id"]:
         if forbidden_status == 404:
             raise HTTPException(status_code=404, detail="文件不存在")
         raise HTTPException(status_code=forbidden_status, detail="无权访问该文件")
     file_path = files_store.get_file_path(record)
     if file_path is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=404, detail="文件已清理或不存在")
     return record, file_path
 
 
@@ -2054,6 +2068,117 @@ async def delete_user_file(
     return {"status": "deleted", "file_id": file_id}
 
 
+@app.post("/files/{file_id}/receipt")
+async def acknowledge_download(file_id: str, current_user: dict = Depends(get_current_user)):
+    """仅浏览器完整取到Blob后发送，不将响应开始当作回执。"""
+    record = files_store.get_file(file_id)
+    if record is not None and record.owner_user_id != current_user["user_id"]:
+        raise HTTPException(404, "文件已清理或不存在")
+    if record is not None and not files_store.delete_file(file_id, current_user["user_id"]):
+        raise HTTPException(500, "临时文件清理失败")
+    return {"status": "cleared"}
+
+
+@app.delete("/chat/{session_id}/temporary-files")
+async def clear_chat_products(session_id: str, current_user: dict = Depends(get_current_user)):
+    _ensure_session_owner_or_404(session_id, current_user)
+    temporary_files.clear_session(session_id, current_user["user_id"])
+    attachments.clear_session(session_id)
+    return {"status": "cleared"}
+
+
+async def _receive_chat_originals(chat_request, files, original_ids, current_user):
+    """全套入口检查、原件哈希匹配；只登记本轮身份工作目录。"""
+    _bind_or_verify_session(chat_request.session_id, current_user)
+    if len(files) != len(original_ids) or len(set(original_ids)) != len(original_ids):
+        raise HTTPException(400, "原件参数不匹配，请重新上传")
+    workspace = TaskWorkspace()
+    sources = {}
+    try:
+        for upload, attachment_id in zip(files, original_ids):
+            if attachment_id not in chat_request.attachment_ids:
+                raise HTTPException(400, "原件不属于本轮附件，请重新上传")
+            record = attachments.get_attachment(chat_request.session_id, attachment_id)
+            if record is None or not record.sha256:
+                raise HTTPException(400, chat_originals.ORIGINAL_CLEARED_MESSAGE)
+            suffix = os.path.splitext(upload.filename or "")[1].lower()
+            expected_suffix = os.path.splitext(record.filename)[1].lower()
+            if suffix != expected_suffix or suffix not in config.ALLOWED_UPLOAD_EXTENSIONS:
+                raise HTTPException(400, "原件格式不匹配，请重新上传")
+            size, digest = 0, hashlib.sha256()
+            path = workspace.path / (str(uuid.uuid4()) + suffix)
+            with path.open("wb") as output_file:
+                while data := await upload.read(1024 * 1024):
+                    size += len(data)
+                    if size > max(0, config.MAX_UPLOAD_SIZE_MB) * 1024 * 1024:
+                        raise HTTPException(413, f"文件不能超过{config.MAX_UPLOAD_SIZE_MB}MB")
+                    digest.update(data)
+                    output_file.write(data)
+            with path.open("rb") as original_stream:
+                _validate_upload_content(UploadFile(original_stream, filename=upload.filename, size=size), suffix)
+            if digest.hexdigest() != record.sha256:
+                raise HTTPException(400, "原件与首次上传的文件不一致，请重新上传")
+            sources[(chat_request.session_id, attachment_id, current_user["user_id"])] = str(path)
+        return workspace, sources
+    except BaseException:
+        workspace.cleanup()
+        raise
+    finally:
+        for upload in files:
+            await upload.close()
+
+
+def _parse_original_chat(payload, original_ids):
+    try:
+        chat_request = ChatRequest.model_validate_json(payload)
+        ids = json.loads(original_ids)
+        if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+            raise ValueError()
+        return chat_request, ids
+    except ValueError:
+        raise HTTPException(422, "聊天原件参数无效") from None
+
+
+@app.post("/chat/stream/originals")
+async def chat_stream_with_originals(request: Request, background_tasks: BackgroundTasks,
+    payload: str = Form(...), original_ids: str = Form(...), files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)):
+    chat_request, ids = _parse_original_chat(payload, original_ids)
+    workspace, sources = await _receive_chat_originals(chat_request, files, ids, current_user)
+    try:
+        response = await chat_stream(request, chat_request, background_tasks, current_user)
+    except BaseException:
+        workspace.cleanup()
+        raise
+    body = response.body_iterator
+    async def scoped_body():
+        token = chat_originals.bind(sources)
+        try:
+            async for event in body:
+                yield event
+        finally:
+            chat_originals.reset(token)
+            workspace.cleanup()
+    response.body_iterator = scoped_body()
+    if isinstance(response, RequestStreamingResponse):
+        response.round_original_cleanup = workspace.cleanup
+    return response
+
+
+@app.post("/chat/originals", response_model=ChatResponse)
+async def chat_with_originals(request: Request, background_tasks: BackgroundTasks,
+    payload: str = Form(...), original_ids: str = Form(...), files: List[UploadFile] = File(...),
+    current_user: dict = Depends(get_current_user)):
+    chat_request, ids = _parse_original_chat(payload, original_ids)
+    workspace, sources = await _receive_chat_originals(chat_request, files, ids, current_user)
+    token = chat_originals.bind(sources)
+    try:
+        return await chat(request, chat_request, background_tasks, current_user)
+    finally:
+        chat_originals.reset(token)
+        workspace.cleanup()
+
+
 @app.post("/chat/attachments", response_model=ChatAttachmentResponse)
 async def upload_chat_attachment(
     request: Request,
@@ -2162,21 +2287,18 @@ async def upload_chat_attachment(
                 ).model_dump(),
             )
 
-        persistent_file_id = files_store.save_file(
-            current_user["user_id"],
-            "attachment",
-            filename,
-            temp_path,
-            suffix,
-            session_id=session_id,
-        )
+        with open(temp_path, "rb") as original:
+            original_sha256 = hashlib.file_digest(original, "sha256").hexdigest()
         record = attachments.save_attachment(
             session_id,
             text,
             filename,
-            file_id=persistent_file_id,
             owner_user_id=current_user["user_id"],
+            sha256=original_sha256,
+            size_bytes=os.path.getsize(temp_path),
         )
+        file_traces.save(session_id, filename, suffix.lstrip("."), record.size_bytes,
+                         owner=current_user["user_id"])
         logger.info(
             "聊天附件解析完成：session_id_len=%s attachment_id=%s char_count=%s format=%s",
             len(session_id),
@@ -2201,6 +2323,11 @@ async def upload_chat_attachment(
                 detail=exc.message,
             ).model_dump(),
         )
+    except temporary_files.TemporaryQuotaExceeded as exc:
+        return JSONResponse(status_code=422, content=ToolConversionResponse(
+            success=False, converted_from_format=source_format,
+            converted_to_format=target_format, error_type="temporary_space_full",
+            detail=str(exc)).model_dump())
     except HTTPException as exc:
         error_type = ("encrypted_file" if exc.detail == ENCRYPTED_FILE_MESSAGE else
                       "file_too_large" if exc.status_code == 413 else "invalid_file")
@@ -2492,6 +2619,8 @@ async def merge_pdf_tool_files(
         raise
     except Exception as exc:
         logger.error("PDF合并异常：error_type=%s", type(exc).__name__)
+        if isinstance(exc, temporary_files.TemporaryQuotaExceeded):
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         raise HTTPException(status_code=422, detail="PDF合并失败") from None
     finally:
         for upload in files:
@@ -2575,6 +2704,8 @@ async def split_pdf_tool_file(
         for file_id in saved_file_ids:
             files_store.delete_file(file_id, current_user["user_id"])
         logger.error("PDF拆分异常：error_type=%s", type(exc).__name__)
+        if isinstance(exc, temporary_files.TemporaryQuotaExceeded):
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         raise HTTPException(status_code=422, detail="PDF拆分失败") from None
     finally:
         await file.close()
@@ -4053,6 +4184,7 @@ async def _chat_stream_events_with_heartbeat(
         with anyio.CancelScope(shield=True):
             await producer_task
             if not completed:
+                temporary_files.clear_request_products(stream_registry)
                 with llm_provider.use_stream_registry(stream_registry):
                     if stream_registry.history_user_id is None:
                         _save_user_history_turn(request, current_user)
@@ -4140,7 +4272,7 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
     for result in state.get("results", []) or []:
         if not isinstance(result, execution.ToolResult):
             continue
-        if result.tool != "generate_file" or result.status != "success":
+        if result.tool not in {"generate_file", "convert_document"} or result.status != "success":
             continue
         metadata = result.metadata or {}
         file_id = str(metadata.get("file_id", "")).strip()
@@ -4196,6 +4328,7 @@ def _save_user_history_turn(request: ChatRequest, current_user: dict) -> None:
     """
     _bind_or_verify_session(request.session_id, current_user)
     message_id = memory.save_message(request.session_id, "user", request.message.strip(), request.attachment_ids)
+    file_traces.begin_turn(request.session_id, request.attachment_ids, current_user["user_id"])
     control = llm_provider.current_request_control()
     if control is not None:
         control.history_user_id = message_id
@@ -4246,6 +4379,7 @@ def _save_assistant_history_message(
 ) -> None:
     """保存assistant历史；普通消息保持原调用形状兼容既有测试桩。"""
     auth.ensure_session_writer(session_id, owner_user_id)
+    file_traces.record_read_answer(session_id, content)
     if message_type == memory.MESSAGE_TYPE_FILE_DELIVERY:
         message_id = memory.save_message(
             session_id,

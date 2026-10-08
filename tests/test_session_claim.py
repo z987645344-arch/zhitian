@@ -28,7 +28,8 @@ def _seed_record(kind, session, owner_user_id="test-owner"):
     elif kind == "cache":
         attachments.save_attachment(session, "private attachment sentinel", "test.txt")
     else:
-        files_store.save_file(owner_user_id, kind, "test.txt", b"private file sentinel", "txt",
+        # Seed the pre-migration permanent records as well as retaining their claim checks.
+        files_store._save_legacy_file(owner_user_id, kind, "test.txt", b"private file sentinel", "txt",
                               session_id=session, source_task_id="test-task")
 
 

@@ -1210,9 +1210,9 @@ def bind_session(session_id: str, user_id: str) -> None:
                 return
             # 与所有进程内会话写入/删除共用锁；SQLite写事务串行化首次绑定。
             # 延迟导入避免 auth/memory 的模块初始化循环。
-            from layers import attachments
+            from layers import attachments, temporary_files
             try:
-                occupied = attachments.has_session_records(session_id) or session_records.has_persistent_records(
+                occupied = attachments.has_session_records(session_id) or temporary_files.has_session_records(session_id) or session_records.has_persistent_records(
                     session_id, config.HISTORY_DB_PATH,
                     os.path.join(config.BASE_DIR, "data", "files.db"),
                     os.path.join(config.VECTORDB_PATH, "chroma.sqlite3"),

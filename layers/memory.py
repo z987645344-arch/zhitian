@@ -54,9 +54,10 @@ MESSAGE_TYPE_CHAT = "chat"
 MESSAGE_TYPE_FILE_DELIVERY = "file_delivery"
 MESSAGE_TYPE_INTERRUPTED_USER = "interrupted_user"
 MESSAGE_TYPE_INTERRUPTED = "interrupted"
+MESSAGE_TYPE_FILE_TRACE = "file_trace"
 INTERRUPTED_MESSAGE = "回答已中断"
 VALID_MESSAGE_TYPES = {MESSAGE_TYPE_CHAT, MESSAGE_TYPE_FILE_DELIVERY,
-                       MESSAGE_TYPE_INTERRUPTED_USER, MESSAGE_TYPE_INTERRUPTED}
+                       MESSAGE_TYPE_INTERRUPTED_USER, MESSAGE_TYPE_INTERRUPTED, MESSAGE_TYPE_FILE_TRACE}
 IMPORTANCE_LEVEL_HIGH = "high"
 IMPORTANCE_LEVEL_NORMAL = "normal"
 LOW_INFORMATION_PHRASES = {
@@ -333,7 +334,7 @@ def list_session_summaries(session_ids: List[str]) -> List[dict]:
                            LIMIT 1
                        ), '') AS title,
                        (SELECT COUNT(*) FROM conversations c
-                        WHERE c.session_id = s.session_id) AS message_count
+                        WHERE c.session_id = s.session_id AND c.message_type != 'file_trace') AS message_count
                 FROM sessions s
                 WHERE s.session_id IN (%s)
                 ORDER BY COALESCE(s.last_active, s.created_at) DESC
@@ -1754,6 +1755,8 @@ def _validate_message_type(message_type: str, role: str) -> str:
         raise ValueError("message_type不受支持")
     if normalized == MESSAGE_TYPE_FILE_DELIVERY and role != "assistant":
         raise ValueError("file_delivery只允许用于assistant消息")
+    if normalized == MESSAGE_TYPE_FILE_TRACE and role != "assistant":
+        raise ValueError("file_trace只允许用于assistant消息")
     if normalized == MESSAGE_TYPE_INTERRUPTED and role != "assistant":
         raise ValueError("interrupted只允许用于assistant消息")
     if normalized == MESSAGE_TYPE_INTERRUPTED_USER and role != "user":

@@ -266,7 +266,116 @@ test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数�
   assert.equal(requests[0].url, '/api/file-processing/engines');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-token');
   for (const page of ['chat', 'login', 'register', 'settings']) {
-    assert.match(read(page + '.html'), /api\.js\?v=file-capabilities-20261008/);
+    assert.match(read(page + '.html'), /api\.js\?v=temporary-files-20261008/);
   }
   assert.ok(read('chat.html').indexOf('file_capabilities.js') < read('chat.html').indexOf('js/chat.js'));
+  assert.ok(read('chat.html').indexOf('temporary-files.js') < read('chat.html').indexOf('js/chat.js'));
+});
+
+test('原件和产物只在页面内存保存，回执不等于用户已保存；过期/切换全部失效', () => {
+  const { create } = require('../web_client/js/temporary-files.js');
+  let clock = 0;
+  const pool = create(() => clock);
+  const original = new Blob(['original']), product = new Blob(['product']);
+  pool.original('a', original);
+  pool.product('p', product, 'result.docx');
+  assert.equal(pool.getOriginal('a'), original);
+  assert.equal(pool.getProduct('p').blob, product);
+  assert.equal(pool.hasUnsaved(), true);
+  pool.saved('p');
+  assert.equal(pool.hasUnsaved(), false);
+  clock = 60 * 60 * 1000;
+  assert.equal(pool.getOriginal('a'), undefined);
+  assert.equal(pool.getProduct('p'), undefined);
+  pool.original('a', original);
+  pool.product('p', product, 'result.docx');
+  pool.clear();
+  assert.equal(pool.getOriginal('a'), undefined);
+  assert.equal(pool.getProduct('p'), undefined);
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '../web_client/js/temporary-files.js'), 'utf8'),
+    /localStorage\.|sessionStorage\.|indexedDB\.|caches\./);
+});
+
+test('普通阅读不重发原件；转换只重发选中原件；失效时明确提示且不发请求', () => {
+  const { create, planResend, ORIGINAL_CLEARED } = require('../web_client/js/temporary-files.js');
+  let clock = 0;
+  const pool = create(() => clock), file = new Blob(['original']);
+  pool.original('a', file);
+  assert.deepEqual(planResend('阅读这个文档', ['a'], pool).originals, []);
+  assert.equal(planResend('转换成PDF', ['a'], pool).originals[0].file, file);
+  assert.deepEqual(planResend('转换成PDF', [], pool).ids, ['a']);
+  clock = 3600000;
+  assert.equal(planResend('转换成PDF', ['a'], pool).error, ORIGINAL_CLEARED);
+  assert.equal(planResend('转换成PDF', [], pool, true).error, ORIGINAL_CLEARED);
+  assert.deepEqual(planResend('讨论文件格式转换原理', [], pool, false).originals, []);
+  pool.original('a', file); pool.original('b', file);
+  assert.match(planResend('转换成PDF', [], pool, true).error, /选择/);
+});
+
+test('历史隐藏文件痕迹，历史产物标明已清理且不重建下载链接', () => {
+  const calls = [];
+  const start = chatSource.indexOf('  function renderHistory(');
+  const end = chatSource.indexOf('  function renderInterrupted(', start);
+  const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},
+    addBubble: (...args) => calls.push(args) });
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  vm.runInContext('renderHistory', sandbox)([
+    { role: 'assistant', message_type: 'file_trace', content: 'hidden' },
+    { role: 'assistant', message_type: 'file_delivery', content: '已生成 report.md，可通过 /files/abc 下载' },
+  ]);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][1], /report.md.*文件已清理/);
+  assert.doesNotMatch(calls[0][1], /\/files\//);
+});
+
+test('原件重传是带鉴权的multipart，普通阅读保持JSON；不把原件写入持久缓存', async () => {
+  for (const resend of [false, true]) {
+    const calls = [];
+    const sandbox = vm.createContext({ window: {}, FormData, Blob, TextDecoder,
+      localStorage: { getItem: () => 'test-token' },
+      fetch: async (url, options) => {
+        calls.push({ url, options });
+        return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) } };
+      } });
+    vm.runInContext(apiSource, sandbox);
+    await vm.runInContext('API', sandbox).chatStream('session', 'test', 'expert', ['attachment'], {},
+      resend ? [{ id: 'attachment', file: new Blob(['original']) }] : []);
+    assert.equal(calls.length, 1);
+    const { url, options } = calls[0];
+    assert.equal(options.headers.Authorization, 'Bearer test-token');
+    if (resend) {
+      assert.match(url, /\/chat\/stream\/originals$/);
+      assert.equal(options.headers['Content-Type'], undefined);
+      assert.equal(options.body.get('original_ids'), '["attachment"]');
+      assert.equal(await options.body.get('files').text(), 'original');
+      assert.equal(JSON.parse(options.body.get('payload')).session_id, 'session');
+    } else {
+      assert.match(url, /\/chat\/stream$/);
+      assert.equal(options.headers['Content-Type'], 'application/json');
+    }
+  }
+  const cache = read('js/temporary-files.js');
+  assert.doesNotMatch(cache, /localStorage\.(setItem|getItem)|indexedDB\.|caches\./);
+});
+
+test('浏览器取完Blob才确认清理；离页请求keepalive，带归属鉴权', async () => {
+  const events = [];
+  const sandbox = vm.createContext({ window: {}, localStorage: { getItem: () => 'test-token' },
+    fetch: async (url, options) => {
+      events.push([url, options]);
+      return { ok: true, status: 200, headers: { get: () => null }, text: async () => '{}',
+        blob: async () => { events.push(['blob complete']); return new Blob(['done']); } };
+    } });
+  vm.runInContext(apiSource, sandbox);
+  const api = vm.runInContext('API', sandbox);
+  const result = await api.downloadFile('file', 'report.txt');
+  assert.equal(await result.blob.text(), 'done');
+  assert.equal(events.length, 2);
+  await api.acknowledgeFile('file');
+  assert.match(events[2][0], /\/files\/file\/receipt$/);
+  await api.clearTemporaryFiles('session');
+  assert.equal(events[3][1].keepalive, true);
+  assert.equal(events[3][1].headers.Authorization, 'Bearer test-token');
+  assert.match(chatSource, /beforeunload[\s\S]*hasUnsaved[\s\S]*preventDefault/);
+  assert.match(chatSource, /pagehide[\s\S]*clearTemporaryFiles/);
 });

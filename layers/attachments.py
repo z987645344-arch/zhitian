@@ -19,6 +19,8 @@ class AttachmentRecord(BaseModel):
     filename: str
     char_count: int
     created_at: datetime
+    sha256: str = ""
+    size_bytes: int = 0
 
 
 _attachment_lock = threading.RLock()
@@ -32,6 +34,8 @@ def save_attachment(
     filename: str,
     file_id: str = "",
     owner_user_id: Optional[str] = None,
+    sha256: str = "",
+    size_bytes: int = 0,
 ) -> AttachmentRecord:
     from layers import auth
     auth.ensure_session_writer(session_id, owner_user_id)
@@ -42,6 +46,8 @@ def save_attachment(
         filename=filename,
         char_count=len(text),
         created_at=datetime.now(timezone.utc),
+        sha256=sha256,
+        size_bytes=size_bytes,
     )
     with _attachment_lock:
         _purge_expired_locked(session_id)
@@ -90,3 +96,9 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def purge_expired():
+    with _attachment_lock:
+        for session_id in list(_attachments):
+            _purge_expired_locked(session_id)

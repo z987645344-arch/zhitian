@@ -3,11 +3,12 @@
 
 import os
 import time
+import hashlib
 
 import pytest
 
 import config
-from layers import attachments, converter, execution, files_store, planning, resource_admission
+from layers import attachments, auth, chat_originals, converter, execution, files_store, planning, resource_admission
 from layers.converter import ConversionResult, ConversionStatus
 
 
@@ -15,26 +16,33 @@ OWNER_A = "11111111-1111-1111-1111-111111111111"
 OWNER_B = "22222222-2222-2222-2222-222222222222"
 
 
+@pytest.fixture(autouse=True)
+def isolated_round_originals():
+    token = chat_originals.bind({})
+    try:
+        yield
+    finally:
+        chat_originals.reset(token)
+
+
 def _store_attachment(tmp_path, session_id, owner_id, file_format="xlsx"):
     source_path = tmp_path / ("source.%s" % file_format)
     source_path.write_bytes(b"source-content")
-    file_id = files_store.save_file(
-        owner_id,
-        "attachment",
-        source_path.name,
-        str(source_path),
-        file_format,
-        session_id=session_id,
-    )
-    return attachments.save_attachment(
+    auth.bind_session(session_id, owner_id)
+    record = attachments.save_attachment(
         session_id,
         "attachment text",
         source_path.name,
-        file_id=file_id,
+        owner_user_id=owner_id,
+        sha256=hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        size_bytes=source_path.stat().st_size,
     )
+    # This fixture models a fully validated multipart resend, never a permanent original.
+    chat_originals.bind({(session_id, record.attachment_id, owner_id): str(source_path)})
+    return record
 
 
-def test_attachment_id_maps_to_persistent_file_and_converts(
+def test_attachment_id_maps_to_round_original_and_converts(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
@@ -275,9 +283,7 @@ def test_convert_document_agent_budget_stops_task_without_late_output(
     assert result.success is False
     assert result.error_type == "timeout"
     assert elapsed < 0.06
-    assert files_store.list_files(OWNER_A) == [
-        files_store.get_file(record.file_id)
-    ]
+    assert files_store.list_files(OWNER_A) == []
     time.sleep(0.12)
     assert not output_path.exists()
     attachments.clear_session("session-budget")

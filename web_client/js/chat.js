@@ -91,6 +91,34 @@
   let pendingAttachments = [];
   let sending = false;
   let loadingSession = false;
+  let hasFileHistory = false;
+  const browserFiles = ZhitianTemporaryFiles.create();
+  window.addEventListener('beforeunload', (event) => {
+    if (browserFiles.hasUnsaved()) {
+      event.preventDefault();
+      event.returnValue = '有未保存的文件，确定离开吗？';
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    if (sessionId) API.clearTemporaryFiles(sessionId).catch(() => {});
+    browserFiles.clear();
+  });
+  window.setInterval(() => {
+    browserFiles.purge();
+    document.querySelectorAll('.generated-file-card').forEach(card => {
+      if (!browserFiles.getProduct(card.dataset.fileId)) {
+        card.querySelector('.generated-file-status').textContent = '文件已清理';
+        card.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      }
+    });
+  }, 30000);
+
+  function releasePageFiles() {
+    if (browserFiles.hasUnsaved() && !window.confirm('有未保存的文件，确定离开吗？')) return false;
+    if (sessionId) API.clearTemporaryFiles(sessionId).catch(() => {});
+    browserFiles.clear();
+    return true;
+  }
 
   document.querySelector('#currentUser').textContent = API.currentUsername() || '-';
 
@@ -262,7 +290,7 @@
     title.textContent = file.download_filename;
     const status = document.createElement('span');
     status.className = 'generated-file-status';
-    status.textContent = '文件已生成，可安全下载';
+    status.textContent = '文件已生成　临时存储1小时，请及时保存';
     status.setAttribute('aria-live', 'polite');
     copy.append(title, status);
 
@@ -271,38 +299,73 @@
     button.className = 'secondary generated-file-download';
     button.textContent = '下载';
     button.setAttribute('aria-label', `下载 ${file.download_filename}`);
+    button.disabled = true;
+    const pageSession = sessionId;
+    API.downloadFile(file.file_id, file.download_filename).then(async download => {
+      // 页面切换后到达的旧请求不能重新塞回内存。
+      if (sessionId !== pageSession || !card.isConnected) return;
+      browserFiles.product(file.file_id, download.blob, download.filename);
+      button.disabled = false;
+      await API.acknowledgeFile(file.file_id);
+    }).catch(error => { status.textContent = `文件获取失败：${briefError(error)}`; });
     button.addEventListener('click', async () => {
       button.disabled = true;
       button.textContent = '下载中…';
       status.textContent = '正在验证身份并准备文件…';
       try {
-        const download = await API.downloadFile(file.file_id, file.download_filename);
+        const download = browserFiles.getProduct(file.file_id);
+        if (!download) throw new Error('文件已清理');
         saveDownloadedBlob(download.blob, download.filename);
-        status.textContent = '下载已开始';
+        browserFiles.saved(file.file_id);
+        status.textContent = '已保存　临时存储1小时';
       } catch (error) {
         status.textContent = `下载失败：${briefError(error)}`;
         card.classList.add('failed');
       } finally {
-        button.disabled = false;
+        button.disabled = !browserFiles.getProduct(file.file_id);
         button.textContent = '下载';
       }
     });
 
-    card.append(icon, copy, button);
+    const reuse = document.createElement('button');
+    reuse.type = 'button';
+    reuse.className = 'secondary';
+    reuse.textContent = '继续处理';
+    reuse.addEventListener('click', async () => {
+      const product = browserFiles.getProduct(file.file_id);
+      if (!product) { hint.textContent = ZhitianTemporaryFiles.ORIGINAL_CLEARED; return; }
+      if (sending || loadingSession) return;
+      try {
+        const original = new File([product.blob], product.filename);
+        const data = await API.uploadAttachment(ensureSessionId(), original);
+        if (!data.success) throw new Error(data.detail || '文件上传失败');
+        browserFiles.original(data.attachment_id, original);
+        pendingAttachments.push(data);
+        renderChips();
+      } catch (error) { hint.textContent = briefError(error); }
+    });
+    card.append(icon, copy, button, reuse);
     bubble.appendChild(card);
     scrollToBottom();
   }
 
   function renderHistory(history) {
+    hasFileHistory = history.some(item => item.message_type === 'file_delivery' || (item.attachment_filenames || []).length);
     logInner.replaceChildren();
     if (!history.length) {
       showWelcome();
       return;
     }
     history.forEach((item) => {
+      if (item.message_type === 'file_trace') return;
       const role = item.role === 'user' ? 'user' : 'assistant';
       const interrupted = item.message_type === 'interrupted';
-      addBubble(role, interrupted ? '回答已中断' : String(item.content || ''),
+      const content = item.message_type === 'file_delivery'
+        ? String(item.content || '').replace(/\[([^\]]*)\]\(\/files\/[^)]+\)/g, '$1')
+          .replace(/(?:可通过|可从|通过)?\s*\/files\/[\w-]+\s*下载/g, '')
+          .replace(/\/files\/[\w/-]+/g, '').trim() + ' · 文件已清理'
+        : String(item.content || '');
+      addBubble(role, interrupted ? '回答已中断' : content,
         interrupted ? 'interrupted' : '', item.attachment_filenames || []);
     });
   }
@@ -483,6 +546,7 @@
 
   async function openSession(nextSessionId) {
     if (!nextSessionId || sending || loadingSession) return;
+    if (!releasePageFiles()) return;
     loadingSession = true;
     setInteractionState();
     closeSidebar();
@@ -516,6 +580,8 @@
 
   function startNewChat() {
     if (sending || loadingSession) return;
+    if (!releasePageFiles()) return;
+    hasFileHistory = false;
     sessionId = createSessionId();
     localStorage.setItem(SESSION_KEY, sessionId);
     pendingAttachments = [];
@@ -540,6 +606,8 @@
       if (!deleted) throw new Error('服务端未确认删除');
       sessions = sessions.filter((entry) => entry.session_id !== item.session_id);
       if (sessionId === item.session_id) {
+        browserFiles.clear();
+        hasFileHistory = false;
         sessionId = '';
         localStorage.removeItem(SESSION_KEY);
         pendingAttachments = [];
@@ -577,6 +645,7 @@
   }
 
   document.querySelector('#logoutButton').addEventListener('click', () => {
+    if (!releasePageFiles()) return;
     API.logout();
     localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(LEGACY_SESSION_KEY);
@@ -628,6 +697,8 @@
         return;
       }
       pendingAttachments.push(data);
+      browserFiles.original(data.attachment_id, file);
+      hasFileHistory = true;
       renderChips();
       hint.textContent = `已附加 ${data.original_filename}，提取 ${data.char_count} 字`;
     } catch (error) {
@@ -652,13 +723,18 @@
 
     const targetSessionId = ensureSessionId();
     const requestMode = mode;
+    const resend = ZhitianTemporaryFiles.planResend(text,
+      pendingAttachments.map((item) => item.attachment_id), browserFiles, hasFileHistory);
+    if (resend.error) {
+      hint.textContent = resend.error;
+      return;
+    }
+    const attachmentIds = resend.ids, originals = resend.originals;
     sending = true;
     setInteractionState();
     logInner.querySelector('.chat-welcome, .chat-empty')?.remove();
     addBubble('user', text, '', pendingAttachments.map((item) => item.original_filename));
     input.value = '';
-
-    const attachmentIds = pendingAttachments.map((item) => item.attachment_id);
     pendingAttachments = [];
     renderChips();
 
@@ -713,7 +789,7 @@
           streamFailed = true;
           renderInterrupted(bubble, body);
         },
-      });
+      }, originals);
     } catch (error) {
       bubble.classList.remove('pending');
       bubble.classList.add('failed');

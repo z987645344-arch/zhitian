@@ -1874,6 +1874,9 @@ def _respond_with_generated_file(state: AgentState) -> None:
             if result.blocked_by_content_taint
             else "文件生成失败，请稍后重试。"
         )
+        if metadata.get("error_type") == "TemporaryQuotaExceeded":
+            from layers.temporary_files import QUOTA_MESSAGE
+            state["response"] = QUOTA_MESSAGE
         state["citations"] = []
         return
     file_id = str(metadata.get("file_id", ""))
@@ -1928,9 +1931,12 @@ def _respond_with_converted_file(state: AgentState) -> None:
         "timeout": "附件转换超时，请稍后重试。",
         "attachment_not_found": "附件已过期或不存在，请重新上传。",
         "file_not_found": "附件原始文件不存在，请重新上传。",
+        "original_cleared": "原件已清理，请重新上传后再转换",
         "forbidden": "无权转换该附件。",
         "session_mismatch": "该附件不属于当前会话，无法转换。",
     }
+    from layers.temporary_files import QUOTA_MESSAGE
+    messages["TemporaryQuotaExceeded"] = QUOTA_MESSAGE
     state["error"] = error_type
     state["response"] = messages.get(error_type, "附件转换失败，请稍后重试。")
     state["citations"] = []

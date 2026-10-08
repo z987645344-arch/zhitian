@@ -55,14 +55,12 @@ def test_directly_supported_attachment_is_parsed_and_temp_file_removed(
     assert payload["original_filename"] == "notes.docx"
     record = attachments.get_attachment("attachment-direct", payload["attachment_id"])
     assert record is not None
-    assert record.file_id
+    assert not record.file_id
+    import hashlib
+    assert record.sha256 == hashlib.sha256(uploaded_bytes).hexdigest()
     assert "Unique attachment fact 4821" in record.text
     stored = files_store.list_files(user["user_id"])
-    assert len(stored) == 1
-    assert stored[0].source_type == "attachment"
-    assert stored[0].session_id == "attachment-direct"
-    assert stored[0].file_id == record.file_id
-    assert open(files_store.get_file_path(stored[0]), "rb").read() == uploaded_bytes
+    assert stored == []  # 原件提取完删除，不进入临时产物或永久文件库。
     assert not (tmp_path / "data" / "tmp_uploads").exists() or not list(
         (tmp_path / "data" / "tmp_uploads").iterdir()
     )
@@ -115,11 +113,9 @@ def test_convertible_attachment_is_converted_parsed_and_cleaned(
     assert record is not None
     assert "Converted legacy attachment fact" in record.text
     stored = files_store.list_files(user["user_id"])
-    assert stored[0].format == "doc"
-    assert stored[0].original_filename == "legacy.doc"
-    assert open(files_store.get_file_path(stored[0]), "rb").read().startswith(
-        b"\xd0\xcf\x11\xe0"
-    )
+    assert stored == []
+    assert record.filename == "legacy.doc"
+    assert len(record.sha256) == 64
     assert not os.path.exists(observed["source_path"])
     assert not os.path.exists(os.path.dirname(observed["source_path"])) or not list(
         os.scandir(os.path.dirname(observed["source_path"]))
@@ -273,7 +269,7 @@ def test_fast_and_expert_receive_attachment_context(
         return _success_state(mode, extra_context)
 
     monkeypatch.setattr(main.planning, "run_graph_state", fake_run)
-    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "save_message", lambda *args, **kwargs: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
     for mode in ("fast", "expert"):
         session_id = "attachment-%s" % mode
@@ -324,7 +320,7 @@ def test_fast_stream_receives_attachment_context(
         return _success_state(mode, extra_context)
 
     monkeypatch.setattr(main.planning, "run_graph_state", fake_run)
-    monkeypatch.setattr(main.memory, "save_message", lambda *args: None)
+    monkeypatch.setattr(main.memory, "save_message", lambda *args, **kwargs: None)
     monkeypatch.setattr(main.memory, "maybe_save_to_vector", lambda *args: None)
     response = client.post(
         "/chat/stream",

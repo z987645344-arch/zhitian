@@ -219,6 +219,13 @@ const API = (() => {
       };
     },
 
+    acknowledgeFile: (id) => request(`/files/${encodeURIComponent(id)}/receipt`, {
+      method: 'POST', json: false,
+    }),
+    clearTemporaryFiles: (sessionId) => request(`/chat/${encodeURIComponent(sessionId)}/temporary-files`, {
+      method: 'DELETE', json: false, keepalive: true,
+    }),
+
     // 流式对话：后端SSE载荷还包含脱敏工具动态与结构化请求终态。
     //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
     //   {"type": "citations", "citations": [...]} 引用来源
@@ -226,16 +233,19 @@ const API = (() => {
     //   {"type": "tool_status", ...} 工具开始/结束（不含参数与正文）
     //   {"type": "request_status", ...} 完整成功或结构化降级终态
     //   {"error": "..."} 服务端异常
-    async chatStream(sessionId, message, mode, attachmentIds, handlers) {
-      const response = await fetch(`${backendUrl}/chat/stream`, {
+    async chatStream(sessionId, message, mode, attachmentIds, handlers, originals = []) {
+      const payload = { session_id: sessionId, message, mode, attachment_ids: attachmentIds || [] };
+      let body = JSON.stringify(payload);
+      if (originals.length) {
+        body = new FormData();
+        body.append('payload', JSON.stringify(payload));
+        body.append('original_ids', JSON.stringify(originals.map(item => item.id)));
+        originals.forEach(item => body.append('files', item.file));
+      }
+      const response = await fetch(`${backendUrl}/chat/stream${originals.length ? '/originals' : ''}`, {
         method: 'POST',
-        headers: headers(true),
-        body: JSON.stringify({
-          session_id: sessionId,
-          message,
-          mode,
-          attachment_ids: attachmentIds || [],
-        }),
+        headers: headers(!originals.length),
+        body,
       });
       if (response.status === 401) {
         logout();

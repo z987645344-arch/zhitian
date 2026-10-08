@@ -1257,27 +1257,28 @@ def _convert_document(
     owner_user_id: str,
     agent_budget_seconds: Optional[float] = None,
 ) -> ConvertDocumentResult:
-    """转换当前会话附件，并将新产物写入owner的统一文件库。"""
+    """只转换本轮重新发送且已核对哈希的原件；产物进入临时区。"""
+    from layers import chat_originals
     target = str(target_format or "").lower()
     record = attachments.get_attachment(session_id, attachment_id)
-    if record is None or not record.file_id:
+    if record is None:
         return ConvertDocumentResult(success=False, error_type="attachment_not_found")
-    source = files_store.get_file(record.file_id)
-    if source is None or source.source_type != "attachment":
-        return ConvertDocumentResult(success=False, error_type="file_not_found")
-    if source.owner_user_id != owner_user_id:
+    if not auth.verify_session_owner(session_id, owner_user_id):
         return ConvertDocumentResult(success=False, error_type="forbidden")
-    if source.session_id != session_id:
-        return ConvertDocumentResult(success=False, error_type="session_mismatch")
+    source_path = chat_originals.get(session_id, attachment_id, owner_user_id)
+    if source_path is None:
+        return ConvertDocumentResult(success=False, error_type="original_cleared",
+                                     detail=chat_originals.ORIGINAL_CLEARED_MESSAGE)
+    source = files_store.UserFile(file_id=attachment_id, owner_user_id=owner_user_id,
+        source_type="attachment", original_filename=record.filename,
+        format=os.path.splitext(record.filename)[1].lstrip("."), size_bytes=record.size_bytes,
+        created_at=record.created_at.isoformat(), session_id=session_id)
     error_type, detail = conversion_availability(source.format, target, FileEntry.AGENT_CHAT)
     if error_type:
         return ConvertDocumentResult(
             success=False,
             error_type=error_type, detail=detail,
         )
-    source_path = files_store.get_file_path(source)
-    if source_path is None:
-        return ConvertDocumentResult(success=False, error_type="file_not_found")
 
     processing_task_id = str(uuid.uuid4())
     budget_seconds = max(
@@ -1519,6 +1520,7 @@ def _generate_file_impl(content, session_id, filename_hint, output_format, owner
                 source_task_id=processing_task_id,
                 generation_engine="native_text",
                 generation_engine_version="1",
+                trace_text=text,
             )
         except Exception as exc:
             workspace.cleanup()
@@ -1570,6 +1572,7 @@ def _generate_file_impl(content, session_id, filename_hint, output_format, owner
                 source_task_id=processing_task_id,
                 generation_engine="libreoffice",
                 generation_engine_version="1",
+                trace_text=text,
             )
             _log_generated_file(
                 session_id,
@@ -1618,6 +1621,7 @@ def _generate_file_impl(content, session_id, filename_hint, output_format, owner
             source_task_id=processing_task_id,
             generation_engine="native_text",
             generation_engine_version="1",
+            trace_text=text,
         )
     except Exception as exc:
         workspace.cleanup()
@@ -2213,7 +2217,9 @@ def conversation_history_messages(
         if str(item).strip()
     )
     return [
-        {"role": item["role"], "content": item["content"]}
+        {"role": item["role"], "content": ("<untrusted_file_description>\n" + item["content"]
+             + "\n</untrusted_file_description>" if item.get("message_type") == memory.MESSAGE_TYPE_FILE_TRACE
+             else item["content"])}
         for item in history
         if item.get("role") in {"user", "assistant"}
         and item.get("content")

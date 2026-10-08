@@ -43,6 +43,8 @@ class UserFile(BaseModel):
     source_task_id: Optional[str] = None
     generation_engine: Optional[str] = None
     generation_engine_version: Optional[str] = None
+    temporary: bool = False
+    expires_at_epoch: float = 0
 
 
 def _database_path() -> str:
@@ -139,7 +141,7 @@ def _file_path(record: UserFile) -> str:
 
 
 @session_records.serialized_change
-def save_file(
+def _save_legacy_file(
     owner_user_id: str,
     source_type: str,
     original_filename: str,
@@ -226,7 +228,7 @@ def save_file(
             raise
 
 
-def list_files(owner_user_id: str) -> List[UserFile]:
+def _list_legacy_files(owner_user_id: str) -> List[UserFile]:
     with _files_lock, _connect() as conn:
         rows = conn.execute(
             "SELECT * FROM user_files WHERE owner_user_id = ? "
@@ -236,7 +238,7 @@ def list_files(owner_user_id: str) -> List[UserFile]:
     return [UserFile(**dict(row)) for row in rows]
 
 
-def get_file(file_id: str) -> Optional[UserFile]:
+def _get_legacy_file(file_id: str) -> Optional[UserFile]:
     try:
         normalized = str(uuid.UUID(str(file_id or "")))
     except (ValueError, TypeError, AttributeError):
@@ -249,14 +251,14 @@ def get_file(file_id: str) -> Optional[UserFile]:
     return UserFile(**dict(row)) if row else None
 
 
-def get_file_path(record: UserFile) -> Optional[str]:
+def _get_legacy_file_path(record: UserFile) -> Optional[str]:
     path = _file_path(record)
     return path if os.path.isfile(path) else None
 
 
-def delete_file(file_id: str, requester_user_id: str) -> bool:
+def _delete_legacy_file(file_id: str, requester_user_id: str) -> bool:
     with _files_lock:
-        record = get_file(file_id)
+        record = _get_legacy_file(file_id)
         if record is None or record.owner_user_id != requester_user_id:
             return False
         path = _file_path(record)
@@ -286,6 +288,63 @@ def delete_file(file_id: str, requester_user_id: str) -> bool:
                     pass
             return False
         return True
+
+
+@session_records.serialized_change
+def save_file(owner_user_id, source_type, original_filename, file_bytes_or_path, format,
+              session_id=None, organization_id=None, source_task_id=None,
+              generation_engine=None, generation_engine_version=None, trace_text=""):
+    """新文件只保存到临时区；旧永久记录留待部署方另行处理。"""
+    from layers import auth, temporary_files
+    from layers import llm_provider
+    llm_provider.check_request_cancelled("file_delivery")
+    if session_id:
+        auth.ensure_session_writer(session_id, owner_user_id)
+    if not _SAFE_COMPONENT.fullmatch(str(owner_user_id or "")) or source_type not in _SOURCE_TYPES:
+        raise ValueError("invalid_owner_or_source")
+    fmt = _normalize_format(format)
+    record = UserFile(file_id=str(uuid.uuid4()), owner_user_id=owner_user_id,
+        source_type=source_type, original_filename=_sanitize_filename(original_filename, fmt),
+        format=fmt, size_bytes=0, created_at=datetime.now(timezone.utc).isoformat(),
+        session_id=session_id, organization_id=organization_id, source_task_id=source_task_id,
+        generation_engine=generation_engine, generation_engine_version=generation_engine_version)
+    file_id = temporary_files.save(record, file_bytes_or_path)
+    temporary_files.register_request_product(record)
+    try:
+        llm_provider.check_request_cancelled("file_delivery")
+    except BaseException:
+        temporary_files.delete(file_id, owner_user_id)
+        raise
+    if session_id and source_type != "attachment":
+        from layers import file_traces
+        try:
+            file_traces.save(session_id, record.original_filename, fmt, record.size_bytes,
+                operation="转换" if source_type == "converted" else "生成", owner=owner_user_id,
+                agent_answer=trace_text)
+        except BaseException:
+            temporary_files.delete(file_id, owner_user_id)
+            raise
+    return file_id
+
+
+def list_files(owner_user_id):
+    from layers import temporary_files
+    return temporary_files.list_for(owner_user_id)
+
+
+def get_file(file_id):
+    from layers import temporary_files
+    return temporary_files.get(file_id)
+
+
+def get_file_path(record):
+    from layers import temporary_files
+    return temporary_files.path_for(record)
+
+
+def delete_file(file_id, requester_user_id):
+    from layers import temporary_files
+    return temporary_files.delete(file_id, requester_user_id)
 
 
 init_db()
