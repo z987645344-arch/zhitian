@@ -207,7 +207,12 @@ RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 # 只需27秒，代价是把大量正常文档挡在门外；6.09那个最坏值来自人工构造的极端
 # 重复文本，真实文档罕见。
 # 注意：文件大小只是切片数的弱代理，同为1MB的文件切片数可相差约9倍。
-MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "5"))
+# 50MiB为所有入口的文件体积上限；不等于解除页数、像素、正文和切片数限制。
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))
+# 48MiB图片Office隔离HTTP实测：上传入库API增量316MiB，转换服务峰值664MiB。
+# 大上传先限为一个，避免多份原件/解析spool同时占用tmpfs；小文件仍沿用原闸门。
+LARGE_UPLOAD_THRESHOLD_MB = max(1, int(os.getenv("LARGE_UPLOAD_THRESHOLD_MB", "10")))
+MAX_CONCURRENT_LARGE_UPLOADS = max(1, int(os.getenv("MAX_CONCURRENT_LARGE_UPLOADS", "1")))
 # F37：切片数上限——比体积上限精确，因为耗时与切片数线性而与体积只是弱相关。
 # 解析与切分合计不到0.3秒，因此"先切分、再按切片数拒绝"的代价可以忽略，
 # 却能挡住体积达标但切片畸多的极端文档（实测最坏密度6.09切片/KB，1MB可达6,236切片）。
@@ -273,7 +278,7 @@ if MAX_USER_INFLIGHT_HEAVY_TASKS >= MAX_CONCURRENT_HEAVY_TASKS:
 # 等待期间任务状态保持pending（TASK_STATUSES里的pending本就是这个位置）。
 MAX_CONCURRENT_INGEST_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_INGEST_TASKS", "2")))
 # 队列深度上限。排队的是已切好的chunks（List[str]，在内存里，单文档最多
-# MAX_DOCUMENT_CHUNKS=2000片、源文件最大MAX_UPLOAD_SIZE_MB=5MB），不是文件引用。
+# MAX_DOCUMENT_CHUNKS=2000片、源文件最大MAX_UPLOAD_SIZE_MB=50MB），不是文件引用。
 # 按最坏情形每个排队项约10~15MB常驻，深度8约合80~120MB——在4核4G上与嵌入模型
 # 共存尚可；再深就是拿RAM换吞吐，而RAM正是嵌入模型要抢的东西。
 # 超过深度必须在返回accepted**之前**拒绝，不许先收下再异步失败。

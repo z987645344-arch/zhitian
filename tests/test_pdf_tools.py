@@ -156,7 +156,7 @@ def test_pdf_split_rejects_page_limit_invalid_and_encrypted_files(
         files={"file": ("book.pdf", _pdf_bytes(2), "application/pdf")},
     )
     assert too_many.status_code == 400
-    assert "页数" in too_many.json()["detail"]
+    assert too_many.json()["detail"] == "PDF超过1页，请拆分后上传"
 
     invalid = client.post(
         "/tools/pdf/split",

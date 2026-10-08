@@ -41,6 +41,7 @@ from layers.file_processing.input_guard import (
     reject_encrypted, EncryptedFileError, ENCRYPTED_FILE_MESSAGE,
 )
 from layers import temporary_files, chat_originals, file_traces
+from layers.upload_limits import UploadAdmissionMiddleware
 from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
@@ -523,6 +524,7 @@ def _heavy_task_rate_limit(key: str) -> str:
 limiter = Limiter(key_func=_rate_limit_key)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(UploadAdmissionMiddleware)
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -2253,6 +2255,7 @@ async def upload_chat_attachment(
                     success=False,
                     original_filename=filename,
                     error_type=conversion.error_type or "conversion_failed",
+                    detail=conversion.error_msg or "文件转换失败，请检查格式或拆分后上传",
                 ).model_dump(),
             )
         if conversion is not None:
@@ -2264,6 +2267,7 @@ async def upload_chat_attachment(
                     success=False,
                     original_filename=filename,
                     error_type="parse_failed",
+                    detail=_document_failure_detail(text),
                 ).model_dump(),
             )
         text = text.strip()
@@ -2274,6 +2278,7 @@ async def upload_chat_attachment(
                     success=False,
                     original_filename=filename,
                     error_type="empty_content",
+                    detail=_empty_document_detail(suffix),
                 ).model_dump(),
             )
         if len(text) > config.CHAT_ATTACHMENT_MAX_CHARS:
@@ -2284,6 +2289,7 @@ async def upload_chat_attachment(
                     original_filename=filename,
                     char_count=len(text),
                     error_type="content_too_large",
+                    detail=f"提取的文字超过{config.CHAT_ATTACHMENT_MAX_CHARS}字，请拆分后上传",
                 ).model_dump(),
             )
 
@@ -2323,11 +2329,6 @@ async def upload_chat_attachment(
                 detail=exc.message,
             ).model_dump(),
         )
-    except temporary_files.TemporaryQuotaExceeded as exc:
-        return JSONResponse(status_code=422, content=ToolConversionResponse(
-            success=False, converted_from_format=source_format,
-            converted_to_format=target_format, error_type="temporary_space_full",
-            detail=str(exc)).model_dump())
     except HTTPException as exc:
         error_type = ("encrypted_file" if exc.detail == ENCRYPTED_FILE_MESSAGE else
                       "file_too_large" if exc.status_code == 413 else "invalid_file")
@@ -2337,7 +2338,7 @@ async def upload_chat_attachment(
                 success=False,
                 original_filename=filename,
                 error_type=error_type,
-                detail=exc.detail if error_type == "encrypted_file" else "",
+                detail=str(exc.detail) if error_type in {"encrypted_file", "file_too_large"} else "文件格式无效或内容损坏",
             ).model_dump(),
         )
     finally:
@@ -2477,9 +2478,14 @@ async def convert_tool_file(
                 converted_from_format=source_format,
                 converted_to_format=target_format,
                 error_type=error_type,
-                detail=exc.detail if error_type == "encrypted_file" else "",
+                detail=str(exc.detail) if error_type in {"encrypted_file", "file_too_large"} else "文件格式无效或内容损坏",
             ).model_dump(),
         )
+    except temporary_files.TemporaryQuotaExceeded as exc:
+        return JSONResponse(status_code=422, content=ToolConversionResponse(
+            success=False, converted_from_format=source_format,
+            converted_to_format=target_format, error_type="temporary_space_full",
+            detail=str(exc)).model_dump())
     except Exception as exc:
         logger.error(
             "工具箱转换异常：user_id_len=%s source_format=%s target_format=%s error_type=%s",
@@ -2503,11 +2509,26 @@ async def convert_tool_file(
         _remove_temp_upload(temp_path)
 
 
+def _document_failure_detail(text: str) -> str:
+    # 只映射已知资源拒绝；不向外传递解析异常中的文件路径或内部堆栈。
+    if "too_many_pages" in text or ("PDF" in text and "页数" in text and "上限" in text):
+        return f"PDF超过{config.MAX_PDF_PROCESSING_PAGES}页，请拆分后上传"
+    if "too_many_pixels" in text or ("像素" in text and "上限" in text):
+        return f"页面或图片超过{config.MAX_IMAGE_PIXELS}像素，请拆分或缩小后上传"
+    return "文件无法解析，请检查文件是否损坏或使用受支持的格式"
+
+
+def _empty_document_detail(suffix: str) -> str:
+    return ("未提取到文字；扫描型PDF暂不支持OCR，请上传可选择文字的PDF"
+            if suffix == ".pdf" else "文档内容为空或无法提取文本")
+
+
 def _pdf_error_detail(error_type: Optional[str]) -> str:
     return {
         "encrypted_pdf": "加密PDF暂不支持处理",
         "invalid_pdf": "PDF文件损坏或无法解析",
-        "too_many_pages": "PDF页数超过拆分上限",
+        "too_many_pages": f"PDF超过{config.PDF_SPLIT_MAX_PAGES}页，请拆分后上传",
+        "too_many_pixels": f"页面或图片超过{config.MAX_IMAGE_PIXELS}像素，请拆分或缩小后上传",
         "timeout": "PDF处理超时，请稍后重试",
     }.get(error_type or "", "PDF处理失败")
 
@@ -2818,7 +2839,7 @@ async def upload_document(
             return {
                 "status": "error",
                 "source": filename,
-                "detail": text
+                "detail": _document_failure_detail(text)
             }
 
         chunks = await asyncio.to_thread(document_loader.chunk_text, text)
@@ -2827,7 +2848,7 @@ async def upload_document(
             lambda: chunk_section_paths(text, chunks, source_path=parse_path, source_name=filename),
             deadline=processing_deadline, progress_callback=file_progress.append, http_request=request)
         if not chunks:
-            raise HTTPException(status_code=400, detail="文档内容为空或无法提取文本")
+            raise HTTPException(status_code=400, detail=_empty_document_detail(os.path.splitext(parse_path)[1].lower()))
         # F37：切分成本可忽略，向量化才是大头，因此在向量化之前按切片数拒绝。
         # 体积达标但内容极密的文档只有到这一步才拦得住。
         if len(chunks) > config.MAX_DOCUMENT_CHUNKS:

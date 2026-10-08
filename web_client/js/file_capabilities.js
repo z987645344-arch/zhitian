@@ -2,7 +2,7 @@
 const ZhitianFileCapabilities = (() => {
   const OFFICE = ['doc', 'xls', 'xlsx', 'ppt', 'pptx'];
   const NATIVE = ['txt', 'md', 'pdf', 'docx'];
-  const fallback = () => ({ officeReady: true, maxSizeMb: 5 });
+  const fallback = () => ({ officeReady: true, maxSizeMb: 50 });
 
   function parse(payload) {
     const engine = payload?.engines?.find(item => item.engine_name === 'libreoffice');

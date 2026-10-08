@@ -131,8 +131,10 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
                     if result["status"] == "cancelled":
                         raise FileTaskCancelled("remote_cancelled")
                     if result["status"] == "failed":
-                        return converter._failed("转换服务处理失败", Path(source_path).suffix,
-                            target_format, result.get("reason") or "process_failed")
+                        reason = result.get("reason") or "process_failed"
+                        message = (f"转换产物为空或超过{config.MAX_CONVERSION_FILE_SIZE_MB}MB，请拆分后重试"
+                                   if reason == "output_size_or_missing" else "转换服务处理失败")
+                        return converter._failed(message, Path(source_path).suffix, target_format, reason)
                     if result["status"] == "success":
                         break
                     stop.wait(min(0.05, max(0, scope.deadline - time.monotonic())))

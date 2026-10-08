@@ -7,9 +7,10 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Settings:
     shared_key: str
-    input_limit: int = 25 * 1024 * 1024
-    output_limit: int = 25 * 1024 * 1024
-    queue_limit: int = 2
+    input_limit: int = 50 * 1024 * 1024
+    output_limit: int = 50 * 1024 * 1024
+    # 50MiB输入/输出时不囤积额外原件；串行忙时明确拒绝，客户端可稍后重试。
+    queue_limit: int = 0
     timeout_seconds: float = 30
     retention_seconds: float = 60
     soffice_path: str = "/usr/bin/soffice"

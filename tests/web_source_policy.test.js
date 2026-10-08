@@ -189,11 +189,11 @@ test('就绪时保留格式提示并读取后端大小；pending/failed明确禁
   assert.match(lib.hint(lib.parse(payload('failed'))), /暂时无法处理.*txt、md、pdf、docx 不受影响/);
 });
 
-test('大小检查采用服务器配置，边界允许；接口失败的静态回退仍为5MB', () => {
+test('大小检查采用服务器配置，边界允许；接口失败的静态回退为50MB', () => {
   const lib = library(), state = lib.parse(payload('ready', 2));
   assert.equal(lib.validate({ name: 'a.txt', size: 2 * 1024 * 1024 }, state), '');
   assert.match(lib.validate({ name: 'a.txt', size: 2 * 1024 * 1024 + 1 }, state), /2MB 的上限/);
-  assert.match(lib.hint(lib.fallback()), /常见 Office 格式.*5MB/);
+  assert.match(lib.hint(lib.fallback()), /常见 Office 格式.*50MB/);
   assert.throws(() => lib.parse({ engines: [] }));
 });
 
