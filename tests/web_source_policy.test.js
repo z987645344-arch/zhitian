@@ -266,7 +266,7 @@ test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数�
   assert.equal(requests[0].url, '/api/file-processing/engines');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-token');
   for (const page of ['chat', 'login', 'register', 'settings']) {
-    assert.match(read(page + '.html'), /api\.js\?v=temporary-files-20261008/);
+    assert.match(read(page + '.html'), /api\.js\?v=text-edit-20261009/);
   }
   assert.ok(read('chat.html').indexOf('file_capabilities.js') < read('chat.html').indexOf('js/chat.js'));
   assert.ok(read('chat.html').indexOf('temporary-files.js') < read('chat.html').indexOf('js/chat.js'));

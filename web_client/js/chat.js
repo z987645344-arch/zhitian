@@ -23,6 +23,7 @@
     },
   };
   const TOOL_LABELS = {
+    file_editing: '文件编辑与校验',
     web_search: '联网检索',
     knowledge_search: '知识库检索',
     document_list: '文件清单',
@@ -39,6 +40,8 @@
     skipped: '已跳过',
   };
   const REASON_LABELS = {
+    text_edit_failed: '文件编辑未完成',
+    text_edit_partial: '部分修改未完成，请核对修改对照',
     fast_general_answer_failed: '通用知识备用回答未能生成',
     web_low_relevance: '联网结果相关性不足',
     web_provider_failed: '搜索服务不可用',
@@ -330,7 +333,7 @@
     const reuse = document.createElement('button');
     reuse.type = 'button';
     reuse.className = 'secondary';
-    reuse.textContent = '继续处理';
+    reuse.textContent = (file.edit_changes || []).length ? '继续编辑' : '继续处理';
     reuse.addEventListener('click', async () => {
       const product = browserFiles.getProduct(file.file_id);
       if (!product) { hint.textContent = ZhitianTemporaryFiles.ORIGINAL_CLEARED; return; }
@@ -340,11 +343,13 @@
         const data = await API.uploadAttachment(ensureSessionId(), original);
         if (!data.success) throw new Error(data.detail || '文件上传失败');
         browserFiles.original(data.attachment_id, original);
+        if ((file.edit_changes || []).length) data.edit = true;
         pendingAttachments.push(data);
         renderChips();
       } catch (error) { hint.textContent = briefError(error); }
     });
     card.append(icon, copy, button, reuse);
+    if ((file.edit_changes || []).length) card.appendChild(ZhitianTemporaryFiles.renderComparison(document, file));
     bubble.appendChild(card);
     scrollToBottom();
   }
@@ -640,6 +645,18 @@
         renderChips();
       });
       chip.append(label, remove);
+      if (/\.(txt|md)$/i.test(item.original_filename || '')) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = item.edit ? '编辑模式 ✓' : '编辑此文件';
+        edit.setAttribute('aria-pressed', String(Boolean(item.edit)));
+        edit.addEventListener('click', () => {
+          item.edit = !item.edit;
+          renderChips();
+          hint.textContent = item.edit ? '请写明修改要求；只修改选中的 txt / md 文件，不检索或联网。' : '已取消编辑模式';
+        });
+        chip.appendChild(edit);
+      }
       chips.appendChild(chip);
     });
   }
@@ -724,7 +741,8 @@
     const targetSessionId = ensureSessionId();
     const requestMode = mode;
     const resend = ZhitianTemporaryFiles.planResend(text,
-      pendingAttachments.map((item) => item.attachment_id), browserFiles, hasFileHistory);
+      pendingAttachments.map((item) => item.attachment_id), browserFiles, hasFileHistory,
+      pendingAttachments.some(item => item.edit) ? 'edit' : '');
     if (resend.error) {
       hint.textContent = resend.error;
       return;
@@ -789,7 +807,7 @@
           streamFailed = true;
           renderInterrupted(bubble, body);
         },
-      }, originals);
+      }, originals, resend.fileTaskType || '');
     } catch (error) {
       bubble.classList.remove('pending');
       bubble.classList.add('failed');

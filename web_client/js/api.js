@@ -233,8 +233,9 @@ const API = (() => {
     //   {"type": "tool_status", ...} 工具开始/结束（不含参数与正文）
     //   {"type": "request_status", ...} 完整成功或结构化降级终态
     //   {"error": "..."} 服务端异常
-    async chatStream(sessionId, message, mode, attachmentIds, handlers, originals = []) {
+    async chatStream(sessionId, message, mode, attachmentIds, handlers, originals = [], fileTaskType = '') {
       const payload = { session_id: sessionId, message, mode, attachment_ids: attachmentIds || [] };
+      if (fileTaskType === 'edit') payload.file_task_type = 'edit';
       let body = JSON.stringify(payload);
       if (originals.length) {
         body = new FormData();
