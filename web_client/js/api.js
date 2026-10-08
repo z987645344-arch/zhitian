@@ -91,6 +91,8 @@ const API = (() => {
     logout,
     request,
 
+    getFileEngines: () => request('/file-processing/engines'),
+
     login: (username, password) => request('/auth/login', {
       method: 'POST',
       skipAuthRedirect: true,

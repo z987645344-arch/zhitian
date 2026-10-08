@@ -2586,3 +2586,10 @@
 - 控制服务使用独立INFO stderr通道，docker logs可见，不导入业务日志配置，uvicorn access log仍关闭。补充成功/失败/超时/取消四种结果、队列取消和重复收尾测试；协议与引擎就绪定向37 passed。
 - 本机隔离转换镜像真实DOCX→PDF成功，docker logs恰好一行终态：elapsed_ms=860.3、output_bytes=15034；禁网构建探针回环请求1→0，IPv4/IPv6 socket禁止、AF_UNIX允许。验证容器无业务卷、只读根、cap_drop ALL及no-new-privileges，用后停止移除。
 - 部署注意：此项需重建转换服务镜像，访问日志设置不变；未部署、未推送、不改VERSION，零付费。
+
+### 2026-10-08 网页附件能力与实际大小上限动态提示
+
+- 网页加载时异步读取文件引擎状态，选择附件时上传前再检查；LibreOffice pending/failed时明确提示并禁止doc/xls/xlsx/ppt/pptx，txt/md/pdf/docx照常处理。引擎ready时保留正常格式提示，探测失败回退原静态提示，不妨碍聊天，最终校验仍由后端负责。
+- 复用已有鉴权GET /file-processing/engines，仅追加只读max_upload_size_mb字段，取现有MAX_UPLOAD_SIZE_MB；网页提示和上传前字节检查不再固定为5MiB。只有接口异常时使用原5MiB静态回退，不增加新接口、不改后端上传参数或引擎裁决。
+- 增加5个JS回归场景：三种就绪状态、五类Office与四类原生格式、大小边界、真实选择附件路径零上传拒绝、接口失败/恢复、鉴权封装及加载缓存；测试并入CI已有执行文件，网页JS共17 passed。后端接口另锁住鉴权及实际配置值，项目3.12完整回归1498 passed。
+- 部署注意：重建API和web客户端镜像；同步四个网页的共享api.js缓存参数，新增能力提示模块与chat.js使用同一新缓存版本。App本轮不改，不改.env和VERSION；默认data前后完全一致，零付费、未推送、未部署。

@@ -154,3 +154,109 @@ test('实际详情只显示访客可理解的依据，API详细字段不显示�
   assert.ok(!chatSource.includes('`片段 #'));
   assert.match(chatSource, /onSourcePolicy\(sourceEvent\)/);
 });
+
+// 文件能力回归放在CI已执行的网页测试文件中，不遗漏新测试。
+const read = name => fs.readFileSync(path.join(__dirname, '../web_client', name), 'utf8');
+const source = read('js/file_capabilities.js');
+const chat = read('js/chat.js');
+
+function library() {
+  const context = vm.createContext({});
+  vm.runInContext(source, context);
+  return vm.runInContext('ZhitianFileCapabilities', context);
+}
+function payload(status, size = 17) {
+  return { engines: [{ engine_name: 'libreoffice', status }], max_upload_size_mb: size };
+}
+
+test('就绪时保留格式提示并读取后端大小；pending/failed明确禁用Office，不影响原生格式', () => {
+  const lib = library();
+  for (const status of ['ready', 'pending', 'failed']) {
+    const state = lib.parse(payload(status));
+    assert.match(lib.hint(state), /17MB/);
+    assert.equal(state.officeReady, status === 'ready');
+    for (const extension of ['doc', 'xls', 'xlsx', 'ppt', 'pptx']) {
+      const error = lib.validate({ name: `file.${extension.toUpperCase()}`, size: 1 }, state);
+      assert.equal(Boolean(error), status !== 'ready');
+      assert.equal(lib.accept(state).includes('.' + extension + ',' ) ||
+        lib.accept(state).endsWith('.' + extension), status === 'ready');
+    }
+    for (const extension of ['txt', 'md', 'pdf', 'docx']) {
+      assert.equal(lib.validate({ name: `file.${extension}`, size: 1 }, state), '');
+      assert.ok(lib.accept(state).includes('.' + extension));
+    }
+  }
+  assert.match(lib.hint(lib.parse(payload('failed'))), /暂时无法处理.*txt、md、pdf、docx 不受影响/);
+});
+
+test('大小检查采用服务器配置，边界允许；接口失败的静态回退仍为5MB', () => {
+  const lib = library(), state = lib.parse(payload('ready', 2));
+  assert.equal(lib.validate({ name: 'a.txt', size: 2 * 1024 * 1024 }, state), '');
+  assert.match(lib.validate({ name: 'a.txt', size: 2 * 1024 * 1024 + 1 }, state), /2MB 的上限/);
+  assert.match(lib.hint(lib.fallback()), /常见 Office 格式.*5MB/);
+  assert.throws(() => lib.parse({ engines: [] }));
+});
+
+function uploadHarness(response, file) {
+  const callbacks = {}, calls = { uploads: 0, capabilities: 0, sessions: 0 };
+  const sandbox = vm.createContext({ ZhitianFileCapabilities: library(),
+    fileCapabilities: library().fallback(), hint: {}, attachButton: { disabled: false },
+    attachmentInput: { files: [file], addEventListener: (name, handler) => callbacks[name] = handler },
+    sending: false, loadingSession: false, pendingAttachments: [], renderChips() {},
+    ensureSessionId: () => { calls.sessions++; return 'session'; },
+    briefError: error => error.message,
+    API: {
+      getFileEngines: async () => { calls.capabilities++; if (response instanceof Error) throw response; return response; },
+      uploadAttachment: async () => { calls.uploads++; return { success: true, char_count: 1, original_filename: 'fixture' }; },
+    } });
+  vm.runInContext(chat.slice(chat.indexOf('  async function refreshFileCapabilities('),
+    chat.indexOf("  input.addEventListener('keydown'")), sandbox);
+  return { sandbox, calls, change: callbacks.change };
+}
+
+test('真实选择附件路径在上传前重检；不可用Office零上传，原生文件仍上传', async () => {
+  for (const ext of ['doc', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'pdf', 'docx']) {
+    const { calls, sandbox, change } = uploadHarness(payload('failed'), { name: 'file.' + ext, size: 1 });
+    await change();
+    assert.equal(calls.capabilities, 1);
+    const native = ['txt', 'md', 'pdf', 'docx'].includes(ext);
+    assert.equal(calls.uploads, native ? 1 : 0);
+    assert.equal(calls.sessions, native ? 1 : 0);
+    assert.equal(sandbox.attachButton.disabled, false);
+    if (!native) assert.match(sandbox.hint.textContent, /暂时无法处理/);
+  }
+});
+
+test('接口失败不抛错；恢复就绪后的新一次选择可上传；超大小在上传前拒绝', async () => {
+  let harness = uploadHarness(new Error('offline'), { name: 'file.xlsx', size: 1 });
+  await harness.change();
+  assert.equal(harness.calls.uploads, 1);
+  harness = uploadHarness(payload('ready', 1), { name: 'file.txt', size: 2 * 1024 * 1024 });
+  await harness.change();
+  assert.equal(harness.calls.uploads, 0);
+  assert.match(harness.sandbox.hint.textContent, /1MB 的上限/);
+  harness = uploadHarness(payload('failed'), { name: 'file.xlsx', size: 1 });
+  await harness.change();
+  harness.sandbox.attachmentInput.files = [{ name: 'file.xlsx', size: 1 }];
+  harness.sandbox.API.getFileEngines = async () => payload('ready');
+  await harness.change();
+  assert.equal(harness.calls.uploads, 1);
+});
+
+test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数一致，模块在chat之前', async () => {
+  assert.match(chat.slice(chat.indexOf('  async function initialize()')), /refreshFileCapabilities\(\);/);
+  const requests = [];
+  const context = vm.createContext({ window: {}, localStorage: { getItem: () => 'test-token' },
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, text: async () => JSON.stringify(payload('ready')) };
+    } });
+  vm.runInContext(read('js/api.js'), context);
+  await vm.runInContext('API', context).getFileEngines();
+  assert.equal(requests[0].url, '/api/file-processing/engines');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer test-token');
+  for (const page of ['chat', 'login', 'register', 'settings']) {
+    assert.match(read(page + '.html'), /api\.js\?v=file-capabilities-20261008/);
+  }
+  assert.ok(read('chat.html').indexOf('file_capabilities.js') < read('chat.html').indexOf('js/chat.js'));
+});

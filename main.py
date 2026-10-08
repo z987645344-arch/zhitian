@@ -1078,7 +1078,8 @@ async def file_capabilities(source_format: str, entry: FileEntry = FileEntry.APP
 
 @app.get("/file-processing/engines")
 async def file_engines(current_user: dict = Depends(get_current_user)):
-    return {"engines": [state.model_dump(mode="json") for state in get_file_processor_registry().engine_states()]}
+    return {"engines": [state.model_dump(mode="json") for state in get_file_processor_registry().engine_states()],
+            "max_upload_size_mb": config.MAX_UPLOAD_SIZE_MB}
 
 
 @app.post("/file-processing/engines/{engine_name}/recheck", status_code=202)

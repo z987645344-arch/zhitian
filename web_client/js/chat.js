@@ -9,7 +9,7 @@
   const SESSION_KEY = 'zt_web_session_id';
   const MODE_KEY = 'zt_web_chat_mode';
   const LEGACY_SESSION_KEY = 'zt_web_session_id';
-  const MAX_ATTACHMENT_MB = 5;
+  let fileCapabilities = ZhitianFileCapabilities.fallback();
   const MODE_COPY = {
     fast: {
       label: '快速模式',
@@ -524,7 +524,7 @@
     showWelcome();
     renderSessions();
     closeSidebar();
-    hint.textContent = '支持 txt / md / pdf / docx 及常见 Office 格式，单个文件不超过 5MB。';
+    hint.textContent = ZhitianFileCapabilities.hint(fileCapabilities);
     input.focus();
   }
 
@@ -593,21 +593,35 @@
 
   attachButton.addEventListener('click', () => attachmentInput.click());
 
+  async function refreshFileCapabilities() {
+    try {
+      fileCapabilities = ZhitianFileCapabilities.parse(await API.getFileEngines());
+    } catch (_error) {
+      // 能力接口失败不妨碍聊天；由上传接口继续执行最终校验。
+      fileCapabilities = ZhitianFileCapabilities.fallback();
+    }
+    attachmentInput.accept = ZhitianFileCapabilities.accept(fileCapabilities);
+    hint.textContent = ZhitianFileCapabilities.hint(fileCapabilities);
+    return fileCapabilities;
+  }
+
   attachmentInput.addEventListener('change', async () => {
     const file = attachmentInput.files && attachmentInput.files[0];
     attachmentInput.value = '';
     if (!file) return;
-    if (file.size > MAX_ATTACHMENT_MB * 1024 * 1024) {
-      const shown = (file.size / 1024 / 1024).toFixed(1);
-      hint.textContent = `这个文件 ${shown}MB，超过了 ${MAX_ATTACHMENT_MB}MB 的上限，换个小一点的吧`;
-      return;
-    }
-    const targetSessionId = ensureSessionId();
-    hint.textContent = file.size > 512 * 1024
-      ? `正在上传 ${file.name}，文件较大，解析可能要等一会儿…`
-      : `正在上传 ${file.name}…`;
+    if (attachButton.disabled || sending || loadingSession) return;
     attachButton.disabled = true;
     try {
+      const state = await refreshFileCapabilities();
+      const error = ZhitianFileCapabilities.validate(file, state);
+      if (error) {
+        hint.textContent = error;
+        return;
+      }
+      const targetSessionId = ensureSessionId();
+      hint.textContent = file.size > 512 * 1024
+        ? `正在上传 ${file.name}，文件较大，解析可能要等一会儿…`
+        : `正在上传 ${file.name}…`;
       const data = await API.uploadAttachment(targetSessionId, file);
       if (!data.success) {
         hint.textContent = `上传失败：${data.detail || data.error_type || '未知原因'}`;
@@ -716,6 +730,7 @@
     updateModeUi();
     setInteractionState();
     showWelcome();
+    refreshFileCapabilities(); // 不让能力探测阻塞会话加载与聊天。
     await refreshSessions();
     if (!sessionId) {
       input.focus();

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import main
+import config
 from layers import converter, execution, planning
 from layers.file_processing.base import FileProcessor
 from layers.file_processing.models import (
@@ -234,6 +235,17 @@ def test_capability_api_available_unavailable_and_auth(client, auth_headers, ent
     unsupported = client.get("/file-processing/capabilities?source_format=encrypted-media", headers=headers).json()
     assert unsupported["available_task_types"] == [] and unsupported["reason"] == "unsupported_format"
     assert client.get("/file-processing/engines", headers=headers).status_code == 200
+
+
+def test_engine_api_exposes_actual_upload_limit_without_changing_engine_states(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(config, "MAX_UPLOAD_SIZE_MB", 17)
+    headers, _ = auth_headers("customer")
+    response = client.get("/file-processing/engines", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["max_upload_size_mb"] == 17
+    assert response.json()["engines"] == [state.model_dump(mode="json")
+        for state in get_file_processor_registry().engine_states()]
+    assert client.get("/file-processing/engines").status_code in (401, 403)
 
 
 def test_recheck_requires_developer_and_returns_state(client, auth_headers, monkeypatch):
