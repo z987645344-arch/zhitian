@@ -45,35 +45,80 @@ def test_timeout_kills_process_tree_before_releasing_resources(root):
 
 
 @pytest.mark.parametrize("request_disconnect", [False, True])
-def test_cancel_kills_running_process_and_does_not_become_timeout(root, request_disconnect):
+def test_cancel_kills_running_process_and_does_not_become_timeout(root, request_disconnect, record_property):
     workspace = runner.TaskWorkspace()
-    entered = workspace.path / "entered"
     control = llm_provider.StreamRegistry()
     cancellation = control.cancelled if request_disconnect else threading.Event()
     errors = []
     def run():
         try:
             with runner.task_scope(10, cancellation=cancellation) as scope:
-                runner.run_process(_command("from pathlib import Path; import time; Path(%r).touch(); time.sleep(60)"
-                                            % str(entered)), workspace, scope)
+                runner.run_process(_command("import time; time.sleep(60)"), workspace, scope)
         except BaseException as exc:
             errors.append(exc)
     thread = threading.Thread(target=run)
     thread.start()
-    deadline = time.monotonic() + 3
-    while not entered.exists() and time.monotonic() < deadline:
-        time.sleep(.01)
-    assert entered.exists()
-    pid = next(iter(workspace.processes)).pid
-    if request_disconnect:
-        control.close_all()
-    else:
+    try:
+        deadline = time.monotonic() + 3
+        # Windows Job恢复运行早于register；子进程写文件不能证明已经登记。
+        # 等待被测前置条件本身，保留原3秒准备上限和1秒取消断言。
+        while not workspace.processes and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert workspace.processes
+        pid = next(iter(workspace.processes)).pid
+        cancel_started = time.perf_counter()
+        if request_disconnect:
+            control.close_all()
+        else:
+            cancellation.set()
+        thread.join(1)
+        record_property("cancellation_seconds", time.perf_counter() - cancel_started)
+        assert not thread.is_alive()
+        assert len(errors) == 1 and isinstance(errors[0], runner.FileTaskCancelled)
+        assert runner.process_identity(pid) is None
+    finally:
+        # 断言失败也发出取消并回收本测试工作区，不掩盖原断言失败。
         cancellation.set()
-    thread.join(1)
-    assert not thread.is_alive()
-    assert len(errors) == 1 and isinstance(errors[0], runner.FileTaskCancelled)
-    assert runner.process_identity(pid) is None
-    workspace.cleanup()
+        if thread.is_alive():
+            thread.join(1)
+        assert workspace.cleanup()
+        assert not workspace.path.exists()
+
+
+@pytest.mark.parametrize("request_disconnect", [False, True])
+def test_cancel_between_popen_and_registration_still_cleans_process(root, monkeypatch, request_disconnect, record_property):
+    workspace = runner.TaskWorkspace()
+    control = llm_provider.StreamRegistry()
+    cancellation = control.cancelled if request_disconnect else threading.Event()
+    original_register = workspace.register
+    observed = []
+    cancel_started = []
+
+    def cancel_before_registration(process):
+        # 此时Popen已完成，Windows Job也已恢复运行，但尚未登记。
+        assert not workspace.processes
+        assert process.poll() is None
+        observed.append(process)
+        cancel_started.append(time.perf_counter())
+        if request_disconnect:
+            control.close_all()
+        else:
+            cancellation.set()
+        original_register(process)
+
+    monkeypatch.setattr(workspace, "register", cancel_before_registration)
+    try:
+        with pytest.raises(runner.FileTaskCancelled):
+            with runner.task_scope(10, cancellation=cancellation) as scope:
+                runner.run_process(_command("import time; time.sleep(60)"), workspace, scope)
+        record_property("cancellation_seconds", time.perf_counter() - cancel_started[0])
+        assert len(observed) == 1
+        assert observed[0].poll() is not None
+        assert runner.process_identity(observed[0].pid) is None
+        assert workspace.processes == {}
+    finally:
+        assert workspace.cleanup()
+        assert not workspace.path.exists()
 
 
 def test_lock_wait_counts_towards_total_budget(root):
