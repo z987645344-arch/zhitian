@@ -2781,7 +2781,7 @@
 - 新增robots.txt，仅禁止GPTBot、CCBot、Google-Extended、ClaudeBot、anthropic-ai、Bytespider、Applebot-Extended、meta-externalagent，不改变其他爬虫规则；不含Sitemap或域名。web镜像显式复制该文件，隔离容器直接请求返回200，部署反向代理现有规则无需调整。
 - 验证：项目Python 3.12的run_tests.bat -q为1679 passed、5 deselected；网页JS 33项通过。默认data的16个文件大小、修改时间和SHA-256前后一致。部署本项需重建web镜像，不改VERSION、配置或第三方字体许可证。
 
-## 未发布
+## 2026-10-09 存档 v4.23 —— 版本升（x.Y）：附件复读（用户可感知的新能力，回滚无需手动处理）
 
 ### 2026-10-09 同一页面内按需复读附件
 
