@@ -155,6 +155,19 @@ test('实际详情只显示访客可理解的依据，API详细字段不显示�
   assert.match(chatSource, /onSourcePolicy\(sourceEvent\)/);
 });
 
+test('附件依据使用supplied_context标签', () => {
+  const start = chatSource.indexOf('  function renderSourcePolicy(');
+  const end = chatSource.indexOf('  function renderRequestStatus(', start);
+  const detail = { textContent: '' };
+  const row = { dataset: { executionKey: 'source_policy-source_policy' },
+    querySelector: key => key === '.execution-name' ? { textContent: '' } : detail };
+  const sandbox = vm.createContext({ renderToolStatus: () => {}, scrollToBottom: () => {} });
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  vm.runInContext('renderSourcePolicy', sandbox)({ querySelectorAll: () => [row] },
+    { answer_source: 'supplied_context' });
+  assert.equal(detail.textContent, '依据：本轮附件资料');
+});
+
 // 文件能力回归放在CI已执行的网页测试文件中，不遗漏新测试。
 const read = name => fs.readFileSync(path.join(__dirname, '../web_client', name), 'utf8');
 const source = read('js/file_capabilities.js');

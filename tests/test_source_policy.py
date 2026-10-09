@@ -656,8 +656,7 @@ def test_fast_attachment_empty_retrieval_keeps_existing_path(first_content, monk
     monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
     replies = iter([
         response(classification=classified("internal"), content=first_content),
-        {"choices": [{"message": {"content":
-            '{"evidence_sufficient":false,"used_candidate_ids":[],"reason":"miss:没有相关资料"}'}}]},
+        {"choices": [{"message": {"content": "根据附件生成的回答"}}]},
     ])
     no_external[1].side_effect = lambda *_a, **_kw: next(replies)
     monkeypatch.setattr(planning.mcp_client, "call_tool", Mock(return_value=execution.ToolResult(
@@ -666,10 +665,11 @@ def test_fast_attachment_empty_retrieval_keeps_existing_path(first_content, monk
 
     result = planning._run_fast_state(request)
 
-    expected_stages = ["fast_tool_selection"] if first_content else ["fast_tool_selection", "fast_evidence_filter"]
+    expected_stages = ["fast_tool_selection"] if first_content else ["fast_tool_selection", "fast_result_generation"]
     assert [c.kwargs["stage"] for c in no_external[1].call_args_list] == expected_stages
-    assert result["response"] == (first_content or policy.REFUSAL)
-    assert result["evidence_state"] == ("hit" if first_content else "miss")
+    assert result["response"] == (first_content or "根据附件生成的回答")
+    assert result["evidence_state"] == "hit"
+    assert result["answer_source"] == "supplied_context"
     no_external[0].assert_not_called()
 
 

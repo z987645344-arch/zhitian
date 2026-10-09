@@ -1090,15 +1090,17 @@ def _search_documents(
     citations = [Citation(source=item.source, doc_id=item.doc_id, chunk_index=item.chunk_index,
                           score=item.score) for item in document_answer_context.candidates]
     if generate_answer and context:
+        prepare_document_answer_context(document_answer_context, _execution_state)
+        citations = document_answer_citations(document_answer_context)
         context_result = _answer_from_supplied_context(
             query,
-            context,
+            context + ["知识库资料：\n" + _format_document_tool_context(
+                [item.model_dump() for item in document_answer_context.candidates])],
             tier,
             timeout=timeout,
             _execution_state=_execution_state,
         )
         answer = context_result.data
-        citations = context_result.citations
     elif generate_answer and not defer_document_answer:
         prepare_document_answer_context(document_answer_context, _execution_state)
         citations = document_answer_citations(document_answer_context)
@@ -1159,6 +1161,7 @@ def _answer_from_supplied_context(
     timeout: Optional[float] = None,
     _execution_state: Optional[dict] = None,
 ) -> ToolResult:
+    source_policy.record_source(_execution_state, "supplied_context", "supplied_context")
     system_prompt = (
         "请只根据本轮提供的附件或上下文回答用户问题。不得编造上下文中没有的信息；"
         "如果无法回答，明确说明依据不足。"
@@ -2139,7 +2142,7 @@ def _llm_chat(
         return iter([answer]) if stream else answer
     if _execution_state is not None and _execution_state.get("attachment_context") and not search_results:
         source_policy.set_evidence(_execution_state, "hit")
-        source_policy.record_source(_execution_state, "knowledge", "supplied_context")
+        source_policy.record_source(_execution_state, "supplied_context", "supplied_context")
         system_prompt = (
             "只根据本轮附件和用户对话事实回答，部分缺失不得用自身知识补全。\n"
             + "\n\n".join(_execution_state["attachment_context"])
