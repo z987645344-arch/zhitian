@@ -29,7 +29,7 @@ const path = require('node:path');
 test('四个页面包含同一版权行并更新样式缓存', () => {
   for (const page of ['login', 'register', 'chat', 'settings']) {
     const html = fs.readFileSync(path.join(__dirname, `../web_client/${page}.html`), 'utf8');
-    assert.equal(html.split('© 2026 知了 · 保留所有权利。').length - 1, 1);
+    assert.equal(html.split('© 2026 知了 · 保留所有权利</footer>').length - 1, 1);
     assert.match(html, /<footer class="[^"]*copyright-line/);
     assert.match(html, /style\.css\?v=copyright-20261009/);
   }
