@@ -74,6 +74,9 @@ RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         libgomp1 \
+        # PDFium的Linux系统字体回退：未嵌入字体的中文PDF不能依赖宿主字体。
+        # Noto CJK为OFL-1.1；无需重新引入LibreOffice或fontconfig。
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt scripts/check_runtime_versions.py ./

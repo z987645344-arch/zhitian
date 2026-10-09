@@ -87,6 +87,14 @@ jobs:
             '${{ steps.image.outputs.version_tag }}' scripts/check_runtime_versions.py \
             | tee ci-reports/runtime-package-versions.txt
 
+      - name: Verify unembedded Chinese PDF rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:size=67108864,mode=1777 \
+            --entrypoint python '${{ steps.image.outputs.version_tag }}' \
+            scripts/check_pdf_chinese_rendering.py | tee ci-reports/pdf-chinese-rendering.json
+
       - name: Record image digest
         shell: bash
         run: |
