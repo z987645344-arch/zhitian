@@ -21,7 +21,7 @@ def safe_name(name, fmt):
     return re.sub(r"[^\w\u4e00-\u9fff. -]", "_", name)[:30] or "文件." + fmt
 
 
-def save(session_id, filename, fmt, size, *, operation="上传", agent_answer="", owner=None, edit_actions=()):
+def save(session_id, filename, fmt, size, *, operation="上传", agent_answer="", owner=None, edit_actions=(), attachment_id=""):
     from layers import auth
     auth.ensure_session_writer(session_id, owner)
     operation = operation if operation in _OPERATIONS else "读取"
@@ -37,7 +37,9 @@ def save(session_id, filename, fmt, size, *, operation="上传", agent_answer=""
         info["改动"] = "、".join(label for key, label in (("replace", "替换文字"),
             ("insert_after", "插入文字"), ("delete", "删除文字")) if key in edit_actions) or "未修改"
     content = PREFIX + json.dumps(info, ensure_ascii=False, separators=(",", ":"))
-    return memory.save_message(session_id, "assistant", content[:200], message_type=memory.MESSAGE_TYPE_FILE_TRACE)
+    return memory.save_message(session_id, "assistant", content[:200],
+        attachment_ids=[attachment_id] if attachment_id else None,
+        message_type=memory.MESSAGE_TYPE_FILE_TRACE)
 
 
 def begin_turn(session_id, ids, owner):
@@ -54,4 +56,4 @@ def record_read_answer(session_id, answer):
         record = attachments.get_attachment(session_id, attachment_id)
         if record is not None:
             save(session_id, record.filename, record.filename.rsplit(".", 1)[-1].lower(),
-                 record.size_bytes, operation="读取", agent_answer=answer, owner=turn[2])
+                 record.size_bytes, operation="读取", agent_answer=answer, owner=turn[2], attachment_id=attachment_id)

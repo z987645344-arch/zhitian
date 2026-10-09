@@ -21,6 +21,8 @@ class AttachmentRecord(BaseModel):
     created_at: datetime
     sha256: str = ""
     size_bytes: int = 0
+    page_id: str = ""
+    owner_user_id: str = ""
 
 
 _attachment_lock = threading.RLock()
@@ -36,6 +38,7 @@ def save_attachment(
     owner_user_id: Optional[str] = None,
     sha256: str = "",
     size_bytes: int = 0,
+    page_id: str = "",
 ) -> AttachmentRecord:
     from layers import auth
     auth.ensure_session_writer(session_id, owner_user_id)
@@ -48,6 +51,8 @@ def save_attachment(
         created_at=datetime.now(timezone.utc),
         sha256=sha256,
         size_bytes=size_bytes,
+        page_id=page_id,
+        owner_user_id=owner_user_id or "",
     )
     with _attachment_lock:
         _purge_expired_locked(session_id)
@@ -66,6 +71,46 @@ def has_session_records(session_id: str) -> bool:
     """仅检查缓存是否有记录，不取正文、不清理过期记录（保守拒绝认领）。"""
     with _attachment_lock:
         return bool(_attachments.get(session_id))
+
+
+def page_metadata(session_id: str, owner: str, page_id: str) -> list[dict]:
+    """只返回本页面的标识，不读取正文；空页面标识不授权历史复读。"""
+    if not page_id:
+        return []
+    with _attachment_lock:
+        _purge_expired_locked(session_id)
+        return [{"attachment_id": r.attachment_id, "filename": r.filename}
+                for r in _attachments.get(session_id, {}).values()
+                if r.page_id == page_id and r.owner_user_id == owner]
+
+
+def get_page_attachment(session_id: str, attachment_id: str, owner: str, page_id: str):
+    if not page_id:
+        return None
+    with _attachment_lock:
+        _purge_expired_locked(session_id)
+        record = _attachments.get(session_id, {}).get(attachment_id)
+        if record and record.page_id == page_id and record.owner_user_id == owner:
+            return record.model_copy(deep=True)
+        return None
+
+
+@session_records.serialized_change
+def clear_page(session_id: str, owner: str, page_id: str, ids: list[str], known_ids: set[str]):
+    """先验证全部标识，再删除；到期后凭同会话痕迹允许幂等清理。"""
+    with _attachment_lock:
+        records = _attachments.get(session_id, {})
+        for identifier in ids:
+            record = records.get(identifier)
+            if record is None:
+                if identifier not in known_ids:
+                    raise PermissionError("attachment scope mismatch")
+            elif record.page_id != page_id or record.owner_user_id != owner:
+                raise PermissionError("attachment scope mismatch")
+        for identifier in ids:
+            records.pop(identifier, None)
+        if not records:
+            _attachments.pop(session_id, None)
 
 
 @session_records.serialized_change

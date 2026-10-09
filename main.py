@@ -40,7 +40,7 @@ from layers.file_processing import service as file_service
 from layers.file_processing.input_guard import (
     reject_encrypted, EncryptedFileError, ENCRYPTED_FILE_MESSAGE,
 )
-from layers import temporary_files, chat_originals, file_traces
+from layers import temporary_files, chat_originals, file_traces, attachment_reread
 from layers.upload_limits import UploadAdmissionMiddleware
 from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
@@ -565,6 +565,12 @@ class ChatRequest(BaseModel):
     mode: Optional[str] = "fast"
     attachment_ids: List[str] = Field(default_factory=list)
     file_task_type: Optional[Literal["edit"]] = None
+    attachment_page_id: str = Field(default="", max_length=128)
+
+
+class AttachmentPageCleanup(BaseModel):
+    page_id: str = Field(min_length=1, max_length=128)
+    attachment_ids: List[str] = Field(default_factory=list, max_length=100)
 
 
 class ChatResponse(BaseModel):
@@ -1667,6 +1673,7 @@ async def chat(
             extra_context=attachment_context,
             owner_user_id=current_user["user_id"],
             attachment_ids=chat_request.attachment_ids,
+            **({"attachment_page_id": chat_request.attachment_page_id} if chat_request.attachment_page_id else {}),
             **({"file_task_type": "edit"} if chat_request.file_task_type == "edit" else {}),
         )
         layer_trace.extend(final_state.get("layer_trace", []))
@@ -1690,7 +1697,7 @@ async def chat(
                 assistant_message_type,
                 owner_user_id=current_user["user_id"],
             )
-        if (not chat_request.file_task_type and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+        if (not chat_request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment"}
                 and not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data):
             background_tasks.add_task(
                 llm_provider.run_with_api_key,
@@ -2100,7 +2107,19 @@ async def acknowledge_download(file_id: str, current_user: dict = Depends(get_cu
 async def clear_chat_products(session_id: str, current_user: dict = Depends(get_current_user)):
     _ensure_session_owner_or_404(session_id, current_user)
     temporary_files.clear_session(session_id, current_user["user_id"])
-    attachments.clear_session(session_id)
+    return {"status": "cleared"}
+
+
+@app.delete("/chat/{session_id}/attachments")
+async def clear_page_attachments(session_id: str, cleanup: AttachmentPageCleanup,
+                                  current_user: dict = Depends(get_current_user)):
+    _ensure_session_owner(session_id, current_user)
+    known = {r["attachment_id"] for r in attachment_reread.traces(session_id)}
+    try:
+        attachments.clear_page(session_id, current_user["user_id"], cleanup.page_id,
+                               list(dict.fromkeys(cleanup.attachment_ids)), known)
+    except PermissionError:
+        raise HTTPException(403, "无权访问该session") from None
     return {"status": "cleared"}
 
 
@@ -2202,6 +2221,7 @@ async def upload_chat_attachment(
     session_id: str = Form(...),
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user),
+    page_id: str = Form(default="", max_length=128),
 ):
     filename = _safe_upload_filename(file.filename or "")
     suffix = os.path.splitext(filename)[1].lower()
@@ -2317,9 +2337,10 @@ async def upload_chat_attachment(
             owner_user_id=current_user["user_id"],
             sha256=original_sha256,
             size_bytes=os.path.getsize(temp_path),
+            page_id=page_id,
         )
         file_traces.save(session_id, filename, suffix.lstrip("."), record.size_bytes,
-                         owner=current_user["user_id"])
+                         owner=current_user["user_id"], attachment_id=record.attachment_id)
         logger.info(
             "聊天附件解析完成：session_id_len=%s attachment_id=%s char_count=%s format=%s",
             len(session_id),
@@ -3793,6 +3814,7 @@ def _chat_stream_events(
                 extra_context=attachment_context,
                 owner_user_id=current_user["user_id"],
                 attachment_ids=attachment_ids,
+                **({"attachment_page_id": request.attachment_page_id} if request.attachment_page_id else {}),
                 tool_event_sink=tool_event_sink,
                 **({"file_task_type": "edit"} if request.file_task_type == "edit" else {}),
             )
@@ -3820,7 +3842,7 @@ def _chat_stream_events(
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                if (not request.file_task_type and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+                if (not request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment"}
                         and request_status == "success" and final_data):
                     background_tasks.add_task(
                         llm_provider.run_request_background,
@@ -3858,6 +3880,7 @@ def _chat_stream_events(
             extra_context=attachment_context,
             owner_user_id=current_user["user_id"],
             attachment_ids=attachment_ids,
+            **({"attachment_page_id": request.attachment_page_id} if request.attachment_page_id else {}),
             tool_event_sink=tool_event_sink,
         )
         reasoning = state.get("decision_reasoning")
@@ -4087,7 +4110,7 @@ def _chat_stream_events(
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data(_request_status_event(state, has_error).model_dump())
         yield _sse_data({"chunk": "[DONE]"})
-        if (state.get("intent") not in {"edit_document", "edit_attachment"}
+        if (not state.get("attachment_reread") and state.get("intent") not in {"edit_document", "edit_attachment"}
                 and not has_error and status == "success" and final_data):
             background_tasks.add_task(
                 llm_provider.run_request_background,
@@ -4242,6 +4265,7 @@ def _prepare_stream_state(
     owner_user_id: str = "",
     attachment_ids: Optional[List[str]] = None,
     tool_event_sink=None,
+    attachment_page_id: str = "",
 ) -> planning.AgentState:
     state = planning._new_agent_state(
         session_id,
@@ -4251,6 +4275,7 @@ def _prepare_stream_state(
         owner_user_id=owner_user_id,
         attachment_ids=attachment_ids,
         tool_event_sink=tool_event_sink,
+        attachment_page_id=attachment_page_id,
     )
     if mode == "expert":
         # 容器时钟与本地时区无关；这里只使用单调时钟维护已有请求级总预算。
