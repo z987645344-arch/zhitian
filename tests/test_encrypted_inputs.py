@@ -2,9 +2,11 @@
 
 import io
 import struct
+import subprocess
+import sys
 import uuid
 
-import fitz
+from tests.pdf_fixtures import pdf_bytes as make_pdf_bytes
 import pytest
 
 import main
@@ -59,12 +61,7 @@ def encrypted_office():
 
 
 def pdf_bytes(password=None, owner_only=False):
-    with fitz.open() as doc:
-        doc.new_page().insert_text((72, 72), "Public synthetic test")
-        if password or owner_only:
-            return doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256,
-                owner_pw="synthetic-owner", user_pw=password or "")
-        return doc.tobytes()
+    return make_pdf_bytes("Public synthetic test", password=password, owner_only=owner_only)
 
 
 @pytest.mark.parametrize("fmt", ["docx", "xlsx", "pptx"])
@@ -97,6 +94,22 @@ def test_pdf_open_password_and_owner_only_distinction():
     assert not is_encrypted(pdf_bytes(owner_only=True), "pdf")
     assert not is_encrypted(pdf_bytes(), "pdf")
     assert not is_encrypted(b"%PDF-broken", "pdf")
+
+
+def test_office_only_converter_input_guard_does_not_require_pdf_packages():
+    code = '''
+import builtins
+original = builtins.__import__
+def office_only_import(name, *args, **kwargs):
+    if name.split('.')[0] in {'pypdf', 'pypdfium2'}:
+        raise AssertionError('Office converter must not import PDF dependencies')
+    return original(name, *args, **kwargs)
+builtins.__import__ = office_only_import
+from layers.file_processing.input_guard import is_encrypted
+assert not is_encrypted(b'not OLE', 'docx')
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_preflight_preserves_stream_position_and_real_mini_stream_fixture(tmp_path):

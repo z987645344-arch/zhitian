@@ -6,7 +6,9 @@ MS-XLS FilePass, MS-PPT CurrentUserAtom.headerToken. This does not decrypt files
 """
 
 import struct
+from io import BytesIO
 from pathlib import Path
+
 
 ENCRYPTED_FILE_MESSAGE = "文件已加密，请去掉打开密码后再上传"
 OLE_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
@@ -137,15 +139,20 @@ class CompoundFile:
         return result
 
 
+def pdf_requires_open_password(reader) -> bool:
+    """Owner/permission encryption is allowed when an empty password opens it."""
+    return bool(reader.is_encrypted and not reader.decrypt(""))
+
+
 def is_encrypted(data: bytes, source_format: str) -> bool:
     fmt = source_format.lower().lstrip(".")
     if fmt == "pdf" and data.startswith(b"%PDF-"):
-        import fitz
+        # 转换服务仅处理Office，无PDF依赖；不能在共享入口模块导入时加载它们。
+        from pypdf import PdfReader
+        from pypdf.errors import PyPdfError
         try:
-            with fitz.open(stream=data, filetype="pdf") as document:
-                # Permission/owner-password-only PDFs do not require an open password.
-                return document.needs_pass
-        except (RuntimeError, ValueError):
+            return pdf_requires_open_password(PdfReader(BytesIO(data)))
+        except (PyPdfError, RuntimeError, ValueError, OSError):
             return False  # Corruption is reported by the existing validation/parser.
     if fmt not in {"docx", "xlsx", "pptx", "doc", "xls", "ppt"} or data[:8] != OLE_MAGIC:
         return False

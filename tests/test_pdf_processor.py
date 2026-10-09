@@ -3,7 +3,7 @@
 
 import os
 
-import fitz
+from tests.pdf_fixtures import pdf_bytes
 
 from layers import converter, document_loader
 from layers.file_processing.models import FileProcessingRequest, FileTaskType
@@ -11,11 +11,7 @@ from layers.file_processing.runtime import get_file_processor_registry
 
 
 def _write_pdf(path, text="PDF processor marker"):
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_text((72, 72), text)
-    document.save(str(path))
-    document.close()
+    path.write_bytes(pdf_bytes(text))
 
 
 def test_pdf_registry_exposes_complete_first_stage_capabilities(tmp_path):

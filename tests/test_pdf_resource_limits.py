@@ -1,6 +1,7 @@
 """PDF页数及图像像素上限必须在产生部分结果前拒绝。"""
 
-import fitz
+from PIL import Image
+from tests.pdf_fixtures import pdf_bytes
 import pytest
 
 import config
@@ -15,21 +16,7 @@ from layers.file_processing.quality import FileQualityChecker
 
 
 def _write_pdf(path, pages=1, page_size=(612, 792), image_size=None):
-    document = fitz.open()
-    for _ in range(pages):
-        page = document.new_page(width=page_size[0], height=page_size[1])
-        if image_size:
-            pixmap = fitz.Pixmap(
-                fitz.csRGB,
-                fitz.IRect(0, 0, image_size[0], image_size[1]),
-                0,
-            )
-            page.insert_image(
-                fitz.Rect(0, 0, min(20, page.rect.width), min(20, page.rect.height)),
-                pixmap=pixmap,
-            )
-    document.save(str(path))
-    document.close()
+    path.write_bytes(pdf_bytes(text="", pages=pages, page_size=page_size, image_size=image_size))
 
 
 def test_pdf_page_cap_rejects_before_extraction_or_partial_render(tmp_path, monkeypatch):
@@ -77,8 +64,8 @@ def test_oversized_embedded_image_is_rejected_without_partial_render(tmp_path, m
 
 def test_png_quality_check_rejects_pixels_over_limit(tmp_path, monkeypatch):
     image_path = tmp_path / "oversized.png"
-    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 40, 40), 0)
-    pixmap.save(str(image_path))
+    with Image.new("RGB", (40, 40)) as image:
+        image.save(image_path)
     monkeypatch.setattr(config, "MAX_IMAGE_PIXELS", 1000)
     artifact = FileArtifact(
         output_path=str(image_path),

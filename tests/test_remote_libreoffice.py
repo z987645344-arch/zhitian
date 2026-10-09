@@ -26,11 +26,8 @@ def transport(monkeypatch):
 
 
 def test_remote_protocol_download_then_local_quality_gate(transport, tmp_path):
-    import fitz
-    pdf = fitz.open()
-    pdf.new_page().insert_text((72, 72), "Conversion artifact")
-    payload = pdf.tobytes()
-    pdf.close()
+    from tests.pdf_fixtures import pdf_bytes
+    payload = pdf_bytes("Conversion artifact")
     source = tmp_path / "file.DOCX"
     source.write_bytes(b"fixture")
     requests = []

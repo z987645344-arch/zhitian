@@ -6,7 +6,7 @@ import os
 import uuid
 import zipfile
 
-import fitz
+from tests.pdf_fixtures import pdf_bytes
 from docx import Document
 from openpyxl import load_workbook
 from pptx import Presentation
@@ -22,12 +22,7 @@ def _xlsx_bytes() -> bytes:
 
 
 def _pdf_bytes() -> bytes:
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_text((72, 72), "PDF conversion marker")
-    content = document.tobytes()
-    document.close()
-    return content
+    return pdf_bytes("PDF conversion marker")
 
 
 def _successful_conversion(captured_paths):

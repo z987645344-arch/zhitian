@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统一PDF处理器；保留pdfplumber、pypdf、fitz各自已验证的职责。"""
+"""统一PDF处理器；pdfplumber提取、pypdf结构检查、PDFium渲染。"""
 
 import math
 import os
@@ -10,8 +10,8 @@ import uuid
 import tempfile
 from typing import List, Optional
 
-import fitz
 import pdfplumber
+import pypdfium2 as pdfium
 from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
@@ -34,6 +34,7 @@ from layers.file_processing.models import (
 )
 from layers.file_processing.quality import FileQualityChecker
 from layers.file_processing.runtime import register_processor_once
+from layers.file_processing.input_guard import pdf_requires_open_password
 from layers.file_processing.runner import (
     TaskWorkspace, task_scope, budget_lock, run_python_worker,
     FileTaskTimeout, FileTaskCancelled, cleanup_artifact, cleanup_task_directory,
@@ -45,6 +46,20 @@ from utils.logger import get_logger
 
 logger = get_logger("converter")
 _pdf_processing_lock = threading.Lock()
+# 内置的一页合法PDF；不依赖第三方创建库，xref偏移对应以下固定字节。
+_SMOKE_PDF = (
+    b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+    b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+    b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n"
+    b"4 0 obj\n<< /Length 54 >>\nstream\n"
+    b"BT /F1 12 Tf 72 720 Td (File engine smoke test) Tj ET\nendstream\nendobj\n"
+    b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+    b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n"
+    b"0000000058 00000 n \n0000000115 00000 n \n0000000241 00000 n \n"
+    b"0000000344 00000 n \ntrailer\n<< /Size 6 /Root 1 0 R >>\n"
+    b"startxref\n414\n%%EOF\n"
+)
 _MIME_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -72,10 +87,8 @@ class PdfProcessor(FileProcessor):
     def probe_ready(self) -> EngineProbeResult:
         with tempfile.TemporaryDirectory(prefix="zhitian-pdf-smoke-") as directory:
             source = os.path.join(directory, "smoke.pdf")
-            with fitz.open() as document:
-                page = document.new_page()
-                page.insert_text((72, 72), "File engine smoke test")
-                document.save(source)
+            with open(source, "wb") as output:
+                output.write(_SMOKE_PDF)
             extracted = self.execute_task(FileProcessingRequest(task_type=FileTaskType.EXTRACT,
                 source_format="pdf", source_paths=[source]))
             request = FileProcessingRequest(task_type=FileTaskType.CONVERT, source_paths=[source],
@@ -340,10 +353,11 @@ class PdfProcessor(FileProcessor):
         total_pages = 0
         try:
             for path in request.source_paths:
-                with fitz.open(path) as document:
-                    if document.needs_pass:
+                with open(path, "rb") as source:
+                    reader = PdfReader(source)
+                    if pdf_requires_open_password(reader):
                         return self._failed("encrypted_pdf", "PDF已加密")
-                    total_pages += document.page_count
+                    total_pages += len(reader.pages)
                     page_limit = min(value for value in (config.MAX_PDF_PROCESSING_PAGES, request.max_pages)
                                      if value > 0)
                     if total_pages > page_limit:
@@ -354,8 +368,12 @@ class PdfProcessor(FileProcessor):
                         FileTaskType.RENDER_PAGES, FileTaskType.CONVERT
                     } and request.target_format in {"png", "pptx"}:
                         scale = 1.5
-                        for page in document:
-                            self._validate_page_pixels(page, scale, request.resource_budget.max_pixels)
+                        with pdfium.PdfDocument(path) as document:
+                            for page in document:
+                                try:
+                                    self._validate_page_pixels(page, scale, request.resource_budget.max_pixels)
+                                finally:
+                                    page.close()
         except ValueError as exc:
             if str(exc) in {"too_many_pixels", "encrypted_pdf"}:
                 message = (
@@ -372,15 +390,15 @@ class PdfProcessor(FileProcessor):
     @staticmethod
     def _validate_page_pixels(page, scale: float = 1.0, pixel_budget: int = 0) -> None:
         """在分配渲染缓冲区前检查页面输出尺寸及内嵌图片的解码尺寸。"""
-        rect = page.rect
+        width, height = page.get_size()
         rendered_pixels = (
-            math.ceil(rect.width * scale) * math.ceil(rect.height * scale)
+            math.ceil(width * scale) * math.ceil(height * scale)
         )
         pixel_limit = min(value for value in (config.MAX_IMAGE_PIXELS, pixel_budget) if value > 0)
         if rendered_pixels > pixel_limit:
             raise ValueError("too_many_pixels")
-        for image in page.get_images(full=True):
-            width, height = int(image[2]), int(image[3])
+        for image in page.get_objects(filter=[pdfium.raw.FPDF_PAGEOBJ_IMAGE]):
+            width, height = image.get_px_size()
             if width > 0 and height > 0 and width * height > pixel_limit:
                 raise ValueError("too_many_pixels")
 
@@ -411,17 +429,31 @@ class PdfProcessor(FileProcessor):
     def _render_pages(self, source_path: str, output_dir: str) -> FileProcessingResult:
         os.makedirs(output_dir, exist_ok=True)
         artifacts = []
-        document = fitz.open(source_path)
-        try:
+        with pdfium.PdfDocument(source_path) as document:
+            document.init_forms()
             for page_index, page in enumerate(document, start=1):
-                self._validate_page_pixels(page, 1.5)
-                output_path = os.path.join(output_dir, "page_%s.png" % page_index)
-                page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(output_path)
+                try:
+                    self._validate_page_pixels(page, 1.5)
+                    output_path = os.path.join(output_dir, "page_%s.png" % page_index)
+                    self._save_page_png(page, output_path)
+                finally:
+                    page.close()
                 artifacts.append(self._artifact(output_path, "png"))
                 emit_progress("converting", page_index, len(document), "pages")
-        finally:
-            document.close()
         return self._success(artifacts=artifacts, page_count=len(artifacts))
+
+    @staticmethod
+    def _save_page_png(page, output_path: str) -> None:
+        # PDFium调用已位于串行、可终止的文件工作进程；不并发调用其C API。
+        bitmap = page.render(scale=1.5, fill_color=(255, 255, 255, 255))
+        try:
+            image = bitmap.to_pil()
+            try:
+                image.save(output_path)
+            finally:
+                image.close()
+        finally:
+            bitmap.close()
 
     def _merge(self, source_paths: List[str], output_path: str) -> FileProcessingResult:
         writer = PdfWriter()
@@ -541,15 +573,18 @@ class PdfProcessor(FileProcessor):
         presentation.slide_width = Inches(13.333)
         presentation.slide_height = Inches(7.5)
         blank_layout = presentation.slide_layouts[6]
-        document = fitz.open(source_path)
-        try:
+        with pdfium.PdfDocument(source_path) as document:
+            document.init_forms()
             for page_index, page in enumerate(document, start=1):
-                PdfProcessor._validate_page_pixels(page, 1.5)
-                image_path = os.path.join(
-                    os.path.dirname(output_path),
-                    "page_%s.png" % page_index,
-                )
-                page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).save(image_path)
+                try:
+                    PdfProcessor._validate_page_pixels(page, 1.5)
+                    image_path = os.path.join(
+                        os.path.dirname(output_path),
+                        "page_%s.png" % page_index,
+                    )
+                    PdfProcessor._save_page_png(page, image_path)
+                finally:
+                    page.close()
                 slide = presentation.slides.add_slide(blank_layout)
                 slide.shapes.add_picture(
                     image_path,
@@ -560,8 +595,6 @@ class PdfProcessor(FileProcessor):
                 )
                 os.remove(image_path)
                 emit_progress("converting", page_index, len(document), "pages")
-        finally:
-            document.close()
         presentation.save(output_path)
 
     @staticmethod

@@ -82,7 +82,7 @@ zhitian/
 | 向量数据 | Chroma 0.5.0，memory/documents两个collection |
 | 文档检索 | BM25+向量召回、标题/来源补召回、模型重排序、可选GraphRAG扩展 |
 | 中文嵌入 | `BAAI/bge-small-zh-v1.5`自研ONNX运行路径，512维 |
-| 文档处理 | pdfplumber、pypdf、python-docx、openpyxl、python-pptx、PyMuPDF、LibreOffice headless |
+| 文档处理 | pdfplumber、pypdf、pypdfium2、python-docx、openpyxl、python-pptx、LibreOffice headless |
 | 外部能力 | Tavily联网搜索、阿里云DirectMail、stdio MCP连接基础设施 |
 | 部署 | Python 3.12 slim trixie非root镜像（补丁标签与digest锁定）；独立部署仓库编排API、两套静态站点和反向代理 |
 

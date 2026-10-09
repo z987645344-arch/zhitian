@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-import fitz
+from tests.pdf_fixtures import pdf_bytes
 import pytest
 from docx import Document
 from openpyxl import load_workbook
@@ -25,20 +25,7 @@ from layers.file_processing.runtime import get_file_processor_registry
 
 
 def _pdf(path, pages=2, table=False):
-    with fitz.open() as document:
-        for _ in range(pages):
-            page = document.new_page()
-            if table:
-                for x in (50, 200, 350):
-                    page.draw_line((x, 50), (x, 150))
-                for y in (50, 100, 150):
-                    page.draw_line((50, y), (350, y))
-                for x, y, text in ((70, 80, "Item"), (220, 80, "Value"),
-                                   (70, 130, "Model"), (220, 130, "42")):
-                    page.insert_text((x, y), text)
-            else:
-                page.insert_text((72, 72), "Normal document text")
-        document.save(path)
+    path.write_bytes(pdf_bytes("Normal document text", pages=pages, table=table))
 
 
 @pytest.mark.parametrize("status,success", [("SUCCESS", True), ("FAILED", False),
