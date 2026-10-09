@@ -741,9 +741,9 @@
 
     const targetSessionId = ensureSessionId();
     const requestMode = mode;
-    const resend = ZhitianTemporaryFiles.planResend(text,
+    const resend = ZhitianTemporaryFiles.withIntentOriginal(ZhitianTemporaryFiles.planResend(text,
       pendingAttachments.map((item) => item.attachment_id), browserFiles, hasFileHistory,
-      pendingAttachments.some(item => item.edit) ? 'edit' : '');
+      pendingAttachments.some(item => item.edit) ? 'edit' : ''), browserFiles);
     if (resend.error) {
       hint.textContent = resend.error;
       return;

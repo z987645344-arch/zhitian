@@ -5,6 +5,22 @@ const path = require('node:path');
 const vm = require('node:vm');
 const files = require('../web_client/js/temporary-files.js');
 
+test('普通打字的单个txt/md附件回传原件但不加edit标记，按钮流程保持不变', () => {
+  const pool = files.create();
+  const file = new File(['待改写文本'], 'sample.txt');
+  pool.original('a', file);
+  const original = files.planResend('缩写这个文件', ['a'], pool);
+  const plan = files.withIntentOriginal(original, pool);
+  assert.equal(plan.originals[0].file, file);
+  assert.equal(plan.fileTaskType, undefined);
+  assert.equal(original.originals.length, 0);
+  assert.equal(files.withIntentOriginal({ ids: [], originals: [] }, pool).originals.length, 0);
+  const button = files.planResend('缩写这个文件', ['a'], pool, false, 'edit');
+  assert.equal(files.withIntentOriginal(button, pool), button);
+  const source = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
+  assert.match(source, /withIntentOriginal\(ZhitianTemporaryFiles.planResend/);
+});
+
 test('编辑模式明确回传单个原件；普通阅读不变；过期、格式、多个文件明确拒绝', () => {
   let clock = 0;
   const pool = files.create(() => clock);

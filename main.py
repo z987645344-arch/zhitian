@@ -1690,7 +1690,8 @@ async def chat(
                 assistant_message_type,
                 owner_user_id=current_user["user_id"],
             )
-        if not chat_request.file_task_type and not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data:
+        if (not chat_request.file_task_type and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+                and not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data):
             background_tasks.add_task(
                 llm_provider.run_with_api_key,
                 api_key,
@@ -3819,7 +3820,8 @@ def _chat_stream_events(
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                if not request.file_task_type and request_status == "success" and final_data:
+                if (not request.file_task_type and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+                        and request_status == "success" and final_data):
                     background_tasks.add_task(
                         llm_provider.run_request_background,
                         api_key,
@@ -4085,7 +4087,8 @@ def _chat_stream_events(
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data(_request_status_event(state, has_error).model_dump())
         yield _sse_data({"chunk": "[DONE]"})
-        if not has_error and status == "success" and final_data:
+        if (state.get("intent") not in {"edit_document", "edit_attachment"}
+                and not has_error and status == "success" and final_data):
             background_tasks.add_task(
                 llm_provider.run_request_background,
                 api_key,
@@ -4254,7 +4257,8 @@ def _prepare_stream_state(
         state["complex_deadline"] = time.perf_counter() + config.EXPERT_COMPLEX_TIMEOUT
     try:
         state = planning.classify_node(state)
-        state = planning.retrieve_node(state)
+        if state.get("intent") != "edit_attachment":
+            state = planning.retrieve_node(state)
         return state
     except Exception:
         state["intent"] = "document"

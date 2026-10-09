@@ -60,6 +60,13 @@ const ZhitianTemporaryFiles = (() => {
     }
     return panel;
   }
+  function withIntentOriginal(plan, pool) {
+    // 只按本轮附件格式提供原件；是否编辑仍由同一次工具选择判断，不匹配用户措辞。
+    if (plan.error || plan.fileTaskType === 'edit' || plan.originals.length || plan.ids.length !== 1) return plan;
+    const file = pool.getOriginal(plan.ids[0]);
+    if (!file || !/\.(txt|md)$/i.test(file.name || '')) return plan;
+    return { ...plan, originals: [{ id: plan.ids[0], file }] };
+  }
   function continuationIsEdit(file) {
     return /\.(txt|md)$/i.test(file.download_filename || '');
   }
@@ -70,6 +77,6 @@ const ZhitianTemporaryFiles = (() => {
     const name = linked?.[1] || edited?.[1] || text.replace(/\/files\/[\w/-]+/g, '').trim() || '文件';
     return `${name} · 文件已清理`;
   }
-  return { create, planResend, renderComparison, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };
+  return { create, planResend, withIntentOriginal, renderComparison, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };
 })();
 if (typeof module !== 'undefined') module.exports = ZhitianTemporaryFiles;
