@@ -120,6 +120,16 @@ vulnerabilities:
     evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.7.4，不加载系统 libexpat1。漏洞涉及 storeAtts 多属性处理；尚未证明上传格式会走到 Expat SAX 的该分支。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
     why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-66046）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+  - id: CVE-2026-77214
+    images: [converter]
+    purls:
+      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-09
+    expired_at: 2026-11-02
+    reachability: "未能判定"
+    evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
+    why_not_fixed: "2026-10-09 复核 CI run 37875857134（https://github.com/z987645344-arch/zhitian/actions/runs/37875857134）：Debian 13.7 trixie，libexpat1 2.8.3-1~deb13u1，HIGH，FixedVersion 未给出；原始 API/转换报告 SHA-256 分别为 dadfefd9e89745e08dcb2ae79bdae39066714673f0a0bc6189849bc23b78d730、0b46f498720d528110b5db66f318cde8f815a4a1be5abaab98d115f43358b89c。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-77214）：trixie 2.8.3-1~deb13u1 与 forky 2.8.4-2 均仍受影响，sid 2.9.0-1 已修复（上游 R_2_9_0）；不能套用同类旧 CVE 的 forky 修复结论。trixie 尚未提供修复包，不混用 sid 包；只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的指定 Debian 包版本有效，2026-11-02 到期（本次复核后24天）；有修复或条目失效时仍由现有门禁阻止部署。"
   - id: CVE-2026-6653
     images: [converter]
     purls:
