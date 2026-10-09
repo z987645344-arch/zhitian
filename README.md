@@ -180,6 +180,8 @@ Windows 本地和 GitHub Actions 均以根目录脚本作为唯一测试入口�
 - [zhitian_admin](https://github.com/z987645344-arch/zhitian_admin)：员工 / 审核员 / 开发者三角色管理后台
 - [zhitian-deploy](https://github.com/z987645344-arch/zhitian-deploy)：Docker Compose、统一反向代理与运行时部署配置
 
-## License
+## 版权说明 / License
 
-当前仓库未附带开源许可证，默认保留全部权利；公开复用前请先联系项目作者。
+本项目为作者个人作品，**保留所有权利**，公开仅供浏览与评估，未经许可不得复制、部署或用于对外服务。详见 [LICENSE](LICENSE)。
+
+This is a personal project. **All rights reserved.** Public for viewing and evaluation only; see [LICENSE](LICENSE).
