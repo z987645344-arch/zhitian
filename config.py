@@ -232,6 +232,10 @@ CHAT_ATTACHMENT_MAX_CHARS = int(os.getenv("CHAT_ATTACHMENT_MAX_CHARS", "50000"))
 TEXT_EDIT_MAX_CHARS = int(os.getenv("TEXT_EDIT_MAX_CHARS", "50000"))
 TEXT_EDIT_MAX_OPERATIONS = int(os.getenv("TEXT_EDIT_MAX_OPERATIONS", "20"))
 TEXT_EDIT_MAX_CHANGED_CHARS = int(os.getenv("TEXT_EDIT_MAX_CHANGED_CHARS", "20000"))
+# 编辑输出含逐字原文，不能使用普通聊天的10秒单步时限。本机真实2815字
+# 整篇缩写58.59秒、继续缩写22.08秒，采用90秒任务总预算留约31秒余量；
+# 修正轮也共享此预算，不是每轮各90秒，超时建议拆分要求。
+TEXT_EDIT_TIMEOUT = float(os.getenv("TEXT_EDIT_TIMEOUT", "90"))
 CHAT_ATTACHMENT_TTL_MINUTES = int(os.getenv("CHAT_ATTACHMENT_TTL_MINUTES", "60"))
 TEMP_FILE_TTL_MINUTES = int(os.getenv("TEMP_FILE_TTL_MINUTES", "60"))
 TEMP_FILE_USER_QUOTA_MB = int(os.getenv("TEMP_FILE_USER_QUOTA_MB", "100"))

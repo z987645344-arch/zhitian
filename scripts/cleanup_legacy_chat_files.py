@@ -28,6 +28,21 @@ def _is_api_command(args):
     return any(arg == "main:app" or Path(arg).name == "main.py" for arg in args)
 
 
+def _compose_dns_healthy():
+    """只认可已实测的Docker内部DNS缺名行为；独立正向探针失败则关闭。"""
+    try:
+        if not Path("/.dockerenv").exists():
+            return False
+        if not re.search(r"(?m)^nameserver\s+127\.0\.0\.11\s*$", Path("/etc/resolv.conf").read_text()):
+            return False
+        # 内部网络中 API 停机的缺名返回EAI_AGAIN；不能据此放过全局DNS故障。
+        # 用同网络仍在运行的反向代理做正向解析与连接验证。
+        with socket.create_connection(("reverse-proxy", 8080), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 def api_is_running():
     """检查本进程命名空间及 compose 内 API；未知检测结果失败关闭。
 
@@ -71,6 +86,19 @@ def api_is_running():
         except ConnectionRefusedError:
             continue
         except socket.gaierror as exc:
+            if host == "zhitian-api" and exc.errno == socket.EAI_AGAIN:
+                # 再探测一次，短暂解析波动恢复后仍须拒绝运行中的API。
+                try:
+                    with socket.create_connection((host, port), timeout=2):
+                        return True
+                except ConnectionRefusedError:
+                    continue
+                except socket.gaierror as repeated:
+                    if repeated.errno == socket.EAI_AGAIN and _compose_dns_healthy():
+                        continue
+                    raise CleanupRefused("API名称解析失败，无法确认停机，拒绝清理") from repeated
+                except OSError as repeated:
+                    raise CleanupRefused("无法确认API端口已停止，拒绝清理") from repeated
             if exc.errno not in {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}:
                 raise CleanupRefused("API名称解析失败，无法确认停机，拒绝清理") from exc
         except OSError as exc:

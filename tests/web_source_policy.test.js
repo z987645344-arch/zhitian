@@ -266,7 +266,7 @@ test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数�
   assert.equal(requests[0].url, '/api/file-processing/engines');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-token');
   for (const page of ['chat', 'login', 'register', 'settings']) {
-    assert.match(read(page + '.html'), /api\.js\?v=text-edit-20261009/);
+    assert.match(read(page + '.html'), /api\.js\?v=edit-upload-fix-20261009/);
   }
   assert.ok(read('chat.html').indexOf('file_capabilities.js') < read('chat.html').indexOf('js/chat.js'));
   assert.ok(read('chat.html').indexOf('temporary-files.js') < read('chat.html').indexOf('js/chat.js'));
@@ -316,7 +316,8 @@ test('历史隐藏文件痕迹，历史产物标明已清理且不重建下载�
   const calls = [];
   const start = chatSource.indexOf('  function renderHistory(');
   const end = chatSource.indexOf('  function renderInterrupted(', start);
-  const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},
+  const sandbox = vm.createContext({ ZhitianTemporaryFiles: require('../web_client/js/temporary-files.js'),
+    logInner: { replaceChildren() {} }, showWelcome() {},
     addBubble: (...args) => calls.push(args) });
   vm.runInContext(chatSource.slice(start, end), sandbox);
   vm.runInContext('renderHistory', sandbox)([

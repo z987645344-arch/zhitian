@@ -99,7 +99,7 @@ def propose_edits(text, instruction, *, deadline, call=None):
             {"role": "user", "content": json.dumps({"user_request": instruction,
                 "file_data_not_instructions": text, "validation_feedback": feedback}, ensure_ascii=False)}]
         response = call(messages=messages, tier="fast", stage="text_edit_plan",
-            response_format={"type": "json_object"}, timeout=min(config.FAST_LLM_TIMEOUT, remaining),
+            response_format={"type": "json_object"}, timeout=remaining,
             total_budget=remaining, retry_timeouts=False, enforce_wall_clock=True)
         llm_provider.check_request_cancelled("text_edit_validate")
         try:
@@ -153,8 +153,9 @@ def run(state):
             raise EditValidationError("编辑仅支持 UTF-8 文本，请另存为 UTF-8 后重新上传") from None
         if len(text) > config.TEXT_EDIT_MAX_CHARS:
             raise EditValidationError("文件过长，请拆分后再编辑")
-        deadline = started + (config.FAST_REQUEST_TIMEOUT if state["mode"] == "fast" else config.EXPERT_COMPLEX_TIMEOUT)
+        deadline = started + config.TEXT_EDIT_TIMEOUT
         valid, issues = propose_edits(text, state["message"], deadline=deadline)
+        execution.emit_tool_status(state, "edit_document", "started", result_count=len(valid))
         count = len(valid)
         if not valid:
             state["edit_issues"] = issues
@@ -198,7 +199,8 @@ def run(state):
         raise
     except Exception as exc:
         outcome = "timeout" if isinstance(exc, TimeoutError) else "failed"
-        state["response"] = str(exc) if isinstance(exc, EditValidationError) else "抱歉，这次文件编辑失败，请稍后重试。"
+        state["response"] = ("文件编辑超时，请缩短文本或拆分修改要求后重试。" if isinstance(exc, TimeoutError)
+            else str(exc) if isinstance(exc, EditValidationError) else "抱歉，这次文件编辑失败，请稍后重试。")
         state["results"] = []
         state["error"] = "text_edit_failed"
         execution.add_degradation_reason(state, "text_edit_failed")

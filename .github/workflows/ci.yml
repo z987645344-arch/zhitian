@@ -83,4 +83,4 @@ jobs:
         run: .\run_tests.bat -q
 
       - name: Test web client behavior
-        run: node --test tests/web_time.test.js tests/web_source_policy.test.js tests/web_markdown.test.js
+        run: node --test tests/web_time.test.js tests/web_source_policy.test.js tests/web_markdown.test.js tests/web_text_edit.test.js

@@ -74,7 +74,11 @@ const API = (() => {
       throw new Error('登录已过期，请重新登录');
     }
     const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; }
+    catch (error) {
+      throw new Error(response.status === 413 ? '文件过大，请拆分后再上传（单个文件上限50MB）' : `请求失败：HTTP ${response.status}`);
+    }
     if (!response.ok) {
       const error = new Error(data.detail || `请求失败：HTTP ${response.status}`);
       error.status = response.status;
@@ -181,7 +185,11 @@ const API = (() => {
         body: form,
       });
       const text = await response.text();
-      const data = text ? JSON.parse(text) : {};
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; }
+      catch (error) {
+        throw new Error(response.status === 413 ? '文件过大，请拆分后再上传（单个文件上限50MB）' : `文件上传失败：HTTP ${response.status}`);
+      }
       if (!response.ok) {
         throw new Error(data.detail || data.error_type || `上传失败：HTTP ${response.status}`);
       }
@@ -303,6 +311,8 @@ const API = (() => {
                 file_id: fileId,
                 download_filename: downloadFilename,
                 file_type: typeof payload.file_type === 'string' ? payload.file_type.trim() : '',
+                edit_changes: Array.isArray(payload.edit_changes) ? payload.edit_changes : [],
+                edit_issues: Array.isArray(payload.edit_issues) ? payload.edit_issues : [],
               });
             }
             continue;

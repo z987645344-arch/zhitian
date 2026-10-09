@@ -333,7 +333,7 @@
     const reuse = document.createElement('button');
     reuse.type = 'button';
     reuse.className = 'secondary';
-    reuse.textContent = (file.edit_changes || []).length ? '继续编辑' : '继续处理';
+    reuse.textContent = '继续处理';
     reuse.addEventListener('click', async () => {
       const product = browserFiles.getProduct(file.file_id);
       if (!product) { hint.textContent = ZhitianTemporaryFiles.ORIGINAL_CLEARED; return; }
@@ -343,12 +343,15 @@
         const data = await API.uploadAttachment(ensureSessionId(), original);
         if (!data.success) throw new Error(data.detail || '文件上传失败');
         browserFiles.original(data.attachment_id, original);
-        if ((file.edit_changes || []).length) data.edit = true;
+        if (ZhitianTemporaryFiles.continuationIsEdit(file)) data.edit = true;
         pendingAttachments.push(data);
         renderChips();
       } catch (error) { hint.textContent = briefError(error); }
     });
-    card.append(icon, copy, button, reuse);
+    const actions = document.createElement('div');
+    actions.className = 'generated-file-actions';
+    actions.append(button, reuse);
+    card.append(icon, copy, actions);
     if ((file.edit_changes || []).length) card.appendChild(ZhitianTemporaryFiles.renderComparison(document, file));
     bubble.appendChild(card);
     scrollToBottom();
@@ -366,9 +369,7 @@
       const role = item.role === 'user' ? 'user' : 'assistant';
       const interrupted = item.message_type === 'interrupted';
       const content = item.message_type === 'file_delivery'
-        ? String(item.content || '').replace(/\[([^\]]*)\]\(\/files\/[^)]+\)/g, '$1')
-          .replace(/(?:可通过|可从|通过)?\s*\/files\/[\w-]+\s*下载/g, '')
-          .replace(/\/files\/[\w/-]+/g, '').trim() + ' · 文件已清理'
+        ? ZhitianTemporaryFiles.historyFileLabel(item.content)
         : String(item.content || '');
       addBubble(role, interrupted ? '回答已中断' : content,
         interrupted ? 'interrupted' : '', item.attachment_filenames || []);
@@ -756,7 +757,8 @@
     pendingAttachments = [];
     renderChips();
 
-    const { bubble, body } = addBubble('assistant', MODE_COPY[requestMode].waiting, 'pending');
+    const { bubble, body } = addBubble('assistant', resend.fileTaskType === 'edit'
+      ? '正在制定修改方案，随后核对并生成文件，请稍候…' : MODE_COPY[requestMode].waiting, 'pending');
     bubble.dataset.mode = requestMode;
     let answer = '';
     let streamFailed = false;

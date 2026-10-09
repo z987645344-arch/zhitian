@@ -541,6 +541,10 @@ button.mode-option.active { background: var(--primary); color: var(--on-primary)
 .generated-file-status { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .generated-file-card.failed .generated-file-status { color: var(--danger); }
 button.generated-file-download { padding: 7px 11px; font-size: 11px; }
+.generated-file-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.edit-comparison { grid-column: 1 / -1; min-width: 0; }
+.edit-comparison summary { cursor: pointer; }
+.edit-comparison pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 引用来源：如实展示后端返回的doc_id/来源/分数，不做任何美化性补全 */
 .citations { margin-top: 11px; padding-top: 10px; border-top: 1px dashed var(--line-strong); }

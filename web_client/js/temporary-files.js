@@ -44,7 +44,8 @@ const ZhitianTemporaryFiles = (() => {
   function renderComparison(document, file) {
     const panel = document.createElement('details');
     const title = document.createElement('summary');
-    title.textContent = '修改对照（改前 / 改后）';
+    title.textContent = `修改对照（${(file.edit_changes || []).length}处，点击展开改前 / 改后）`;
+    panel.className = 'edit-comparison';
     panel.appendChild(title);
     for (const change of file.edit_changes || []) {
       const block = document.createElement('pre');
@@ -59,6 +60,16 @@ const ZhitianTemporaryFiles = (() => {
     }
     return panel;
   }
-  return { create, planResend, renderComparison, ORIGINAL_CLEARED };
+  function continuationIsEdit(file) {
+    return /\.(txt|md)$/i.test(file.download_filename || '');
+  }
+  function historyFileLabel(content) {
+    const text = String(content || '');
+    const linked = text.match(/\[([^\]]+)\]\(\/files\/[^)]+\)/);
+    const edited = text.match(/^已修改 (.+\.(?:txt|md))，/);
+    const name = linked?.[1] || edited?.[1] || text.replace(/\/files\/[\w/-]+/g, '').trim() || '文件';
+    return `${name} · 文件已清理`;
+  }
+  return { create, planResend, renderComparison, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };
 })();
 if (typeof module !== 'undefined') module.exports = ZhitianTemporaryFiles;

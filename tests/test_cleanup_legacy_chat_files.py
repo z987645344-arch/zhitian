@@ -187,6 +187,39 @@ def test_api_detection_failure_is_not_treated_as_stopped(monkeypatch):
 def test_process_command_recognition():
     assert command._is_api_command(["python", "-m", "uvicorn", "main:app"])
     assert command._is_api_command(["python", "/app/main.py"])
+
+
+@pytest.mark.parametrize("healthy", [True, False])
+def test_compose_missing_api_eai_again_requires_healthy_internal_dns(monkeypatch,healthy):
+    if os.name=="nt":
+        monkeypatch.setattr(command.subprocess,"run",lambda *a,**k:subprocess.CompletedProcess(a,0,"stopped"))
+    monkeypatch.setattr(command,"API_ENDPOINTS",(("zhitian-api",8000),))
+    monkeypatch.setattr(command.socket,"create_connection",lambda *a,**k:(_ for _ in ()).throw(socket.gaierror(socket.EAI_AGAIN,"temporary")))
+    monkeypatch.setattr(command,"_compose_dns_healthy",lambda:healthy)
+    if healthy:
+        assert command.api_is_running() is False
+    else:
+        with pytest.raises(command.CleanupRefused):command.api_is_running()
+
+
+def test_transient_dns_error_cannot_hide_running_api(monkeypatch):
+    from contextlib import nullcontext
+    if os.name=="nt":
+        monkeypatch.setattr(command.subprocess,"run",lambda *a,**k:subprocess.CompletedProcess(a,0,"stopped"))
+    monkeypatch.setattr(command,"API_ENDPOINTS",(("zhitian-api",8000),))
+    attempts=[]
+    def connect(*a,**k):
+        attempts.append(1)
+        if len(attempts)==1:raise socket.gaierror(socket.EAI_AGAIN,"temporary")
+        return nullcontext()
+    monkeypatch.setattr(command.socket,"create_connection",connect)
+    monkeypatch.setattr(command,"_compose_dns_healthy",lambda:pytest.fail("running API must refuse first"))
+    assert command.api_is_running() is True
+    assert len(attempts)==2
+
+
+def test_eai_again_outside_docker_is_not_accepted():
+    if os.name=="nt":assert command._compose_dns_healthy() is False
     assert not command._is_api_command(["python", "scripts/cleanup_legacy_chat_files.py"])
 
 

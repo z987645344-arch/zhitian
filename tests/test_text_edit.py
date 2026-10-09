@@ -204,6 +204,7 @@ def test_edit_limits_partial_failure_encoding_and_cleanup(client, auth_headers, 
     elif case == "timeout":
         assert len(calls) == 1 and "text_edit_failed" in state["degradation_reasons"]
         assert "provider internal" not in state["response"]
+        assert "文件编辑超时" in state["response"] and "缩短文本或拆分修改要求" in state["response"]
     else:
         item = state["results"][0]
         artifact = files_store.get_file(item.metadata["file_id"])
@@ -273,3 +274,50 @@ def test_cancel_after_artifact_created_removes_product_and_workspace(auth_header
         chat_originals.reset(token)
     assert len(created) == 1 and files_store.get_file(created[0]) is None
     assert all(not path.exists() for path in workspaces)
+
+
+def test_edit_has_independent_budget_not_fast_chat_timeout(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(config,"FAST_LLM_TIMEOUT",0.01)
+    valid,issues=text_edit.propose_edits("旧文","缩写",deadline=time.perf_counter()+45,
+        call=lambda **kw:calls.append(kw) or response([replace("旧文","新文")]))
+    assert valid and not issues
+    assert 44 < calls[0]["timeout"] <= 45
+    assert calls[0]["timeout"] == calls[0]["total_budget"]
+    assert calls[0]["retry_timeouts"] is False
+
+
+@pytest.mark.parametrize("mode",["fast","expert"])
+def test_upload_shorten_then_continue_shorten_is_explicit_edit(client,auth_headers,monkeypatch,mode):
+    headers,user=auth_headers("customer")
+    session=uuid.uuid4().hex
+    for engine in ("native_text","document_text"):
+        get_file_processor_registry().probe_sync(engine)
+    calls=[]
+    def model(**kw):
+        calls.append(kw)
+        original=json.loads(kw["messages"][1]["content"])["file_data_not_instructions"]
+        return response([replace(original, "短故事" if len(calls)==1 else "更短")])
+    monkeypatch.setattr(llm_provider,"chat_completion",model)
+    monkeypatch.setattr(planning,"_classify_with_model",lambda *a,**k:pytest.fail("explicit edit classified"))
+    raw="这是一篇现场编造的长故事。".encode()
+    for instruction in ("缩写故事内容","再缩写"):
+        upload=client.post("/chat/attachments",headers=headers,data={"session_id":session},
+            files={"file":("story.txt",raw,"text/plain")})
+        assert upload.status_code==200,upload.text
+        identity=upload.json()["attachment_id"]
+        result=client.post("/chat/stream/originals",headers=headers,
+            data={"payload":json.dumps({"session_id":session,"message":instruction,"mode":mode,
+                "attachment_ids":[identity],"file_task_type":"edit"}),"original_ids":json.dumps([identity])},
+            files=[("files",("story.txt",raw,"text/plain"))])
+        assert result.status_code==200
+        events=[json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
+        artifact=next(item for item in events if item.get("type")=="file")
+        assert artifact["edit_changes"]
+        download=client.get("/files/"+artifact["file_id"],headers=headers)
+        assert download.status_code==200
+        raw=download.content
+        client.post("/files/"+artifact["file_id"]+"/receipt",headers=headers).raise_for_status()
+    assert raw.decode()=="更短" and len(calls)==2
+    history=client.get("/memory/"+session,headers=headers).json()
+    assert any(item.get("message_type")=="file_delivery" for item in history["history"])
