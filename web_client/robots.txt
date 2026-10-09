@@ -1,0 +1,9 @@
+User-agent: GPTBot
+User-agent: CCBot
+User-agent: Google-Extended
+User-agent: ClaudeBot
+User-agent: anthropic-ai
+User-agent: Bytespider
+User-agent: Applebot-Extended
+User-agent: meta-externalagent
+Disallow: /

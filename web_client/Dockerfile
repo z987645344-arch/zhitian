@@ -19,6 +19,7 @@ COPY --chown=nginx:nginx css/ /usr/share/nginx/html/css/
 COPY --chown=nginx:nginx js/ /usr/share/nginx/html/js/
 COPY --chown=nginx:nginx config.js /usr/share/nginx/html/config.js
 COPY --chown=nginx:nginx *.html /usr/share/nginx/html/
+COPY --chown=nginx:nginx robots.txt /usr/share/nginx/html/robots.txt
 
 USER nginx
 

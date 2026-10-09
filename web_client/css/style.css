@@ -251,6 +251,8 @@ button.secondary:hover { background: var(--surface-high); }
 .auth-link a { color: var(--primary-hover); font-weight: 600; text-decoration: none; }
 .auth-link a:hover { text-decoration: underline; }
 .auth-footer { margin-top: 22px; color: var(--subtle); font-size: 11px; text-align: center; }
+.copyright-line { margin: 24px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; text-align: center; overflow-wrap: anywhere; }
+.sidebar-copyright { flex-shrink: 0; margin-top: 12px; padding: 0 6px; font-size: 10px; }
 
 .cross-site-link {
   display: grid;

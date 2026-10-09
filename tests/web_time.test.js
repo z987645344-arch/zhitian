@@ -25,6 +25,26 @@ test('跨日、空值、非法值和显式偏移都按同一口径处理', () =>
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+test('四个页面包含同一版权行并更新样式缓存', () => {
+  for (const page of ['login', 'register', 'chat', 'settings']) {
+    const html = fs.readFileSync(path.join(__dirname, `../web_client/${page}.html`), 'utf8');
+    assert.equal(html.split('© 2026 知了 · 保留所有权利。').length - 1, 1);
+    assert.match(html, /<footer class="[^"]*copyright-line/);
+    assert.match(html, /style\.css\?v=copyright-20261009/);
+  }
+});
+
+test('robots仅限制指定训练爬虫且镜像复制为可直接访问的静态文件', () => {
+  const read = name => fs.readFileSync(path.join(__dirname, '../web_client', name), 'utf8');
+  const robots = read('robots.txt');
+  const agents = [...robots.matchAll(/^User-agent: (.+)$/gm)].map(m => m[1].trim());
+  assert.deepEqual(agents, ['GPTBot', 'CCBot', 'Google-Extended', 'ClaudeBot', 'anthropic-ai', 'Bytespider', 'Applebot-Extended', 'meta-externalagent']);
+  assert.deepEqual(robots.trim().split(/\r?\n/).slice(8), ['Disallow: /']);
+  assert.doesNotMatch(robots, /sitemap|https?:|www\.|[\w-]+\.[a-z]{2,}/i);
+  assert.match(read('Dockerfile'), /COPY --chown=nginx:nginx robots\.txt \/usr\/share\/nginx\/html\/robots\.txt/);
+  assert.match(read('nginx.conf'), /location \/ \{\s*try_files \$uri =404;/);
+});
 test('显示和排序都经统一入口，页面实际加载该脚本', () => {
   for (const page of ['chat', 'settings']) {
     const html = fs.readFileSync(path.join(__dirname, '../web_client/' + page + '.html'), 'utf8');

@@ -2768,3 +2768,11 @@
 - 文字编辑不触发知识库、联网或后台长期记忆判断；无附件的提示词和工具定义保持不变。不改模型推理、预算、检索参数或VERSION，部署重建API和web。
 - 验证：项目Python 3.12的`run_tests.bat -q`为1679 passed、5项既有integration deselected、1条既有Starlette警告；网页JS 31项、管理端JS 12项通过。隔离环境两次完整fast聊天请求均成功：附件阅读2次模型调用、打字编辑2次模型调用，合计4次，无重试、联网或判卷。默认data的16个文件大小、修改时间和SHA-256一致，临时测量库已删除。
 - VERSION 首次写成 4.21，未通过启动与容器 CI 的语义化版本校验，改为 4.21.0（标签仍为 v4.21）。
+
+## 未发布
+
+### 2026-10-09 界面版权行与训练爬虫规则
+
+- 登录、注册、设置页页脚及聊天侧栏底部统一显示“© 2026 知了 · 保留所有权利。”，沿用现有设计并更新样式缓存参数；1280px和375px宽度核验无横向溢出。不改聊天、账号或文件业务逻辑。
+- 新增robots.txt，仅禁止GPTBot、CCBot、Google-Extended、ClaudeBot、anthropic-ai、Bytespider、Applebot-Extended、meta-externalagent，不改变其他爬虫规则；不含Sitemap或域名。web镜像显式复制该文件，隔离容器直接请求返回200，部署反向代理现有规则无需调整。
+- 验证：项目Python 3.12的run_tests.bat -q为1679 passed、5 deselected；网页JS 33项通过。默认data的16个文件大小、修改时间和SHA-256前后一致。部署本项需重建web镜像，不改VERSION、配置或第三方字体许可证。
