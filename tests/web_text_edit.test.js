@@ -4,6 +4,91 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const files = require('../web_client/js/temporary-files.js');
+const attachmentPage = require('../web_client/js/attachment-page.js');
+
+function tabStorage(seed = {}) {
+  const data = {...seed};
+  return {data, getItem: key => data[key] || null, setItem: (key, value) => { data[key] = value; }};
+}
+
+test('没有randomUUID的HTTP开发页面仍可正常初始化，不阻断无附件聊天', async () => {
+  const sandbox = vm.createContext({window:{}});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web_client/js/attachment-page.js'),'utf8'),sandbox);
+  const page=sandbox.window.ZhitianAttachmentPage.create(tabStorage(),async()=>{});
+  await page.ready;
+  assert.match(page.pageId,/^page-/);
+});
+
+test('刷新新页面主动删除旧页面附件；切换会话清理；只存标识不存正文', async () => {
+  const storage = tabStorage(), calls = [];
+  const remove = async (...args) => calls.push(args);
+  const first = attachmentPage.create(storage, remove, {pageId: 'old'});
+  await first.ready;
+  first.register('s', 'a');
+  const refreshed = attachmentPage.create(storage, remove, {pageId: 'new', navigationType:'reload'});
+  await refreshed.ready;
+  assert.deepEqual(calls, [['s', 'old', ['a']]]);
+  refreshed.register('s', 'b');
+  await refreshed.clear('s');
+  assert.deepEqual(calls[1], ['s', 'new', ['b']]);
+  assert.equal(storage.data.zt_attachment_page_ledger, '[]');
+});
+
+test('另一个标签页及复制的sessionStorage不能误删活跃标签页的附件', async () => {
+  const storage = tabStorage(), calls = [];
+  const remove = async (...args) => calls.push(args);
+  const first = attachmentPage.create(storage, remove, {pageId:'tab-a'});
+  await first.ready; first.register('s', 'a');
+  const clone = attachmentPage.create(tabStorage(storage.data), remove,
+    {pageId:'tab-b', navigationType:'navigate'});
+  await clone.ready; await clone.clear('s');
+  assert.equal(calls.length, 0);
+  const independent = attachmentPage.create(tabStorage(), remove, {pageId:'tab-c'});
+  await independent.ready; independent.register('s', 'c'); await independent.clear('s');
+  assert.deepEqual(calls, [['s', 'tab-c', ['c']]]);
+  assert.match(storage.data.zt_attachment_page_ledger, /"a"/);
+});
+
+test('清理请求失败保存标识供下次载入重试；晚返回不删除后来上传的标识', async () => {
+  const storage = tabStorage();
+  const first = attachmentPage.create(storage, async()=>{throw Error('offline');},
+    {pageId:'old'});
+  await first.ready; first.register('s','a'); await first.clear('s');
+  assert.match(storage.data.zt_attachment_page_ledger, /"a"/);
+  let finish;
+  const second = attachmentPage.create(storage, async()=>{}, {pageId:'new',navigationType:'reload'});
+  await second.ready;
+  const active = attachmentPage.create(storage, ()=>new Promise(r=>{finish=r;}),
+    {pageId:'active'});
+  await active.ready; active.register('s','b'); const cleaning=active.clear('s');
+  active.register('s','c'); finish(); await cleaning;
+  assert.match(storage.data.zt_attachment_page_ledger, /"c"/);
+  assert.doesNotMatch(storage.data.zt_attachment_page_ledger, /"b"/);
+});
+
+test('网页上传与聊天携带页面标识，清理使用有鉴权的keepalive DELETE，不注入历史正文', async () => {
+  const calls = [];
+  const sandbox = vm.createContext({ window:{},FormData,Blob,TextDecoder,
+    localStorage:{getItem:()=> 'token'},fetch:async(url,options)=>{
+      calls.push({url,options});
+      return {ok:true,status:200,text:async()=>'{"attachment_id":"a"}',json:async()=>({status:'cleared'}),
+        body:{getReader:()=>({read:async()=>({done:true})})}};
+    }});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web_client/js/api.js'),'utf8'),sandbox);
+  const api=vm.runInContext('API',sandbox);
+  await api.uploadAttachment('s',new Blob(['test']),'page');
+  await api.chatStream('s','追问','fast',[],{},[],'','page');
+  await api.clearAttachments('s','page',['a']);
+  assert.equal(calls[0].options.body.get('page_id'),'page');
+  assert.equal(JSON.parse(calls[1].options.body).attachment_page_id,'page');
+  assert.deepEqual(JSON.parse(calls[1].options.body).attachment_ids,[]);
+  assert.equal(calls[2].options.method,'DELETE');
+  assert.equal(calls[2].options.keepalive,true);
+  assert.match(calls[2].options.headers.Authorization,/Bearer/);
+  const source=fs.readFileSync(path.join(__dirname,'../web_client/js/chat.js'),'utf8');
+  assert.match(source,/pagehide[\s\S]*?attachmentPage.clear\(sessionId\)/);
+  assert.match(source,/function releasePageFiles[\s\S]*?attachmentPage.clear\(sessionId\)/);
+});
 
 test('普通打字的单个txt/md附件回传原件但不加edit标记，按钮流程保持不变', () => {
   const pool = files.create();

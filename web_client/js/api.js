@@ -175,10 +175,11 @@ const API = (() => {
       body: JSON.stringify({ source }),
     }),
 
-    async uploadAttachment(sessionId, file) {
+    async uploadAttachment(sessionId, file, pageId = '') {
       const form = new FormData();
       form.append('session_id', sessionId);
       form.append('file', file);
+      if (pageId) form.append('page_id', pageId);
       const response = await fetch(`${backendUrl}/chat/attachments`, {
         method: 'POST',
         headers: headers(false),
@@ -233,6 +234,9 @@ const API = (() => {
     clearTemporaryFiles: (sessionId) => request(`/chat/${encodeURIComponent(sessionId)}/temporary-files`, {
       method: 'DELETE', json: false, keepalive: true,
     }),
+    clearAttachments: (sessionId, pageId, attachmentIds) => request(`/chat/${encodeURIComponent(sessionId)}/attachments`, {
+      method: 'DELETE', body: JSON.stringify({page_id: pageId, attachment_ids: attachmentIds}), keepalive: true,
+    }),
 
     // 流式对话：后端SSE载荷还包含脱敏工具动态与结构化请求终态。
     //   {"chunk": "片段"} 逐段正文，以 {"chunk": "[DONE]"} 结束
@@ -241,9 +245,10 @@ const API = (() => {
     //   {"type": "tool_status", ...} 工具开始/结束（不含参数与正文）
     //   {"type": "request_status", ...} 完整成功或结构化降级终态
     //   {"error": "..."} 服务端异常
-    async chatStream(sessionId, message, mode, attachmentIds, handlers, originals = [], fileTaskType = '') {
+    async chatStream(sessionId, message, mode, attachmentIds, handlers, originals = [], fileTaskType = '', attachmentPageId = '') {
       const payload = { session_id: sessionId, message, mode, attachment_ids: attachmentIds || [] };
       if (fileTaskType === 'edit') payload.file_task_type = 'edit';
+      if (attachmentPageId) payload.attachment_page_id = attachmentPageId;
       let body = JSON.stringify(payload);
       if (originals.length) {
         body = new FormData();

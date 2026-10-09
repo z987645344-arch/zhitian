@@ -96,6 +96,7 @@
   let loadingSession = false;
   let hasFileHistory = false;
   const browserFiles = ZhitianTemporaryFiles.create();
+  const attachmentPage = ZhitianAttachmentPage.create(sessionStorage, API.clearAttachments);
   window.addEventListener('beforeunload', (event) => {
     if (browserFiles.hasUnsaved()) {
       event.preventDefault();
@@ -103,6 +104,7 @@
     }
   });
   window.addEventListener('pagehide', () => {
+    if (sessionId) attachmentPage.clear(sessionId);
     if (sessionId) API.clearTemporaryFiles(sessionId).catch(() => {});
     browserFiles.clear();
   });
@@ -119,6 +121,7 @@
   function releasePageFiles() {
     if (browserFiles.hasUnsaved() && !window.confirm('有未保存的文件，确定离开吗？')) return false;
     if (sessionId) API.clearTemporaryFiles(sessionId).catch(() => {});
+    if (sessionId) attachmentPage.clear(sessionId);
     browserFiles.clear();
     return true;
   }
@@ -340,7 +343,8 @@
       if (sending || loadingSession) return;
       try {
         const original = new File([product.blob], product.filename);
-        const data = await API.uploadAttachment(ensureSessionId(), original);
+        const data = await API.uploadAttachment(ensureSessionId(), original, attachmentPage.pageId);
+        attachmentPage.register(sessionId, data.attachment_id);
         if (!data.success) throw new Error(data.detail || '文件上传失败');
         browserFiles.original(data.attachment_id, original);
         if (ZhitianTemporaryFiles.continuationIsEdit(file)) data.edit = true;
@@ -709,7 +713,9 @@
       hint.textContent = file.size > 512 * 1024
         ? `正在上传 ${file.name}，文件较大，解析可能要等一会儿…`
         : `正在上传 ${file.name}…`;
-      const data = await API.uploadAttachment(targetSessionId, file);
+      await attachmentPage.ready;
+      const data = await API.uploadAttachment(targetSessionId, file, attachmentPage.pageId);
+      attachmentPage.register(targetSessionId, data.attachment_id);
       if (!data.success) {
         hint.textContent = `上传失败：${data.detail || data.error_type || '未知原因'}`;
         return;
@@ -764,6 +770,7 @@
     let streamFailed = false;
 
     try {
+      await attachmentPage.ready;
       await API.chatStream(targetSessionId, text, requestMode, attachmentIds, {
         onChunk(chunk) {
           if (!answer) bubble.classList.remove('pending');
@@ -809,7 +816,7 @@
           streamFailed = true;
           renderInterrupted(bubble, body);
         },
-      }, originals, resend.fileTaskType || '');
+      }, originals, resend.fileTaskType || '', attachmentPage.pageId);
     } catch (error) {
       bubble.classList.remove('pending');
       bubble.classList.add('failed');
@@ -823,6 +830,7 @@
   });
 
   async function initialize() {
+    await attachmentPage.ready;
     updateModeUi();
     setInteractionState();
     showWelcome();

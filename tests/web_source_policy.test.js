@@ -216,6 +216,7 @@ function uploadHarness(response, file) {
     fileCapabilities: library().fallback(), hint: {}, attachButton: { disabled: false },
     attachmentInput: { files: [file], addEventListener: (name, handler) => callbacks[name] = handler },
     sending: false, loadingSession: false, pendingAttachments: [], renderChips() {},
+    attachmentPage: {ready: Promise.resolve(), pageId:'page', register() {}},
     ensureSessionId: () => { calls.sessions++; return 'session'; },
     briefError: error => error.message,
     API: {
@@ -279,7 +280,7 @@ test('加载时探测不阻塞聊天；API封装带鉴权；四页缓存参数�
   assert.equal(requests[0].url, '/api/file-processing/engines');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer test-token');
   for (const page of ['chat', 'login', 'register', 'settings']) {
-    assert.match(read(page + '.html'), /api\.js\?v=edit-upload-fix-20261009/);
+    assert.match(read(page + '.html'), /api\.js\?v=attachment-reread-20261009/);
   }
   assert.ok(read('chat.html').indexOf('file_capabilities.js') < read('chat.html').indexOf('js/chat.js'));
   assert.ok(read('chat.html').indexOf('temporary-files.js') < read('chat.html').indexOf('js/chat.js'));
