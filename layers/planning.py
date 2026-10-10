@@ -20,6 +20,16 @@ from utils.time_context import cache_friendly_messages, current_date_prompt
 
 logger = get_logger("planning")
 
+FILE_DELIVERABLE_ROUTING_RULE = (
+    "先区分用户要一份可交付文件，还是只要一个回答。"
+    "依据知识库或资料写成、整理成、生成文件、文档、说明或报告等交付物时，选generate_file；"
+    "需要知识库依据时，系统会在generate_file内部先检索知识库再生成，不能先选search_documents，"
+    "也不能仅因这两个内部步骤就声明复杂任务。"
+    "只有目标是了解资料内容或规定、获得聊天中的回答而不是交付物时，才选search_documents。"
+    "通用模板、格式范例和按范例续写交付文件也选generate_file。"
+    "交付物的工具选择优先于事实问答的检索工具选择；事实核验要求仍由生成流程中的知识库检索落实。"
+)
+
 
 class Task(BaseModel):
     tool: str
@@ -212,6 +222,7 @@ INTENT_TOOLS = [
                 "读取已有文件或转换已有文件格式时不要调用。根据用户描述生成，或按本轮附件、可复读附件、对话中的范例续写新文件，都选本工具。"
                 "按用户要求决定完整新文件包含原内容与新增部分，还是只有新增部分。支持md、txt、pdf、docx四种输出格式；"
                 "md适合结构化文本，txt适合纯文本，用户明确要求正式文档、报告或可打印材料时可选择pdf或docx。"
+                + FILE_DELIVERABLE_ROUTING_RULE
             ),
             "parameters": {
                 "type": "object",
@@ -2279,7 +2290,7 @@ def _classify_with_model(
                     "‘搜索A的最新消息’=>search_web。复杂请求禁止选择direct_answer或单次search_web。"
                     "当多个检索对象和比较/汇总目标已经明确时，问题就是完整的；不要因为‘近期’‘最新’"
                     "没有指定精确日期范围而ask_clarification，应结合当前日期直接declare_complex_task。"
-                    "事实型问题一律先选search_documents；非事实型问候、感谢或对话本身的追问才选direct_answer；"
+                    "只要事实回答、不要求交付文件的问题先选search_documents；非事实型问候、感谢或对话本身的追问才选direct_answer；"
                     "用户明确要求把内容整理、导出或生成为可下载文件、文档、清单或报告时选generate_file；"
                     "generate_file用于按描述生成，或按附件/对话范例续写新的md、txt、pdf或docx交付物；按用户要求决定包含原内容还是只有新增内容；不用于只读取或只转换格式。"
                     "范例来自历史附件时，在generate_file的template_attachment_id里选目录标识，不要先选reread_attachment；系统在同一请求加载原文。"
@@ -2301,7 +2312,8 @@ def _classify_with_model(
             "用户要求修改本轮附件文字内容时选edit_attachment；读取、解释、概括仍选search_documents。"
             "类型不支持或有多个附件时仍选edit_attachment，由系统给出操作说明。"
         )
-    fixed_system_prompt = system_modules.prompt_prefix(fixed_system_prompt + source_policy.CLASSIFICATION_PROMPT)
+    fixed_system_prompt = system_modules.prompt_prefix(
+        fixed_system_prompt + source_policy.CLASSIFICATION_PROMPT + FILE_DELIVERABLE_ROUTING_RULE)
     reread_messages = []
     if attachment_references:
         fixed_system_prompt += attachment_reread.REREAD_RULE

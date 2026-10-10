@@ -51,6 +51,65 @@ def artifact_text(content, filename):
     return content.decode("utf-8-sig")
 
 
+def record_artifact(item, content):
+    """按真实SSE交付字段只读核对产物，不假设存在filename字段。"""
+    item["actual_size_bytes"] = len(content)
+    item["file_content"] = artifact_text(content, item["files"][0]["download_filename"])
+
+
+def model_selection(response):
+    """保留模型实际选的工具及决策理由，不用业务解析器把非法工具改成合法工具。"""
+    result = {"selected_tools": [], "tool_decisions": [], "reasoning": None}
+    data = response if isinstance(response, dict) else (
+        response.model_dump() if hasattr(response, "model_dump") else {})
+    choices = data.get("choices") or []
+    message = choices[0].get("message") or {} if choices else {}
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        arguments = function.get("arguments") or {}
+        invalid = False
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (ValueError, TypeError):
+                arguments, invalid = {}, True
+        if not isinstance(arguments, dict):
+            arguments, invalid = {}, True
+        name = function.get("name")
+        result["selected_tools"].append(name)
+        result["tool_decisions"].append({"tool_name": name, "reasoning": arguments.get("reasoning"),
+            "arguments": arguments, "arguments_parse_failed": invalid})
+    if result["tool_decisions"]:
+        result["reasoning"] = result["tool_decisions"][0]["reasoning"]
+    else:
+        try:
+            content = json.loads(message.get("content") or "null")
+            if isinstance(content, dict):
+                result["reasoning"] = content.get("reasoning")
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
+def observe_model_selection(recorder):
+    """只读挂到实际模型返回处；异常调用也有明确的空选择字段。"""
+    original = recorder.original
+    def observed(messages, tier="fast", **kwargs):
+        item = recorder.current_call.get()
+        if item is not None:
+            item.update({"selected_tools": [], "tool_decisions": [], "reasoning": None})
+        response = original(messages, tier=tier, **kwargs)
+        if item is not None:
+            item.update(model_selection(response))
+        return response
+    recorder.original = observed
+
+
+def generation_route_verified(item):
+    return (item.get("selected_tools") == ["generate_file"]
+            and not item["tool_decisions"][0]["arguments_parse_failed"])
+
+
 def run(args):
     repo = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(repo))
@@ -101,6 +160,7 @@ def run(args):
     from layers import auth, api_quota, enterprise_password, execution, llm_provider, memory
     from layers.file_processing.runtime import get_file_processor_registry
     recorder = CallRecorder(llm_provider, output, args.max_calls, no_judge=True)
+    observe_model_selection(recorder)
 
     def prevent_retry(request):
         if request.method == "POST" and "/chat/completions" in request.url.path:
@@ -114,13 +174,24 @@ def run(args):
     def recorded_call(messages, tier="fast", **kwargs):
         if recorder.stop_reason:
             raise EvalStopped("Smoke already stopped")
-        if knowledge_fixture and str(getattr(kwargs.get("stage"), "value", kwargs.get("stage"))) not in {
+        stage = str(getattr(kwargs.get("stage"), "value", kwargs.get("stage")))
+        if knowledge_fixture and stage not in {
                 "intent_classification", "direct_chat_reasoning", "memory_importance"}:
-            recorder.stop_reason = "unexpected_model_stage"
+            recorder.stop_reason = "unexpected_model_stage:" + stage
             raise EvalStopped("Generation smoke must not run rerank, reflection, planning or search models")
         # 只限制本次测量的重试，不改变应用默认配置、预算或模型参数。
         kwargs["retry_timeouts"] = False
-        return recorder.call(messages, tier=tier, **kwargs)
+        response = recorder.call(messages, tier=tier, **kwargs)
+        if knowledge_fixture and stage == "intent_classification":
+            item = next(r for r in reversed(recorder.records)
+                        if r["round"] == recorder.current and r["stage"] == stage)
+            write_json(output / "model_calls.json", recorder.records)
+            if not generation_route_verified(item):
+                recorder.stop_reason = "classification_not_generate_file"
+                print("ROUTE_STOP " + json.dumps({"selected_tools":item["selected_tools"],
+                    "tool_decisions":item["tool_decisions"]},ensure_ascii=False),flush=True)
+                raise EvalStopped("Classifier did not select generate_file; stop without retry")
+        return response
     llm_provider.chat_completion = recorded_call
 
     def forbidden(*_a, **_k):
@@ -128,6 +199,8 @@ def run(args):
     local_searches = []
     original_search = execution._search_documents
     def local_only_search(*a, **k):
+        if recorder.stop_reason:
+            raise EvalStopped("Smoke already stopped before knowledge search")
         if k.get("rerank_enabled") is not False or k.get("generate_answer") is not False:
             raise EvalStopped("Generation knowledge search must be local only")
         local_searches.append({"round":recorder.current,"rerank_enabled":False,"generate_answer":False})
@@ -182,14 +255,19 @@ def run(args):
                 "status":next((e for e in events if e.get("type") == "request_status"),None),
                 "answer":"".join(e.get("chunk","") for e in events if e.get("chunk") != "[DONE]")}
             item["knowledge_searches"] = sum(s["round"] == sample["id"] for s in local_searches)
+            item["classification"] = next(({"selected_tools":r["selected_tools"],
+                "tool_decisions":r["tool_decisions"],"reasoning":r["reasoning"]}
+                for r in recorder.records if r["round"] == sample["id"]
+                and r["stage"] == "intent_classification"),None)
             item["source_policy"] = next((e for e in events if e.get("type") == "source_policy"),None)
             item["citations"] = next((e["citations"] for e in events if e.get("type") == "citations"),[])
             completed.append(item)
+            # 下载或正文提取失败时，仍保留已经收到的状态、引用与文件卡。
+            write_json(output / "results.json",completed)
             if files:
                 artifact = client.get("/files/"+files[0]["file_id"],headers=headers)
                 artifact.raise_for_status()
-                item["actual_size_bytes"] = len(artifact.content)
-                item["file_content"] = artifact_text(artifact.content, files[0]["filename"])
+                record_artifact(item, artifact.content)
                 client.post("/files/"+files[0]["file_id"]+"/receipt",headers=headers).raise_for_status()
             write_json(output / "results.json",completed)
             print("RESULT " + json.dumps(item,ensure_ascii=False),flush=True)
