@@ -19,7 +19,9 @@ FAST_LATEST_UNVERIFIED = "当前快速模式未进行联网查询，无法核实
 WEB_FAILURE_NOTE = "联网查询失败，以下为通用知识，可能不是最新信息。"
 FAST_GENERAL_NOTE = "以下来自通用知识，非知识库资料；当前快速模式未进行联网查询，如需最新信息请切换到专家模式。"
 NO_SOURCE_NOTE_PROMPT = "不要自行撰写来源说明或联网状态备注；这些说明由服务端统一添加。"
-SUPPLIED_CONTEXT_NOTE = "以下依据本轮附件资料回答；如有知识库资料，也一并参考。"
+SUPPLIED_CONTEXT_NOTE = "以下依据你提供的附件资料回答；如有知识库资料，也一并参考。"
+# 兼容旧成品及模型沿用旧提示的输出，统一替换为当前服务端文案。
+_LEGACY_SUPPLIED_CONTEXT_NOTE = "以下依据本轮附件资料回答；如有知识库资料，也一并参考。"
 CLASSIFICATION_PROMPT = (
     "在本次主工具的source_classification参数中同时完成来源分类，不增加一次调用。"
     "source取internal/public/uncertain；本知识库所有者自己的资料、作品、业务与客户事实属于internal；"
@@ -146,7 +148,9 @@ def annotate_answer(answer: str, state: Optional[dict]) -> str:
     if is_knowledge_refusal(text):
         record_source(state, "refusal", "knowledge_miss")
     if (state or {}).get("answer_source") == "supplied_context" and not (state or {}).get("error"):
-        return SUPPLIED_CONTEXT_NOTE + "\n\n" + text.replace(SUPPLIED_CONTEXT_NOTE, "").lstrip()
+        for known in (SUPPLIED_CONTEXT_NOTE, _LEGACY_SUPPLIED_CONTEXT_NOTE):
+            text = text.replace(known, "")
+        return SUPPLIED_CONTEXT_NOTE + "\n\n" + text.lstrip()
     if (state or {}).get("answer_source") != "general":
         return text
     note = FAST_GENERAL_NOTE if (state or {}).get("mode") == "fast" else WEB_FAILURE_NOTE

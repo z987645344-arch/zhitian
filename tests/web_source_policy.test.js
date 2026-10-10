@@ -187,7 +187,30 @@ test('附件依据使用supplied_context标签', () => {
   vm.runInContext(chatSource.slice(start, end), sandbox);
   vm.runInContext('renderSourcePolicy', sandbox)({ querySelectorAll: () => [row] },
     { answer_source: 'supplied_context' });
-  assert.equal(detail.textContent, '依据：本轮附件资料');
+  assert.equal(detail.textContent, '依据：你提供的附件资料');
+  assert.match(fs.readFileSync(path.join(__dirname, '../web_client/chat.html'), 'utf8'), /chat\.js\?v=attachment-note-20261010/);
+});
+
+test('网页原样显示新版附件依据说明，不另加本轮说明或重复备注', async () => {
+  const note = '以下依据你提供的附件资料回答；如有知识库资料，也一并参考。';
+  const expected = note + '\n\n附件回答正文';
+  const events = [{ type: 'source_policy', answer_source: 'supplied_context' },
+    { chunk: note.slice(0, 10) }, { chunk: note.slice(10) + '\n\n附件回答正文' }, { chunk: '[DONE]' }];
+  let read = false;
+  const chunks = [];
+  const sandbox = vm.createContext({ window: {}, localStorage: { getItem: () => 'test-token' }, TextDecoder,
+    fetch: async () => ({ ok: true, status: 200, body: { getReader: () => ({ read: async () => {
+      if (read) return { done: true };
+      read = true;
+      return { done: false, value: new TextEncoder().encode(events.map(e => 'data: ' + JSON.stringify(e) + '\n\n').join('')) };
+    } }) } }) });
+  vm.runInContext(apiSource, sandbox);
+  await vm.runInContext('API', sandbox).chatStream('session', '查看文件', 'fast', [], {
+    onChunk: chunk => chunks.push(chunk)
+  });
+  assert.equal(chunks.join(''), expected);
+  assert.equal(chunks.join('').split(note).length - 1, 1);
+  assert.doesNotMatch(chunks.join(''), /本轮附件资料/);
 });
 
 // 文件能力回归放在CI已执行的网页测试文件中，不遗漏新测试。

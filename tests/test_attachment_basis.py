@@ -8,6 +8,21 @@ import pytest
 from layers import attachments, auth, execution, llm_provider, memory, planning, source_policy
 
 
+@pytest.mark.parametrize("reread", [False, True])
+@pytest.mark.parametrize("prefix", ["", "current", "legacy", "both"])
+def test_supplied_context_note_new_wording_is_shared_and_deduplicated(reread, prefix):
+    expected = "以下依据你提供的附件资料回答；如有知识库资料，也一并参考。"
+    old = "以下依据本轮附件资料回答；如有知识库资料，也一并参考。"
+    assert source_policy.SUPPLIED_CONTEXT_NOTE == expected
+    prefixes = {"": "", "current": expected, "legacy": old, "both": old + expected}
+    state = {"answer_source": "supplied_context", "attachment_reread": reread}
+    answer = source_policy.annotate_answer(prefixes[prefix] + "\n\n回答正文", state)
+    assert answer == expected + "\n\n回答正文"
+    assert old not in answer
+    assert answer.count(expected) == 1
+    assert source_policy.annotate_answer(answer, state) == answer
+
+
 def reply(content="", tool=None):
     message = {"content": content}
     if tool:
