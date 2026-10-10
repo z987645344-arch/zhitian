@@ -1044,6 +1044,8 @@ def _resolve_attachment_context(
 
 def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List[dict]:
     """为历史消息补充可展示的附件文件名，不暴露其他用户文件。"""
+    # 调用方已校验会话归属；只在这份会话历史里匹配，不跨会话查附件。
+    names = file_traces.attachment_names(history)
     enriched = []
     for item in history:
         if item.get("message_type") == memory.MESSAGE_TYPE_FILE_TRACE:
@@ -1051,7 +1053,7 @@ def _enrich_history_attachments(history: List[dict], owner_user_id: str) -> List
         attachment_ids = item.get("attachment_ids") or []
         filenames = []
         for attachment_id in attachment_ids:
-            filenames.append("附件 · 原件已清理")
+            filenames.append(f"{names.get(attachment_id, '附件')} · 原件已清理")
         enriched.append({**item, "attachment_filenames": filenames})
     return enriched
 

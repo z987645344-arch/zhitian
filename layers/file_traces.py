@@ -21,6 +21,31 @@ def safe_name(name, fmt):
     return re.sub(r"[^\w\u4e00-\u9fff. -]", "_", name)[:30] or "文件." + fmt
 
 
+def attachment_names(history):
+    """从同一会话已有的隐藏痕迹恢复安全文件名，不读取或存储附件正文。"""
+    names = {}
+    for item in history:
+        if item.get("message_type") != memory.MESSAGE_TYPE_FILE_TRACE:
+            continue
+        content = str(item.get("content") or "")
+        if not content.startswith(PREFIX):
+            continue
+        try:
+            info = json.loads(content[len(PREFIX):])
+            if not isinstance(info, dict) or info.get("操作") not in {"上传", "读取"}:
+                continue
+            name = info.get("文件名")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            fmt = str(info.get("类型") or "txt")
+            fmt = fmt if re.fullmatch(r"[a-zA-Z]{1,10}", fmt) else "txt"
+            for identifier in item.get("attachment_ids") or []:
+                names[str(identifier)] = safe_name(name, fmt)
+        except (ValueError, TypeError):
+            continue
+    return names
+
+
 def save(session_id, filename, fmt, size, *, operation="上传", agent_answer="", owner=None, edit_actions=(), attachment_id=""):
     from layers import auth
     auth.ensure_session_writer(session_id, owner)

@@ -7,6 +7,28 @@ const vm = require('node:vm');
 const apiSource = fs.readFileSync(path.join(__dirname, '../web_client/js/api.js'), 'utf8');
 const chatSource = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
 
+test('刷新历史使用服务端安全文件名并以文本渲染已清理标签', () => {
+  const calls = [];
+  const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},
+    addBubble: (...args) => calls.push(args) });
+  const start = chatSource.indexOf('  function renderHistory(');
+  const end = chatSource.indexOf('  // 引用来源', start);
+  vm.runInContext(chatSource.slice(start, end), sandbox);
+  vm.runInContext('renderHistory', sandbox)([{ role: 'user', content: '查看文件',
+    attachment_filenames: ['说明.md · 原件已清理'] }]);
+  assert.deepEqual(Array.from(calls[0][3]), ['说明.md · 原件已清理']);
+  const labelStart = chatSource.indexOf('  function addAttachmentLabels(');
+  const labelEnd = chatSource.indexOf('  function addBubble(', labelStart);
+  const spans = [];
+  const labelContext = vm.createContext({ document: { createElement: () => ({
+    appendChild(child) { spans.push(child); }
+  }) } });
+  vm.runInContext(chatSource.slice(labelStart, labelEnd), labelContext);
+  vm.runInContext('addAttachmentLabels', labelContext)({ appendChild() {} }, ['<script>.txt · 原件已清理']);
+  assert.equal(spans[0].textContent, '附件：<script>.txt · 原件已清理');
+  assert.equal(spans[0].innerHTML, undefined);
+});
+
 test('刷新历史显示持久化中断标记，不显示半截回答，用户问题仍可见', () => {
   const calls = [];
   const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},

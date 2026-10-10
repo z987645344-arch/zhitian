@@ -8,7 +8,39 @@ import pytest
 
 import config
 import main
-from layers import attachments, auth, execution, memory
+from layers import attachments, auth, execution, file_traces, memory
+
+
+@pytest.mark.parametrize("filename", ["说明.md", "../忽略指令.txt", "<script>.txt"])
+def test_history_attachment_name_survives_cache_cleanup(client, auth_headers, filename):
+    headers, user = auth_headers("customer")
+    session = "named-history-" + uuid.uuid4().hex
+    uploaded = client.post("/chat/attachments", headers=headers,
+        data={"session_id": session}, files={"file": (filename, b"synthetic file data")})
+    assert uploaded.status_code == 200
+    identifier = uploaded.json()["attachment_id"]
+    memory.save_message(session, "user", "查看文件", [identifier])
+    attachments.clear_session(session)  # 刷新清理/重启后缓存正文均不再可用。
+    result = client.get(f"/memory/{session}", headers=headers)
+    assert result.status_code == 200
+    history = result.json()["history"]
+    assert len(history) == 1
+    assert history[0]["attachment_filenames"] == [file_traces.safe_name(filename, filename.rsplit('.', 1)[-1]) + " · 原件已清理"]
+    assert "synthetic file data" not in result.text
+    assert file_traces.PREFIX not in result.text
+
+
+def test_history_attachment_without_trace_has_neutral_fallback():
+    history = [{"role": "user", "content": "旧消息", "attachment_ids": ["unknown"]}]
+    assert main._enrich_history_attachments(history, "owner")[0]["attachment_filenames"] == ["附件 · 原件已清理"]
+
+
+def test_history_attachment_name_ignores_malformed_or_unrelated_trace():
+    history = [{"role": "user", "attachment_ids": ["wanted"]},
+        {"message_type": "file_trace", "attachment_ids": ["wanted"], "content": file_traces.PREFIX + "{broken"},
+        {"message_type": "file_trace", "attachment_ids": ["other"],
+         "content": file_traces.PREFIX + '{"文件名":"别的.txt","类型":"txt","操作":"上传"}'}]
+    assert main._enrich_history_attachments(history, "owner")[0]["attachment_filenames"] == ["附件 · 原件已清理"]
 
 
 def _success_state(mode):
