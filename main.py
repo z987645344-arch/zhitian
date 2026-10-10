@@ -592,6 +592,8 @@ class ChatFileEvent(BaseModel):
     file_id: str
     download_filename: str
     file_type: str
+    size_bytes: int = 0
+    summary: str = ""
     edit_changes: Optional[List[dict]] = None
     edit_issues: Optional[List[dict]] = None
 
@@ -1699,7 +1701,7 @@ async def chat(
                 assistant_message_type,
                 owner_user_id=current_user["user_id"],
             )
-        if (not chat_request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+        if (not chat_request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment", "file_generation_unavailable"}
                 and not has_error and status == "success" and not final_state.get("degradation_reasons") and final_data):
             background_tasks.add_task(
                 llm_provider.run_with_api_key,
@@ -3844,7 +3846,7 @@ def _chat_stream_events(
             yield _sse_data(_request_status_event(final_state, has_error).model_dump())
             yield _sse_data({"chunk": "[DONE]"})
             if not has_error:
-                if (not request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment"}
+                if (not request.file_task_type and not final_state.get("attachment_reread") and final_state.get("intent") not in {"edit_document", "edit_attachment", "file_generation_unavailable"}
                         and request_status == "success" and final_data):
                     background_tasks.add_task(
                         llm_provider.run_request_background,
@@ -4112,7 +4114,7 @@ def _chat_stream_events(
         yield _sse_data({"type": "citations", "citations": citations})
         yield _sse_data(_request_status_event(state, has_error).model_dump())
         yield _sse_data({"chunk": "[DONE]"})
-        if (not state.get("attachment_reread") and state.get("intent") not in {"edit_document", "edit_attachment"}
+        if (not state.get("attachment_reread") and state.get("intent") not in {"edit_document", "edit_attachment", "file_generation_unavailable"}
                 and not has_error and status == "success" and final_data):
             background_tasks.add_task(
                 llm_provider.run_request_background,
@@ -4354,11 +4356,17 @@ def _serialize_generated_file_events(state: dict) -> List[ChatFileEvent]:
         if not file_id or not download_filename or file_id in seen_file_ids:
             continue
         seen_file_ids.add(file_id)
+        from layers import file_summary
+        record = files_store.get_file(file_id)
+        fallback_summary = (f"已将文件转换为 {file_type.upper()}。" if result.tool == "convert_document"
+                            else "已按要求修改文件。" if result.tool == "edit_document" else "已按要求生成文件。")
         events.append(
             ChatFileEvent(
                 file_id=file_id,
                 download_filename=download_filename,
                 file_type=file_type or "file",
+                size_bytes=record.size_bytes if record else 0,
+                summary=file_summary.clean(metadata.get("summary"), fallback_summary),
                 edit_changes=metadata.get("edit_changes"),
                 edit_issues=metadata.get("edit_issues"),
             )

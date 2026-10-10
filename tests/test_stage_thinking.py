@@ -73,7 +73,7 @@ def test_every_runtime_provider_call_declares_a_stage():
             ):
                 calls.append((path.name, node.lineno))
                 assert any(k.arg == "stage" for k in node.keywords), (path.name, node.lineno)
-    assert len(calls) == 18
+    assert len(calls) == 19
 
 
 def test_unknown_stage_is_not_silently_accepted():

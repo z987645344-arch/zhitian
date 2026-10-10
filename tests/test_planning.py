@@ -567,6 +567,8 @@ def test_chat_stream_emits_structured_file_event_after_generated_text(
         "file_id": "11111111-1111-1111-1111-111111111111",
         "download_filename": "项目周报.pdf",
         "file_type": "pdf",
+        "size_bytes": 0,
+        "summary": "已按要求生成文件。",
     }
     assert events[3] == {"type": "citations", "citations": []}
     assert events[4] == {
@@ -882,7 +884,8 @@ def test_fast_chat_uses_one_model_call_without_tools(monkeypatch):
     assert {item["function"]["name"] for item in calls[0]["tools"]} == {
         "search_documents",
         "list_documents",
-        "direct_answer"
+        "direct_answer",
+        "request_file_generation"
     }
 
 
@@ -1015,7 +1018,7 @@ def test_fast_has_no_search_web_capability(monkeypatch):
 
     assert state["response"]
     assert "search_web" not in observed_tools
-    assert len(observed_tools) == 3
+    assert set(observed_tools) == {"search_documents", "list_documents", "direct_answer", "request_file_generation"}
     assert tool_call.call_args[0][0] == "search_documents"
     assert state["response"] == source_policy.REFUSAL
 
