@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from layers.chroma_sync import CHROMA_LOCK
+from layers.chroma_sync import CHROMA_LOCK, close_chroma_client
 
 
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -182,14 +182,8 @@ def sqlite_snapshot(path: Path) -> Dict[str, Any]:
 
 
 def _stop_chroma_client(client: Any) -> None:
-    system = getattr(client, "_system", None)
-    stop = getattr(system, "stop", None)
-    if callable(stop):
-        stop()
     try:
-        from chromadb.api.client import SharedSystemClient
-
-        SharedSystemClient.clear_system_cache()
+        close_chroma_client(client)
     finally:
         gc.collect()
 
