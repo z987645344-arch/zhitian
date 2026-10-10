@@ -101,6 +101,8 @@ class AgentState(TypedDict):
     filename_hint: str
     output_format: str
     file_summary: str
+    generation_knowledge_checked: bool
+    generation_document_context: Optional[execution.DocumentAnswerContext]
     conversion_target_format: str
     decision_reasoning: Optional[str]
     is_complex_task: bool
@@ -500,7 +502,48 @@ def retrieve_node(state: AgentState) -> AgentState:
     except Exception:
         state["context"] = state["context"] or []
     observability.log_stage("retrieve_chroma", int((time.perf_counter() - started_at) * 1000))
+    _retrieve_generation_documents(state)
     return state
+
+
+def _retrieve_generation_documents(state: AgentState) -> None:
+    """内部文件生成只做一次本地召回；不精排、不筛选、不生成问答或联网。"""
+    policy = source_policy.get_policy(state)
+    if (state.get("mode") != "expert" or state.get("intent") != "generate_file"
+            or policy.non_factual or policy.source not in {"internal", "uncertain"}
+            or state.get("generation_knowledge_checked")):
+        return
+    llm_provider.check_request_cancelled("generation_knowledge_retrieval", state)
+    state["generation_knowledge_checked"] = True
+    state["generation_document_context"] = None
+    execution.emit_tool_status(state, "search_documents", "started")
+    try:
+        result = execution._search_documents(
+            query=state["message"], tier="expert", rerank_enabled=False,
+            generate_answer=False,
+            timeout=execution.remaining_request_budget(state, config.EXPERT_LLM_TIMEOUT),
+            _execution_state=state,
+        )
+        if result.status != "success":
+            raise ValueError("generation_document_search_failed")
+        context = result.document_answer_context
+        if context and context.candidates:
+            # 所有召回资料直接进入最终生成；复用已核验范围及整次请求的邻段上限。
+            execution.prepare_document_answer_context(context, state)
+            state["generation_document_context"] = context
+        source_policy.record_source(state, "knowledge" if state["generation_document_context"] else "conversation",
+                                    "generated_with_knowledge" if state["generation_document_context"] else "user_requested_file_generation")
+        execution.emit_tool_status(state, "search_documents", "succeeded")
+    except llm_provider.RequestCancelled:
+        raise
+    except Exception as exc:
+        reason = ("generation_knowledge_retrieval_timeout" if isinstance(exc, TimeoutError)
+                  else "generation_knowledge_retrieval_failed")
+        state["generation_document_context"] = None
+        source_policy.record_source(state, "conversation", reason)
+        execution.add_degradation_reason(state, reason)
+        execution.emit_tool_status(state, "search_documents", "failed", reason_code=reason)
+        logger.warning("生成前知识库检索降级：reason=%s error_type=%s", reason, type(exc).__name__)
 
 
 def plan_node(state: AgentState) -> AgentState:
@@ -538,6 +581,8 @@ def execute_node(state: AgentState) -> AgentState:
         if "【待补充：" in str(generated_body) and "含待补充项" not in summary:
             summary = summary[:file_summary.MAX_LENGTH - len("（含待补充项）")] + "（含待补充项）"
         result.metadata["summary"] = summary
+        if result.status == "success" and state.get("generation_document_context"):
+            result.citations = execution.document_answer_citations(state["generation_document_context"])
     observability.log_stage(
         "execute_%s" % task.tool,
         int((time.perf_counter() - started_at) * 1000)
@@ -1040,6 +1085,8 @@ def _new_agent_state(
         filename_hint="",
         output_format="md",
         file_summary="",
+        generation_knowledge_checked=False,
+        generation_document_context=None,
         conversion_target_format="",
         decision_reasoning=None,
         is_complex_task=False,
@@ -2043,7 +2090,7 @@ def _respond_with_generated_file(state: AgentState) -> None:
         download_filename,
         relative_path,
     )
-    state["citations"] = []
+    state["citations"] = _dedupe_citations(result.citations or [])
 
 
 def _respond_with_converted_file(state: AgentState) -> None:

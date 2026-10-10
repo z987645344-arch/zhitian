@@ -20,12 +20,11 @@ def text_reply(text):
     return {"choices": [{"message": {"content": text}}]}
 
 
-def no_search(monkeypatch):
-    monkeypatch.setattr(planning, "retrieve_node", lambda s: s)
+def no_web(monkeypatch):
+    monkeypatch.setattr(memory, "search_memory", lambda *_a, **_k: [])
     monkeypatch.setattr(planning, "_load_classify_context", lambda *_a: [])
-    forbidden = Mock(side_effect=AssertionError("文件任务不得检索或联网"))
-    for module, name in [(execution, "_search_documents"), (execution, "_search_web")]:
-        monkeypatch.setattr(module, name, forbidden)
+    forbidden = Mock(side_effect=AssertionError("文件任务不得联网"))
+    monkeypatch.setattr(execution, "_search_web", forbidden)
     forbidden.memory_roles = []
     def user_memory_only(session, role, content, *_a, **_k):
         forbidden.memory_roles.append(role)
@@ -35,15 +34,37 @@ def no_search(monkeypatch):
     return forbidden
 
 
+def no_knowledge_search(monkeypatch):
+    forbidden = Mock(side_effect=AssertionError("公开文件任务不得检索知识库"))
+    monkeypatch.setattr(execution, "_search_documents", forbidden)
+    return forbidden
+
+
+def empty_knowledge_search(monkeypatch):
+    search = Mock(return_value=execution.ToolResult(tool="search_documents", status="success", data=""))
+    monkeypatch.setattr(execution, "_search_documents", search)
+    return search
+
+
+def assert_one_local_search(search):
+    assert search.call_count == 1
+    assert search.call_args.kwargs["rerank_enabled"] is False
+    assert search.call_args.kwargs["generate_answer"] is False
+
+
+@pytest.mark.parametrize("source", ["internal", "public"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("example", ["description", "attachment", "history", "reread", "txt", "explicit"])
-def test_expert_generation_examples_same_two_calls_and_download_card(client, auth_headers, monkeypatch, stream, example):
+def test_expert_generation_examples_same_two_calls_and_download_card(client, auth_headers, monkeypatch, stream, example, source):
     headers, user = auth_headers("customer")
     session = uuid.uuid4().hex
     auth.bind_session(session, user["user_id"])
-    forbidden = no_search(monkeypatch)
+    forbidden = no_web(monkeypatch)
+    search = empty_knowledge_search(monkeypatch) if source == "internal" else no_knowledge_search(monkeypatch)
     sample = "1. 范例：准备材料；核对目标；完成检查。"
     args = {"filename_hint": "新文件", "summary": "根据范例生成后续三项。"}
+    args["source_classification"] = {"source":source,"time_sensitivity":"general",
+        "only_materials":False,"non_factual":False}
     payload = {"session_id": session, "mode": "expert", "message": "生成一份简短说明文件", "attachment_page_id": "page"}
     if example in {"attachment", "reread", "txt", "explicit"}:
         filename = "范例.txt" if example == "txt" else "范例.md"
@@ -88,11 +109,16 @@ def test_expert_generation_examples_same_two_calls_and_download_card(client, aut
     download = client.get("/files/" + artifact["file_id"], headers=headers)
     assert download.content.decode() == output
     forbidden.assert_not_called()
+    if source == "internal":
+        assert_one_local_search(search)
+    else:
+        search.assert_not_called()
     assert set(forbidden.memory_roles) <= {"user"}
 
 
 def test_fast_generation_notice_one_call_no_file_or_refusal(monkeypatch):
-    no_search(monkeypatch)
+    no_web(monkeypatch)
+    no_knowledge_search(monkeypatch)
     model = Mock(return_value=tool_reply("request_file_generation"))
     monkeypatch.setattr(llm_provider, "chat_completion", model)
     state = planning.run_graph_state("new-session", "生成一份文件", "fast")
@@ -109,7 +135,8 @@ def test_cleared_generation_template_stops_before_generation(client, auth_header
     session = uuid.uuid4().hex
     auth.bind_session(session, user["user_id"])
     file_traces.save(session, "范例.md", "md", 10, operation="上传", owner=user["user_id"], attachment_id="gone")
-    no_search(monkeypatch)
+    no_web(monkeypatch)
+    no_knowledge_search(monkeypatch)
     model = Mock(return_value=tool_reply(template_attachment_id="gone"))
     monkeypatch.setattr(llm_provider, "chat_completion", model)
     response = client.post("/chat", headers=headers, json={"session_id":session,"mode":"expert",
@@ -155,12 +182,14 @@ def test_file_smoke_prepare_stays_within_three_requests_twelve_calls():
 def test_generation_request_matches_legacy_call_count_and_never_runs_legacy_body(client, auth_headers, monkeypatch, continuation):
     """旧正文生成函数作为计数对照；新请求不可双跑新旧生成函数。后台用户记忆使用相同零付费桩。"""
     headers, user = auth_headers("customer")
-    no_search(monkeypatch)
+    no_web(monkeypatch)
+    search = empty_knowledge_search(monkeypatch)
     original_legacy = execution._llm_chat
     request = "照第1项格式续写第2到4项，生成新文件" if continuation else "按描述生成一份md文件"
     body = "1. 范例。\n2. 新项。\n3. 新项。\n4. 新项。"
     counts = []
     for legacy in [True, False]:
+        search.reset_mock()
         session = uuid.uuid4().hex
         auth.bind_session(session, user["user_id"])
         payload = {"session_id":session,"mode":"expert","message":request}
@@ -180,6 +209,7 @@ def test_generation_request_matches_legacy_call_count_and_never_runs_legacy_body
                 scoped.setattr(execution,"_llm_chat",old_path)
             response = client.post("/chat",headers=headers,json=payload)
             assert response.status_code == 200 and response.json()["files"]
+            assert_one_local_search(search)
             counts.append(model.call_count)
             assert [call.kwargs["stage"] for call in model.call_args_list] == [
                 planning.config.LLMStage.INTENT_CLASSIFICATION, planning.config.LLMStage.DIRECT_CHAT_REASONING]
@@ -190,7 +220,8 @@ def test_generation_request_matches_legacy_call_count_and_never_runs_legacy_body
 
 def test_internal_unverified_generation_requires_placeholders_and_marks_summary(client, auth_headers, monkeypatch):
     headers, _user = auth_headers("customer")
-    no_search(monkeypatch)
+    no_web(monkeypatch)
+    search = empty_knowledge_search(monkeypatch)
     model = Mock(side_effect=[tool_reply(output_format="md",summary="生成制度草稿。"),
         text_reply("# 制度草稿\n处理期限：【待补充：处理期限】")])
     monkeypatch.setattr(llm_provider,"chat_completion",model)
@@ -202,10 +233,13 @@ def test_internal_unverified_generation_requires_placeholders_and_marks_summary(
     assert "不得编造" in system and "使用明确占位【待补充：所需信息】" in system
     assert "通用写作、模板、格式范例" in system
     assert "含待补充项" in response.json()["files"][0]["summary"]
+    assert_one_local_search(search)
+    assert response.json()["citations"] == []
 
 
 def test_known_knowledge_context_is_kept_in_generation_prompt(monkeypatch):
-    no_search(monkeypatch)
+    no_web(monkeypatch)
+    no_knowledge_search(monkeypatch)
     quote = "已核验资料：办理窗口为三个工作日。"
     state = planning._new_agent_state("known-generation", "按已查到的资料生成文件", "expert")
     state["intent"] = "generate_file"
