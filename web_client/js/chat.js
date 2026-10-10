@@ -290,15 +290,12 @@
     icon.textContent = fileTypeLabel(file.file_type, file.download_filename);
     icon.setAttribute('aria-hidden', 'true');
 
-    const copy = document.createElement('div');
-    copy.className = 'generated-file-copy';
-    const title = document.createElement('strong');
-    title.textContent = file.download_filename;
+    const { copy, size } = ZhitianTemporaryFiles.renderDetails(document, file);
     const status = document.createElement('span');
     status.className = 'generated-file-status';
     status.textContent = '文件已生成　临时存储1小时，请及时保存';
     status.setAttribute('aria-live', 'polite');
-    copy.append(title, status);
+    copy.appendChild(status);
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -311,6 +308,7 @@
       // 页面切换后到达的旧请求不能重新塞回内存。
       if (sessionId !== pageSession || !card.isConnected) return;
       browserFiles.product(file.file_id, download.blob, download.filename);
+      size.textContent = ZhitianTemporaryFiles.readableSize(download.blob.size);
       button.disabled = false;
       await API.acknowledgeFile(file.file_id);
     }).catch(error => { status.textContent = `文件获取失败：${briefError(error)}`; });
@@ -356,7 +354,6 @@
     actions.className = 'generated-file-actions';
     actions.append(button, reuse);
     card.append(icon, copy, actions);
-    if ((file.edit_changes || []).length) card.appendChild(ZhitianTemporaryFiles.renderComparison(document, file));
     bubble.appendChild(card);
     scrollToBottom();
   }

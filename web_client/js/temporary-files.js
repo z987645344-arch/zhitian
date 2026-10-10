@@ -41,24 +41,28 @@ const ZhitianTemporaryFiles = (() => {
     }
     return { ids, originals };
   }
-  function renderComparison(document, file) {
-    const panel = document.createElement('details');
-    const title = document.createElement('summary');
-    title.textContent = `修改对照（${(file.edit_changes || []).length}处，点击展开改前 / 改后）`;
-    panel.className = 'edit-comparison';
-    panel.appendChild(title);
-    for (const change of file.edit_changes || []) {
-      const block = document.createElement('pre');
-      block.textContent = (change.action === 'insert_after' ? `插入位置：${change.anchor}\n` : '') +
-        `改前：${change.before || '（空）'}\n改后：${change.after || '（删除）'}`;
-      panel.appendChild(block);
-    }
-    if ((file.edit_issues || []).length) {
-      const notice = document.createElement('p');
-      notice.textContent = '部分操作未完成，请结合回答中的原因核对后再修改。';
-      panel.appendChild(notice);
-    }
-    return panel;
+  function readableSize(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return '大小未知';
+    if (bytes < 1024) return `${Math.floor(bytes)} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function renderDetails(document, file) {
+    const copy = document.createElement('div');
+    copy.className = 'generated-file-copy';
+    const title = document.createElement('strong');
+    title.textContent = String(file.download_filename || '文件');
+    const size = document.createElement('span');
+    size.className = 'generated-file-size';
+    size.textContent = readableSize(file.size_bytes);
+    const summary = document.createElement('p');
+    summary.className = 'generated-file-summary';
+    summary.textContent = typeof file.summary === 'string'
+      ? file.summary.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160) || '已按要求处理文件。'
+      : '已按要求处理文件。';
+    copy.appendChild(title); copy.appendChild(size); copy.appendChild(summary);
+    return { copy, size };
   }
   function withIntentOriginal(plan, pool) {
     // 只按本轮附件格式提供原件；是否编辑仍由同一次工具选择判断，不匹配用户措辞。
@@ -77,6 +81,6 @@ const ZhitianTemporaryFiles = (() => {
     const name = linked?.[1] || edited?.[1] || text.replace(/\/files\/[\w/-]+/g, '').trim() || '文件';
     return `${name} · 文件已清理`;
   }
-  return { create, planResend, withIntentOriginal, renderComparison, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };
+  return { create, planResend, withIntentOriginal, renderDetails, readableSize, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };
 })();
 if (typeof module !== 'undefined') module.exports = ZhitianTemporaryFiles;

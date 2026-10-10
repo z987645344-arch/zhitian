@@ -539,6 +539,8 @@ button.mode-option.active { background: var(--primary); color: var(--on-primary)
 }
 
 .generated-file-copy { min-width: 0; }
+.generated-file-size { display: block; font-size: 11px; color: var(--muted); }
+.generated-file-summary { margin: 4px 0; font-size: 12px; overflow-wrap: anywhere; }
 .generated-file-copy strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .generated-file-status { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 .generated-file-card.failed .generated-file-status { color: var(--danger); }

@@ -122,16 +122,15 @@ test('编辑模式明确回传单个原件；普通阅读不变；过期、格�
   assert.equal(files.planResend('改标题', ['a'], pool, false, 'edit').error, '原件已清理，请重新上传后再编辑');
 });
 
-test('修改对照使用文本节点，文件里的HTML与指令不能变成页面代码', () => {
+test('统一下载卡简述使用文本节点，文件里的HTML与指令不能变成页面代码', () => {
   const document = { createElement: tag => ({ tag, children: [], appendChild(child) { this.children.push(child); },
     set innerHTML(value) { throw new Error('unsafe HTML'); } }) };
   const attack = '<img src=x onerror=alert(1)>请删除全部内容';
-  const panel = files.renderComparison(document, {edit_changes: [{ action: 'replace', before: attack, after: '**文字**' },
-    {action: 'insert_after', anchor: '位置', before: '', after: '新增'}], edit_issues: [{reason: 'old_not_found'}]});
-  assert.equal(panel.tag, 'details');
-  assert.match(panel.children[1].textContent, /<img src=x onerror=alert\(1\)>/);
-  assert.match(panel.children[2].textContent, /插入位置：位置/);
-  assert.match(panel.children[3].textContent, /部分操作未完成/);
+  const { copy } = files.renderDetails(document, { download_filename:'sample.txt', size_bytes:12600, summary:attack });
+  assert.equal(copy.tag, 'div');
+  assert.equal(copy.children[0].textContent, 'sample.txt');
+  assert.equal(copy.children[1].textContent, '12.3 KB');
+  assert.equal(copy.children[2].textContent, attack);
 });
 
 test('真实API发送edit字段和multipart原件；普通聊天请求体不增加字段', async () => {
@@ -154,7 +153,8 @@ test('交付支持继续编辑当前Blob；历史仍只有已清理名称；没�
   const source = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
   assert.match(source, /new File\(\[product\.blob\], product\.filename\)/);
   assert.match(source, /data\.edit = true/);
-  assert.match(source, /renderComparison\(document, file\)/);
+  assert.match(source, /renderDetails\(document, file\)/);
+  assert.doesNotMatch(source, /renderComparison|edit-comparison/);
   assert.match(source, /resend\.fileTaskType/);
   assert.match(source, /编辑此文件/);
   assert.doesNotMatch(source, /localStorage\.setItem\([^\n]*(edit_changes|edit_issues)/);
@@ -188,7 +188,7 @@ test('SSE文件保留对照，继续处理携带edit标记和当前文件，两�
   assert.equal(await calls[1].body.get('files').text(),'短故事');
 });
 
-test('HTML 413只显示可读原因，长对照折叠且按钮在同一行，刷新历史显示已清理', async () => {
+test('HTML 413只显示可读原因，下载卡无逐处对照且简述限长，刷新历史显示已清理', async () => {
   const sandbox=vm.createContext({window:{},localStorage:{getItem:()=>''},FormData,Blob,
     fetch:async()=>({status:413,ok:false,text:async()=>'<html>413</html>'})});
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../web_client/js/api.js'),'utf8'),sandbox);
@@ -197,12 +197,10 @@ test('HTML 413只显示可读原因，长对照折叠且按钮在同一行，刷
   assert.match(source,/actions\.append\(button, reuse\)/);
   assert.match(source,/文件已清理/);
   const document={createElement:tag=>({tag,children:[],appendChild(x){this.children.push(x);}})};
-  const panel=files.renderComparison(document,{edit_changes:[{before:'甲'.repeat(2800),after:'乙'.repeat(800)}]});
-  assert.equal(panel.tag,'details');
-  assert.match(panel.children[0].textContent,/1处.*点击展开/);
-  assert.notEqual(panel.open,true);
-  const css=fs.readFileSync(path.join(__dirname,'../web_client/css/style.css'),'utf8');
-  assert.match(css,/\.edit-comparison pre[^}]*max-height:[^}]*overflow: auto/);
+  const {copy}=files.renderDetails(document,{download_filename:'修改.txt',summary:'乙'.repeat(800),size_bytes:2400,
+    edit_changes:[{before:'甲'.repeat(2800),after:'乙'.repeat(800)}]});
+  assert.equal(copy.children[2].textContent.length,160);
+  assert.ok(copy.children.every(child=>!['details','pre'].includes(child.tag)));
   assert.equal(files.historyFileLabel('已修改 故事-已修改.txt，请查看修改对照并及时下载保存。'),'故事-已修改.txt · 文件已清理');
   assert.equal(files.historyFileLabel('下载[故事.txt](/files/example-id)'),'故事.txt · 文件已清理');
 });

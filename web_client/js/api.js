@@ -316,6 +316,8 @@ const API = (() => {
                 file_id: fileId,
                 download_filename: downloadFilename,
                 file_type: typeof payload.file_type === 'string' ? payload.file_type.trim() : '',
+                size_bytes: Number.isFinite(payload.size_bytes) && payload.size_bytes >= 0 ? payload.size_bytes : undefined,
+                summary: typeof payload.summary === 'string' ? payload.summary.slice(0, 160) : '',
                 edit_changes: Array.isArray(payload.edit_changes) ? payload.edit_changes : [],
                 edit_issues: Array.isArray(payload.edit_issues) ? payload.edit_issues : [],
               });
