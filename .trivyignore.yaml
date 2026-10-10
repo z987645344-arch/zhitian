@@ -130,6 +130,26 @@ vulnerabilities:
     evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
     why_not_fixed: "2026-10-09 复核 CI run 37875857134（https://github.com/z987645344-arch/zhitian/actions/runs/37875857134）：Debian 13.7 trixie，libexpat1 2.8.3-1~deb13u1，HIGH，FixedVersion 未给出；原始 API/转换报告 SHA-256 分别为 dadfefd9e89745e08dcb2ae79bdae39066714673f0a0bc6189849bc23b78d730、0b46f498720d528110b5db66f318cde8f815a4a1be5abaab98d115f43358b89c。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-77214）：trixie 2.8.3-1~deb13u1 与 forky 2.8.4-2 均仍受影响，sid 2.9.0-1 已修复（上游 R_2_9_0）；不能套用同类旧 CVE 的 forky 修复结论。trixie 尚未提供修复包，不混用 sid 包；只升级 Python 不能消除该系统包条目。"
     statement: "未能判定；仅转换镜像的指定 Debian 包版本有效，2026-11-02 到期（本次复核后24天）；有修复或条目失效时仍由现有门禁阻止部署。"
+  - id: CVE-2026-88647
+    images: [converter]
+    purls:
+      - "pkg:deb/debian/libgnutls30t64@3.8.9-3%2Bdeb13u4?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-10
+    expired_at: 2026-11-02
+    reachability: "未能判定"
+    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的证书主机名校验绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。"
+    why_not_fixed: "2026-10-10 复核 CI run 38037699926（提交9bdfc44）：转换报告 HIGH、affected、FixedVersion 为空。原始 converter-trivy-image.json SHA-256 7ca1ce98a011f84c4456614604b6fec56036ebd3004ed13623d2f4e3ab92c720；原始 trivy-image.json SHA-256 bcbc8a488a6cc0b86bf26c2f2f679e6afdf6ccce3f9049f25bf3f8d4f295e95b。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88647 ：trixie/trixie-security 3.8.9-3+deb13u4 为 vulnerable；forky、sid 3.8.13-1 均为 vulnerable，修复表为 unfixed；页面另注明上游报告有效性待核查，不能据此忽略漏洞。当前无可安装的发行版修复，不混用其他发行版包；只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅对转换镜像的指定 libgnutls30t64 包版本有效，2026-11-02 到期（复核后23天）；到期、有修复或条目失效时仍由现有门禁阻止部署，不放宽严重级别或扫描要求。"
+  - id: CVE-2026-88648
+    images: [converter]
+    purls:
+      - "pkg:deb/debian/libgnutls30t64@3.8.9-3%2Bdeb13u4?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-10
+    expired_at: 2026-11-02
+    reachability: "未能判定"
+    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的下级 CA 跨域证书限制绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。"
+    why_not_fixed: "2026-10-10 复核 CI run 38037699926（提交9bdfc44）：转换报告 HIGH、affected、FixedVersion 为空。原始 converter-trivy-image.json SHA-256 7ca1ce98a011f84c4456614604b6fec56036ebd3004ed13623d2f4e3ab92c720；原始 trivy-image.json SHA-256 bcbc8a488a6cc0b86bf26c2f2f679e6afdf6ccce3f9049f25bf3f8d4f295e95b。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88648 ：trixie/trixie-security 3.8.9-3+deb13u4 为 vulnerable；forky、sid 3.8.13-1 均为 vulnerable，修复表为 unfixed；页面另注明上游报告有效性待核查，不能据此忽略漏洞。当前无可安装的发行版修复，不混用其他发行版包；只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅对转换镜像的指定 libgnutls30t64 包版本有效，2026-11-02 到期（复核后23天）；到期、有修复或条目失效时仍由现有门禁阻止部署，不放宽严重级别或扫描要求。"
   - id: CVE-2026-6653
     images: [converter]
     purls:
