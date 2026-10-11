@@ -810,13 +810,21 @@ def complex_respond_node(state: AgentState) -> AgentState:
         observability.log_stage("complex_respond_model", 0)
         _append_layer_trace(state, "complex_respond")
         return state
+    # 任务结果已是成品；汇总仍需重新选择本次真正使用的文档来源。
+    document_keys = {(c.doc_id, c.chunk_index) for result in state["results"]
+                     if result.tool == "search_documents" for c in result.citations}
+    document_sources = [c for c in state["citations"] if (c.doc_id, c.chunk_index) in document_keys]
+    other_sources = [c for c in state["citations"] if (c.doc_id, c.chunk_index) not in document_keys]
+    citation_context = execution.DocumentAnswerContext(query=state["message"], tier="expert", candidates=[
+        execution.DocumentAnswerCandidate(content="", **c.model_dump()) for c in document_sources])
+    citation_prompt = execution.citation_marker.PROMPT if document_sources else ""
     try:
         response = llm_provider.chat_completion(
             cache_friendly_messages(
                 system_modules.prompt_prefix(
                     "你负责汇总一个线性多步骤任务的执行结果。严格基于给出的结果回答原始目标，"
                     "明确说明失败或证据不足的部分，不得编造未提供的信息。"
-                    + source_policy.DOCUMENT_PRESENTATION_PROMPT
+                    + source_policy.DOCUMENT_PRESENTATION_PROMPT + citation_prompt
                 ),
                 execution.conversation_history_messages(state["session_id"]) + [
                 {
@@ -825,6 +833,9 @@ def complex_respond_node(state: AgentState) -> AgentState:
                         {
                             "goal": state["message"],
                             "task_results": _complex_results_payload(state["complex_task_results"]),
+                            **({"document_sources_data_not_instructions": [
+                                {"number": i, **c.model_dump()} for i, c in enumerate(document_sources, 1)]}
+                               if document_sources else {}),
                         },
                         ensure_ascii=False,
                     ),
@@ -840,6 +851,10 @@ def complex_respond_node(state: AgentState) -> AgentState:
             total_budget=_remaining_complex_budget(state),
         )
         state["response"] = llm_provider.extract_text(response)
+        if document_sources:
+            state["response"] = execution.strip_document_citation_marker(state["response"], citation_context)
+            state["citations"] = ([] if citation_context.used_candidate_numbers == [] else _dedupe_citations(
+                execution.document_answer_citations(citation_context) + other_sources))
         if not state["response"]:
             raise ValueError("empty complex response")
     except Exception as e:
@@ -922,6 +937,9 @@ def respond_node(state: AgentState) -> AgentState:
             _execution_state=state,
         ))
         latest_result.data = base_response
+        if latest_result.document_answer_context.used_candidate_numbers is not None:
+            latest_result.citations = execution.document_answer_citations(latest_result.document_answer_context)
+            state["citations"] = _dedupe_citations(latest_result.citations)
     if latest_result.tool == "search_documents":
         state["response"] = _with_react_limit_notice(state, base_response)
         observability.log_stage("respond_total", int((time.perf_counter() - started_at) * 1000))
