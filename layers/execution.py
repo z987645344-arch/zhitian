@@ -422,10 +422,15 @@ def emit_tool_status(
         if phase == "started":
             state["document_search_occurrence"] = state.get("document_search_occurrence", 0) + 1
         occurrence = state.get("document_search_occurrence")
+    display_code = TOOL_DISPLAY_CODES.get(tool, "tool_execution")
+    if (state or {}).get("intent") == "generate_file":
+        # 仅修正展示：llm_chat写正文，generate_file保存/处理产物；各自计时不变。
+        display_code = {"llm_chat": "file_generation", "generate_file": "file_saving"}.get(
+            tool, display_code)
     event = ToolStatusEvent(
         tool=tool,
         phase=phase,
-        display_code=TOOL_DISPLAY_CODES.get(tool, "tool_execution"),
+        display_code=display_code,
         elapsed_ms=elapsed_ms,
         result_count=result_count,
         reason_code=safe_reason_code,

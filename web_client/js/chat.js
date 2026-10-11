@@ -29,6 +29,7 @@
     document_list: '文件清单',
     answer_generation: '回答生成',
     file_generation: '文件生成',
+    file_saving: '文件保存',
     document_conversion: '格式转换',
     reflection: '判断：资料不够充分，换个问法再查',
   };
