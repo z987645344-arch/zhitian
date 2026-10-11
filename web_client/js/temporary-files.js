@@ -78,7 +78,10 @@ const ZhitianTemporaryFiles = (() => {
     const text = String(content || '');
     const linked = text.match(/\[([^\]]+)\]\(\/files\/[^)]+\)/);
     const edited = text.match(/^已修改 (.+\.(?:txt|md))，/);
-    const name = linked?.[1] || edited?.[1] || text.replace(/\/files\/[\w/-]+/g, '').trim() || '文件';
+    const generated = text.match(/(?:^|\n)文件已生成：([^\n]+)/);
+    const converted = text.match(/^已生成 (.+?)，可通过 \/files\//);
+    const name = linked?.[1] || edited?.[1] || generated?.[1] || converted?.[1]
+      || text.replace(/\/files\/[\w/-]+/g, '').trim() || '文件';
     return `${name} · 文件已清理`;
   }
   return { create, planResend, withIntentOriginal, renderDetails, readableSize, continuationIsEdit, historyFileLabel, ORIGINAL_CLEARED };

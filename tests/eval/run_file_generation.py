@@ -57,6 +57,12 @@ def record_artifact(item, content):
     item["file_content"] = artifact_text(content, item["files"][0]["download_filename"])
 
 
+def scenario_sessions(samples, same_session=False):
+    """保持旧小测独立会话；新回归可显式复用一个隔离会话。"""
+    shared = uuid.uuid4().hex if same_session else None
+    return [(sample, shared or uuid.uuid4().hex) for sample in samples]
+
+
 def model_selection(response):
     """保留模型实际选的工具及决策理由，不用业务解析器把非法工具改成合法工具。"""
     result = {"selected_tools": [], "tool_decisions": [], "reasoning": None}
@@ -226,12 +232,12 @@ def run(args):
         client = TestClient(main.app)
         if knowledge_fixture:
             prepare_knowledge(client, auth, password, output)
-        for sample in KNOWLEDGE_SAMPLES if knowledge_fixture else SAMPLES:
+        samples = KNOWLEDGE_SAMPLES if knowledge_fixture else SAMPLES
+        for sample, session in scenario_sessions(samples, getattr(args, "same_session", False)):
             if recorder.stop_reason:
                 break
             recorder.current = sample["id"]
             count_before = recorder.model_count
-            session = uuid.uuid4().hex
             payload = {"session_id": session, "message": sample["request"], "mode": sample["mode"], "attachment_page_id": "fixture-page"}
             raw = sample.get("text", "").encode("utf-8")
             if sample.get("filename"):
@@ -329,6 +335,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-calls",type=int,default=12)
     parser.add_argument("--output",default="file-generation-20261010")
     parser.add_argument("--knowledge-fixture",action="store_true",help="Two expert requests, real isolated knowledge upload, max six model calls")
+    parser.add_argument("--same-session",action="store_true",help="Run the fixed requests in one isolated conversation")
     parser.add_argument("--worker",action="store_true",help=argparse.SUPPRESS)
     args=parser.parse_args()
     if args.prepare_only or args.worker:
@@ -336,7 +343,8 @@ if __name__ == "__main__":
     else:
         process=subprocess.run([sys.executable,"-B",str(Path(__file__).resolve()),"--worker",
             "--max-calls",str(args.max_calls),"--output",args.output]
-            + (["--knowledge-fixture"] if args.knowledge_fixture else []))
+            + (["--knowledge-fixture"] if args.knowledge_fixture else [])
+            + (["--same-session"] if args.same_session else []))
         repo=Path(__file__).resolve().parents[2]
         sys.path.insert(0,str(repo))
         from tests.eval.run_eval import cleanup_runtime,write_json

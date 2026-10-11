@@ -428,7 +428,8 @@ def test_generate_file_intent_executes_content_then_file(monkeypatch):
     assert [item[0] for item in calls] == ["llm_chat", "generate_file"]
     assert calls[1][1]["content"] == "# 项目报告\n正文"
     assert calls[1][1]["session_id"] == "generate-flow"
-    assert "/files/11111111-1111-1111-1111-111111111111" in state["response"]
+    assert state["response"] == "文件已生成：11111111-1111-1111-1111-111111111111_项目报告.md"
+    assert "/files/" not in state["response"]
     assert "D:\\" not in state["response"]
 
 
@@ -499,14 +500,11 @@ def test_real_expert_generates_downloadable_pdf(
         assert response.status_code == 200, response.text
         payload = response.json()
         assert payload["status"] == "success", payload
-        match = re.search(
-            r"(/files/[0-9a-f-]{36})",
-            payload["data"],
-        )
-        assert match, payload["data"]
-        created_file_id = match.group(1).rsplit("/", 1)[-1]
+        assert "/files/" not in payload["data"]
+        assert len(payload["files"]) == 1, payload
+        created_file_id = payload["files"][0]["file_id"]
 
-        downloaded = client.get(match.group(1), headers=headers)
+        downloaded = client.get("/files/" + created_file_id, headers=headers)
         assert downloaded.status_code == 200
         assert downloaded.headers["content-type"].startswith("application/pdf")
         assert downloaded.content.startswith(b"%PDF-")

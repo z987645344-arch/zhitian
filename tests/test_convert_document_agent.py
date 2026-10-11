@@ -385,10 +385,7 @@ def test_convert_document_responds_with_download_and_specific_errors():
         )
     ]
     planning.respond_node(success)
-    assert success["response"] == (
-        "已生成 report.pdf，可通过 "
-        "/files/33333333-3333-3333-3333-333333333333 下载"
-    )
+    assert success["response"] == "文件已生成：report.pdf"
 
     failed = planning._new_agent_state("session", "convert", "expert")
     failed["intent"] = "convert_document"

@@ -2089,18 +2089,13 @@ def _respond_with_generated_file(state: AgentState) -> None:
         state["response"] = "文件生成失败，请稍后重试。"
         state["citations"] = []
         return
-    relative_path = "/files/%s" % file_id
     requested_format = str(metadata.get("requested_format", "") or "")
     delivered_format = str(metadata.get("delivered_format", "") or "")
     prefix = ""
     if requested_format and delivered_format and requested_format != delivered_format:
         from layers.file_processing.degradation import DEGRADATIONS, OFFICE_TO_MARKDOWN
         prefix = DEGRADATIONS[OFFICE_TO_MARKDOWN] + "\n"
-    state["response"] = "%s文件已生成：%s\n下载地址：%s" % (
-        prefix,
-        download_filename,
-        relative_path,
-    )
+    state["response"] = "%s文件已生成：%s" % (prefix, download_filename)
     state["citations"] = _dedupe_citations(result.citations or [])
 
 
@@ -2116,10 +2111,7 @@ def _respond_with_converted_file(state: AgentState) -> None:
         file_id = str(metadata.get("file_id", "") or "")
         download_filename = str(metadata.get("download_filename", "") or "")
         if file_id and download_filename:
-            state["response"] = "已生成 %s，可通过 /files/%s 下载" % (
-                download_filename,
-                file_id,
-            )
+            state["response"] = "文件已生成：%s" % download_filename
             state["error"] = ""
             state["citations"] = []
             return
