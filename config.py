@@ -236,6 +236,8 @@ TEXT_EDIT_MAX_CHANGED_CHARS = int(os.getenv("TEXT_EDIT_MAX_CHANGED_CHARS", "2000
 # 整篇缩写58.59秒、继续缩写22.08秒，采用90秒任务总预算留约31秒余量；
 # 修正轮也共享此预算，不是每轮各90秒，超时建议拆分要求。
 TEXT_EDIT_TIMEOUT = float(os.getenv("TEXT_EDIT_TIMEOUT", "90"))
+# 生成正文独立墙钟预算；不截取已被分类/检索消耗的请求余量。
+FILE_GENERATION_TIMEOUT = float(os.getenv("FILE_GENERATION_TIMEOUT", "90"))
 CHAT_ATTACHMENT_TTL_MINUTES = int(os.getenv("CHAT_ATTACHMENT_TTL_MINUTES", "60"))
 TEMP_FILE_TTL_MINUTES = int(os.getenv("TEMP_FILE_TTL_MINUTES", "60"))
 TEMP_FILE_USER_QUOTA_MB = int(os.getenv("TEMP_FILE_USER_QUOTA_MB", "100"))

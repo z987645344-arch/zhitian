@@ -481,7 +481,7 @@ def chat_completion(
     if not enforce_wall_clock:
         return _chat_completion(messages, tier, response_format, timeout, stage, **kwargs)
     # SDK read timeout会被非正文网络活动续期；可选筛选/精排必须有独立墙钟界限。
-    # 仅这两个显式开启的非流式阶段使用工作线程，默认模型调用/请求体不变。
+    # 显式开启的筛选、精排及文件生成使用工作线程，其余默认请求体不变。
     budget = float(kwargs.get("total_budget") or 0.0)
     if budget <= 0 or kwargs.get("stream"):
         raise ValueError("wall-clock budget requires a positive non-streaming total_budget")
@@ -553,6 +553,7 @@ def _chat_completion(
     total_budget = kwargs.pop("total_budget", None)
     # 编辑的纠错轮次自己有界；禁止适配层再悄悄增加超时付费调用。
     retry_timeouts = kwargs.pop("retry_timeouts", True)
+    retry_connection_resets = kwargs.pop("retry_connection_resets", True)
     require_full_retry_budget = kwargs.pop("require_full_retry_budget", False)
     request_kwargs = {
         "messages": messages,
@@ -612,7 +613,7 @@ def _chat_completion(
             check_request_cancelled()
             remaining = deadline - time.perf_counter()
             if (
-                not connection_reset_retried
+                retry_connection_resets and not connection_reset_retried
                 and remaining > 0
                 and not (_cancelled is not None and _cancelled.is_set())
                 and _is_pre_send_connection_reset(exc)
