@@ -87,13 +87,17 @@ def test_observation_logs_once_to_file_not_console(monkeypatch, tmp_path, capsys
 
 
 def test_observation_call_budget_is_not_doubled_by_fast_retry(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = SimpleNamespace(perf_counter=lambda: 100.0)
+    monkeypatch.setattr(execution, "time", clock)
     captured = {}
     def completion(*_args, **kwargs):
         captured.update(kwargs)
         raise TimeoutError("test timeout")
     monkeypatch.setattr(execution.llm_provider, "chat_completion", completion)
     state = _state()
-    state["complex_deadline"] = time.perf_counter() + 0.1
+    state["complex_deadline"] = clock.perf_counter() + 0.1
     execution._observe_external_search_output("问题", "回答", "expert", state)
     assert 0 < captured["timeout"] <= 0.1
     assert captured["total_budget"] == captured["timeout"]
