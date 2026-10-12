@@ -27,6 +27,16 @@ class AttachmentRecord(BaseModel):
 
 _attachment_lock = threading.RLock()
 _attachments: Dict[str, Dict[str, AttachmentRecord]] = {}
+QUANTITY_PROMPT = "不得自行估算或编造资料里没有给出的数量；需要说明篇幅时，使用系统给出的字数。"
+
+
+def model_name(record: AttachmentRecord) -> str:
+    """只使用存储时的系统计数，不由模型估算或重复计算。"""
+    return f"{record.filename}（系统统计约 {record.char_count} 字）"
+
+
+def model_context(record: AttachmentRecord) -> str:
+    return f"附件名称：{model_name(record)}\n附件内容：\n{record.text}"
 
 
 @session_records.serialized_change

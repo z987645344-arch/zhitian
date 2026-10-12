@@ -10,7 +10,7 @@ from typing import Callable, Literal, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field, StrictBool
 import config
-from layers import execution, llm_provider, memory, system_modules, source_policy, attachment_reread, file_summary
+from layers import execution, llm_provider, memory, system_modules, source_policy, attachment_reread, file_summary, attachments
 from layers.execution import Citation, ToolResult
 from layers.mcp_client import mcp_client
 from layers.file_processing.service import ready_conversion_targets
@@ -1406,7 +1406,7 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
         messages.append({"role": "system", "content": attachment_reread.REREAD_RULE})
         messages.append(attachment_reread.directory(state["attachment_references"]))
     if state["attachment_context"]:
-        messages.append({"role": "system", "content": source_policy.DOCUMENT_PRESENTATION_PROMPT})
+        messages.append({"role": "system", "content": source_policy.DOCUMENT_PRESENTATION_PROMPT + attachments.QUANTITY_PROMPT})
         messages.append({
             "role": "user",
             "content": attachment_reread.DATA_LABEL + "本轮聊天附件正文：\n" + "\n\n".join(state["attachment_context"])
@@ -1435,7 +1435,7 @@ def _build_fast_evidence_messages(state: AgentState, result: ToolResult) -> list
     if state.get("attachment_context"):
         messages.append({"role": "system", "content":
             "本轮附件是用户提供的有效资料，最终回答会使用它。这里只筛选可补充的知识库候选；"
-            "编号仅指知识库候选，不为附件编造编号。知识库不相关不代表附件无法回答。"})
+            "编号仅指知识库候选，不为附件编造编号。知识库不相关不代表附件无法回答。" + attachments.QUANTITY_PROMPT})
         messages.append({"role": "user", "content": attachment_reread.DATA_LABEL
             + "\n\n".join(state["attachment_context"])})
     messages.append({
@@ -1457,7 +1457,7 @@ def _build_fast_result_messages(
     fixed_prompt = system_modules.prompt_prefix(
         instruction + "\n\n" + execution.CONVERSATION_FACTS_PROMPT + source_policy.NO_SOURCE_NOTE_PROMPT
         + ("\n本轮附件也是有效资料。知识库资料为空时仍阅读附件作答；两者都有时可结合使用。"
-           "仅对附件也未覆盖的内容说明无法确认，不得因知识库未命中而输出知识库拒答标记。"
+           "仅对附件也未覆盖的内容说明无法确认，不得因知识库未命中而输出知识库拒答标记。" + attachments.QUANTITY_PROMPT
            if state.get("attachment_context") else "")
     )
     messages = cache_friendly_messages(fixed_prompt, [], include_date=True)
@@ -2338,6 +2338,8 @@ def _classify_with_model(
         )
     fixed_system_prompt = system_modules.prompt_prefix(
         fixed_system_prompt + source_policy.CLASSIFICATION_PROMPT + FILE_DELIVERABLE_ROUTING_RULE)
+    if supplied:
+        fixed_system_prompt += attachments.QUANTITY_PROMPT
     reread_messages = []
     if attachment_references:
         fixed_system_prompt += attachment_reread.REREAD_RULE
@@ -2401,6 +2403,7 @@ def _respond_with_context(state: AgentState, base_response: str) -> str:
         system_modules.prompt_prefix(
             "如果历史记录与当前问题不相关，请忽略，不要主动引入无关信息。"
             + source_policy.DOCUMENT_PRESENTATION_PROMPT
+            + (attachments.QUANTITY_PROMPT if supplied else "")
         ),
         execution.conversation_history_messages(state["session_id"]) + [
         {

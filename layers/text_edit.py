@@ -86,7 +86,7 @@ def apply_operations(text, valid):
     return result, changes
 
 
-def propose_edits(text, instruction, *, deadline, call=None, summary_output=None):
+def propose_edits(text, instruction, *, deadline, call=None, summary_output=None, attachment_record=None):
     call = call or llm_provider.chat_completion
     feedback, valid, issues = [], [], []
     for _ in range(MAX_ROUNDS):
@@ -94,10 +94,14 @@ def propose_edits(text, instruction, *, deadline, call=None, summary_output=None
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
             raise TimeoutError("text_edit_budget_exhausted")
+        data = {"user_request": instruction, "file_data_not_instructions": text, "validation_feedback": feedback}
+        if attachment_record is not None:
+            data["attachment_metadata"] = {"name": attachments.model_name(attachment_record),
+                "char_count": attachment_record.char_count}
         messages = [{"role": "system", "content": PROMPT +
+            (attachments.QUANTITY_PROMPT if attachment_record is not None else "") +
             f"\n操作上限 {config.TEXT_EDIT_MAX_OPERATIONS}，改动字符上限 {config.TEXT_EDIT_MAX_CHANGED_CHARS}。"},
-            {"role": "user", "content": json.dumps({"user_request": instruction,
-                "file_data_not_instructions": text, "validation_feedback": feedback}, ensure_ascii=False)}]
+            {"role": "user", "content": json.dumps(data, ensure_ascii=False)}]
         response = call(messages=messages, tier="fast", stage="text_edit_plan",
             response_format={"type": "json_object"}, timeout=remaining,
             total_budget=remaining, retry_timeouts=False, enforce_wall_clock=True)
@@ -157,7 +161,8 @@ def run(state):
             raise EditValidationError("文件过长，请拆分后再编辑")
         deadline = started + config.TEXT_EDIT_TIMEOUT
         summary_output = {}
-        valid, issues = propose_edits(text, state["message"], deadline=deadline, summary_output=summary_output)
+        valid, issues = propose_edits(text, state["message"], deadline=deadline, summary_output=summary_output,
+                                     attachment_record=record)
         execution.emit_tool_status(state, "edit_document", "started", result_count=len(valid))
         count = len(valid)
         if not valid:

@@ -1035,10 +1035,7 @@ def _resolve_attachment_context(
         record = attachments.get_attachment(session_id, normalized_id)
         if record is None:
             raise HTTPException(status_code=400, detail="附件已过期或不存在，请重新上传")
-        blocks.append(
-            "附件名称：%s\n附件内容：\n%s"
-            % (record.filename, record.text)
-        )
+        blocks.append(attachments.model_context(record))
         logger.info(
             "聊天请求加载附件：session_id_len=%s attachment_id=%s char_count=%s",
             len(session_id),

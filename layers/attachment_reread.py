@@ -70,7 +70,7 @@ def apply(state, identifier):
         state["citations"] = []
         source_policy.record_source(state, "conversation", "attachment_cleared")
         return False
-    block = DATA_LABEL + f"附件名称：{record.filename}\n附件内容：\n{record.text}"
+    block = DATA_LABEL + attachments.model_context(record)
     state["attachment_context"] = list(state.get("attachment_context") or []) + [block]
     state["context"] = list(state.get("context") or []) + [block]
     state["intent"] = "document"
