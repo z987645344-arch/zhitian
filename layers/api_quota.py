@@ -18,6 +18,7 @@ ENTERPRISE_PASSWORD_MAX_FAILURES = 5
 ENTERPRISE_PASSWORD_LOCK_HOURS = 12
 SOURCE_ENTERPRISE = "enterprise"
 SOURCE_PERSONAL = "personal"
+ENTERPRISE_API_REVOKED_MESSAGE = "企业额度授权已被管理员收回，请重新输入企业密码或配置个人密钥"
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,11 @@ class PersonalDeepSeekKeyInvalidError(ApiQuotaError):
 
 class ApiQuotaSourceUnavailableError(ApiQuotaError):
     pass
+
+
+class EnterpriseApiRevokedError(ApiQuotaSourceUnavailableError):
+    def __init__(self):
+        super().__init__(ENTERPRISE_API_REVOKED_MESSAGE)
 
 
 class ApiQuotaNotConfiguredError(ApiQuotaError):
@@ -117,7 +123,7 @@ def authorize_enterprise_source(
     supplied_password: str,
     now: Optional[datetime] = None,
 ) -> ApiQuotaStatus:
-    """首次校验企业流动密码；成功授权永久保留并选中企业来源。"""
+    """校验企业流动密码；授权保留到开发者回收，并显式选中企业来源。"""
     current = _utc_now(now)
     expected_password = enterprise_password.get_current_enterprise_password()
     supplied = str(supplied_password or "")
@@ -136,10 +142,10 @@ def authorize_enterprise_source(
         if not row:
             raise ApiQuotaAccountNotFoundError("账号不存在")
 
-        # 一次验证后永久授权：后续业务日轮换或手工刷新不撤销该状态。
+        # 密码轮换/手工刷新不撤销授权，只有开发者显式回收才需要重新验证。
         if row["enterprise_api_authorized_at"]:
             conn.execute(
-                "UPDATE users SET api_quota_source = ? WHERE user_id = ?",
+                "UPDATE users SET api_quota_source = ?, enterprise_api_revoked_at = NULL WHERE user_id = ?",
                 (SOURCE_ENTERPRISE, user_id),
             )
         else:
@@ -159,7 +165,8 @@ def authorize_enterprise_source(
                         UPDATE users
                         SET api_quota_source = ?, enterprise_api_authorized_at = ?,
                             enterprise_password_fail_count = 0,
-                            enterprise_password_locked_until = NULL
+                            enterprise_password_locked_until = NULL,
+                            enterprise_api_revoked_at = NULL
                         WHERE user_id = ?
                         """,
                         (SOURCE_ENTERPRISE, current.isoformat(), user_id),
@@ -206,6 +213,43 @@ def authorize_enterprise_source(
         raise pending_error
 
     return get_status(user_id, now=current)
+
+
+def _revoke_enterprise_sources(operator_user_id: str, user_id: Optional[str], now: Optional[datetime]) -> int:
+    """回收与最小审计同事务提交；不读写个人密钥、失败计数或锁定状态。"""
+    timestamp = _utc_now(now).isoformat()
+    target_clause = " AND user_id = ?" if user_id is not None else ""
+    params = (timestamp, SOURCE_ENTERPRISE) + ((user_id,) if user_id is not None else ())
+    with transaction(auth.USERS_DB_PATH) as conn:
+        revoked = conn.execute(
+            """
+            UPDATE users SET enterprise_api_authorized_at = NULL,
+                enterprise_api_revoked_at = ?,
+                api_quota_source = CASE WHEN api_quota_source = ? THEN NULL ELSE api_quota_source END
+            WHERE enterprise_api_authorized_at IS NOT NULL AND enterprise_api_authorized_at != ''
+            """ + target_clause + " RETURNING user_id", params,
+        ).fetchall()
+        if user_id is not None and not revoked:
+            if not conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone():
+                raise ApiQuotaAccountNotFoundError("账号不存在")
+        count = len(revoked)
+        conn.execute(
+            """INSERT INTO enterprise_api_revocations
+               (action, operator_user_id, target_user_id, revoked_count, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("single" if user_id is not None else "all", operator_user_id, user_id, count, timestamp),
+        )
+    return count
+
+
+def revoke_enterprise_source(user_id: str, operator_user_id: str, now: Optional[datetime] = None) -> dict:
+    revoked = bool(_revoke_enterprise_sources(operator_user_id, user_id, now))
+    return {"user_id": user_id, "revoked": revoked,
+            "detail": "企业额度授权已回收" if revoked else "该用户没有企业额度授权"}
+
+
+def revoke_all_enterprise_sources(operator_user_id: str, now: Optional[datetime] = None) -> dict:
+    return {"revoked_count": _revoke_enterprise_sources(operator_user_id, None, now)}
 
 
 def save_personal_source(user_id: str, plaintext_key: str) -> ApiQuotaStatus:
@@ -284,7 +328,7 @@ def resolve_api_credential(user_id: str) -> ResolvedApiCredential:
         row = conn.execute(
             """
             SELECT api_quota_source, personal_deepseek_key_enc,
-                   enterprise_api_authorized_at
+                   enterprise_api_authorized_at, enterprise_api_revoked_at
             FROM users WHERE user_id = ?
             """,
             (user_id,),
@@ -294,10 +338,14 @@ def resolve_api_credential(user_id: str) -> ResolvedApiCredential:
 
     source = row["api_quota_source"]
     if not source:
+        if row["enterprise_api_revoked_at"]:
+            raise EnterpriseApiRevokedError()
         raise ApiQuotaNotConfiguredError("尚未选择API额度来源")
 
     if source == SOURCE_ENTERPRISE:
         if not row["enterprise_api_authorized_at"]:
+            if row["enterprise_api_revoked_at"]:
+                raise EnterpriseApiRevokedError()
             raise ApiQuotaSourceUnavailableError("企业额度来源尚未授权")
         api_key = str(config.DEEPSEEK_API_KEY or "").strip()
         if not api_key:

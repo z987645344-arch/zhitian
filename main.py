@@ -768,6 +768,10 @@ class EnterpriseQuotaAuthorizationRequest(BaseModel):
     enterprise_password: str
 
 
+class RevokeAllEnterpriseApiRequest(BaseModel):
+    confirm: Literal["REVOKE_ALL_ENTERPRISE_API"]
+
+
 class PersonalQuotaRequest(BaseModel):
     deepseek_api_key: str
 
@@ -1364,7 +1368,23 @@ async def reviewer_reject_registration(request_id: int, current_user: dict = Dep
 
 @app.get("/developer/users")
 async def developer_users(current_user: dict = Depends(require_developer)):
-    return {"users": auth.list_users()}
+    return {"users": auth.list_users(include_api_quota=True)}
+
+
+@app.post("/developer/users/{user_id}/enterprise-api/revoke")
+async def revoke_user_enterprise_api(user_id: str, current_user: dict = Depends(require_developer)):
+    try:
+        return api_quota.revoke_enterprise_source(user_id, current_user["user_id"])
+    except api_quota.ApiQuotaAccountNotFoundError:
+        raise HTTPException(status_code=404, detail="用户不存在") from None
+
+
+@app.post("/developer/enterprise-api/revoke-all")
+async def revoke_all_enterprise_api(
+    payload: RevokeAllEnterpriseApiRequest,
+    current_user: dict = Depends(require_developer),
+):
+    return api_quota.revoke_all_enterprise_sources(current_user["user_id"])
 
 
 @app.get("/developer/enterprise-password")

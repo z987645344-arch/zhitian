@@ -109,6 +109,7 @@ def _migrate_users_unique_constraint(conn: sqlite3.Connection) -> None:
                        OR api_quota_source IS NULL),
             personal_deepseek_key_enc TEXT,
             enterprise_api_authorized_at TEXT,
+            enterprise_api_revoked_at TEXT,
             enterprise_password_fail_count INTEGER NOT NULL DEFAULT 0,
             enterprise_password_locked_until TEXT,
             UNIQUE(username, role)
@@ -121,13 +122,13 @@ def _migrate_users_unique_constraint(conn: sqlite3.Connection) -> None:
             user_id, username, password_hash, role, created_at, email,
             is_active, is_default_account, last_login_at, flagged, notes,
             api_quota_source, personal_deepseek_key_enc,
-            enterprise_api_authorized_at, enterprise_password_fail_count,
+            enterprise_api_authorized_at, enterprise_api_revoked_at, enterprise_password_fail_count,
             enterprise_password_locked_until
         )
         SELECT user_id, username, password_hash, role, created_at, email,
                is_active, is_default_account, last_login_at, flagged, notes,
                api_quota_source, personal_deepseek_key_enc,
-               enterprise_api_authorized_at, enterprise_password_fail_count,
+               enterprise_api_authorized_at, enterprise_api_revoked_at, enterprise_password_fail_count,
                enterprise_password_locked_until
         FROM users
         """
@@ -252,6 +253,7 @@ def init_db() -> None:
                                OR api_quota_source IS NULL),
                     personal_deepseek_key_enc TEXT,
                     enterprise_api_authorized_at TEXT,
+                    enterprise_api_revoked_at TEXT,
                     enterprise_password_fail_count INTEGER NOT NULL DEFAULT 0,
                     enterprise_password_locked_until TEXT
                 )
@@ -292,6 +294,8 @@ def init_db() -> None:
                 conn.execute(
                     "ALTER TABLE users ADD COLUMN enterprise_api_authorized_at TEXT"
                 )
+            if "enterprise_api_revoked_at" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN enterprise_api_revoked_at TEXT")
             if "enterprise_password_fail_count" not in user_columns:
                 conn.execute(
                     "ALTER TABLE users ADD COLUMN "
@@ -302,6 +306,18 @@ def init_db() -> None:
                     "ALTER TABLE users ADD COLUMN enterprise_password_locked_until TEXT"
                 )
             _migrate_users_unique_constraint(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS enterprise_api_revocations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL CHECK (action IN ('single', 'all')),
+                    operator_user_id TEXT NOT NULL,
+                    target_user_id TEXT,
+                    revoked_count INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -997,16 +1013,23 @@ def review_registration_request(
     return result
 
 
-def list_users() -> list[dict]:
+def list_users(*, include_api_quota: bool = False) -> list[dict]:
+    """额度管理字段只由开发者列表显式请求；不查询密钥。"""
+    quota_columns = ", api_quota_source, enterprise_api_authorized_at" if include_api_quota else ""
     with _connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT user_id, username, role, email, is_active,
-                   is_default_account, created_at
+                   is_default_account, created_at{quota_columns}
             FROM users ORDER BY created_at ASC, username ASC
             """
         ).fetchall()
-    return [_user_row_to_dict(row) for row in rows]
+    users = [_user_row_to_dict(row) for row in rows]
+    if include_api_quota:
+        for user, row in zip(users, rows):
+            user.update(api_quota_source=row["api_quota_source"],
+                        enterprise_api_authorized_at=row["enterprise_api_authorized_at"])
+    return users
 
 
 def list_personnel_detail() -> list[dict]:
