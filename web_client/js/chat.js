@@ -44,6 +44,7 @@
     text_edit_failed: '文件编辑未完成',
     text_edit_partial: '部分修改未完成，请核对修改对照',
     fast_general_answer_failed: '通用知识备用回答未能生成',
+    knowledge_retrieval_failed: '知识库检索失败，已根据附件资料继续回答',
     web_low_relevance: '联网结果相关性不足',
     web_provider_failed: '搜索服务不可用',
     web_no_results: '搜索无结果',

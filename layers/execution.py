@@ -188,6 +188,7 @@ DEGRADATION_REASON_CODES = {
     "fast_general_answer_failed",
     "fast_evidence_filter_timeout",
     "fast_evidence_filter_failed",
+    "knowledge_retrieval_failed",
     "classification_timeout",
     "planning_timeout",
     "reflection_timeout",

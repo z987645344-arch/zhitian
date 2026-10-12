@@ -1210,7 +1210,7 @@ def _run_fast_state(state: AgentState) -> AgentState:
             return state
         if result.status == "error":
             # 知识库不可用不能抹去已校验的附件，继续只根据附件生成。
-            execution.add_degradation_reason(state, "fast_evidence_filter_failed")
+            execution.add_degradation_reason(state, "knowledge_retrieval_failed")
             result = result.model_copy(update={"status": "success", "data": "", "citations": []})
             state["results"] = [result]
 

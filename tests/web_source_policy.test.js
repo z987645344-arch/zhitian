@@ -7,6 +7,23 @@ const vm = require('node:vm');
 const apiSource = fs.readFileSync(path.join(__dirname, '../web_client/js/api.js'), 'utf8');
 const chatSource = fs.readFileSync(path.join(__dirname, '../web_client/js/chat.js'), 'utf8');
 
+test('附件回答的知识库检索失败原因显示准确中文说明', () => {
+  const sandbox = vm.createContext({ document: { createElement: () => ({}) } });
+  const labelsStart = chatSource.indexOf('  const REASON_LABELS =');
+  const labelsEnd = chatSource.indexOf('\n  };', labelsStart) + '\n  };'.length;
+  const renderStart = chatSource.indexOf('  function renderRequestStatus(');
+  const renderEnd = chatSource.indexOf('  function renderSessions(', renderStart);
+  vm.runInContext(chatSource.slice(labelsStart, labelsEnd) + chatSource.slice(renderStart, renderEnd), sandbox);
+  const notices = [];
+  sandbox.document.createElement = () => ({ replaceChildren: (...children) => notices.push(children) });
+  const bubble = { dataset: {}, querySelector: () => null, appendChild() {} };
+  vm.runInContext('renderRequestStatus', sandbox)(bubble, {
+    status: 'degraded', reason_codes: ['knowledge_retrieval_failed'],
+  });
+  assert.equal(bubble.dataset.requestStatus, 'degraded');
+  assert.equal(notices[0][1].textContent, '具体原因：知识库检索失败，已根据附件资料继续回答');
+});
+
 test('刷新历史使用服务端安全文件名并以文本渲染已清理标签', () => {
   const calls = [];
   const sandbox = vm.createContext({ logInner: { replaceChildren() {} }, showWelcome() {},
