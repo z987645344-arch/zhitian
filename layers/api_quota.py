@@ -218,7 +218,7 @@ def authorize_enterprise_source(
 def _revoke_enterprise_sources(operator_user_id: str, user_id: Optional[str], now: Optional[datetime]) -> int:
     """回收与最小审计同事务提交；不读写个人密钥、失败计数或锁定状态。"""
     timestamp = _utc_now(now).isoformat()
-    target_clause = " AND user_id = ?" if user_id is not None else ""
+    target_clause = " AND user_id = ?" if user_id is not None else " AND role = 'customer'"
     params = (timestamp, SOURCE_ENTERPRISE) + ((user_id,) if user_id is not None else ())
     with transaction(auth.USERS_DB_PATH) as conn:
         revoked = conn.execute(
@@ -237,7 +237,7 @@ def _revoke_enterprise_sources(operator_user_id: str, user_id: Optional[str], no
             """INSERT INTO enterprise_api_revocations
                (action, operator_user_id, target_user_id, revoked_count, created_at)
                VALUES (?, ?, ?, ?, ?)""",
-            ("single" if user_id is not None else "all", operator_user_id, user_id, count, timestamp),
+            ("single" if user_id is not None else "all_customers", operator_user_id, user_id, count, timestamp),
         )
     return count
 

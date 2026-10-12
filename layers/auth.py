@@ -229,6 +229,27 @@ def _seed_default_organizations(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_enterprise_revocation_actions(conn: sqlite3.Connection) -> None:
+    """保留既有审计，只扩展action以明确记录客户批量回收范围。"""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='enterprise_api_revocations'"
+    ).fetchone()
+    if not row or "all_customers" in str(row["sql"]):
+        return
+    conn.execute("DROP TABLE IF EXISTS enterprise_api_revocations_migrating")
+    conn.execute("""CREATE TABLE enterprise_api_revocations_migrating (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL CHECK (action IN ('single', 'all', 'all_customers')),
+        operator_user_id TEXT NOT NULL, target_user_id TEXT,
+        revoked_count INTEGER NOT NULL, created_at TEXT NOT NULL)""")
+    conn.execute("""INSERT INTO enterprise_api_revocations_migrating
+        (id, action, operator_user_id, target_user_id, revoked_count, created_at)
+        SELECT id, action, operator_user_id, target_user_id, revoked_count, created_at
+        FROM enterprise_api_revocations""")
+    conn.execute("DROP TABLE enterprise_api_revocations")
+    conn.execute("ALTER TABLE enterprise_api_revocations_migrating RENAME TO enterprise_api_revocations")
+
+
 def init_db() -> None:
     """初始化独立用户数据库。"""
     os.makedirs(os.path.dirname(USERS_DB_PATH), exist_ok=True)
@@ -310,7 +331,7 @@ def init_db() -> None:
                 """
                 CREATE TABLE IF NOT EXISTS enterprise_api_revocations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    action TEXT NOT NULL CHECK (action IN ('single', 'all')),
+                    action TEXT NOT NULL CHECK (action IN ('single', 'all', 'all_customers')),
                     operator_user_id TEXT NOT NULL,
                     target_user_id TEXT,
                     revoked_count INTEGER NOT NULL,
@@ -318,6 +339,7 @@ def init_db() -> None:
                 )
                 """
             )
+            _migrate_enterprise_revocation_actions(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -1030,6 +1052,28 @@ def list_users(*, include_api_quota: bool = False) -> list[dict]:
             user.update(api_quota_source=row["api_quota_source"],
                         enterprise_api_authorized_at=row["enterprise_api_authorized_at"])
     return users
+
+
+def mask_account_name(value: str) -> str:
+    """邮箱只保留完整域名；非邮箱用户名按同样的本地部分规则打码。"""
+    name = str(value or "")
+    local, separator, domain = name.rpartition("@")
+    if not separator:
+        local = name
+    masked = local[:1] + "***" if len(local) < 5 else local[:2] + "****" + local[-2:]
+    return masked + ("@" + domain if separator else "")
+
+
+def list_enterprise_customers() -> list[dict]:
+    """专用最小列表，完整账号仅在本函数内部使用，不返回给客户端。"""
+    with _connect() as conn:
+        rows = conn.execute("""SELECT user_id, username, email, enterprise_api_authorized_at
+            FROM users WHERE role = 'customer'
+                AND enterprise_api_authorized_at IS NOT NULL AND enterprise_api_authorized_at != ''
+            ORDER BY enterprise_api_authorized_at ASC, user_id ASC""").fetchall()
+    return [{"user_id": row["user_id"],
+             "masked_account": mask_account_name(row["email"] or row["username"]),
+             "enterprise_api_authorized_at": row["enterprise_api_authorized_at"]} for row in rows]
 
 
 def list_personnel_detail() -> list[dict]:

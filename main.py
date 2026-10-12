@@ -1376,6 +1376,11 @@ async def revoke_user_enterprise_api(user_id: str, current_user: dict = Depends(
         raise HTTPException(status_code=404, detail="用户不存在") from None
 
 
+@app.get("/developer/enterprise-api/customers")
+async def developer_enterprise_customers(current_user: dict = Depends(require_developer)):
+    return {"customers": auth.list_enterprise_customers()}
+
+
 @app.post("/developer/enterprise-api/revoke-all")
 async def revoke_all_enterprise_api(
     payload: RevokeAllEnterpriseApiRequest,

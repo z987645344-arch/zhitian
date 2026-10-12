@@ -91,7 +91,7 @@ def test_bulk_revoke_requires_exact_confirmation_and_counts_authorized(client, a
     api_quota.save_personal_source(personal["user_id"], "sk-" + "b" * 32)
     personal_before = account_row(personal["user_id"])
     with auth._connect() as conn:
-        expected = conn.execute("SELECT count(*) FROM users WHERE enterprise_api_authorized_at IS NOT NULL").fetchone()[0]
+        expected = conn.execute("SELECT count(*) FROM users WHERE role = 'customer' AND enterprise_api_authorized_at IS NOT NULL").fetchone()[0]
     for payload in [None, {}, {"confirm": "确认回收"}]:
         response = client.post("/developer/enterprise-api/revoke-all", headers=headers, json=payload)
         assert response.status_code == 422
@@ -105,7 +105,7 @@ def test_bulk_revoke_requires_exact_confirmation_and_counts_authorized(client, a
     assert account_row(never["user_id"])["enterprise_api_revoked_at"] is None
     with auth._connect() as conn:
         audit = dict(conn.execute("SELECT * FROM enterprise_api_revocations ORDER BY id DESC LIMIT 1").fetchone())
-    assert audit["action"] == "all" and audit["target_user_id"] is None
+    assert audit["action"] == "all_customers" and audit["target_user_id"] is None
     assert audit["operator_user_id"] == actor["user_id"] and audit["revoked_count"] == expected
     assert audit["created_at"]
     assert client.post("/developer/enterprise-api/revoke-all", headers=headers,
