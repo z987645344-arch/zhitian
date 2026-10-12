@@ -399,8 +399,11 @@ def _run_attachment_edit(state: AgentState) -> AgentState:
         record = attachments.get_attachment(state["session_id"], ids[0])
         if record is not None and Path(record.filename).suffix.lower() in {".txt", ".md"}:
             return text_edit.run(state)
-        notice = ("目前只支持编辑 txt / md 文件，请上传一个 txt 或 md 文件后提出修改要求，"
-                  "也可以点击‘编辑此文件’。")
+        if record is None:
+            notice = "附件已清理或已过期，请重新上传后再编辑"
+        else:
+            notice = ("目前只支持编辑 txt / md 文件，请上传一个 txt 或 md 文件后提出修改要求，"
+                      "也可以点击‘编辑此文件’。")
     else:
         notice = "请只附上一个 txt 或 md 文件后提出修改要求，也可以点击‘编辑此文件’。"
     state["intent"] = "edit_attachment"
