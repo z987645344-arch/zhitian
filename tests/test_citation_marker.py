@@ -151,8 +151,9 @@ def test_attachment_and_knowledge_keep_both_data_but_only_used_reference(monkeyp
     assert result.data.rstrip() == "结合附件和资料的回答"
     assert [c.doc_id for c in result.citations] == ["d2"]
     assert request["answer_source"] == "supplied_context"
-    assert "本轮附件文字" in model.call_args.kwargs["system_prompt"]
-    assert "[2]" in model.call_args.kwargs["system_prompt"]
+    assert "本轮附件文字" in "\n\n".join(model.call_args.kwargs["_data_context"])
+    assert "[2]" in "\n\n".join(model.call_args.kwargs["_data_context"])
+    assert "本轮附件文字" not in model.call_args.kwargs["system_prompt"]
     model.assert_called_once()
 
 

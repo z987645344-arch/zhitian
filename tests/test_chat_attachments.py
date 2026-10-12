@@ -238,6 +238,7 @@ def test_document_execution_uses_supplied_attachment_context(monkeypatch):
     def fake_llm_chat(message, **kwargs):
         observed["message"] = message
         observed["system_prompt"] = kwargs.get("system_prompt", "")
+        observed["data_context"] = kwargs.get("_data_context", [])
         return "SKY-739 is in the attachment"
 
     monkeypatch.setattr(execution, "_llm_chat", fake_llm_chat)
@@ -249,7 +250,8 @@ def test_document_execution_uses_supplied_attachment_context(monkeypatch):
 
     assert result.status == "success"
     assert "SKY-739" in result.data
-    assert "attachment marker SKY-739" in observed["system_prompt"]
+    assert "attachment marker SKY-739" in "\n\n".join(observed["data_context"])
+    assert "attachment marker SKY-739" not in observed["system_prompt"]
     assert result.metadata["supplied_context_answer"] is True
 
 
