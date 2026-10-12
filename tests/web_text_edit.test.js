@@ -11,6 +11,48 @@ function tabStorage(seed = {}) {
   return {data, getItem: key => data[key] || null, setItem: (key, value) => { data[key] = value; }};
 }
 
+test('同标签页navigate重新进入时重试失败的离页清理', async () => {
+  const storage = tabStorage(), tabWindow = {name: ''}, calls = [];
+  const first = attachmentPage.create(storage, async () => { throw Error('offline'); },
+    {pageId: 'old-page', tabWindow});
+  await first.ready; first.register('s', 'a'); await first.clear('s');
+  const returned = attachmentPage.create(storage, async (...args) => calls.push(args),
+    {pageId: 'returned-page', navigationType: 'navigate', tabWindow});
+  await returned.ready;
+  assert.deepEqual(calls, [['s', 'old-page', ['a']]]);
+  assert.equal(storage.data.zt_attachment_page_ledger, '[]');
+});
+
+test('新标签页复制存储但window.name为空时不删除来源页附件', async () => {
+  const storage = tabStorage(), parentWindow = {name: ''}, calls = [];
+  const first = attachmentPage.create(storage, async (...args) => calls.push(args),
+    {pageId: 'parent-page', tabWindow: parentWindow});
+  await first.ready; first.register('s', 'a');
+  const copied = tabStorage(storage.data), childWindow = {name: ''};
+  const child = attachmentPage.create(copied, async (...args) => calls.push(args),
+    {pageId: 'child-page', navigationType: 'navigate', tabWindow: childWindow});
+  await child.ready; await child.clear('s');
+  assert.deepEqual(calls, []);
+  assert.match(storage.data.zt_attachment_page_ledger, /"a"/);
+  assert.notEqual(parentWindow.name, childWindow.name);
+  assert.equal(copied.data.zt_attachment_page_ledger, '[]');
+});
+
+test('新标签页丢弃继承记录后刷新仍不能误删来源页；自己上传的可清理', async () => {
+  const storage = tabStorage(), calls = [], parentWindow = {name: ''}, childWindow = {name: ''};
+  const remove = async (...args) => calls.push(args);
+  const parent = attachmentPage.create(storage, remove, {pageId: 'parent', tabWindow: parentWindow});
+  await parent.ready; parent.register('s', 'parent-file');
+  const copied = tabStorage(storage.data);
+  const child = attachmentPage.create(copied, remove, {pageId: 'child', tabWindow: childWindow});
+  await child.ready; child.register('s', 'child-file');
+  const refreshed = attachmentPage.create(copied, remove,
+    {pageId: 'child-new', navigationType: 'reload', tabWindow: childWindow});
+  await refreshed.ready;
+  assert.deepEqual(calls, [['s', 'child', ['child-file']]]);
+  assert.match(storage.data.zt_attachment_page_ledger, /parent-file/);
+});
+
 test('没有randomUUID的HTTP开发页面仍可正常初始化，不阻断无附件聊天', async () => {
   const sandbox = vm.createContext({window:{}});
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../web_client/js/attachment-page.js'),'utf8'),sandbox);
