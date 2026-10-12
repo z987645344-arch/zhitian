@@ -355,9 +355,14 @@ FAST_TOOLS.append({"type": "function", "function": {
     "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}},
 }})
 FAST_GENERATION_NOTICE = "生成文件请切换到专家模式。"
+FAST_FILE_DELIVERY_RULE = (
+    "按用户要的交付方式区分：用户要求依据知识库或资料写成、整理成或生成一份文件、文档、说明或报告时，"
+    "是在要文件交付物，选择request_file_generation，系统会提示切换专家模式；"
+    "只是提问或了解信息、要聊天回答时，照旧选择search_documents。"
+)
 FAST_TOOLS.append({"type": "function", "function": {
     "name": "request_file_generation",
-    "description": "用户要求生成或按范例续写一份完整新文件时选择；快速模式不生成，由系统提示切换专家模式。修改本轮已有txt/md附件仍选edit_attachment。",
+    "description": "用户要求生成或按范例续写一份完整新文件时选择；快速模式不生成，由系统提示切换专家模式。修改本轮已有txt/md附件仍选edit_attachment。" + FAST_FILE_DELIVERY_RULE,
     "parameters": {"type": "object", "properties": {}},
 }})
 for _tool in INTENT_TOOLS + FAST_TOOLS:
@@ -1388,6 +1393,7 @@ def _build_fast_messages(state: AgentState) -> list[dict]:
         "事实型问题仍选择search_documents；用户没有附加文字时，可在本次回复正文概括附件的主要内容，不能用自身知识补全。"
         "你没有联网搜索工具，不得声称已经查询互联网或获得实时结果。"
         "生成或按范例续写完整新文件选request_file_generation，由系统提示专家模式；修改已有附件保留edit_attachment。"
+        + FAST_FILE_DELIVERY_RULE
         + source_policy.CLASSIFICATION_PROMPT
         + "公开一般知识也先选search_documents，并在general_answer提供无来源备注的备用草稿；内部或当前具体值不写草稿。"
         + ("本轮有附件：用户要求修改附件文字时选择edit_attachment；只读取、概括或解释时选search_documents。"
