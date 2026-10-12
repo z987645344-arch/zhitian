@@ -15,6 +15,10 @@ jobs:
   backend:
     needs: hnsw-wheel
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       JWT_SECRET_KEY: ci-only-test-secret-not-for-production
       ENTERPRISE_PASSWORD_SEED: ci-only-enterprise-seed-not-for-production
@@ -32,6 +36,7 @@ jobs:
           cache: pip
 
       - uses: actions/setup-node@v4
+        if: matrix.shard == 1
         with:
           node-version: '20'
 
@@ -59,6 +64,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check tracked files for secrets
+        if: matrix.shard == 1
         shell: bash
         run: |
           if git ls-files | grep -Eq '(^|/)\.env$'; then
@@ -71,6 +77,7 @@ jobs:
           fi
 
       - name: Compile Python sources
+        if: matrix.shard == 1
         shell: bash
         run: |
           find . -type f -name '*.py' \
@@ -80,7 +87,39 @@ jobs:
             -print0 | xargs -0 ./.venv/Scripts/python.exe -m py_compile
 
       - name: Run offline test suite
-        run: .\run_tests.bat -q
+        run: .\.venv\Scripts\python.exe scripts/ci_test_shards.py run --shards 2 --shard ${{ matrix.shard }} --report ci-shard-reports/shard-${{ matrix.shard }}.json
+
+      - name: Upload observed offline test IDs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-test-shard-${{ matrix.shard }}
+          path: ci-shard-reports/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
 
       - name: Test web client behavior
+        if: matrix.shard == 1
         run: node --test tests/web_time.test.js tests/web_source_policy.test.js tests/web_markdown.test.js tests/web_text_edit.test.js
+
+  offline-coverage:
+    needs: backend
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download observed offline test IDs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: offline-test-shard-*
+          path: ci-shard-reports
+          merge-multiple: true
+
+      - name: Verify exact offline test coverage
+        run: python scripts/ci_test_shards.py verify --shards 2 --reports-dir ci-shard-reports

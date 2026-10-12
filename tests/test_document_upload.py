@@ -296,6 +296,7 @@ def test_supported_upload_formats_reach_parser(client, auth_headers, monkeypatch
         ("sheet.xlsx", _office_zip_bytes("xl/workbook.xml"), "pdf"),
         ("slides.pptx", _office_zip_bytes("ppt/presentation.xml"), "pdf"),
     ],
+    ids=["legacy-doc", "xlsx", "pptx"],
 )
 def test_convertible_upload_converts_and_cleans_temp_files(
     client,
