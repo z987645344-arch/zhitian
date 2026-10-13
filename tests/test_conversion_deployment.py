@@ -37,7 +37,7 @@ def test_no_local_soffice_in_api_image_and_no_business_packages_in_service():
 
 def test_manual_conversion_integrations_are_relocated_not_skipped():
     workflow = yaml.safe_load((ROOT / ".github/workflows/integration-manual.yml").read_text(encoding="utf-8"))
-    assert workflow["jobs"]["integration"]["runs-on"] == "ubuntu-latest"
+    assert workflow["jobs"]["integration"]["runs-on"] == "ubuntu-24.04"
     commands = "\n".join(s.get("run", "") for s in workflow["jobs"]["integration"]["steps"])
     assert "check_conversion_integration.sh" in commands
     assert "--models" in commands and "docker build" in commands
