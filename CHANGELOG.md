@@ -3009,3 +3009,9 @@
 - 重新核对同版本转换镜像的dpkg-query/ldd、SAX绑定缺失及现行隔离配置，补偿措施不作为改判不可达的理由。每条记录补入最新报告SHA-256与Debian状态；Dockerfile仍有apt-get upgrade，但当前没有trixie修复可装，单纯重建不会消除这些条目。
 - 仅按授权同步测试参考日、复核/到期日期、CI摘要、精确有效期及Expat的forky当前状态；例外数量、作用域、可达性、30/90天规则、过期/失效检查不变。11月中旬须再次复核；不改门禁逻辑、不推送、不改VERSION。
 - 验证：validate确认35条精确例外，原始双镜像报告check-scan通过且无失效/未用报错，漏洞专项49 passed；run_tests.bat -q完整回归1958 passed、5 deselected，网页54项、管理端27项JS测试通过。Flutter 3.47.5分析无问题、55项测试通过；默认data的16个文件大小、修改时间和SHA-256不变。
+
+### 2026-10-13 GitHub Actions升级到Node 24运行时
+
+- 四个后端工作流中17处checkout、setup-python、setup-node、upload/download-artifact及setup-buildx引用升级到指定Node 24提交SHA，保留标签注释；Trivy composite及本地可复用工作流调用不动。已核对主要版本和中间发布说明，现有输入、产物名称及分片merge-multiple/覆盖检查无需迁移，工作流逻辑不变。
+- checkout凭据持久化仍默认true；setup-python新的Linux发行版缓存键可能造成首次缓存冷启动；buildx的BuildKit预拉取可能改变网络发生时机，不改变构建命令。setup-node给JS测试安装的node-version仍为20，本次升级的是Action自身运行时；GitHub托管runner须满足至少2.327.1。
+- 静态核验旧SHA零命中，三仓工作流除uses引用外语义一致。run_tests.bat -q完整回归1958 passed、5 deselected，网页JS全部54项通过；实际远端CI须由指挥师推送后观察，本轮不推送、不改VERSION。
