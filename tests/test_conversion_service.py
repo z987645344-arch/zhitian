@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -231,11 +232,29 @@ def test_cancel_running_queue_and_bounded_capacity():
         manager.capacity.release()
 
 
-def test_queue_wait_consumes_deadline():
+def test_queue_wait_consumes_deadline(monkeypatch):
     client, manager = ready_client()
     with client:
         wait_ready(manager)
         manager.serial.acquire()
+        # 本测试只断言排队耗尽预算的分类；实际等锁延迟由运行器测试覆盖。
+        from converter_service import app as service_app, tasks
+        from layers.file_processing import runner
+        clock = [100.0]
+        timer = SimpleNamespace(monotonic=lambda: clock[0], time=time.time, sleep=time.sleep)
+        for module in (service_app, tasks, runner):
+            monkeypatch.setattr(module, "time", timer)
+        serial = manager.serial
+
+        class BudgetedQueueWait:
+            def acquire(self, *, timeout):
+                clock[0] += timeout
+                return False  # 已由上方持锁；只推进原来的等待额度。
+
+            def release(self):
+                serial.release()
+
+        monkeypatch.setattr(manager, "serial", BudgetedQueueWait())
         try:
             response = submit(client, remaining_budget="0.03")
             job = manager.get(response.json()["task_id"])

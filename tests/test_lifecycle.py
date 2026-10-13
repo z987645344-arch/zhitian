@@ -2,6 +2,7 @@
 """Offline tests for graceful application shutdown."""
 
 import asyncio
+from types import SimpleNamespace
 
 import config
 import main
@@ -34,6 +35,9 @@ def test_lifespan_waits_for_active_request_and_closes_resources(monkeypatch):
 def test_lifespan_stops_waiting_at_configured_deadline(monkeypatch):
     closed = []
     monkeypatch.setattr(config, "SHUTDOWN_GRACE_PERIOD_SECONDS", 0.01)
+    checks = iter([0.0, config.SHUTDOWN_GRACE_PERIOD_SECONDS])
+    monkeypatch.setattr(main, "time", SimpleNamespace(
+        monotonic=lambda: next(checks, config.SHUTDOWN_GRACE_PERIOD_SECONDS)))
     monkeypatch.setattr(main.memory, "close_resources", lambda: closed.append(True))
     monkeypatch.setattr(main, "_active_http_requests", 1)
 

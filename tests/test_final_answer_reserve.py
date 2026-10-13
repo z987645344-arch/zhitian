@@ -146,10 +146,16 @@ def test_wall_clock_bounds_live_non_content_activity_and_no_late_retry(monkeypat
     release = threading.Event()
     ended = threading.Event()
     attempts = []
+    clock = Clock()
+    # 只推进被测预算，不把SDK壳准备和慢runner线程调度当成模型活动。
+    # 局部对象不修改标准库time或pytest自己的时钟。
+    time = SimpleNamespace(perf_counter=lambda: clock.now, sleep=clock.advance)
+    monkeypatch.setattr(llm_provider, "time", time)
 
     def create(**kw):
         attempts.append(kw)
         started.set()
+        clock.advance(.04)
         try:
             # 模拟连接持续有非正文活动，SDK的read timeout始终不触发。
             assert release.wait(2)
@@ -159,6 +165,7 @@ def test_wall_clock_bounds_live_non_content_activity_and_no_late_retry(monkeypat
 
     install_provider(monkeypatch, create)
     begin = time.perf_counter()
+    cleanup_ended = False
     try:
         with pytest.raises(TimeoutError, match="wall-clock"):
             llm_provider.chat_completion([], timeout=.1, total_budget=.04,
@@ -167,7 +174,9 @@ def test_wall_clock_bounds_live_non_content_activity_and_no_late_retry(monkeypat
         assert time.perf_counter() - begin < .5
     finally:
         release.set()
-        assert ended.wait(2)
+        cleanup_ended = ended.wait(2)
+    # 清理失败不覆盖try中更早的失败；原2秒清理上限不变。
+    assert cleanup_ended
     assert len(attempts) == 1
 
 

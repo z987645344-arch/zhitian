@@ -2,12 +2,22 @@
 
 import logging
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 import config
 import main
 from layers import heavy_task_limits, resource_admission, task_store
+
+
+def _memory_deadline_clock(monkeypatch):
+    """只测内存超时分类/账本，等待步推进逻辑钟，不测真实恢复延迟。"""
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(heavy_task_limits, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    def advance(seconds):
+        clock.now += seconds
+    monkeypatch.setattr(resource_admission, "wait_for_change", advance)
 
 
 _MIB = 1024 * 1024
@@ -79,6 +89,7 @@ def test_shared_ledger_allows_only_one_task_and_releases_after_exception(monkeyp
     # 600MiB余量：320MiB转换 + 256MiB安全余量能过；其预留会挡住192MiB入库。
     monkeypatch.setattr(resource_admission, "read_cgroup_memory", lambda: (_snapshot(600), ""))
     monkeypatch.setattr(config, "INGEST_MEMORY_WAIT_SECONDS", 0.05)
+    _memory_deadline_clock(monkeypatch)
     entered = threading.Event()
     unblock = threading.Event()
     caught_errors = []
@@ -136,6 +147,7 @@ def test_ingest_waits_then_resumes_when_memory_recovers(monkeypatch):
 def test_ingest_memory_timeout_marks_task_failed(monkeypatch):
     monkeypatch.setattr(resource_admission, "read_cgroup_memory", lambda: (_snapshot(100), ""))
     monkeypatch.setattr(config, "INGEST_MEMORY_WAIT_SECONDS", 0.01)
+    _memory_deadline_clock(monkeypatch)
     task = task_store.create_task("knowledge_input", "mem_timeout_hash", "mem_timeout.txt", None, "memory-user")
     heavy_task_limits.reserve_ingest_slot()
     main._run_ingest_task(task.task_id, "mem-timeout-doc", "mem_timeout.txt", ["文本"], "", None, "memory-user")
