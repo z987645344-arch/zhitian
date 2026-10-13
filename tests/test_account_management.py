@@ -21,8 +21,12 @@ def test_default_account_management_is_rejected_without_changes(client, accounts
     operator, target = accounts("developer"), accounts("reviewer", True)
     before = row(target)
     result = client.post(f'/developer/users/{target["user_id"]}/{action}', headers=headers(operator), json=payload)
-    assert result.status_code == 400 and "默认账号" in result.json()["detail"]
-    assert row(target) == before
+    if action == "disable":
+        assert result.status_code == 200 and result.json()["is_active"] is False
+        assert row(target) == {**before, "is_active": 0}
+    else:
+        assert result.status_code == 400 and "默认账号" in result.json()["detail"]
+        assert row(target) == before
 
 
 @pytest.mark.parametrize("action,payload", [("disable", None), ("change_role", {"target_role": "reviewer"})])
@@ -106,37 +110,11 @@ def test_four_management_actions_are_audited_without_personal_fields(client, acc
         audits = [dict(item) for item in conn.execute("SELECT * FROM account_management_audit ORDER BY id")]
     assert [item["action"] for item in audits] == ["disable", "enable", "change_role", "reset_password"]
     for item in audits:
-        assert set(item) == {"id", "operator_user_id", "target_user_id", "action", "created_at"}
+        assert set(item) == {"id", "operator_user_id", "target_user_id", "action", "created_at", "reason_code"}
+        assert item["reason_code"] is None
         assert item["operator_user_id"] == operator["user_id"] and item["target_user_id"] == target["user_id"]
         assert life.parse(item["created_at"])
     assert "@" not in json.dumps(audits) and "password" not in json.dumps(audits).replace("reset_password", "")
-
-
-@pytest.mark.parametrize("role", ["customer", "employee", "reviewer"])
-def test_accounts_interface_is_developer_only(client, accounts, role):
-    assert client.get("/developer/accounts", headers=headers(accounts(role))).status_code == 403
-
-
-def test_accounts_interface_is_minimal_masked_and_has_all_states(client, accounts):
-    operator, disabled, pending = accounts("developer"), accounts("employee"), accounts("customer")
-    auth.set_user_active(disabled["user_id"], False)
-    life._pending(pending["user_id"], "self", life.utc())
-    org = organizations.create_organization("SYNTHETIC", "SYNTHETIC")["id"]
-    with auth._connect() as conn:
-        conn.execute("INSERT INTO user_organizations (user_id,organization_id) VALUES (?,?)", (operator["user_id"], org))
-    result = client.get("/developer/accounts", headers=headers(operator))
-    assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
-    body = result.json()
-    assert set(body) == {"accounts", "current_user_id", "last_enabled_developer_id"}
-    assert body["current_user_id"] == body["last_enabled_developer_id"] == operator["user_id"]
-    items = {item["user_id"]: item for item in body["accounts"]}
-    assert items[operator["user_id"]]["custom_organization_count"] == 1
-    assert items[disabled["user_id"]]["status"] == "disabled" and items[pending["user_id"]]["status"] == "pending_deletion"
-    for user in [operator, disabled, pending]:
-        item = items[user["user_id"]]
-        assert set(item) == {"user_id", "masked_account", "role", "status", "is_default_account", "created_at", "last_login_at", "custom_organization_count", "api_quota_source"}
-        assert item["masked_account"] == auth.mask_account_name(user["username"])
-        assert user["username"] not in result.text
 
 
 def test_role_change_uses_existing_internal_clock_trigger(client, accounts):

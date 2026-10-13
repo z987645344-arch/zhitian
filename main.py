@@ -1561,12 +1561,6 @@ def _manage_account_or_http(current_user, user_id, action, target_role=None):
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
-@app.get("/developer/accounts")
-async def developer_accounts(current_user: dict = Depends(require_developer)):
-    from layers import account_management
-    return JSONResponse(content=account_management.list_accounts(current_user["user_id"]), headers={"Cache-Control": "no-store"})
-
-
 @app.post("/developer/users/{user_id}/disable")
 async def disable_user(user_id: str, current_user: dict = Depends(require_developer)):
     _reject_self_management(user_id, current_user, "disable")
@@ -1576,6 +1570,8 @@ async def disable_user(user_id: str, current_user: dict = Depends(require_develo
 @app.post("/developer/users/{user_id}/enable")
 async def enable_user(user_id: str, current_user: dict = Depends(require_developer)):
     if user_id == current_user["user_id"]:
+        if current_user.get("is_default_account"):
+            raise HTTPException(status_code=400, detail="默认启动账号移交后不可重新启用")
         raise HTTPException(status_code=400, detail="不能操作自己的账号")
     return _manage_account_or_http(current_user, user_id, "enable")
 

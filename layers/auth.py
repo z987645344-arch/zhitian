@@ -337,6 +337,9 @@ def init_db() -> None:
                 target_user_id TEXT NOT NULL, action TEXT NOT NULL
                     CHECK (action IN ('disable','enable','change_role','reset_password')),
                 created_at TEXT NOT NULL)""")
+            audit_columns = {row["name"] for row in conn.execute("PRAGMA table_info(account_management_audit)")}
+            if "reason_code" not in audit_columns:
+                conn.execute("ALTER TABLE account_management_audit ADD COLUMN reason_code TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS enterprise_api_revocations (

@@ -1,4 +1,4 @@
-"""开发者账号管理：最小打码列表、事务内保护和不透明ID审计。"""
+"""开发者账号操作：事务内保护和不透明ID审计。"""
 from contextlib import ExitStack
 
 from layers import auth, account_lifecycle
@@ -10,8 +10,11 @@ class RoleConflict(ValueError):
 
 
 def validate_transition(conn, user, action, target_role=None):
-    if action in {"disable", "change_role"} and user["is_default_account"]:
-        raise ValueError("默认账号不能被禁用或修改角色")
+    if user["is_default_account"]:
+        if action == "enable":
+            raise ValueError("默认启动账号移交后不可重新启用")
+        if action == "change_role":
+            raise ValueError("默认账号不能修改角色")
     reduces_developers = action == "disable" or (action == "change_role" and target_role != "developer")
     if user["role"] == "developer" and user["is_active"] and reduces_developers:
         if not account_lifecycle.other_active_developer(conn, user["user_id"]):
@@ -57,25 +60,6 @@ def manage(operator_id, user_id, action, target_role=None):
                 result = {"user_id": user_id, "new_password": plaintext,
                           "detail": "该密码已同步到此邮箱名下全部角色账号"}
             conn.execute("""INSERT INTO account_management_audit
-                (operator_user_id,target_user_id,action,created_at) VALUES (?,?,?,?)""",
+                (operator_user_id,target_user_id,action,created_at,reason_code) VALUES (?,?,?,?,NULL)""",
                 (operator_id, user_id, action, utc_now_naive().isoformat()))
     return result
-
-
-def list_accounts(current_user_id):
-    with auth._connect() as conn:
-        rows = conn.execute("""SELECT u.user_id,u.username,u.email,u.role,u.is_active,u.is_default_account,
-            u.created_at,u.last_login_at,u.api_quota_source,l.deletion_requested_at,
-            (SELECT COUNT(*) FROM user_organizations uo JOIN organizations o ON o.id=uo.organization_id
-             WHERE uo.user_id=u.user_id AND o.name!='默认') AS custom_organization_count
-            FROM users u LEFT JOIN customer_account_lifecycle l ON l.user_id=u.user_id
-            ORDER BY u.created_at,u.user_id""").fetchall()
-    active_developers = [row["user_id"] for row in rows if row["role"] == "developer" and row["is_active"]]
-    accounts = [{"user_id": row["user_id"], "masked_account": auth.mask_account_name(row["email"] or row["username"]),
-                 "role": row["role"], "status": "pending_deletion" if row["deletion_requested_at"] else "enabled" if row["is_active"] else "disabled",
-                 "is_default_account": bool(row["is_default_account"]), "created_at": row["created_at"],
-                 "last_login_at": row["last_login_at"], "custom_organization_count": row["custom_organization_count"],
-                 "api_quota_source": row["api_quota_source"]} for row in rows]
-    # 元数据只含不透明ID；pending状态不能反映is_active，不能让网页猜最后一个开发者。
-    return {"accounts": accounts, "current_user_id": current_user_id,
-            "last_enabled_developer_id": active_developers[0] if len(active_developers) == 1 else None}
