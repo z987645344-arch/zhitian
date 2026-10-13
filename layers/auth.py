@@ -7,6 +7,7 @@ import os
 import secrets
 import sqlite3
 import uuid
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from utils.time_values import utc_now_naive
 from typing import Any, Dict, List, Optional
@@ -331,6 +332,11 @@ def init_db() -> None:
             _migrate_users_unique_constraint(conn)
             from layers import account_lifecycle
             account_lifecycle.initialize_schema(conn)
+            conn.execute("""CREATE TABLE IF NOT EXISTS account_management_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, operator_user_id TEXT NOT NULL,
+                target_user_id TEXT NOT NULL, action TEXT NOT NULL
+                    CHECK (action IN ('disable','enable','change_role','reset_password')),
+                created_at TEXT NOT NULL)""")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS enterprise_api_revocations (
@@ -806,16 +812,19 @@ def login_user(username: str, password: str, role: str) -> str:
     user = _get_user_by_username_role((username or "").strip(), normalized_role)
     if not user:
         raise PermissionError("用户名、密码或账号类型不正确")
-    if not bool(user["is_active"]):
-        raise PermissionError("账号已被禁用")
-
-    password_bytes = (password or "").encode("utf-8")
-    hash_bytes = user["password_hash"].encode("utf-8")
-    if not bcrypt.checkpw(password_bytes, hash_bytes):
-        raise PermissionError("用户名、密码或账号类型不正确")
-
     from layers import account_lifecycle
-    epoch, cancelled = account_lifecycle.login_succeeded(user["user_id"])
+    login_user_id = user["user_id"]
+    with account_lifecycle.user_lock(login_user_id):
+        user = _get_user_by_username_role((username or "").strip(), normalized_role)
+        if not user or user["user_id"] != login_user_id:
+            raise PermissionError("用户名、密码或账号类型不正确")
+        if not bool(user["is_active"]):
+            raise PermissionError("账号已被禁用")
+        password_bytes = (password or "").encode("utf-8")
+        hash_bytes = user["password_hash"].encode("utf-8")
+        if not bcrypt.checkpw(password_bytes, hash_bytes):
+            raise PermissionError("用户名、密码或账号类型不正确")
+        epoch, cancelled = account_lifecycle.login_succeeded(user["user_id"])
 
     expire_at = datetime.now(timezone.utc) + timedelta(hours=config.JWT_EXPIRE_HOURS)
     payload = {
@@ -1230,22 +1239,33 @@ def change_user_role(user_id: str, target_role: str) -> bool:
     return cursor.rowcount > 0
 
 
-def reset_user_password(user_id: str) -> Optional[str]:
+def _new_reset_password():
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
     plaintext = "".join(secrets.choice(alphabet) for _ in range(12))
     password_hash = bcrypt.hashpw(
         plaintext.encode("utf-8"), bcrypt.gensalt()
     ).decode("utf-8")
-    with transaction(USERS_DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT username FROM users WHERE user_id = ?", (user_id,)
-        ).fetchone()
-        if not row:
-            return None
-        conn.execute(
-            "UPDATE users SET password_hash = ? WHERE username = ?",
-            (password_hash, row["username"]),
-        )
+    return plaintext, password_hash
+
+
+def _reset_password_in_connection(conn, username, password_hash):
+    conn.execute("UPDATE users SET password_hash=?, account_epoch=account_epoch+1 WHERE username=?",
+                 (password_hash, username))
+
+
+def reset_user_password(user_id: str) -> Optional[str]:
+    from layers import account_lifecycle
+    with account_lifecycle._developer_lock, ExitStack() as locks:
+        with _connect() as conn:
+            row = conn.execute("SELECT username FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if not row:
+                return None
+            identifiers = [item[0] for item in conn.execute("SELECT user_id FROM users WHERE username=?", (row["username"],))]
+        for identifier in sorted(identifiers):
+            locks.enter_context(account_lifecycle.user_lock(identifier))
+        plaintext, password_hash = _new_reset_password()
+        with transaction(USERS_DB_PATH) as conn:
+            _reset_password_in_connection(conn, row["username"], password_hash)
     return plaintext
 
 

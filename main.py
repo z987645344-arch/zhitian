@@ -1549,47 +1549,48 @@ def _reject_self_management(user_id: str, current_user: dict, action: str) -> No
         raise HTTPException(status_code=400, detail=detail)
 
 
+def _manage_account_or_http(current_user, user_id, action, target_role=None):
+    from layers import account_management
+    try:
+        return account_management.manage(current_user["user_id"], user_id, action, target_role)
+    except account_management.RoleConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@app.get("/developer/accounts")
+async def developer_accounts(current_user: dict = Depends(require_developer)):
+    from layers import account_management
+    return JSONResponse(content=account_management.list_accounts(current_user["user_id"]), headers={"Cache-Control": "no-store"})
+
+
 @app.post("/developer/users/{user_id}/disable")
 async def disable_user(user_id: str, current_user: dict = Depends(require_developer)):
     _reject_self_management(user_id, current_user, "disable")
-    if not auth.set_user_active(user_id, False):
-        raise HTTPException(status_code=404, detail="用户不存在")
-    return {"user_id": user_id, "is_active": False}
+    return _manage_account_or_http(current_user, user_id, "disable")
 
 
 @app.post("/developer/users/{user_id}/enable")
 async def enable_user(user_id: str, current_user: dict = Depends(require_developer)):
     if user_id == current_user["user_id"]:
         raise HTTPException(status_code=400, detail="不能操作自己的账号")
-    if not auth.set_user_active(user_id, True):
-        raise HTTPException(status_code=404, detail="用户不存在")
-    return {"user_id": user_id, "is_active": True}
+    return _manage_account_or_http(current_user, user_id, "enable")
 
 
 @app.post("/developer/users/{user_id}/change_role")
 async def change_user_role(user_id: str, payload: ChangeRoleRequest, current_user: dict = Depends(require_developer)):
     _reject_self_management(user_id, current_user, "role")
-    try:
-        changed = auth.change_user_role(user_id, payload.target_role)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not changed:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    return {"user_id": user_id, "role": payload.target_role}
+    return _manage_account_or_http(current_user, user_id, "change_role", payload.target_role)
 
 
 @app.post("/developer/users/{user_id}/reset_password")
 async def reset_user_password(user_id: str, current_user: dict = Depends(require_developer)):
     if user_id == current_user["user_id"]:
         raise HTTPException(status_code=400, detail="不能操作自己的账号")
-    plaintext = auth.reset_user_password(user_id)
-    if plaintext is None:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    return {
-        "user_id": user_id,
-        "new_password": plaintext,
-        "detail": "该密码已同步到此邮箱名下全部角色账号",
-    }
+    return JSONResponse(content=_manage_account_or_http(current_user, user_id, "reset_password"), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/account/api-quota", response_model=api_quota.ApiQuotaStatus)

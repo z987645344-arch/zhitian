@@ -138,10 +138,11 @@ def check_token(user_id, epoch):
         row = _row(user_id)
         if not row:
             raise PermissionError("token无效")
+        if epoch != row["account_epoch"]:
+            raise PermissionError("token无效")
         if not eligible(row, "restore"):
             return
-        if (user_id in deleted_accounts() or _state(user_id).get("deletion_requested_at")
-                or epoch != row["account_epoch"]):
+        if user_id in deleted_accounts() or _state(user_id).get("deletion_requested_at"):
             raise PermissionError("token无效")
 
 
