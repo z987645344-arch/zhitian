@@ -223,17 +223,32 @@ def test_invalid_shard_input_is_rejected(monkeypatch, args):
     assert shards.main(args) == 1
 
 
-def test_workflow_runs_two_serial_workers_and_one_fail_closed_coverage_gate():
+def test_three_shards_cover_every_file_and_require_all_three_reports():
+    plan = shards.make_plan(IDS, TIMINGS, 3)
+    data = [{"schema": 1, "revision": "same-revision", "shards": 3,
+             "shard": group["shard"], "files": group["files"],
+             "full_ids": list(IDS), "selected_ids": group["ids"],
+             "executed_ids": group["ids"], "exit_code": 0}
+            for group in plan]
+    assert len(plan) == 3
+    assert sorted(name for group in plan for name in group["files"]) == sorted(TIMINGS)
+    assert sorted(node for group in plan for node in group["ids"]) == sorted(IDS)
+    assert shards.verify_reports(data, 3, TIMINGS) == len(IDS)
+    with pytest.raises(ValueError):
+        shards.verify_reports(data[:2], 3, TIMINGS)
+
+
+def test_workflow_runs_three_serial_workers_and_one_fail_closed_coverage_gate():
     workflow = yaml.safe_load((shards.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     backend = workflow["jobs"]["backend"]
-    assert backend["strategy"] == {"fail-fast": False, "matrix": {"shard": [1, 2]}}
+    assert backend["strategy"] == {"fail-fast": False, "matrix": {"shard": [1, 2, 3]}}
     assert backend["needs"] == "hnsw-wheel"
     steps = {step.get("name", step.get("uses")): step for step in backend["steps"]}
     for name in ["Check tracked files for secrets", "Compile Python sources", "Test web client behavior"]:
         assert steps[name]["if"] == "matrix.shard == 1"
     assert steps["Upload observed offline test IDs"]["if"] == "always()"
     assert steps["Upload observed offline test IDs"]["with"]["if-no-files-found"] == "error"
-    assert "--shards 2 --shard ${{ matrix.shard }}" in steps["Run offline test suite"]["run"]
+    assert "--shards 3 --shard ${{ matrix.shard }}" in steps["Run offline test suite"]["run"]
     gate = workflow["jobs"]["offline-coverage"]
     assert gate["needs"] == "backend" and gate["if"] == "always()"
-    assert "verify --shards 2" in gate["steps"][-1]["run"]
+    assert "verify --shards 3" in gate["steps"][-1]["run"]

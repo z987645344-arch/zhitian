@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     env:
       JWT_SECRET_KEY: ci-only-test-secret-not-for-production
       ENTERPRISE_PASSWORD_SEED: ci-only-enterprise-seed-not-for-production
@@ -87,7 +87,7 @@ jobs:
             -print0 | xargs -0 ./.venv/Scripts/python.exe -m py_compile
 
       - name: Run offline test suite
-        run: .\.venv\Scripts\python.exe scripts/ci_test_shards.py run --shards 2 --shard ${{ matrix.shard }} --report ci-shard-reports/shard-${{ matrix.shard }}.json
+        run: .\.venv\Scripts\python.exe scripts/ci_test_shards.py run --shards 3 --shard ${{ matrix.shard }} --report ci-shard-reports/shard-${{ matrix.shard }}.json
 
       - name: Upload observed offline test IDs
         if: always()
@@ -122,4 +122,4 @@ jobs:
           merge-multiple: true
 
       - name: Verify exact offline test coverage
-        run: python scripts/ci_test_shards.py verify --shards 2 --reports-dir ci-shard-reports
+        run: python scripts/ci_test_shards.py verify --shards 3 --reports-dir ci-shard-reports
