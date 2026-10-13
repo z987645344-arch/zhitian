@@ -19,6 +19,9 @@ def _mail_subject_and_body(code: str, purpose: str) -> Tuple[str, str]:
     if purpose == "customer_register":
         title = "客户注册"
         scene = "知天客户注册"
+    elif purpose == "customer_delete_account":
+        title = "客户注销"
+        scene = "知天客户注销申请"
     elif purpose == "register":
         title = "注册验证"
         scene = "知天注册验证"
@@ -38,6 +41,11 @@ def _mail_subject_and_body(code: str, purpose: str) -> Tuple[str, str]:
 
 def _send_once(to_email: str, code: str, purpose: str) -> None:
     """调用官方 Tea SDK；延迟导入使缺少 SDK 时返回可识别错误。"""
+    subject, html_body = _mail_subject_and_body(code, purpose)
+    _send_message_once(to_email, subject, html_body)
+
+
+def _send_message_once(to_email, subject, html_body):
     try:
         from alibabacloud_dm20151123.client import Client as DirectMailClient
         from alibabacloud_dm20151123 import models as dm_models
@@ -51,7 +59,6 @@ def _send_once(to_email: str, code: str, purpose: str) -> None:
     )
     client_config.region_id = config.ALIYUN_MAIL_REGION_ID
     client = DirectMailClient(client_config)
-    subject, html_body = _mail_subject_and_body(code, purpose)
     request = dm_models.SingleSendMailRequest(
         account_name=config.ALIYUN_MAIL_ACCOUNT_NAME,
         address_type=1,
@@ -97,3 +104,19 @@ def send_verification_email(to_email: str, code: str, purpose: str) -> bool:
                 continue
             return False
     return False
+
+
+def send_account_lifecycle_email(to_email, kind):
+    """一次发送；失败由生命周期状态机次日重试，日志由调用方按user_id记录。"""
+    messages = {
+        "confirmation": ("知天账号注销申请确认", "注销申请已收到，7 天后生效，期间重新登录即视为撤销。"),
+        "inactivity": ("知天账号长期未登录提醒", "账号将在约 1 个月后因长期未登录被注销，登录即可保留。"),
+    }
+    subject, text = messages[kind]
+    if not config.ALIYUN_ACCESS_KEY_ID or not config.ALIYUN_ACCESS_KEY_SECRET or not config.ALIYUN_MAIL_REGION_ID:
+        return False
+    try:
+        _send_message_once(to_email, subject, "<p>" + text + "</p>")
+        return True
+    except Exception:
+        return False

@@ -314,12 +314,14 @@ def _log_graphrag_startup_state() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _accepting_requests
+    from layers import account_lifecycle
     db_schema_version.initialize_and_validate_databases(
         auth.USERS_DB_PATH, config.HISTORY_DB_PATH
     )
     _log_graphrag_startup_state()
     resource_admission.log_startup_state()
     _recover_interrupted_tasks()
+    account_lifecycle.reconcile_deleted_accounts()
     # 文件引擎只降级文件能力；冒烟线程不阻塞启动、聊天及/ready。
     try:
         logger.info("[file-task] stale_directories_cleaned=%d", cleanup_stale_tasks())
@@ -336,9 +338,11 @@ async def lifespan(app: FastAPI):
         backup_scheduler.start_scheduler()
     except Exception as exc:
         logger.error("启动进程内备份调度失败：error_type=%s", type(exc).__name__)
+    account_lifecycle.start_scheduler()
     try:
         yield
     finally:
+        account_lifecycle.stop_scheduler()
         temporary_files.stop_cleanup()
         with _request_gate_lock:
             _accepting_requests = False
@@ -1187,10 +1191,13 @@ async def login(request: Request, payload: LoginRequest):
             "[audit] login_success user_id=%s role=%s source_ip=%s",
             user["user_id"], audit_role, source_ip,
         )
-        return {
+        response = {
             "token": token,
             "role": user["role"]
         }
+        if user.get("deletion_cancelled"):
+            response["detail"] = "已撤销注销申请"
+        return response
     except PermissionError as e:
         reason = "account_disabled" if str(e) == "账号已被禁用" else "invalid_credentials"
         audit_logger.info(
@@ -1281,7 +1288,8 @@ async def forgot_password(request: Request, payload: ForgotPasswordRequest):
 @app.post("/auth/send-verification-code")
 @limiter.limit("10/hour")
 async def send_verification_code(
-    request: Request, payload: SendVerificationCodeRequest
+    request: Request, payload: SendVerificationCodeRequest,
+    authorization: str = Header(default="", alias="Authorization"),
 ):
     email = (payload.email or "").strip()
     purpose = (payload.purpose or "").strip()
@@ -1289,6 +1297,13 @@ async def send_verification_code(
         raise HTTPException(status_code=400, detail="邮箱格式无效")
     if purpose not in auth.VERIFICATION_PURPOSES:
         raise HTTPException(status_code=400, detail="验证码用途无效")
+    if purpose == auth.CUSTOMER_DELETE_PURPOSE:
+        current = get_current_user(authorization)
+        user = auth.get_user(current["user_id"])
+        if current["role"] != "customer" or current["is_default_account"]:
+            raise HTTPException(status_code=403, detail="仅普通客户可注销账号")
+        if email.lower() != (user["email"] or user["username"]).lower():
+            raise HTTPException(status_code=403, detail="只能验证本人邮箱")
     # 企业密码前置校验，拦住"换邮箱批量刷验证码"消耗DirectMail每日额度的路径。
     # 刻意放在频率限制之前：校验不通过即返回，既不写入 email_verification_codes，
     # 也就不占用真实用户的冷却/24小时配额和每日发送量统计。
@@ -1315,6 +1330,22 @@ async def send_verification_code(
         raise HTTPException(status_code=502, detail="验证码发送失败，请稍后重试")
     auth.create_verification_code(email, purpose, code)
     return {"detail": "验证码已发送，请查收邮箱"}
+
+
+class CustomerDeletionRequest(BaseModel):
+    current_password: str
+    verification_code: str
+
+
+@app.post("/account/deletion")
+async def customer_request_deletion(payload: CustomerDeletionRequest, current_user: dict = Depends(get_current_user)):
+    from layers import account_lifecycle
+    try:
+        return account_lifecycle.request_deletion(current_user["user_id"], payload.current_password, payload.verification_code)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 @app.get("/developer/registration-requests")

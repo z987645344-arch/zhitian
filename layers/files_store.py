@@ -48,7 +48,7 @@ class UserFile(BaseModel):
 
 
 def _database_path() -> str:
-    return os.path.join(config.BASE_DIR, "data", "files.db")
+    return os.path.join(getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", os.path.join(config.BASE_DIR, "data")), "files.db")
 
 
 def _connect() -> sqlite3.Connection:
@@ -132,8 +132,7 @@ def _file_path(record: UserFile) -> str:
     if not _SAFE_COMPONENT.fullmatch(record.owner_user_id):
         raise ValueError("invalid_owner_user_id")
     return os.path.join(
-        config.BASE_DIR,
-        "data",
+        getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", os.path.join(config.BASE_DIR, "data")),
         "user_files",
         record.owner_user_id,
         "%s.%s" % (record.file_id, record.format),
@@ -268,7 +267,7 @@ def _legacy_disk_paths(record: UserFile):
     for item in (path, tombstone, staging, *path.parents):
         if item.is_symlink() or item.is_junction():
             raise ValueError("invalid_legacy_file_link")
-    root = Path(config.BASE_DIR) / "data" / "user_files"
+    root = Path(getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", Path(config.BASE_DIR) / "data")) / "user_files"
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("invalid_legacy_file_path")
     return path, tombstone, staging

@@ -1666,7 +1666,7 @@ def clear_session(session_id: str) -> bool:
 
 
 @session_records.serialized_change
-def delete_session_full(session_id: str) -> bool:
+def delete_session_full(session_id: str, *, privacy_safe: bool = False) -> bool:
     """彻底删除会话记录、归属和长期向量；返回向量清理是否完整。"""
     if not session_id:
         return True
@@ -1677,16 +1677,15 @@ def delete_session_full(session_id: str) -> bool:
         from layers import auth
         auth.delete_session_binding(session_id)
     except Exception as e:
-        logger.error(
-            "SQLite彻底删除会话失败：session_id=%s error_type=%s",
-            session_id,
-            type(e).__name__,
-        )
+        if privacy_safe:
+            logger.error("注销中的会话清理未完成")
+        else:
+            logger.error("SQLite彻底删除会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
         raise
-    return _clear_vector_session(session_id)
+    return _clear_vector_session(session_id, privacy_safe=True) if privacy_safe else _clear_vector_session(session_id)
 
 
-def _clear_vector_session(session_id: str) -> bool:
+def _clear_vector_session(session_id: str, *, privacy_safe: bool = False) -> bool:
     """删除指定session的Chroma向量记忆"""
     try:
         with _chroma_lock:
@@ -1694,7 +1693,10 @@ def _clear_vector_session(session_id: str) -> bool:
             collection.delete(where={"session_id": session_id})
         return True
     except Exception as e:
-        logger.error("Chroma清空会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
+        if privacy_safe:
+            logger.error("注销中的向量清理未完成")
+        else:
+            logger.error("Chroma清空会话失败：session_id=%s error_type=%s", session_id, type(e).__name__)
         return False
 
 

@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -524,6 +525,17 @@ def _activate_in_place(data_dir: Path, staging: Path) -> Path:
     return rollback
 
 
+def reapply_account_deletions(data_dir: Path) -> None:
+    # 此文件不在激活/备份条目中。没有名单时不加载应用或创建任何新表。
+    if not (Path(data_dir) / "account-deletions.json").exists():
+        return
+    result = subprocess.run([sys.executable, str(PROJECT_ROOT / "scripts" / "reapply_account_deletions.py"),
+        "--data-dir", str(data_dir), "--confirm-service-stopped"],
+        capture_output=True, timeout=180, check=False)
+    if result.returncode:
+        raise RestoreError("恢复后注销核对未完成，启动API时将再次核对")
+
+
 def restore_backup(
     archive_path: Path,
     data_dir: Path = backup_data.DEFAULT_DATA_DIR,
@@ -586,6 +598,7 @@ def restore_backup(
             safety.archive_path if safety is not None else None,
             rollback,
         )
+    reapply_account_deletions(resolved_data)
     if rollback is not None and rollback.exists():
         _remove_path(rollback)
     return RestoreResult(

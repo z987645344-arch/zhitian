@@ -157,3 +157,14 @@ def purge_expired():
     with _attachment_lock:
         for session_id in list(_attachments):
             _purge_expired_locked(session_id)
+
+
+@session_records.serialized_change
+def clear_user(owner_user_id):
+    with _attachment_lock:
+        for session_id, records in list(_attachments.items()):
+            for identifier, record in list(records.items()):
+                if record.owner_user_id == owner_user_id:
+                    records.pop(identifier, None)
+            if not records:
+                _attachments.pop(session_id, None)

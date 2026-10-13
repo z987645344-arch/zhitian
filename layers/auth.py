@@ -22,7 +22,7 @@ from utils.logger import get_logger
 logger = get_logger("auth")
 session_audit_logger = get_logger("auth_audit", console_info_prefix="[audit] ")
 
-USERS_DB_PATH = os.path.join(config.BASE_DIR, "data", "users.db")
+USERS_DB_PATH = os.path.join(getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", os.path.join(config.BASE_DIR, "data")), "users.db")
 VALID_ROLES = {"customer", "employee", "reviewer", "developer"}
 # 按角色的每分钟请求上限种子值。customer/employee沿用此前全局`.env`的
 # RATE_LIMIT_PER_MINUTE=20，使升级为按角色可配置后这两类角色的实际体验不变；
@@ -48,11 +48,13 @@ REGISTRATION_APPROVER_ROLES = {
 # customer自助注册用途，与企业角色的register/reset_password严格区分：
 # 只有企业角色用途要求企业密码，且两类用途的发送计数按purpose天然隔离、互不干扰。
 CUSTOMER_REGISTER_PURPOSE = "customer_register"
+CUSTOMER_DELETE_PURPOSE = "customer_delete_account"
 ENTERPRISE_VERIFICATION_PURPOSES = {"register", "reset_password"}
-VERIFICATION_PURPOSES = ENTERPRISE_VERIFICATION_PURPOSES | {CUSTOMER_REGISTER_PURPOSE}
+VERIFICATION_PURPOSES = ENTERPRISE_VERIFICATION_PURPOSES | {CUSTOMER_REGISTER_PURPOSE, CUSTOMER_DELETE_PURPOSE}
 # 按purpose区分的两套独立限流参数：customer自助注册面向公开流量、每日上限更严，
 # 企业角色用途已有企业密码前置校验兜底，可放宽每日次数。
 VERIFICATION_SEND_RULES = {
+    CUSTOMER_DELETE_PURPOSE: {"cooldown_seconds": 180, "daily_limit": 5},
     CUSTOMER_REGISTER_PURPOSE: {"cooldown_seconds": 180, "daily_limit": 5},
     "register": {"cooldown_seconds": 180, "daily_limit": 10},
     "reset_password": {"cooldown_seconds": 180, "daily_limit": 10},
@@ -146,7 +148,7 @@ def _migrate_verification_purpose_check(conn: sqlite3.Connection) -> None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='email_verification_codes'"
     ).fetchone()
-    if not row or CUSTOMER_REGISTER_PURPOSE in str(row["sql"]):
+    if not row or CUSTOMER_DELETE_PURPOSE in str(row["sql"]):
         return
     conn.execute("DROP TABLE IF EXISTS email_verification_codes_migrating")
     conn.execute(
@@ -155,7 +157,7 @@ def _migrate_verification_purpose_check(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
             purpose TEXT NOT NULL
-                CHECK (purpose IN ('register', 'reset_password', 'customer_register')),
+                CHECK (purpose IN ('register', 'reset_password', 'customer_register', 'customer_delete_account')),
             code_hash TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             used BOOLEAN NOT NULL DEFAULT 0,
@@ -327,6 +329,8 @@ def init_db() -> None:
                     "ALTER TABLE users ADD COLUMN enterprise_password_locked_until TEXT"
                 )
             _migrate_users_unique_constraint(conn)
+            from layers import account_lifecycle
+            account_lifecycle.initialize_schema(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS enterprise_api_revocations (
@@ -410,7 +414,7 @@ def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     email TEXT NOT NULL,
                     purpose TEXT NOT NULL
-                        CHECK (purpose IN ('register', 'reset_password', 'customer_register')),
+                        CHECK (purpose IN ('register', 'reset_password', 'customer_register', 'customer_delete_account')),
                     code_hash TEXT NOT NULL,
                     expires_at TEXT NOT NULL,
                     used BOOLEAN NOT NULL DEFAULT 0,
@@ -809,11 +813,8 @@ def login_user(username: str, password: str, role: str) -> str:
     if not bcrypt.checkpw(password_bytes, hash_bytes):
         raise PermissionError("用户名、密码或账号类型不正确")
 
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE users SET last_login_at = ? WHERE user_id = ?",
-            (utc_now_naive().isoformat(), user["user_id"]),
-        )
+    from layers import account_lifecycle
+    epoch, cancelled = account_lifecycle.login_succeeded(user["user_id"])
 
     expire_at = datetime.now(timezone.utc) + timedelta(hours=config.JWT_EXPIRE_HOURS)
     payload = {
@@ -822,6 +823,10 @@ def login_user(username: str, password: str, role: str) -> str:
         "role": user["role"],
         "exp": expire_at
     }
+    if epoch:
+        payload["account_epoch"] = epoch
+    if cancelled:
+        payload["deletion_cancelled"] = True
     return jwt.encode(payload, config.JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
@@ -855,13 +860,18 @@ def verify_token(token: str) -> dict:
     user = get_user(user_id)
     if not user or user["username"] != username or user["role"] != role:
         raise PermissionError("token无效")
-    return {
+    from layers import account_lifecycle
+    account_lifecycle.check_token(user_id, payload.get("account_epoch", 0))
+    result = {
         "user_id": user_id,
         "username": username,
         "role": role,
         "is_active": user["is_active"],
         "is_default_account": user["is_default_account"],
     }
+    if payload.get("deletion_cancelled") is True:
+        result["deletion_cancelled"] = True
+    return result
 
 
 def create_registration_request(

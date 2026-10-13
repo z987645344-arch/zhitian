@@ -24,7 +24,7 @@ class TemporaryQuotaExceeded(ValueError):
 
 
 def root():
-    return Path(config.BASE_DIR) / "data" / "tmp_uploads" / "temporary_products"
+    return Path(getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", Path(config.BASE_DIR) / "data")) / "tmp_uploads" / "temporary_products"
 
 
 def _record(directory):
@@ -162,6 +162,15 @@ def clear_session(session_id, owner):
         for record in list_for(owner):
             if record.session_id == session_id:
                 delete(record.file_id, owner)
+
+
+def clear_user(owner):
+    with _lock:
+        for directory in _directories():
+            record = _record(directory)
+            if record is not None and record.owner_user_id == owner:
+                if not _delete(directory):
+                    raise OSError("temporary_cleanup_failed")
 
 
 def register_request_product(record):
