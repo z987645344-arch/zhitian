@@ -172,6 +172,34 @@ def reset_rate_limiter():
     main.limiter.reset()
 
 
+def _reset_heavy_task_state():
+    """仅测试夹具复位；不修改配置、不伪造单账号配额或放宽槽位。"""
+    import threading
+    from layers import heavy_task_limits, resource_admission
+    with heavy_task_limits._slot_state_lock:
+        heavy_task_limits._conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS)
+        heavy_task_limits._slots_in_use = 0
+        heavy_task_limits._slot_reservations = []
+    with heavy_task_limits._ingest_state_lock:
+        heavy_task_limits._ingest_slots = threading.Semaphore(config.MAX_CONCURRENT_INGEST_TASKS)
+        heavy_task_limits._ingest_depth = 0
+        heavy_task_limits._ingest_running = 0
+        heavy_task_limits._ingest_reservations = []
+    with resource_admission._condition:
+        resource_admission._reserved_bytes = 0
+        resource_admission._condition.notify_all()
+
+
+@pytest.fixture(autouse=True)
+def isolated_heavy_task_state(isolated_persistent_storage):
+    # 单账号在途数来自upload_tasks；依赖隔离库保证它不跨测试，不mock计数。
+    _reset_heavy_task_state()
+    try:
+        yield
+    finally:
+        _reset_heavy_task_state()
+
+
 @pytest.fixture(autouse=True)
 def isolated_file_engine_states(monkeypatch, request):
     """离线业务测试使用已就绪的引擎桩，不隐式启动外部转换进程。
