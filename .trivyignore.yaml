@@ -56,12 +56,12 @@ vulnerabilities:
     images: [converter]
     purls:
       - "pkg:deb/debian/libtiff6@4.7.0-3%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libtiff.so.6；上传 Office 文件可嵌入攻击者控制的 TIFF，转换时可进入解码。soffice 非 root、串行、seccomp 禁网和内存准入是补偿措施，并未隔离 TIFF 解码，维持可达。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libtiff6 安装版本 4.7.0-3+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-36849）：trixie 无修复，forky 的 4.7.2-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libtiff.so.6；上传 Office 文件可嵌入攻击者控制的 TIFF，转换时可进入解码。soffice 非 root、串行、seccomp 禁网和内存准入是补偿措施，并未隔离 TIFF 解码，维持可达。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libtiff6 4.7.0-3+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-36849 ：trixie/trixie-security 4.7.0-3+deb13u3 为 vulnerable，trixie 标记 ignored（Minor issue），不是已修复；forky、sid 4.7.2-1 已修复（unstable 首个修复为 4.7.1-3）。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-45830
     images: [api]
     purls:
@@ -114,62 +114,62 @@ vulnerabilities:
     images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.7.4，不加载系统 libexpat1。漏洞涉及 storeAtts 多属性处理；尚未证明上传格式会走到 Expat SAX 的该分支。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-66046）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 storeAtts 多属性处理；尚未证明上传格式会走到 Expat SAX 的该分支。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-66046 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-77214
     images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-09
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
-    why_not_fixed: "2026-10-09 复核 CI run 37875857134（https://github.com/z987645344-arch/zhitian/actions/runs/37875857134）：Debian 13.7 trixie，libexpat1 2.8.3-1~deb13u1，HIGH，FixedVersion 未给出；原始 API/转换报告 SHA-256 分别为 dadfefd9e89745e08dcb2ae79bdae39066714673f0a0bc6189849bc23b78d730、0b46f498720d528110b5db66f318cde8f815a4a1be5abaab98d115f43358b89c。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-77214）：trixie 2.8.3-1~deb13u1 与 forky 2.8.4-2 均仍受影响，sid 2.9.0-1 已修复（上游 R_2_9_0）；不能套用同类旧 CVE 的 forky 修复结论。trixie 尚未提供修复包，不混用 sid 包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的指定 Debian 包版本有效，2026-11-02 到期（本次复核后24天）；有修复或条目失效时仍由现有门禁阻止部署。"
+    evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-77214 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-88647
     images: [converter]
     purls:
       - "pkg:deb/debian/libgnutls30t64@3.8.9-3%2Bdeb13u4?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-10
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的证书主机名校验绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。"
-    why_not_fixed: "2026-10-10 复核 CI run 38037699926（提交9bdfc44）：转换报告 HIGH、affected、FixedVersion 为空。原始 converter-trivy-image.json SHA-256 7ca1ce98a011f84c4456614604b6fec56036ebd3004ed13623d2f4e3ab92c720；原始 trivy-image.json SHA-256 bcbc8a488a6cc0b86bf26c2f2f679e6afdf6ccce3f9049f25bf3f8d4f295e95b。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88647 ：trixie/trixie-security 3.8.9-3+deb13u4 为 vulnerable；forky、sid 3.8.13-1 均为 vulnerable，修复表为 unfixed；页面另注明上游报告有效性待核查，不能据此忽略漏洞。当前无可安装的发行版修复，不混用其他发行版包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅对转换镜像的指定 libgnutls30t64 包版本有效，2026-11-02 到期（复核后23天）；到期、有修复或条目失效时仍由现有门禁阻止部署，不放宽严重级别或扫描要求。"
+    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的证书主机名校验绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libgnutls30t64 3.8.9-3+deb13u4，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88647 ：trixie/trixie-security 3.8.9-3+deb13u4、forky 和 sid 3.8.13-1 均为 vulnerable，修复表仍为 unfixed；上游/追踪器对安全影响的备注不等于发行版已修复。当前无可安装的 trixie 修复。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-88648
     images: [converter]
     purls:
       - "pkg:deb/debian/libgnutls30t64@3.8.9-3%2Bdeb13u4?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-10
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的下级 CA 跨域证书限制绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。"
-    why_not_fixed: "2026-10-10 复核 CI run 38037699926（提交9bdfc44）：转换报告 HIGH、affected、FixedVersion 为空。原始 converter-trivy-image.json SHA-256 7ca1ce98a011f84c4456614604b6fec56036ebd3004ed13623d2f4e3ab92c720；原始 trivy-image.json SHA-256 bcbc8a488a6cc0b86bf26c2f2f679e6afdf6ccce3f9049f25bf3f8d4f295e95b。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88648 ：trixie/trixie-security 3.8.9-3+deb13u4 为 vulnerable；forky、sid 3.8.13-1 均为 vulnerable，修复表为 unfixed；页面另注明上游报告有效性待核查，不能据此忽略漏洞。当前无可安装的发行版修复，不混用其他发行版包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅对转换镜像的指定 libgnutls30t64 包版本有效，2026-11-02 到期（复核后23天）；到期、有修复或条目失效时仍由现有门禁阻止部署，不放宽严重级别或扫描要求。"
+    evidence: "原始双镜像报告核对：仅转换镜像出现本 CVE，API 报告未出现。本机转换镜像 fd1e9eb7245f 的 dpkg-query 确认 libgnutls30t64 3.8.9-3+deb13u4、LibreOffice 4:25.2.3-2+deb13u8；ldd 确认 libucpdav1.so、libmergedlo.so、libucpcmis1lo.so、libxmlsecurity.so 等依赖链包含 libgnutls.so.30，另有 libcurl-gnutls.so.4、libcmis、libpoppler 等加载方。LibreOffice UCB 的 CurlSession 支持 HTTP/HTTPS，上传文档可含外链资源，但未证明能触发本 CVE 的下级 CA 跨域证书限制绕过，不能判为不可达。部署 conversion 网络 internal:true、转换服务无其他网络；同配置隔离网络实测无默认路由，外连返回 ENETUNREACH。现有 seccomp 探针确认 AF_INET/AF_INET6 被拒、AF_UNIX 可用；现场生成外链图片 DOCX 未加沙箱请求1次、加沙箱0次，正常 DOCX 转 PDF 成功。沙箱在 exec 前安装、close_fds=True 不传网络 socket；非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均仅为补偿措施。TLS 路径源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/ucb/source/ucp/webdav-curl/CurlSession.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libgnutls30t64 3.8.9-3+deb13u4，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-88648 ：trixie/trixie-security 3.8.9-3+deb13u4、forky 和 sid 3.8.13-1 均为 vulnerable，修复表仍为 unfixed；上游/追踪器对安全影响的备注不等于发行版已修复。当前无可安装的 trixie 修复。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-6653
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-6653）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-6653 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-74860
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "本 CVE 特指 libxml2 Python SAX 绑定的 attributeDecl 回调，不是所有 XML 解析。最新 CI 包清单没有 python3-libxml2；仓库无 libxml2/libxml2mod 调用；本机旧 stage-c-fixed 镜像 find_spec(libxml2/libxml2mod) 均为 False（lxml 不是该绑定）。未对最新 CI 镜像最终文件系统做同等模块复核，证据不足以证明不可达，保守维持可达；不能把普通 LibreOffice XML 解析当作这个 Python 回调的直接证据。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-74860）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "本 CVE 特指 libxml2 Python SAX 绑定的 attributeDecl 回调，不是一般 XML 解析。最新 CI 包清单无 python3-libxml2，仓库无 libxml2/libxml2mod 调用；本机同版本转换镜像 fd1e9eb7245f 的 find_spec(libxml2/libxml2mod) 均为 False。尚未对本次 CI 镜像最终文件系统做等同模块核验，不能充分证明不可达，保守维持原可达结论；不把 LibreOffice 普通 XML 解析误当成该 Python 回调的直接证据。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-74860 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-76642
     images: [api, converter]
     purls:
@@ -191,22 +191,22 @@ vulnerabilities:
     images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.7.4，不加载系统 libexpat1。漏洞涉及 getentropy 失败时的随机化/哈希抗碰撞；尚未证明可控上传 XML 到达该解析器，禁网也不能证明哈希耗尽不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-76956）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 getentropy 失败时的随机化/哈希抗碰撞；尚未证明可控上传 XML 到达该解析器，禁网也不能证明哈希耗尽不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76956 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-76957
     images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.7.4，不加载系统 libexpat1。漏洞需要自定义编码回调；LibreOffice SAX 回调返回 0，但尚未穷尽其他加载方及其编码回调，不能据此判为不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-76957）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞需要自定义编码回调；LibreOffice SAX 回调返回 0，但尚未穷尽其他加载方及其编码回调，不能据此判为不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76957 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-78408
     images: [api, converter]
     purls:
@@ -282,62 +282,62 @@ vulnerabilities:
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86138）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86138 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-86139
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86139）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86139 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-86140
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86140）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86140 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-86142
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86142）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86142 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-86143
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86143）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86143 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-86144
     images: [converter]
     purls:
       - "pkg:deb/debian/libxml2@2.12.7%2Bdfsg%2Breally2.9.14-2.1%2Bdeb13u3?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "可达"
-    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libxml2 安装版本 2.12.7+dfsg+really2.9.14-2.1+deb13u3，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-86144）：trixie 无修复，forky 的 2.15.4+dfsg-1 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "可达；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "LibreOffice libmergedlo.so 加载系统 libxml2，OOXML FastParser 使用 libxml2；用户上传 XML 可控，仍按可达处理。非 root、进程级串行锁、阶段 C seccomp 禁网及内存准入是补偿措施，不等于解析漏洞不可达。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/fastparser/fastparser.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变可达结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libxml2 2.12.7+dfsg+really2.9.14-2.1+deb13u3，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-86144 ：trixie 2.12.7+dfsg+really2.9.14-2.1+deb13u3 为 vulnerable，trixie-security 2.12.7+dfsg+really2.9.14-2.1+deb13u1 也未修复；forky、sid 2.15.4+dfsg-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "可达；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-88806
     images: [converter]
     purls:
@@ -371,12 +371,12 @@ vulnerabilities:
     images: [converter]
     purls:
       - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-03
-    expired_at: 2026-11-02
+    reviewed_at: 2026-10-13
+    expired_at: 2026-11-12
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.7.4，不加载系统 libexpat1。漏洞涉及畸形 UTF-16 高代理项；LibreOffice Expat SAX 在 XML_Parse 前做 UTF-8 转换，但尚未穷尽其他解析入口。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。"
-    why_not_fixed: "2026-10-03 复核 CI run 37105816744（https://github.com/z987645344-arch/zhitian/actions/runs/37105816744）：Debian 13.7 trixie，libexpat1 安装版本 2.8.3-1~deb13u1，FixedVersion 为空。Debian 安全追踪器（https://security-tracker.debian.org/tracker/CVE-2026-93990）：trixie 无修复，forky 的 2.8.4-2 已修复。上游与 forky 已修复，但 trixie 尚未提供修复包；只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；按到期日复核，详见 evidence 与 why_not_fixed。"
+    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及畸形 UTF-16 高代理项；LibreOffice Expat SAX 在 XML_Parse 前做 UTF-8 转换，但尚未穷尽其他解析入口。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-93990 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-9538
     images: [api, converter]
     purls:
