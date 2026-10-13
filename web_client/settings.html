@@ -68,13 +68,30 @@
         </section>
       </div>
 
+      <section class="quota-card" aria-labelledby="accountDeletionTitle">
+        <h2 id="accountDeletionTitle">注销账号</h2>
+        <p>仅客户可自助注销。申请后立即退出所有登录，7 天后生效；期间重新登录即视为撤销。生效后账号、会话和个人文件将被删除。</p>
+        <form id="accountDeletionForm" class="quota-form">
+          <label for="deletionPassword">当前密码</label>
+          <input id="deletionPassword" type="password" autocomplete="current-password" required />
+          <label for="deletionCode">邮箱验证码</label>
+          <input id="deletionCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required />
+          <div class="quota-actions">
+            <button id="sendDeletionCode" class="secondary" type="button">发送验证码</button>
+            <button id="submitAccountDeletion" class="danger-button" type="submit">申请注销</button>
+            <button id="cancelAccountDeletion" class="secondary" type="button">取消</button>
+          </div>
+        </form>
+        <p id="accountDeletionMessage" class="settings-message" aria-live="polite"></p>
+      </section>
       <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
       <footer class="copyright-line">© 2026 知了 · 保留所有权利</footer>
     </main>
 
     <script src="./config.js"></script>
-    <script src="./js/api.js?v=attachment-reread-20261009&card=20261010"></script>
+    <script src="./js/api.js?v=attachment-reread-20261009&card=20261010&lifecycle=20261013"></script>
     <script src="./js/time.js?v=utc-local-20261001"></script>
     <script src="./js/settings.js?v=utc-local-20261001"></script>
+    <script src="./js/account-lifecycle.js?v=lifecycle-20261013"></script>
   </body>
 </html>

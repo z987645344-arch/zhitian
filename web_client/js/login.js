@@ -29,6 +29,9 @@
     try {
       const data = await API.login(username, password);
       API.saveSession(data.token, username);
+      if (data.detail === '已撤销注销申请') {
+        sessionStorage.setItem('zt_web_login_notice', data.detail);
+      }
       location.replace('./chat.html');
     } catch (error) {
       message.textContent = briefError(error);

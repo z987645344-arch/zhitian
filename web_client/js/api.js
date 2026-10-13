@@ -103,6 +103,15 @@ const API = (() => {
       body: JSON.stringify({ username, password, role: 'customer' }),
     }),
 
+    sendDeletionCode: () => request('/auth/send-verification-code', {
+      method: 'POST',
+      body: JSON.stringify({ email: currentUsername(), purpose: 'customer_delete_account' }),
+    }),
+    requestAccountDeletion: (password, code) => request('/account/deletion', {
+      method: 'POST',
+      body: JSON.stringify({ current_password: password, verification_code: code }),
+    }),
+
     // customer自助注册用途，后端不要求企业密码
     sendCode: (email) => request('/auth/send-verification-code', {
       method: 'POST',
