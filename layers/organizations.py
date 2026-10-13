@@ -113,7 +113,8 @@ def delete_organization(organization_id: int) -> None:
     """删除自定义组织，同步清除其在user_organizations中的关联记录；
     账号本身不受影响。受保护组织或仍有关联文档时拒绝删除。
     """
-    with auth._connect() as conn:
+    from layers import account_lifecycle
+    with account_lifecycle._developer_lock, auth._connect() as conn:
         row = _get_organization_row(conn, organization_id)
         if not row:
             raise LookupError("组织不存在")
@@ -195,6 +196,55 @@ def get_user_organization_ids(
 def has_custom_organization(user_id: str) -> bool:
     """是否已加入至少一个非默认组织，即是否具备实际工作资格。"""
     return bool(get_user_organization_ids(user_id, include_default=False))
+
+
+def _can_remove(conn, operator_id, operator_role, target_role, organization_id):
+    if operator_role == "developer":
+        return target_role == "reviewer" or (target_role == "employee" and
+            not conn.execute("""SELECT 1 FROM user_organizations uo JOIN users u ON u.user_id=uo.user_id
+                WHERE uo.organization_id=? AND u.role='reviewer'""", (organization_id,)).fetchone())
+    if operator_role == "reviewer" and target_role == "employee":
+        return bool(conn.execute("SELECT 1 FROM user_organizations WHERE user_id=? AND organization_id=?",
+                                 (operator_id, organization_id)).fetchone())
+    return False
+
+
+def removable_members(operator_id, operator_role):
+    """只列出操作者有权移出的自定义组织成员。"""
+    with auth._connect() as conn:
+        rows = conn.execute("""SELECT u.user_id, u.username, u.role, o.id AS organization_id,
+            o.name AS organization_name FROM user_organizations uo
+            JOIN users u ON u.user_id=uo.user_id JOIN organizations o ON o.id=uo.organization_id
+            WHERE o.is_protected=0 AND o.name != ? AND u.is_default_account=0
+            ORDER BY o.id, u.user_id""", (DEFAULT_ORGANIZATION_NAME,)).fetchall()
+        return [dict(row) for row in rows if _can_remove(conn, operator_id, operator_role,
+                                                       row["role"], row["organization_id"])]
+
+
+def remove_member(operator_id, operator_role, organization_id, user_id):
+    from layers import account_lifecycle
+    # 与注销执行共用锁，不能在核查无组织和删除账号之间重新加入。
+    with account_lifecycle._developer_lock, transaction(auth.USERS_DB_PATH) as conn:
+        org = _get_organization_row(conn, organization_id)
+        if not org:
+            raise LookupError("组织不存在")
+        if org["is_protected"] or org["name"] == DEFAULT_ORGANIZATION_NAME:
+            raise PermissionError("默认组织不能移出成员")
+        target = conn.execute("""SELECT u.* FROM users u JOIN user_organizations uo ON uo.user_id=u.user_id
+            WHERE u.user_id=? AND uo.organization_id=?""", (user_id, organization_id)).fetchone()
+        if not target:
+            raise LookupError("成员不存在")
+        if target["is_default_account"] or not _can_remove(conn, operator_id, operator_role, target["role"], organization_id):
+            raise PermissionError("无权移出该成员")
+        now = utc_now_naive().isoformat()
+        conn.execute("DELETE FROM user_organizations WHERE user_id=? AND organization_id=?", (user_id, organization_id))
+        # 旧的待审批申请不能在被移出后再次批准、恢复成员关系。
+        conn.execute("""UPDATE org_membership_requests SET status='rejected', approved_by=?, decided_at=?
+            WHERE user_id=? AND organization_id=? AND status='pending'""", (operator_id, now, user_id, organization_id))
+        conn.execute("""INSERT INTO organization_member_removals
+            (operator_user_id,target_user_id,organization_id,created_at) VALUES (?,?,?,?)""",
+            (operator_id, user_id, organization_id, now))
+    return {"detail": "已移出组织"}
 
 
 def _my_status(conn: sqlite3.Connection, user_id: str, organization_id: int) -> str:
@@ -360,7 +410,8 @@ def review_membership_request(
     该申请归developer处理，reviewer一律拒绝受理。developer可处理全部申请。
     """
     now = utc_now_naive().isoformat()
-    with transaction(auth.USERS_DB_PATH) as conn:
+    from layers import account_lifecycle
+    with account_lifecycle._developer_lock, transaction(auth.USERS_DB_PATH) as conn:
         row = conn.execute(
             """
             SELECT r.*, u.role AS applicant_role
@@ -395,6 +446,9 @@ def review_membership_request(
                 raise PermissionError("无权处理该组织的申请")
         elif approver_role != "developer":
             raise PermissionError("无权处理组织申请")
+
+        if approve and str(row["action"]) == "join" and row["user_id"] in account_lifecycle.deleted_accounts():
+            raise ValueError("账号注销处理中，不能加入组织")
 
         conn.execute(
             """

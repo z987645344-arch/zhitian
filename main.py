@@ -1300,7 +1300,7 @@ async def send_verification_code(
     if purpose == auth.CUSTOMER_DELETE_PURPOSE:
         current = get_current_user(authorization)
         user = auth.get_user(current["user_id"])
-        if current["role"] != "customer" or current["is_default_account"]:
+        if current["role"] not in {"customer", "developer"} or current["is_default_account"]:
             raise HTTPException(status_code=403, detail="仅普通客户可注销账号")
         if email.lower() != (user["email"] or user["username"]).lower():
             raise HTTPException(status_code=403, detail="只能验证本人邮箱")
@@ -1335,6 +1335,17 @@ async def send_verification_code(
 class CustomerDeletionRequest(BaseModel):
     current_password: str
     verification_code: str
+
+
+@app.get("/account/deletion-options")
+async def account_deletion_options(current_user: dict = Depends(get_current_user)):
+    from layers import account_lifecycle
+    user = auth.get_user(current_user["user_id"])
+    allowed = account_lifecycle.eligible(user)
+    if allowed and user["role"] == "developer":
+        with auth._connect() as conn:
+            allowed = account_lifecycle.other_active_developer(conn, user["user_id"])
+    return {"allowed": allowed, "email": user["email"] or user["username"]}
 
 
 @app.post("/account/deletion")
@@ -3546,6 +3557,35 @@ async def reviewer_org_membership_requests(
             current_user["user_id"]
         )
     }
+
+
+def _remove_org_member_or_http(current_user, organization_id, user_id):
+    try:
+        return organizations.remove_member(current_user["user_id"], current_user["role"], organization_id, user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@app.get("/developer/organization-members")
+async def developer_organization_members(current_user: dict = Depends(require_developer)):
+    return {"members": organizations.removable_members(current_user["user_id"], "developer")}
+
+
+@app.get("/reviewer/organization-members")
+async def reviewer_organization_members(current_user: dict = Depends(require_reviewer)):
+    return {"members": organizations.removable_members(current_user["user_id"], "reviewer")}
+
+
+@app.post("/developer/organizations/{organization_id}/members/{user_id}/remove")
+async def developer_remove_org_member(organization_id: int, user_id: str, current_user: dict = Depends(require_developer)):
+    return _remove_org_member_or_http(current_user, organization_id, user_id)
+
+
+@app.post("/reviewer/organizations/{organization_id}/members/{user_id}/remove")
+async def reviewer_remove_org_member(organization_id: int, user_id: str, current_user: dict = Depends(require_reviewer)):
+    return _remove_org_member_or_http(current_user, organization_id, user_id)
 
 
 @app.post("/reviewer/org-membership-requests/{request_id}/approve")

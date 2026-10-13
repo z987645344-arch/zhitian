@@ -463,6 +463,12 @@ def create_backup(
             resolved_data / USER_FILES_DIRNAME,
             payload_data / USER_FILES_DIRNAME,
         )
+        from utils import account_deletions
+        with account_deletions.LOCK:
+            ledger = resolved_data / account_deletions.NAME
+            if ledger.exists():
+                account_deletions.read(ledger)  # 不把损坏或符号链接名单放进备份。
+                shutil.copy2(ledger, payload_data / account_deletions.NAME)
 
         manifest = _build_manifest(payload_root, timestamp)
         (payload_root / MANIFEST_NAME).write_text(

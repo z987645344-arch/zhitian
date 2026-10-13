@@ -536,6 +536,7 @@ def init_db() -> None:
                     (seed_role, seed_limit),
                 )
             _seed_default_organizations(conn)
+            account_lifecycle.initialize_internal_schema(conn)
         db_schema_version.initialize_schema_version(
             USERS_DB_PATH,
             "users.db",
@@ -1208,7 +1209,8 @@ def get_user(user_id: str) -> Optional[dict]:
 
 
 def set_user_active(user_id: str, is_active: bool) -> bool:
-    with _connect() as conn:
+    from layers import account_lifecycle
+    with account_lifecycle._developer_lock, _connect() as conn:
         cursor = conn.execute(
             "UPDATE users SET is_active = ? WHERE user_id = ?",
             (1 if is_active else 0, user_id),
@@ -1219,7 +1221,8 @@ def set_user_active(user_id: str, is_active: bool) -> bool:
 def change_user_role(user_id: str, target_role: str) -> bool:
     if target_role not in VALID_ROLES:
         raise ValueError("target_role无效")
-    with _connect() as conn:
+    from layers import account_lifecycle
+    with account_lifecycle._developer_lock, _connect() as conn:
         cursor = conn.execute(
             "UPDATE users SET role = ? WHERE user_id = ?",
             (target_role, user_id),

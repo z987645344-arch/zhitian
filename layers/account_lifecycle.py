@@ -1,21 +1,21 @@
-"""客户注销状态机；日常只在API内调用，恢复时仅在停机独占子进程调用。"""
+"""按场景注销账号；日常只在API内调用，恢复时仅在停机独占子进程调用。"""
 import calendar
-import json
-import os
-import re
-import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
 from utils.logger import get_logger
+from utils import account_deletions
 
 logger = get_logger("account_lifecycle")
 _locks_guard = threading.Lock()
 _locks = {}
-_ledger_lock = threading.RLock()
+_ledger_lock = account_deletions.LOCK
+_developer_lock = threading.RLock()
 LEDGER_NAME = "account-deletions.json"
+DELETED_USER = "已注销用户"
+DELETED_REGISTRATION_VALUE = "已注销"
 TZ = timezone(timedelta(hours=8))
 
 
@@ -53,6 +53,40 @@ def initialize_schema(conn):
         user_id TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY(user_id, session_id))""")
 
 
+def initialize_internal_schema(conn):
+    """组织表就绪后迁移；已有无组织账号从部署日计时，不倒推历史。"""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "no_custom_organization_since" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN no_custom_organization_since TEXT")
+        conn.execute("""UPDATE users SET no_custom_organization_since=?
+            WHERE role IN ('employee','reviewer') AND is_default_account=0 AND NOT EXISTS (
+                SELECT 1 FROM user_organizations uo JOIN organizations o ON o.id=uo.organization_id
+                WHERE uo.user_id=users.user_id AND o.name != '默认')""", (utc().isoformat(),))
+    conn.execute("""CREATE TABLE IF NOT EXISTS organization_member_removals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, operator_user_id TEXT NOT NULL,
+        target_user_id TEXT NOT NULL, organization_id INTEGER NOT NULL, created_at TEXT NOT NULL)""")
+    # 在数据库边界维护关系，覆盖审批、主动退出、踢出、组织删除及获批注册。
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS internal_account_created AFTER INSERT ON users
+        WHEN NEW.role IN ('employee','reviewer') AND NEW.is_default_account=0
+        BEGIN UPDATE users SET no_custom_organization_since=NEW.created_at WHERE user_id=NEW.user_id; END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS internal_account_role_changed AFTER UPDATE OF role ON users
+        WHEN NEW.role IN ('employee','reviewer') AND OLD.role NOT IN ('employee','reviewer') AND NEW.is_default_account=0
+        BEGIN UPDATE users SET no_custom_organization_since=CASE WHEN EXISTS (
+            SELECT 1 FROM user_organizations uo JOIN organizations o ON o.id=uo.organization_id
+            WHERE uo.user_id=NEW.user_id AND o.name != '默认') THEN NULL
+            ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00','now') END WHERE user_id=NEW.user_id; END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS internal_organization_joined AFTER INSERT ON user_organizations
+        WHEN EXISTS (SELECT 1 FROM organizations WHERE id=NEW.organization_id AND name != '默认')
+        BEGIN UPDATE users SET no_custom_organization_since=NULL
+        WHERE user_id=NEW.user_id AND role IN ('employee','reviewer'); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS internal_organization_left AFTER DELETE ON user_organizations
+        WHEN EXISTS (SELECT 1 FROM organizations WHERE id=OLD.organization_id AND name != '默认')
+        AND NOT EXISTS (SELECT 1 FROM user_organizations uo JOIN organizations o ON o.id=uo.organization_id
+            WHERE uo.user_id=OLD.user_id AND o.name != '默认')
+        BEGIN UPDATE users SET no_custom_organization_since=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+        WHERE user_id=OLD.user_id AND role IN ('employee','reviewer') AND is_default_account=0; END""")
+
+
 def _row(user_id):
     from layers import auth
     with auth._connect() as conn:
@@ -60,8 +94,19 @@ def _row(user_id):
     return dict(row) if row else None
 
 
-def eligible(row):
-    return bool(row and row["role"] == "customer" and not row["is_default_account"])
+def eligible(row, scenario="self"):
+    if not row or row["is_default_account"]:
+        return False
+    if scenario == "restore":
+        return row["role"] in {"customer", "employee", "reviewer", "developer"}
+    if scenario == "no_organization":
+        return row["role"] in {"employee", "reviewer"}
+    return row["role"] in {"customer", "developer"}
+
+
+def other_active_developer(conn, user_id):
+    return bool(conn.execute("SELECT 1 FROM users WHERE role='developer' AND is_active=1 AND user_id != ?",
+                             (user_id,)).fetchone())
 
 
 def _state(user_id):
@@ -76,49 +121,16 @@ def _event(user_id, action, now):
 
 
 def ledger_path(data_dir=None):
-    # backup/restore只处理明确的三库、vectordb和user_files，此文件不会被覆盖或轮转。
+    # 备份纳入加密包；恢复只合并并集，永不覆盖当前名单。
     return Path(data_dir or getattr(config, "_ACCOUNT_MAINTENANCE_DATA_DIR", Path(config.BASE_DIR) / "data")) / LEDGER_NAME
 
 
 def deleted_accounts(data_dir=None):
-    path = ledger_path(data_dir)
-    if path.is_symlink():
-        raise ValueError("invalid_deletion_ledger")
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        raise ValueError("invalid_deletion_ledger")
-    result = {}
-    for row in raw:
-        if (not isinstance(row, dict) or set(row) != {"user_id", "deleted_at"}
-                or not isinstance(row["user_id"], str)
-                or not isinstance(row["deleted_at"], str)
-                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", row["user_id"])):
-            raise ValueError("invalid_deletion_ledger")
-        parse(row["deleted_at"])
-        result[row["user_id"]] = row["deleted_at"]
-    return result
+    return account_deletions.read(ledger_path(data_dir))
 
 
 def _remember_deletion(user_id, now):
-    with _ledger_lock:
-        entries = deleted_accounts()
-        if user_id in entries:
-            return
-        entries[user_id] = utc(now).isoformat()
-        path = ledger_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=".account-deletions-", dir=path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump([{"user_id": key, "deleted_at": value} for key, value in sorted(entries.items())], stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+    account_deletions.merge(ledger_path(), {user_id: utc(now).isoformat()})
 
 
 def check_token(user_id, epoch):
@@ -126,7 +138,7 @@ def check_token(user_id, epoch):
         row = _row(user_id)
         if not row:
             raise PermissionError("token无效")
-        if not eligible(row):
+        if not eligible(row, "restore"):
             return
         if (user_id in deleted_accounts() or _state(user_id).get("deletion_requested_at")
                 or epoch != row["account_epoch"]):
@@ -141,13 +153,13 @@ def login_succeeded(user_id, now=None):
         if not row or not row["is_active"]:
             raise PermissionError("账号已被禁用")
         cancelled = False
-        if eligible(row):
+        if eligible(row, "restore"):
             state = _state(user_id)
             if user_id in deleted_accounts() or (state.get("deletion_due_at") and parse(state["deletion_due_at"]) <= current):
                 raise PermissionError("账号注销处理中")
             cancelled = bool(state.get("deletion_requested_at"))
         with auth._connect() as conn:
-            if eligible(row):
+            if eligible(row, "restore"):
                 conn.execute("DELETE FROM customer_account_lifecycle WHERE user_id=?", (user_id,))
             conn.execute("UPDATE users SET last_login_at=? WHERE user_id=?",
                          (current.replace(tzinfo=None).isoformat(), user_id))
@@ -160,10 +172,13 @@ def request_deletion(user_id, password, verification_code, now=None):
     from layers import auth, email_provider
     from layers.db_transaction import transaction
     current = utc(now)
-    with user_lock(user_id):
+    with _developer_lock, user_lock(user_id):
         row = _row(user_id)
         if not eligible(row):
-            raise PermissionError("仅普通客户可注销账号")
+            raise PermissionError("仅普通客户或非默认开发者可自助注销账号")
+        with auth._connect() as conn:
+            if row["role"] == "developer" and not other_active_developer(conn, user_id):
+                raise PermissionError("唯一启用中的开发者不能注销账号")
         try:
             valid_password = auth.bcrypt.checkpw(str(password).encode("utf-8"), row["password_hash"].encode("utf-8"))
         except (ValueError, TypeError):
@@ -224,14 +239,55 @@ def _pending(user_id, reason, now):
             pending_reason=excluded.pending_reason""", (user_id, now.isoformat(), now.isoformat(), reason))
 
 
+def _anonymize_identity_references(conn, user_id):
+    """业务身份引用统一标记；纯不透明ID审计独立保留。"""
+    tables = {item[0] for item in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "org_membership_requests" in tables:
+        # 未决申请不能再审批，且先闭合避免多个已注销申请人碰撞pending唯一索引。
+        conn.execute("UPDATE org_membership_requests SET status='rejected' WHERE user_id=? AND status='pending'", (user_id,))
+    modules_changed = False
+    for table, column in [
+        ("documents", "uploaded_by"), ("documents", "reviewed_by"),
+        ("registration_requests", "approved_by"),
+        ("org_membership_requests", "approved_by"), ("org_membership_requests", "user_id"),
+        ("lobby_content", "updated_by"), ("rate_limit_config", "updated_by"),
+        ("upload_tasks", "created_by"), ("system_modules", "updated_by"),
+        ("organization_member_removals", "operator_user_id"), ("organization_member_removals", "target_user_id"),
+    ]:
+        if table in tables:
+            cursor = conn.execute(f"UPDATE {table} SET {column}=? WHERE {column}=?", (DELETED_USER, user_id))
+            if table == "system_modules":
+                modules_changed = cursor.rowcount > 0
+    return modules_changed
+
+
 def delete_account(user_id, now=None, reason="self", audit=True):
     """共用、可重入的注销；先持久化不可逆意图和清理队列，失败保留账号。"""
     from layers import auth, memory, files_store, attachments, temporary_files, session_records
     current = utc(now)
-    with session_records.SESSION_RECORD_LOCK, user_lock(user_id):
+    with _developer_lock, session_records.SESSION_RECORD_LOCK, user_lock(user_id):
         row = _row(user_id)
-        if row and not eligible(row):
+        scenario = "restore" if reason == "restore" else "no_organization" if reason == "no_organization" else "self"
+        if row and not eligible(row, scenario):
+            if reason == "no_organization" and user_id not in deleted_accounts():
+                with auth._connect() as conn:
+                    conn.execute("DELETE FROM customer_account_lifecycle WHERE user_id=? AND pending_reason='no_organization'", (user_id,))
+                _event(user_id, "cancel_role_changed", current)
             return False
+        if row and reason == "no_organization" and user_id not in deleted_accounts():
+            from layers import organizations
+            if organizations.has_custom_organization(user_id):
+                with auth._connect() as conn:
+                    conn.execute("DELETE FROM customer_account_lifecycle WHERE user_id=? AND pending_reason='no_organization'", (user_id,))
+                _event(user_id, "cancel_rejoined_organization", current)
+                return False
+        # 唯一开发者检查在不可逆清理开始前；已有名单条目是已开始清理的重试，不能伪装为撤销。
+        if row and row["role"] == "developer" and reason != "restore" and user_id not in deleted_accounts():
+            with auth._connect() as conn:
+                if not other_active_developer(conn, user_id):
+                    conn.execute("DELETE FROM customer_account_lifecycle WHERE user_id=?", (user_id,))
+                    _event(user_id, "cancel_unique_developer", current)
+                    return False
         _pending(user_id, reason, current)
         try:
             _remember_deletion(user_id, current)
@@ -254,15 +310,32 @@ def delete_account(user_id, now=None, reason="self", audit=True):
             attachments.clear_user(user_id)
             temporary_files.clear_user(user_id)
             with auth._connect() as conn:
+                if row:
+                    # 审批创建users.created_at与申请updated_at使用同一now值。
+                    # 因申请表无账号ID，只接受这条精确对应关系，不按邮箱或角色批量清理历史申请。
+                    conn.execute("""UPDATE registration_requests
+                        SET username=?, email=?, password_hash=?
+                        WHERE username=? AND requested_role=? AND status='approved' AND updated_at=?""",
+                        (DELETED_REGISTRATION_VALUE, DELETED_REGISTRATION_VALUE, DELETED_REGISTRATION_VALUE,
+                         row["username"], row["role"], row["created_at"]))
+                modules_changed = _anonymize_identity_references(conn, user_id)
                 conn.execute("DELETE FROM user_organizations WHERE user_id=?", (user_id,))
                 if row:
-                    conn.execute("DELETE FROM email_verification_codes WHERE lower(email) IN (?, ?)",
-                                 ((row["email"] or row["username"]).lower(), row["username"].lower()))
-                    conn.execute("DELETE FROM password_reset_log WHERE username=?", (row["username"],))
+                    # 邮箱验证码与密码重置是跨角色共享的；仍有其他角色时保留它们。
+                    sibling = conn.execute("SELECT 1 FROM users WHERE username=? AND user_id != ?",
+                                           (row["username"], user_id)).fetchone()
+                    if not sibling:
+                        conn.execute("DELETE FROM email_verification_codes WHERE lower(email) IN (?, ?)",
+                                     ((row["email"] or row["username"]).lower(), row["username"].lower()))
+                        conn.execute("DELETE FROM password_reset_log WHERE username=?", (row["username"],))
                 conn.execute("DELETE FROM user_sessions WHERE user_id=?", (user_id,))
                 conn.execute("DELETE FROM users WHERE user_id=?", (user_id,))
                 conn.execute("DELETE FROM customer_account_lifecycle WHERE user_id=?", (user_id,))
                 conn.execute("DELETE FROM customer_deletion_sessions WHERE user_id=?", (user_id,))
+            if modules_changed:
+                from layers import system_modules
+                with system_modules._cache_lock:
+                    system_modules._module_cache = None
             if audit:
                 _event(user_id, "deleted_" + reason, current)
             return True
@@ -292,11 +365,11 @@ def run_daily(now=None):
     current = utc(now)
     with auth._connect() as conn:
         identifiers = [row[0] for row in conn.execute(
-            "SELECT user_id FROM users WHERE role='customer' AND is_default_account=0")]
+            "SELECT user_id FROM users WHERE role IN ('customer','developer','employee','reviewer') AND is_default_account=0")]
     for user_id in identifiers:
         with user_lock(user_id):
             row = _row(user_id)
-            if not eligible(row):
+            if not eligible(row, "restore"):
                 continue
             state = _state(user_id)
             if state.get("deletion_requested_at"):
@@ -308,28 +381,45 @@ def run_daily(now=None):
                         _confirmation(row, current)
                     continue
             else:
-                base = parse(row["last_login_at"] or row["created_at"])
-                if current < add_months(base, 11):
+                if row["role"] in {"employee", "reviewer"}:
+                    from layers import organizations
+                    since = parse(row["no_custom_organization_since"])
+                    if organizations.has_custom_organization(user_id) or not since or current < add_months(since, 3):
+                        continue
+                    _pending(user_id, "no_organization", current)
+                elif row["role"] == "developer":
                     continue
-                if not state.get("inactivity_sent_at") and not _attempt_today(state.get("inactivity_attempt_at"), current):
-                    with auth._connect() as conn:
-                        conn.execute("""INSERT INTO customer_account_lifecycle
-                            (user_id, inactivity_first_attempt_at, inactivity_attempt_at) VALUES (?, ?, ?)
-                            ON CONFLICT(user_id) DO UPDATE SET
-                            inactivity_first_attempt_at=COALESCE(inactivity_first_attempt_at, excluded.inactivity_first_attempt_at),
-                            inactivity_attempt_at=excluded.inactivity_attempt_at""", (user_id, current.isoformat(), current.isoformat()))
-                    sent = email_provider.send_account_lifecycle_email(row["email"] or row["username"], "inactivity")
-                    if sent:
-                        with auth._connect() as conn:
-                            conn.execute("UPDATE customer_account_lifecycle SET inactivity_sent_at=? WHERE user_id=?",
-                                         (current.isoformat(), user_id))
-                    _event(user_id, "reminder_sent" if sent else "reminder_failed", current)
-                state = _state(user_id)
-                elapsed = (current - parse(state["inactivity_sent_at"] or state["inactivity_first_attempt_at"]))
-                if current < add_months(base, 12) or elapsed < timedelta(days=7 if state.get("inactivity_sent_at") else 30):
-                    continue
-                _pending(user_id, "inactive" if state.get("inactivity_sent_at") else "unreachable_mailbox", current)
+                else:
+                    _run_customer_inactivity(row, state, current)
+                    if not _state(user_id).get("deletion_requested_at"):
+                        continue
         delete_account(user_id, current, reason=_state(user_id).get("pending_reason") or "inactive")
+
+
+def _run_customer_inactivity(row, state, current):
+    from layers import auth, email_provider
+    user_id = row["user_id"]
+    base = parse(row["last_login_at"] or row["created_at"])
+    if current < add_months(base, 11):
+        return
+    if not state.get("inactivity_sent_at") and not _attempt_today(state.get("inactivity_attempt_at"), current):
+        with auth._connect() as conn:
+            conn.execute("""INSERT INTO customer_account_lifecycle
+                (user_id, inactivity_first_attempt_at, inactivity_attempt_at) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                inactivity_first_attempt_at=COALESCE(inactivity_first_attempt_at, excluded.inactivity_first_attempt_at),
+                inactivity_attempt_at=excluded.inactivity_attempt_at""", (user_id, current.isoformat(), current.isoformat()))
+        sent = email_provider.send_account_lifecycle_email(row["email"] or row["username"], "inactivity")
+        if sent:
+            with auth._connect() as conn:
+                conn.execute("UPDATE customer_account_lifecycle SET inactivity_sent_at=? WHERE user_id=?",
+                             (current.isoformat(), user_id))
+        _event(user_id, "reminder_sent" if sent else "reminder_failed", current)
+    state = _state(user_id)
+    elapsed = current - parse(state["inactivity_sent_at"] or state["inactivity_first_attempt_at"])
+    if current < add_months(base, 12) or elapsed < timedelta(days=7 if state.get("inactivity_sent_at") else 30):
+        return
+    _pending(user_id, "inactive" if state.get("inactivity_sent_at") else "unreachable_mailbox", current)
 
 
 _stop = threading.Event()
