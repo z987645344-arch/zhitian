@@ -122,24 +122,39 @@ def strip_document_citation_marker(text, context, state=None):
 
 def prepare_fast_document_evidence(result: "ToolResult", evidence: str,
                                    citations: list[Citation], state: dict) -> tuple[str, list[Citation]]:
-    """只扩展已选中的资料，保留筛选编号/正文和原顺序，不改变筛选输入。"""
+    """只扩展已选中的资料：小节标题匹配优先，其他保留检索顺序；不改变筛选输入。"""
     if result.document_answer_context is None:
         return evidence, citations
-    selected = {(item.doc_id, item.chunk_index) for item in citations}
     original = result.document_answer_context
+    selected_keys = {(item.doc_id, item.chunk_index) for item in citations}
+    selected = [item.model_copy() for item in original.candidates
+                if (item.doc_id, item.chunk_index) in selected_keys]
+    try:
+        verified = set(auth.get_verified_doc_ids())
+        allowed = [doc_id for doc_id in original.allowed_doc_ids if doc_id in verified]
+        ordered_keys = memory.prioritize_document_section_seeds(
+            [(item.doc_id, item.chunk_index) for item in selected], allowed, original.query)
+        positions = {key: index for index, key in enumerate(ordered_keys)}
+        selected.sort(key=lambda item: positions[(item.doc_id, item.chunk_index)])
+    except Exception as exc:
+        logger.warning("小节标题优先排序失败：error_type=%s", type(exc).__name__)
+    # 重排的正文保持原编号和原文；兜底的全部候选也走相同的排序。
+    blocks = re.findall(r"(?ms)^\[\d+\]\s*.*?(?=^\[\d+\]\s*|\Z)", evidence)
+    by_key = {(item.doc_id, item.chunk_index): block.strip()
+              for item, block in zip(citations, blocks)}
+    if selected and all((item.doc_id, item.chunk_index) in by_key for item in selected):
+        evidence = "\n\n".join(by_key[(item.doc_id, item.chunk_index)] for item in selected)
     final_context = DocumentAnswerContext(
         query=original.query, tier=original.tier, allowed_doc_ids=original.allowed_doc_ids,
-        candidates=[item.model_copy() for item in original.candidates
-                    if (item.doc_id, item.chunk_index) in selected],
+        candidates=selected,
     )
     prepare_document_answer_context(final_context, state)
     added = [item for item in final_context.candidates if item.section_neighbor]
     next_index = max((int(n) for n in re.findall(r"(?m)^\[(\d+)\]", evidence)), default=0) + 1
     for index, item in enumerate(added, next_index):
         evidence += f"\n\n[{index}] {item.content}"
-        citations.append(Citation(source=item.source, doc_id=item.doc_id, chunk_index=item.chunk_index))
     state["final_document_answer_context"] = final_context
-    return evidence, citations
+    return evidence, document_answer_citations(final_context)
 
 
 CONVERSATION_FACTS_PROMPT = (

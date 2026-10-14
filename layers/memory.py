@@ -673,6 +673,34 @@ def save_document(
     return total_chunks
 
 
+def prioritize_document_section_seeds(chunk_keys: list[tuple[str, int]],
+                                      allowed_doc_ids: list[str], query: str) -> list[tuple[str, int]]:
+    """短查询匹配小节标题的种子优先，其余保持输入顺序；不检索、不调用模型。"""
+    seeds = list(dict.fromkeys(chunk_keys))
+    terms = _metadata_query_terms(query)
+    allowed = set(allowed_doc_ids)
+    document_ids = list(dict.fromkeys(doc_id for doc_id, _ in seeds if doc_id in allowed))
+    if not terms or not document_ids:
+        return seeds
+    with _chroma_lock:
+        rows = _get_document_collection().get(
+            where={"$and": [{"doc_id": {"$in": document_ids}},
+                            {"chunk_index": {"$in": list(dict.fromkeys(index for _, index in seeds))}}]},
+            include=["metadatas"],
+        )
+    matched = set()
+    for metadata in rows.get("metadatas") or []:
+        metadata = metadata or {}
+        key = (str(metadata.get("doc_id", "")), int(metadata.get("chunk_index", -1)))
+        if key not in seeds or key[0] not in allowed:
+            continue
+        # 路径第一项是文档标题，不是小节；共同标题不能让整份文档都获优先级。
+        paths = document_sections.read_section_paths(metadata.get("section_paths", ""))
+        if any(_metadata_matches_terms("", " ".join(path[1:]), terms) for path in paths):
+            matched.add(key)
+    return sorted(seeds, key=lambda key: key not in matched)
+
+
 def get_document_section_neighbors(chunk_keys: list[tuple[str, int]],
                                    allowed_doc_ids: list[str], limit: int) -> list[DocumentSectionNeighbor]:
     """同文档、同叶子小节、±1；按相关度顺序轮流补，优先延续；旧字段缺失不补。"""
@@ -698,7 +726,7 @@ def get_document_section_neighbors(chunk_keys: list[tuple[str, int]],
             chunks[key] = (content, metadata, document_sections.read_section_paths(metadata.get("section_paths", "")))
     seen = set(seeds)
     result = []
-    # 调用方已按最终资料的相关度排列种子：fast保留检索顺序，expert保留精排顺序。
+    # 调用方已排列最终种子：fast小节标题优先、其余检索顺序；expert保留精排顺序。
     # 每轮每个种子最多取一段，避免首个种子的两个方向独占请求名额。
     for _ in range(2):
         for doc_id, index in seeds:

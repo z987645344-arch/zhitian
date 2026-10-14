@@ -79,7 +79,7 @@ def test_final_seed_order_is_retrieval_for_fast_and_rerank_for_expert(mode, monk
                 chunk_index=index, score=score) for index, score in [(1, .60), (4, .58)]])
     state = {}
     if mode == "fast":
-        # 模型选择编号的顺序不应覆盖原检索排序。
+        # 小节标题未命中时，fast保留原检索顺序，不采用模型编号顺序。
         citations = [execution.Citation(source="样本.md", doc_id="sample", chunk_index=index) for index in (4, 1)]
         execution.prepare_fast_document_evidence(execution.ToolResult(tool="search_documents", status="success",
             data="资料", document_answer_context=context), "[1] 原资料", citations, state)
