@@ -381,6 +381,11 @@ def run(args):
     if (repo == work or repo in work.parents or not work.name.startswith("zhitian-recall-")
             or work.parent != Path(tempfile.gettempdir()).resolve() or any(work.iterdir())):
         raise RuntimeError("Runtime must be outside repository")
+    # DOCX/PDF解析工作进程也只写本次隔离目录；不扩大OfflineGuard允许范围。
+    private_temp = work / "tmp"
+    private_temp.mkdir()
+    os.environ["TEMP"] = os.environ["TMP"] = str(private_temp)
+    tempfile.tempdir = str(private_temp)
     os.environ["PERSONAL_DEEPSEEK_KEY_ENCRYPTION_KEY"] = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
     os.environ["DEEPSEEK_API_KEY"] = ""
     os.environ["TAVILY_API_KEY"] = ""

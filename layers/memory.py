@@ -675,7 +675,7 @@ def save_document(
 
 def get_document_section_neighbors(chunk_keys: list[tuple[str, int]],
                                    allowed_doc_ids: list[str], limit: int) -> list[DocumentSectionNeighbor]:
-    """同文档、同叶子小节、±1，按种子顺序追加；旧字段缺失时不补。"""
+    """同文档、同叶子小节、±1；按相关度顺序轮流补，优先延续；旧字段缺失不补。"""
     if limit <= 0 or not chunk_keys:
         return []
     allowed = set(allowed_doc_ids)
@@ -698,21 +698,25 @@ def get_document_section_neighbors(chunk_keys: list[tuple[str, int]],
             chunks[key] = (content, metadata, document_sections.read_section_paths(metadata.get("section_paths", "")))
     seen = set(seeds)
     result = []
-    for doc_id, index in seeds:
-        seed = chunks.get((doc_id, index))
-        if not seed or not seed[2]:
-            continue
-        for offset in (-1, 1):
-            key = (doc_id, index + offset)
-            neighbor = chunks.get(key)
-            if key in seen or not neighbor or not seed[2].intersection(neighbor[2]):
+    # 调用方已按最终资料的相关度排列种子：fast保留检索顺序，expert保留精排顺序。
+    # 每轮每个种子最多取一段，避免首个种子的两个方向独占请求名额。
+    for _ in range(2):
+        for doc_id, index in seeds:
+            seed = chunks.get((doc_id, index))
+            if not seed or not seed[2]:
                 continue
-            content, metadata, _ = neighbor
-            result.append(DocumentSectionNeighbor(content=content, source=str(metadata.get("source", "")),
-                                                  doc_id=doc_id, chunk_index=index + offset))
-            seen.add(key)
-            if len(result) >= limit:
-                return result
+            for offset in (1, -1):
+                key = (doc_id, index + offset)
+                neighbor = chunks.get(key)
+                if key in seen or not neighbor or not seed[2].intersection(neighbor[2]):
+                    continue
+                content, metadata, _ = neighbor
+                result.append(DocumentSectionNeighbor(content=content, source=str(metadata.get("source", "")),
+                                                      doc_id=doc_id, chunk_index=index + offset))
+                seen.add(key)
+                if len(result) >= limit:
+                    return result
+                break
     return result
 
 
@@ -1070,28 +1074,31 @@ def _apply_title_source_boost(candidates: list[dict], query: str) -> list[dict]:
         return candidates
 
     boosted_score = _title_match_min_score()
-    match_count = 0
-    for candidate in candidates:
-        if not _metadata_matches_terms(
+    matched = [candidate for candidate in candidates if _metadata_matches_terms(
             str(candidate.get("source", "")),
             str(candidate.get("title", "")),
             terms,
-        ):
-            continue
-        original_score = float(candidate.get("vector_score", candidate.get("score", 0.0)))
-        combined_score = float(candidate.get("score", original_score))
-        final_score = max(combined_score, boosted_score)
+        )]
+    # 只展开原来需要抬分的候选，按原综合分（原有向量分用于同分排序）单调分配。
+    # 增量最多0.01，且不越过任何原本高于保证分的标题候选；那些候选保持原分。
+    lower = sorted((item for item in matched if item["final_score"] <= boosted_score),
+                   key=_document_result_sort_key)
+    higher = [item["final_score"] for item in matched if item["final_score"] > boosted_score]
+    spread = min(0.01, (min(higher) - boosted_score) / 2) if higher else 0.01
+    boosted = {id(item): boosted_score + spread * index / len(lower)
+               for index, item in enumerate(lower)}
+    for candidate in matched:
+        final_score = boosted.get(id(candidate), candidate["final_score"])
         candidate["score"] = final_score
         candidate["final_score"] = final_score
         candidate["title_boosted"] = True
         candidate["title_source_match"] = True
-        match_count += 1
 
-    if match_count:
+    if matched:
         logger.info(
             "文档title/source匹配命中：query_len=%s match_count=%s",
             len(query or ""),
-            match_count,
+            len(matched),
         )
     return candidates
 

@@ -218,19 +218,22 @@ def test_short_query_boosts_only_existing_candidate(monkeypatch):
     assert results[0]["title_boosted"] is True
 
 
-def test_title_boost_ties_keep_vector_score_as_secondary_order(monkeypatch):
+def test_title_boost_preserves_original_combined_score_order(monkeypatch):
     monkeypatch.setattr(config, "TITLE_BOOST_MAX_QUERY_LENGTH", 12)
     monkeypatch.setattr(config, "RAG_SCORE_THRESHOLD", 0.55)
     candidates = [
         {"source": "知了简介.md", "score": 0.31, "chunk_index": 1},
         {"source": "知了简介.md", "score": 0.49, "chunk_index": 2},
     ]
+    original_order = [item["chunk_index"] for item in sorted(candidates, key=lambda item: item["score"], reverse=True)]
 
     boosted = memory._apply_title_source_boost(candidates, "知了是什么")
     boosted.sort(key=memory._document_result_sort_key, reverse=True)
 
     assert [item["chunk_index"] for item in boosted] == [2, 1]
-    assert [item["score"] for item in boosted] == [0.57, 0.57]
+    assert boosted[0]["score"] != boosted[1]["score"]
+    assert all(item["score"] >= 0.57 for item in boosted)
+    assert [item["chunk_index"] for item in boosted] == original_order
 
 
 def test_title_boost_does_not_lower_strong_bm25_candidate(monkeypatch):

@@ -88,7 +88,7 @@ def test_neighbors_same_doc_shared_section_adjacent_and_deduplicated():
                    paths("标题", "节二"), paths("标题", "节二")])
     seed("outside")
     result = memory.get_document_section_neighbors([("a", 1), ("outside", 1)], ["a"], 2)
-    assert [(item.doc_id, item.chunk_index) for item in result] == [("a", 0), ("a", 2)]
+    assert [(item.doc_id, item.chunk_index) for item in result] == [("a", 2), ("a", 0)]
     assert all("score" not in item.model_dump() for item in result)
     assert memory.get_document_section_neighbors([("a", 2)], ["a"], 2)[0].chunk_index == 1
     assert not memory.get_document_section_neighbors([("a", 1)], [], 2)
@@ -109,7 +109,7 @@ def test_request_limit_idempotence_disable_and_current_verified_scope(monkeypatc
     request = {}
     first = context()
     execution.prepare_document_answer_context(first, request)
-    assert [item.chunk_index for item in first.candidates] == [1, 0, 2]
+    assert [item.chunk_index for item in first.candidates] == [1, 2, 0]
     assert request["section_neighbor_count"] == 2
     execution.prepare_document_answer_context(first, request)
     second = context("b")
@@ -136,8 +136,8 @@ def test_expert_final_context_expanded_only_at_respond_and_citations_agree(monke
     generator = Mock(return_value=iter(["成品回答"]))
     monkeypatch.setattr(execution, "_answer_from_documents", generator)
     planning.respond_node(request)
-    assert [item.chunk_index for item in ctx.candidates] == [1, 0, 2]
-    assert [item.chunk_index for item in request["citations"]] == [1, 0, 2]
+    assert [item.chunk_index for item in ctx.candidates] == [1, 2, 0]
+    assert [item.chunk_index for item in request["citations"]] == [1, 2, 0]
     serialized = main._serialize_citations(request["citations"])
     assert "score" not in serialized[1] and "score" not in serialized[2]
     if stream:
@@ -161,7 +161,7 @@ def test_fast_expand_selected_only_evidence_filter_input_unchanged(monkeypatch):
     assert len(ctx.candidates) == 2
     assert "原资料0" in text and "原资料2" in text
     assert "未选资料4" not in text and "原资料3" not in text
-    assert [item.chunk_index for item in citations] == [1, 0, 2]
+    assert [item.chunk_index for item in citations] == [1, 2, 0]
 
 
 def test_fast_real_node_selection_before_expansion(monkeypatch):
@@ -187,7 +187,7 @@ def test_fast_real_node_selection_before_expansion(monkeypatch):
     assert "原资料0" in str(observed["fast_result_generation"])
     assert "原资料2" in str(observed["fast_result_generation"])
     assert "原资料4" not in str(observed["fast_result_generation"])
-    assert [item.chunk_index for item in final["citations"]] == [1, 0, 2]
+    assert [item.chunk_index for item in final["citations"]] == [1, 2, 0]
 
 
 def test_metadata_count_mismatch_rejected_before_writing():
