@@ -1379,7 +1379,7 @@ def _convert_document_impl(
         )
         if conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}:
             break
-        if conversion.error_type == "heavy_task_busy":
+        if conversion.error_type in {"heavy_task_busy", "conversion_busy"}:
             break
         if conversion.error_type in {"engine_unavailable", "unsupported_conversion"}:
             break
@@ -1619,7 +1619,7 @@ def _generate_file_impl(content, session_id, filename_hint, output_format, owner
         conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
         converted_path = conversion.output_path or ""
         if (conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}
-                or conversion.error_type in {"unsupported_conversion", "heavy_task_busy"}):
+                or conversion.error_type in {"unsupported_conversion", "heavy_task_busy", "conversion_busy"}):
             workspace.cleanup()
             return GenerateFileResult(success=False, char_count=len(text),
                 error_type=conversion.error_type, requested_format=requested_format)

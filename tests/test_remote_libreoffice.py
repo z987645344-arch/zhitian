@@ -72,6 +72,7 @@ def test_invalid_remote_artifact_is_not_success(transport, tmp_path, kind):
 
 @pytest.mark.parametrize("cancel", [False, True])
 def test_timeout_or_disconnect_forwards_cancel(transport, tmp_path, cancel, monkeypatch):
+    monkeypatch.setattr(config, "CONVERSION_QUEUE_MIN_REMAINING_SECONDS", 0)
     # Only the timeout/cancellation AFTER creation is under test. SDK/transport
     # initialization is not part of this assertion; production still budgets it.
     clock = [100.0]

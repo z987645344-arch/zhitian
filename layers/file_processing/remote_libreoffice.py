@@ -3,6 +3,7 @@
 import os
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,6 +14,9 @@ from layers.file_processing.libreoffice import LibreOfficeProcessor
 from layers.file_processing.models import EngineProbeResult, EngineState, EngineStatus
 from layers.file_processing.runner import TaskWorkspace, task_scope, FileTaskTimeout, FileTaskCancelled
 from converter_service.engine import validate_artifact
+from layers.file_processing.conversion_queue import (
+    BUSY_MESSAGE, ConversionQueueBusy, conversion_turn, check_remaining,
+)
 
 
 def client_settings():
@@ -61,6 +65,7 @@ class RemoteLibreOfficeProcessor(LibreOfficeProcessor):
 def remote_convert(source_path, target_format, *, timeout_seconds=0):
     from layers import converter
     workspace, task_id, complete = None, "", False
+    scope = None
     stop = threading.Event()
     monitor = None
     response_lock = threading.Lock()
@@ -68,6 +73,7 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
     cancelled = threading.Event()
     cancel_confirmed = threading.Event()
     url, headers = "", {}
+    turn_stack = ExitStack()
     def cancel_remote():
         if not task_id or cancel_confirmed.is_set():
             return
@@ -85,8 +91,9 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
         limit = config.MAX_CONVERSION_FILE_SIZE_MB * 1024 * 1024
         if os.path.getsize(source_path) > limit:
             return converter._failed("文件超过转换大小限制", Path(source_path).suffix, target_format, "file_too_large")
-        url, headers = client_settings()
         with task_scope(timeout_seconds or config.CONVERSION_TIMEOUT_SECONDS) as scope:
+            ticket = turn_stack.enter_context(conversion_turn(scope))
+            url, headers = client_settings()
             def watch():
                 while not stop.wait(0.02):
                     if ((scope.cancellation is not None and scope.cancellation.is_set())
@@ -102,13 +109,22 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
             monitor = threading.Thread(target=watch, daemon=True, name="conversion-cancel")
             monitor.start()
             with httpx.Client(trust_env=False, follow_redirects=False, timeout=1) as client:
-                scope.check()
-                remaining = min(config.CONVERSION_TIMEOUT_SECONDS, scope.deadline - time.monotonic())
-                with open(source_path, "rb") as source:
-                    response = client.post(url + "/v1/tasks", headers=headers,
-                        files={"file": ("input." + Path(source_path).suffix.lstrip(".").lower(), source)},
-                        data={"source_format": Path(source_path).suffix.lstrip(".").lower(),
-                              "target_format": target_format, "remaining_budget": str(remaining)})
+                while True:
+                    remaining = min(config.CONVERSION_TIMEOUT_SECONDS, check_remaining(scope))
+                    with open(source_path, "rb") as source:
+                        response = client.post(url + "/v1/tasks", headers=headers,
+                            files={"file": ("input." + Path(source_path).suffix.lstrip(".").lower(), source)},
+                            data={"source_format": Path(source_path).suffix.lstrip(".").lower(),
+                                  "target_format": target_format, "remaining_budget": str(remaining)})
+                    if response.status_code != 429 or response.json().get("detail") != "queue_full":
+                        break
+                    # 保留队首名额，避免后来者插队；只重试明确未受理的queue_full。
+                    response.close()
+                    check_remaining(scope)
+                    converter.logger.info("[conversion_queue] task_id=%s result=remote_busy", ticket)
+                    stop.wait(min(0.05, max(0, scope.deadline - time.monotonic())))
+                if response.status_code == 408:
+                    raise FileTaskTimeout("remote_upload_timeout")
                 response.raise_for_status()
                 task_id = response.json()["task_id"]
                 if len(task_id) != 32 or any(c not in "0123456789abcdef" for c in task_id):
@@ -167,7 +183,16 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
                 complete = True
                 return converter.ConversionResult(success=True, status="SUCCESS", output_path=str(output),
                     converted_from_format=Path(source_path).suffix.lstrip("."), converted_to_format=target_format)
-    except FileTaskTimeout:
+    except ConversionQueueBusy:
+        return converter._failed(BUSY_MESSAGE, Path(source_path).suffix, target_format, "conversion_busy")
+    except (FileTaskTimeout, httpx.TimeoutException) as exc:
+        if scope is not None and scope.cancellation is not None and scope.cancellation.is_set():
+            from layers import llm_provider
+            llm_provider.check_request_cancelled("file_conversion")
+            return converter.ConversionResult(success=False, status="CANCELLED", error_type="cancelled", error_msg="文件任务已取消")
+        if isinstance(exc, httpx.ConnectTimeout) and not cancelled.is_set():
+            return converter._failed("转换服务暂不可用，请稍后重试", Path(source_path).suffix,
+                                     target_format, "engine_unavailable")
         return converter.ConversionResult(success=False, status="TIMEOUT", error_type="timeout", error_msg="文档转换超时，请稍后重试")
     except FileTaskCancelled:
         from layers import llm_provider
@@ -183,8 +208,11 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
             if scope.cancellation is not None and scope.cancellation.is_set():
                 raise FileTaskCancelled("cancelled")
             raise FileTaskTimeout("file_task_timeout")
-        return converter._failed("转换服务暂不可用，请稍后重试", Path(source_path).suffix,
-            target_format, "engine_unavailable" if isinstance(exc, httpx.HTTPError) else str(exc))
+        unavailable = isinstance(exc, httpx.ConnectError) or (
+            isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {502, 503, 504})
+        return converter._failed("转换服务暂不可用，请稍后重试" if unavailable else
+            "转换服务返回异常，请稍后重试", Path(source_path).suffix,
+            target_format, "engine_unavailable" if unavailable else "remote_protocol_error")
     finally:
         stop.set()
         if monitor:
@@ -193,5 +221,8 @@ def remote_convert(source_path, target_format, *, timeout_seconds=0):
             cancel_remote()
             if not cancel_confirmed.is_set():
                 converter.logger.warning("转换取消未获远端确认：reason=remote_cancel_unconfirmed")
-        if workspace and not complete:
-            workspace.cleanup()
+        try:
+            if workspace and not complete:
+                workspace.cleanup()
+        finally:
+            turn_stack.close()
