@@ -180,11 +180,16 @@ def _reset_heavy_task_state():
         heavy_task_limits._conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS)
         heavy_task_limits._slots_in_use = 0
         heavy_task_limits._slot_reservations = []
+        heavy_task_limits._emergency_slots = threading.BoundedSemaphore(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS)
+    with heavy_task_limits._customer_state_lock:
+        heavy_task_limits._customer_tasks.clear()
     with heavy_task_limits._ingest_state_lock:
         heavy_task_limits._ingest_slots = threading.Semaphore(config.MAX_CONCURRENT_INGEST_TASKS)
         heavy_task_limits._ingest_depth = 0
         heavy_task_limits._ingest_running = 0
         heavy_task_limits._ingest_reservations = []
+        heavy_task_limits._ingest_waiters.clear()
+        heavy_task_limits._ingest_wait_condition.notify_all()
     with resource_admission._condition:
         resource_admission._reserved_bytes = 0
         resource_admission._condition.notify_all()

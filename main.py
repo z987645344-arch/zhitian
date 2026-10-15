@@ -42,7 +42,7 @@ from layers.file_processing.input_guard import (
 )
 from layers import temporary_files, chat_originals, file_traces, attachment_reread
 from layers.upload_limits import UploadAdmissionMiddleware
-from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, TaskWorkspace, cleanup_artifact
+from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, FileTaskTimeout, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
 from layers import api_quota, attachments, auth, backup_scheduler, converter, db_schema_version, document_loader, document_usage, email_provider, enterprise_password, execution, files_store, headcount_snapshot, llm_provider, memory, organizations, output, pdf_tools, perception, planning, system_modules, task_store, heavy_task_limits, resource_admission
 from utils.logger import get_logger
@@ -211,7 +211,7 @@ def _run_ingest_task(
     # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
     try:
         task_store.update_task(task_id, file_progress=FileTaskProgress(stage="queued", total=total_chunks, unit="chunks"))
-        heavy_task_limits.acquire_ingest_slot()
+        heavy_task_limits.acquire_ingest_slot(task_id)
     except heavy_task_limits.HeavyTaskRejected as exc:
         try:
             task_store.update_task(task_id, status="failed", error_message=exc.message,
@@ -2281,6 +2281,7 @@ async def chat_with_originals(request: Request, background_tasks: BackgroundTask
 
 
 @app.post("/chat/attachments", response_model=ChatAttachmentResponse)
+@heavy_task_limits.customer_endpoint
 async def upload_chat_attachment(
     request: Request,
     session_id: str = Form(...),
@@ -2449,6 +2450,7 @@ async def upload_chat_attachment(
 
 
 @app.post("/tools/convert", response_model=ToolConversionResponse)
+@heavy_task_limits.customer_endpoint
 async def convert_tool_file(
     request: Request,
     file: UploadFile = File(...),
@@ -2676,6 +2678,7 @@ def _pdf_output_name(filename: str, prefix: str = "") -> str:
 
 
 @app.post("/tools/pdf/merge", response_model=PdfMergeResponse)
+@heavy_task_limits.customer_endpoint
 async def merge_pdf_tool_files(
     request: Request,
     files: List[UploadFile] = File(...),
@@ -2753,6 +2756,7 @@ async def merge_pdf_tool_files(
 
 
 @app.post("/tools/pdf/split", response_model=PdfSplitResponse)
+@heavy_task_limits.customer_endpoint
 async def split_pdf_tool_file(
     request: Request,
     file: UploadFile = File(...),
@@ -2900,7 +2904,7 @@ async def upload_document(
     # 抛异常的语句，否则会漏掉release。
     processing_deadline = time.monotonic() + config.CONVERSION_TIMEOUT_SECONDS
     file_progress = []
-    heavy_task_limits.acquire_slot()
+    processing_lease = heavy_task_limits.acquire_slot(employee_emergency=True)
     try:
         temp_path = _save_temp_upload(file, doc_id, filename)
         file_progress.append(FileTaskProgress(stage="uploaded", processed=len(payload), total=len(payload), unit="bytes"))
@@ -2999,6 +3003,8 @@ async def upload_document(
         # _run_ingest_task的finally归还。这两行之间不允许插入任何会抛的语句。
         ingest_handed_off = True
         return accepted_body
+    except FileTaskTimeout:
+        raise HTTPException(status_code=504, detail="文档处理超时，请稍后重试或拆分后上传") from None
     finally:
         # 文件运行器已等待进程树退出；按身份清理后才归还槽位/内存。
         # 上传句柄关闭放在资源归还之后，避免异步取消打断资源归还。
@@ -3012,7 +3018,7 @@ async def upload_document(
             except Exception as exc:
                 logger.warning("上传清理：删除临时文件失败 error_type=%s", type(exc).__name__)
         finally:
-            heavy_task_limits.release_slot()
+            heavy_task_limits.release_slot(processing_lease)
             if ingest_reserved and not ingest_handed_off:
                 heavy_task_limits.release_reserved_ingest_slot()
         try:
@@ -3052,7 +3058,7 @@ async def input_knowledge(
     title = (knowledge_request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{utc_now_naive().isoformat()}"
     # F35：与/documents/upload同因，切分与向量化一并下放线程池
-    with heavy_task_limits.occupy_slot():
+    with heavy_task_limits.occupy_slot(employee_emergency=True):
         chunks = await asyncio.to_thread(document_loader.chunk_text, content)
         from layers.document_sections import chunk_section_paths
         section_paths = await asyncio.to_thread(chunk_section_paths, content, chunks,
@@ -3117,7 +3123,8 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
             yield _sse_data({"status": "failed", "error_message": "无权查看该任务"})
             return
 
-        signature = (task.status, task.progress, task.processed_chunks,
+        queue_ahead = heavy_task_limits.ingest_queue_ahead(task_id)
+        signature = (task.status, task.progress, task.processed_chunks, queue_ahead,
                      task.file_progress.model_dump_json() if task.file_progress else None)
         if signature != last_signature:
             payload = {
@@ -3125,6 +3132,7 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
                 "progress": task.progress,
                 "processed_chunks": task.processed_chunks,
                 "total_chunks": task.total_chunks,
+                "queue_ahead": queue_ahead,
                 "file_progress": task.file_progress.model_dump(mode="json") if task.file_progress else None,
             }
             if task.error_message:
@@ -3168,7 +3176,7 @@ async def get_task_status(
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.created_by != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="无权查看该任务")
-    return task.model_dump()
+    return {**task.model_dump(), "queue_ahead": heavy_task_limits.ingest_queue_ahead(task_id)}
 
 
 @app.get("/documents")

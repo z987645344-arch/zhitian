@@ -112,6 +112,9 @@ def test_upload_rejected_when_all_slots_busy(client, auth_headers):
         heavy_task_limits.acquire_slot()
     assert heavy_task_limits.slots_in_use() == config.MAX_CONCURRENT_HEAVY_TASKS
 
+    for _ in range(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS):
+        heavy_task_limits.acquire_slot(employee_emergency=True)
+
     busy = _upload(client, headers, org, "slot_busy.docx")
     print(
         "[槽位] %d个槽位全部占满后 -> HTTP %d %s"

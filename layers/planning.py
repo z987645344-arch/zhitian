@@ -2108,6 +2108,9 @@ def _respond_with_generated_file(state: AgentState) -> None:
         if metadata.get("error_type") == "TemporaryQuotaExceeded":
             from layers.temporary_files import QUOTA_MESSAGE
             state["response"] = QUOTA_MESSAGE
+        if metadata.get("error_type") == "user_file_task_limit":
+            from layers.heavy_task_limits import CUSTOMER_FILE_TASK_LIMIT_MESSAGE
+            state["response"] = CUSTOMER_FILE_TASK_LIMIT_MESSAGE
         state["citations"] = []
         return
     file_id = str(metadata.get("file_id", ""))
@@ -2160,6 +2163,8 @@ def _respond_with_converted_file(state: AgentState) -> None:
     }
     from layers.temporary_files import QUOTA_MESSAGE
     messages["TemporaryQuotaExceeded"] = QUOTA_MESSAGE
+    from layers.heavy_task_limits import CUSTOMER_FILE_TASK_LIMIT_MESSAGE
+    messages["user_file_task_limit"] = CUSTOMER_FILE_TASK_LIMIT_MESSAGE
     state["error"] = error_type
     state["response"] = messages.get(error_type, "附件转换失败，请稍后重试。")
     state["citations"] = []

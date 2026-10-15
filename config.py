@@ -260,7 +260,10 @@ CONVERSION_SERVICE_KEY = os.getenv("CONVERSION_SERVICE_KEY", "")
 # 全局槽位刻意设计成「满了直接拒绝」而不是排队：转换体持锁，排队者会在
 # 等待中烧完自己的响应预算，最终一个用户的洪水会变成所有人的超时。
 # 拒绝是立刻可重试的，排队不是。
-MAX_CONCURRENT_HEAVY_TASKS = max(1, int(os.getenv("MAX_CONCURRENT_HEAVY_TASKS", "4")))
+FILE_PROCESSING_SHARED_SLOTS = max(1, int(os.getenv("FILE_PROCESSING_SHARED_SLOTS", "6")))
+FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS = max(0, int(os.getenv("FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS", "1")))
+# Legacy name denotes the shared pool only; customer code cannot borrow emergency slots.
+MAX_CONCURRENT_HEAVY_TASKS = FILE_PROCESSING_SHARED_SLOTS
 # 第5a轮：大DOCX单次转换净峰值约240MiB，故同步任务预留320MiB；
 # 普通150页PDF渲染仅8.5MiB，不能当图片密集PDF上界，故也走保守同步预留。
 HEAVY_TASK_MEMORY_RESERVE_MIB = max(1, int(os.getenv("HEAVY_TASK_MEMORY_RESERVE_MIB", "320")))
@@ -272,6 +275,7 @@ MEMORY_ADMISSION_SAFETY_MARGIN_MIB = max(
 )
 # accepted后的入库只有限时等待内存恢复；超时明确标failed，不长期挂pending。
 INGEST_MEMORY_WAIT_SECONDS = max(0.0, float(os.getenv("INGEST_MEMORY_WAIT_SECONDS", "30")))
+INGEST_SLOT_WAIT_SECONDS = max(0.0, float(os.getenv("INGEST_SLOT_WAIT_SECONDS", "300")))
 # 单账号在途（pending/processing）任务上限。必须严格小于全局槽位，
 # 否则一个账号占满后其他人将完全无法提交——这正是本限制存在的理由。
 MAX_USER_INFLIGHT_HEAVY_TASKS = max(

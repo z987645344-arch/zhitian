@@ -9,6 +9,10 @@ import re
 import sqlite3
 import time
 import uuid
+import threading
+import functools
+import inspect
+from contextlib import contextmanager
 from datetime import datetime
 from utils.time_values import utc_now_naive
 from utils.time_values import as_utc_datetime
@@ -608,6 +612,37 @@ def search_session_memory(query: str, session_id: str, top_k: int = 3) -> list[s
     return _rank_memory_candidates(candidates, max(1, int(top_k)))
 
 
+_document_mutations = {}
+_document_mutations_lock = threading.Lock()
+
+
+@contextmanager
+def _document_mutation(doc_id):
+    # Same-document writers/deleters serialize without blocking unrelated readers.
+    with _document_mutations_lock:
+        entry = _document_mutations.setdefault(doc_id, [threading.RLock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _document_mutations_lock:
+            entry[1] -= 1
+            if not entry[1]:
+                _document_mutations.pop(doc_id, None)
+
+
+def _serialize_document(function):
+    signature = inspect.signature(function)
+    @functools.wraps(function)
+    def guarded(*args, **kwargs):
+        doc_id = signature.bind(*args, **kwargs).arguments["doc_id"]
+        with _document_mutation(doc_id):
+            return function(*args, **kwargs)
+    return guarded
+
+
+@_serialize_document
 def save_document(
     source: str,
     chunks: list[str],
@@ -640,10 +675,13 @@ def save_document(
     uploaded_at = utc_now_naive().isoformat()
     with _chroma_lock:
         collection = _get_document_collection()
-        for start in range(0, total_chunks, config.INGEST_CHUNK_BATCH_SIZE):
-            end = min(start + config.INGEST_CHUNK_BATCH_SIZE, total_chunks)
+    for start in range(0, total_chunks, config.INGEST_CHUNK_BATCH_SIZE):
+        end = min(start + config.INGEST_CHUNK_BATCH_SIZE, total_chunks)
+        vectors = embedding.get_embedding_function()(input=clean_chunks[start:end])
+        with _chroma_lock:
             collection.add(
                 documents=clean_chunks[start:end],
+                embeddings=vectors,
                 metadatas=[
                     {
                         "source": source,
@@ -659,10 +697,10 @@ def save_document(
                 ],
                 ids=[str(uuid.uuid4()) for _ in range(start, end)],
             )
-            # 只在Chroma确认一批写入完成后更新计数；最终100%由调用方在
-            # 全量计数校验通过后写入，不能仅靠最后一次add()推断完成。
-            if on_batch_written and end < total_chunks:
-                on_batch_written(end, total_chunks)
+        # Callback/SQLite work must not extend the Chroma critical section either.
+        if on_batch_written and end < total_chunks:
+            on_batch_written(end, total_chunks)
+    with _chroma_lock:
         actual_count = count_document_chunks(doc_id)
         if actual_count != total_chunks:
             raise RuntimeError("Chroma文档切片数与预期不一致")
@@ -1501,6 +1539,7 @@ def list_documents() -> list[dict]:
     return sorted(grouped.values(), key=lambda item: (item["source"], item["doc_id"]))
 
 
+@_serialize_document
 def delete_document(doc_id: str) -> int:
     """按doc_id精确删除单份文档的全部chunk，返回删除数量。"""
     if not doc_id:

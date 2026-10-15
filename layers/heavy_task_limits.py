@@ -14,6 +14,7 @@
 
 import threading
 import time
+import functools
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -38,6 +39,11 @@ _conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS
 _slot_state_lock = threading.Lock()
 _slots_in_use = 0
 _slot_reservations = []
+_emergency_slots = threading.BoundedSemaphore(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS)
+_customer_state_lock = threading.Lock()
+_customer_tasks = {}
+_CUSTOMER_FILE_TASK_LIMIT = 2
+CUSTOMER_FILE_TASK_LIMIT_MESSAGE = "你已有2个文件在处理，请稍候再试"
 
 
 def slots_in_use() -> int:
@@ -46,21 +52,24 @@ def slots_in_use() -> int:
 
 
 def total_slots() -> int:
-    return config.MAX_CONCURRENT_HEAVY_TASKS
+    return config.FILE_PROCESSING_SHARED_SLOTS + config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS
 
 
-def acquire_slot() -> None:
+def acquire_slot(*, employee_emergency=False):
     """占用一个全局槽位；占不到立刻抛HeavyTaskRejected，不阻塞、不排队。
 
     调用方必须在`finally`里配对调用`release_slot()`。已有大段try/finally的
     端点直接用这一对，避免为加一层`with`而重排整块缩进。
     """
     global _slots_in_use
-    if not _conversion_slots.acquire(blocking=False):
-        raise HeavyTaskRejected(
-            "heavy_task_busy",
-            "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
-        )
+    pool = _conversion_slots
+    if not pool.acquire(blocking=False):
+        pool = _emergency_slots
+        if not employee_emergency or not pool.acquire(blocking=False):
+            raise HeavyTaskRejected(
+                "heavy_task_busy",
+                "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
+            )
     amount = config.HEAVY_TASK_MEMORY_RESERVE_MIB
     committed = False
     reserved = False
@@ -70,34 +79,72 @@ def acquire_slot() -> None:
             raise HeavyTaskRejected("heavy_task_busy", "服务器繁忙，请稍后重试")
         with _slot_state_lock:
             _slots_in_use += 1
-            _slot_reservations.append(amount)
+            lease = (object(), pool, amount)
+            _slot_reservations.append(lease)
         committed = True
+        return lease
     finally:
         if not committed:
             if reserved:
                 resource_admission.release(amount)
-            _conversion_slots.release()
+            pool.release()
 
 
-def release_slot() -> None:
+def release_slot(lease=None) -> None:
     global _slots_in_use
     with _slot_state_lock:
         if _slots_in_use <= 0:
             return
+        if lease is None:
+            lease = _slot_reservations[-1]
+        if lease not in _slot_reservations:
+            return
+        _slot_reservations.remove(lease)
         _slots_in_use -= 1
-        amount = _slot_reservations.pop()
+        _, pool, amount = lease
     resource_admission.release(amount)
-    _conversion_slots.release()
+    pool.release()
 
 
 @contextmanager
-def occupy_slot() -> Iterator[None]:
+def occupy_slot(*, employee_emergency=False) -> Iterator[None]:
     """acquire_slot/release_slot的上下文管理器形式。"""
-    acquire_slot()
+    lease = acquire_slot(employee_emergency=employee_emergency)
     try:
         yield
     finally:
-        release_slot()
+        release_slot(lease)
+
+
+@contextmanager
+def customer_task(user_id):
+    """One account across web/App and all file endpoints; never queue."""
+    if not user_id:
+        yield
+        return
+    with _customer_state_lock:
+        count = _customer_tasks.get(user_id, 0)
+        if count >= _CUSTOMER_FILE_TASK_LIMIT:
+            raise HeavyTaskRejected("user_file_task_limit", CUSTOMER_FILE_TASK_LIMIT_MESSAGE)
+        _customer_tasks[user_id] = count + 1
+    try:
+        yield
+    finally:
+        with _customer_state_lock:
+            count = _customer_tasks.get(user_id, 1) - 1
+            if count:
+                _customer_tasks[user_id] = count
+            else:
+                _customer_tasks.pop(user_id, None)
+
+
+def customer_endpoint(function):
+    @functools.wraps(function)
+    async def guarded(*args, **kwargs):
+        user = kwargs.get("current_user") or {}
+        with customer_task(user.get("user_id")):
+            return await function(*args, **kwargs)
+    return guarded
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +162,13 @@ _ingest_state_lock = threading.Lock()
 _ingest_depth = 0        # 已受理但尚未跑完的入库任务数（排队中 + 执行中）
 _ingest_running = 0      # 已拿到槽位、正在跑的入库任务数
 _ingest_reservations = []
+_ingest_waiters = []
+_ingest_wait_condition = threading.Condition(_ingest_state_lock)
+
+
+def ingest_queue_ahead(task_id):
+    with _ingest_state_lock:
+        return _ingest_waiters.index(task_id) if task_id in _ingest_waiters else None
 
 
 def ingest_depth() -> int:
@@ -152,16 +206,30 @@ def release_reserved_ingest_slot() -> None:
             _ingest_depth -= 1
 
 
-def acquire_ingest_slot() -> None:
+def acquire_ingest_slot(task_id=None) -> None:
     """后台worker取用槽位：**阻塞**等待，直到有空位。
 
     调用方必须已经通过`reserve_ingest_slot()`占过队列位，并保证在最外层
     finally里调用`release_ingest_slot()`。
     """
     global _ingest_running
+    ticket = task_id or object()
+    slot_deadline = time.monotonic() + config.INGEST_SLOT_WAIT_SECONDS
+    with _ingest_wait_condition:
+        _ingest_waiters.append(ticket)
+        try:
+            while True:
+                if _ingest_waiters[0] == ticket and _ingest_slots.acquire(blocking=False):
+                    break
+                remaining = slot_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HeavyTaskRejected("ingest_queue_timeout", "入库排队超时，请稍后重试")
+                _ingest_wait_condition.wait(min(remaining, 0.1))
+        finally:
+            _ingest_waiters.remove(ticket)
+            _ingest_wait_condition.notify_all()
+    # Memory recovery has its own deadline, starting only after a slot is obtained.
     deadline = time.monotonic() + config.INGEST_MEMORY_WAIT_SECONDS
-    if not _ingest_slots.acquire(timeout=max(0.0, deadline - time.monotonic())):
-        raise HeavyTaskRejected("ingest_queue_timeout", "入库排队超时，请稍后重试")
     amount = config.INGEST_TASK_MEMORY_RESERVE_MIB
     committed = False
     reserved = False
@@ -186,6 +254,8 @@ def acquire_ingest_slot() -> None:
             if reserved:
                 resource_admission.release(amount)
             _ingest_slots.release()
+            with _ingest_wait_condition:
+                _ingest_wait_condition.notify_all()
 
 
 def release_ingest_slot() -> None:
@@ -206,6 +276,8 @@ def release_ingest_slot() -> None:
     if amount is not None:
         resource_admission.release(amount)
         _ingest_slots.release()
+        with _ingest_wait_condition:
+            _ingest_wait_condition.notify_all()
 
 
 def ensure_user_quota(user_id: str) -> None:

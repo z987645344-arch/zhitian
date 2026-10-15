@@ -1305,7 +1305,15 @@ def _list_documents() -> ToolResult:
     )
 
 
-def _convert_document(
+def _convert_document(attachment_id, target_format, session_id, owner_user_id, agent_budget_seconds=None):
+    try:
+        with heavy_task_limits.customer_task(owner_user_id):
+            return _convert_document_impl(attachment_id, target_format, session_id, owner_user_id, agent_budget_seconds)
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        return ConvertDocumentResult(success=False, error_type=exc.code, detail=exc.message)
+
+
+def _convert_document_impl(
     attachment_id: str,
     target_format: str,
     session_id: str,
@@ -1487,8 +1495,11 @@ def generate_file(
     with task_scope() as scope:
         scope.emit("preparing")
         try:
-            result = _generate_file_impl(content, session_id, filename_hint, output_format, owner_user_id)
+            with heavy_task_limits.customer_task(owner_user_id), heavy_task_limits.occupy_slot():
+                result = _generate_file_impl(content, session_id, filename_hint, output_format, owner_user_id)
             scope.check()
+        except heavy_task_limits.HeavyTaskRejected as exc:
+            result = GenerateFileResult(success=False, error_type=exc.code, requested_format=output_format)
         except FileTaskTimeout:
             result = GenerateFileResult(success=False, error_type="timeout", requested_format=output_format)
         scope.emit("completed" if result.success else result.status.value.lower(),
@@ -1605,8 +1616,7 @@ def _generate_file_impl(content, session_id, filename_hint, output_format, owner
     conversion_error = ""
     converted_path = ""
     try:
-        with heavy_task_limits.occupy_slot():
-            conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
+        conversion = run_for_entry(FileEntry.AGENT_CHAT, converter.convert_file, initial_path, requested_format)
         converted_path = conversion.output_path or ""
         if (conversion.status in {converter.ConversionStatus.TIMEOUT, converter.ConversionStatus.CANCELLED}
                 or conversion.error_type in {"unsupported_conversion", "heavy_task_busy"}):

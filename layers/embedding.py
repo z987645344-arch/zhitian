@@ -64,10 +64,13 @@ class BgeSmallZhEmbeddingFunction:
             options.graph_optimization_level = (
                 onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
-            self._session = onnxruntime.InferenceSession(
+            session = onnxruntime.InferenceSession(
                 onnx_path, options, providers=["CPUExecutionProvider"]
             )
             self._tokenizer = tokenizer
+            # Publish the ready session last: concurrent ingestion/search must
+            # never observe a non-None session with an uninitialized tokenizer.
+            self._session = session
             logger.info("嵌入模型已加载：dir=%s", self._model_dir)
 
     def _embed_batch(self, texts):
