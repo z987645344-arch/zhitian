@@ -239,17 +239,6 @@ vulnerabilities:
     evidence: "漏洞需调用 mount/nsenter 的特定特权选项、fstab 或可控本地操作者；API/转换链不调用这些命令，容器非特权且丢弃 capability。"
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
-  - id: CVE-2026-8286
-    images: [converter]
-    purls:
-      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u7?arch=amd64&distro=debian-13.7"
-      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u7?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-14
-    expired_at: 2026-11-13
-    reachability: "未能判定"
-    evidence: "本次双镜像扫描仅转换镜像出现本条。本机无缓存构建的转换镜像经 dpkg-query 确认两个 curl 包均为 8.14.1-2+deb13u7。LibreOffice core、libcmis 和 libraptor 依赖 libcurl4t64，libpoppler 依赖 libcurl3t64-gnutls；ldd 确认 libucpdav1.so、libucpcmis1lo.so、libcmis 和 libraptor 加载 libcurl.so.4。模拟删除 libcurl4t64 会连带移除 LibreOffice 转换组件，不能直接卸载。真实探针 AF_INET/AF_INET6 被拒、AF_UNIX 可用，外链加载未加沙箱 1 次、加沙箱 0 次，正常 DOCX 转 PDF 成功。WebDAV、CMIS 及外部资源功能存在远程加载入口，未逐一排除本 CVE 的全部触发条件。conversion 网络 internal:true，soffice 在 exec 前安装 seccomp，拒绝非 AF_UNIX socket 及 io_uring_setup；close_fds=True 不传入已有网络 socket。非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均为补偿措施，不作为不可达证明。上游涉及 STARTTLS 连接复用与 TLS 配置不一致，未排除全部触发条件。"
-    why_not_fixed: "2026-10-14 复核 CI run 38536398270 第 2 次尝试（提交 3724672）：两个 curl 包均为 8.14.1-2+deb13u7，本条在转换镜像仍为 HIGH、affected、FixedVersion 为空；API 镜像无本条。converter-trivy-image.json SHA-256 07db85188edcdda2ac4b25e2df62cef0d54078e65c0f50efab1abbb9f4b5b048；trivy-image.json SHA-256 f662c1a4107d224c881040f5459e42785d5fc9cf5369aadd891ffb115d514326。Debian 安全追踪器将 trixie-security 8.14.1-2+deb13u7 标为 fixed（DSA-6558-1），但已刷新数据库的本次 Trivy 报告仍判 affected、FixedVersion 为空，属于数据库滞后；按原始扫描保留精确例外，到期前若数据库已跟上则删除，不跳过扫描或降低严重级别。只升级 Python 不能消除本系统包告警。"
-    statement: "未能判定；仅转换镜像上述两个精确包版本有效。自 2026-10-14 复核起 30 天，2026-11-13 到期；到期、有修复或作用范围失配时仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-8458
     images: [converter]
     purls:
@@ -340,17 +329,6 @@ vulnerabilities:
     evidence: "漏洞需要恶意 X server 对连接的客户端返回特制 X11 数据；容器 headless 转换无 DISPLAY/X server，用户上传文件不能充当 X server。"
     why_not_fixed: "CI run 35955469586 的 Trivy FixedVersion 为空；对应发行版/包索引在该次扫描中未给出可升级修复版本，到期前必须复核。"
     statement: "不可达；按到期日复核，详见 evidence 与 why_not_fixed。"
-  - id: CVE-2026-8927
-    images: [converter]
-    purls:
-      - "pkg:deb/debian/libcurl3t64-gnutls@8.14.1-2%2Bdeb13u7?arch=amd64&distro=debian-13.7"
-      - "pkg:deb/debian/libcurl4t64@8.14.1-2%2Bdeb13u7?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-14
-    expired_at: 2026-11-13
-    reachability: "未能判定"
-    evidence: "本次双镜像扫描仅转换镜像出现本条。本机无缓存构建的转换镜像经 dpkg-query 确认两个 curl 包均为 8.14.1-2+deb13u7。LibreOffice core、libcmis 和 libraptor 依赖 libcurl4t64，libpoppler 依赖 libcurl3t64-gnutls；ldd 确认 libucpdav1.so、libucpcmis1lo.so、libcmis 和 libraptor 加载 libcurl.so.4。模拟删除 libcurl4t64 会连带移除 LibreOffice 转换组件，不能直接卸载。真实探针 AF_INET/AF_INET6 被拒、AF_UNIX 可用，外链加载未加沙箱 1 次、加沙箱 0 次，正常 DOCX 转 PDF 成功。WebDAV、CMIS 及外部资源功能存在远程加载入口，未逐一排除本 CVE 的全部触发条件。conversion 网络 internal:true，soffice 在 exec 前安装 seccomp，拒绝非 AF_UNIX socket 及 io_uring_setup；close_fds=True 不传入已有网络 socket。非 root、只读根目录、cap_drop ALL、no-new-privileges 和资源限制均为补偿措施，不作为不可达证明。上游涉及环境变量代理切换时 Digest 认证状态泄露，未完整核实全部触发条件。"
-    why_not_fixed: "2026-10-14 复核 CI run 38536398270 第 2 次尝试（提交 3724672）：两个 curl 包均为 8.14.1-2+deb13u7，本条在转换镜像仍为 HIGH、affected、FixedVersion 为空；API 镜像无本条。converter-trivy-image.json SHA-256 07db85188edcdda2ac4b25e2df62cef0d54078e65c0f50efab1abbb9f4b5b048；trivy-image.json SHA-256 f662c1a4107d224c881040f5459e42785d5fc9cf5369aadd891ffb115d514326。Debian 安全追踪器将 trixie-security 8.14.1-2+deb13u7 标为 fixed（DSA-6558-1），但已刷新数据库的本次 Trivy 报告仍判 affected、FixedVersion 为空，属于数据库滞后；按原始扫描保留精确例外，到期前若数据库已跟上则删除，不跳过扫描或降低严重级别。只升级 Python 不能消除本系统包告警。"
-    statement: "未能判定；仅转换镜像上述两个精确包版本有效。自 2026-10-14 复核起 30 天，2026-11-13 到期；到期、有修复或作用范围失配时仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-93990
     images: [converter]
     purls:
