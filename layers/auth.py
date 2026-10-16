@@ -1450,9 +1450,11 @@ def list_pending_documents(
                 """
                 SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
                        d.reviewed_by, d.reviewed_at, d.converted_from,
-                       d.organization_id, o.name AS organization_name
+                       d.organization_id, o.name AS organization_name,
+                       uploader.username AS uploader_username, uploader.email AS uploader_email
                 FROM documents d
                 LEFT JOIN organizations o ON o.id = d.organization_id
+                LEFT JOIN users uploader ON uploader.user_id = d.uploaded_by
                 WHERE d.trust_level = 'pending'
                 """
                 + scope_sql
@@ -1565,9 +1567,11 @@ def list_verified_documents(
                 """
                 SELECT d.doc_id, d.source, d.trust_level, d.uploaded_by, d.uploaded_at,
                        d.reviewed_by, d.reviewed_at, d.converted_from,
-                       d.organization_id, o.name AS organization_name
+                       d.organization_id, o.name AS organization_name,
+                       uploader.username AS uploader_username, uploader.email AS uploader_email
                 FROM documents d
                 LEFT JOIN organizations o ON o.id = d.organization_id
+                LEFT JOIN users uploader ON uploader.user_id = d.uploaded_by
                 WHERE d.trust_level = 'verified'
                 """
                 + scope_sql
@@ -1873,6 +1877,16 @@ def _document_row_to_dict(row: sqlite3.Row) -> dict:
         result["organization_id"] = int(value) if value is not None else None
     if "organization_name" in keys:
         result["organization_name"] = row["organization_name"]
+    if "uploader_username" in keys:
+        from layers.account_lifecycle import DELETED_USER
+
+        if row["uploaded_by"] == DELETED_USER:
+            display_name = DELETED_USER
+        else:
+            username = str(row["uploader_username"] or "").strip()
+            email = str(row["uploader_email"] or "").strip()
+            display_name = username or (mask_account_name(email) if email else "-")
+        result["uploaded_by_display_name"] = display_name
     return result
 
 

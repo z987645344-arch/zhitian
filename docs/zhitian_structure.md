@@ -253,6 +253,6 @@ expert图当前包含：`classify`、`retrieve`、`plan`、`execute`、`reflect`
 - 日志记录`trace_id`和必要的长度、类型、角色等元数据，不记录完整Token、用户消息、文档正文或检索原文。
 - `/chat`与`/chat/stream`按角色读取`rate_limit_config`并实时限流；developer可在管理后台调整四角色每分钟上限。
 - 上传、转换、生成和下载均有owner/组织/文件类型/体积边界；写文件工具不会采用同轮联网内容。
-- 当前日志与业务审批记录不是不可篡改安全审计系统；生产审计能力边界见`claude_memory.md`。
+- 当前日志与业务审批记录不是不可篡改安全审计系统；指挥师记忆不在仓库内，生产审计能力边界须结合当前实现与本轮提供的上下文核对。
 
-历史架构取舍见`docs/history/architecture_decisions.md`，事故与修复背景见`docs/history/incidents.md`，当前开放问题见`docs/claude_memory.md`。
+历史架构取舍见`docs/history/architecture_decisions.md`，事故与修复背景见`docs/history/incidents.md`；指挥师记忆不在仓库内，当前开放问题以本轮明确提供的上下文核对。

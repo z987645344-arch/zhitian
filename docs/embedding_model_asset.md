@@ -68,4 +68,4 @@ BAAI/bge-small-zh-v1.5（MIT，模型卡明示可商用）导出，不取用未�
 6. `docker build --no-cache` 重建并复验：镜像体积、容器内断网生成向量、`import torch` 仍应失败
 
 **注意**：换模型若改变向量维度，存量向量库必须走 `scripts/migrate_embeddings.py` 重新生成，
-否则检索会静默返回 0 条、写入直接失败（详见 claude_memory 的 F37 条目）。
+否则检索会静默返回 0 条、写入直接失败。指挥师记忆不在仓库内；F37 的历史验证记录见 CHANGELOG。
