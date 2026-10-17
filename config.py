@@ -362,9 +362,8 @@ if (
 ):
     raise RuntimeError("SCHEDULED_BACKUP_LOCAL_TIME must be a valid local time")
 del _scheduled_backup_time_parts
-SCHEDULED_BACKUP_RETENTION = max(
-    1, int(os.getenv("SCHEDULED_BACKUP_RETENTION", "3"))
-)
+# 保留策略由scripts.backup_retention统一读取各池的天数和保底配置。
+# 旧SCHEDULED_BACKUP_RETENTION已废弃，不再读取。
 # 运维聚合状态端点缺省关闭；未配置令牌时main.py根本不注册路由。
 OPS_STATUS_TOKEN = os.getenv("OPS_STATUS_TOKEN", "").strip()
 # 宽限期只吸收备份边界时容器因部署、重启或宿主抖动而不在线的时段，

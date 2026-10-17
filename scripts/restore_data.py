@@ -635,8 +635,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--retention",
         type=int,
-        default=DEFAULT_PRE_RESTORE_RETENTION,
-        help="仅保留最近N份恢复前安全备份，默认3；不影响手工或定时归档",
+        default=None,
+        help="已废弃且不生效；仅为兼容旧命令保留，改用按天和保底配置",
     )
     parser.add_argument(
         "--confirm-service-stopped",
@@ -648,6 +648,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    if args.retention is not None:
+        print(backup_data.backup_retention.RETENTION_DEPRECATED, file=sys.stderr)
     print(
         "恢复要求：后端服务必须已停止；完整的当前数据会先生成一份加密"
         "安全备份，三个SQLite主库全缺失时自动按灾难恢复继续。"

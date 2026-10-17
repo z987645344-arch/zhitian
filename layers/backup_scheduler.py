@@ -1,25 +1,27 @@
 # -*- coding: utf-8 -*-
 """既有加密备份能力的进程内薄调度层。
 
-归档、SQLite在线备份、manifest、AES-256-GCM加密和轮转全部由
-scripts.backup_data负责；本模块只处理固定时刻触发、跨重启避免重复、进程内
-不重叠和故障隔离。
+归档、SQLite在线备份、manifest与AES-256-GCM加密由scripts.backup_data负责；
+按天过期由scripts.backup_retention统一裁决。本模块负责备份和每日独立清扫的
+固定时刻触发、跨重启避免重复、状态记录、进程内不重叠和故障隔离。
 """
 
 import json
 import os
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import config
 from layers import files_store
-from scripts import backup_data
+from scripts import backup_data, backup_retention
 from utils.logger import get_logger
 
 
 logger = get_logger("backup_scheduler", console_info_prefix="[backup] completed")
+cleanup_logger = get_logger("archive_cleanup", console_info_prefix="归档每日清扫：")
 _backup_run_lock = threading.Lock()
 SCHEDULED_ARCHIVE_PREFIX = "zhitian-scheduled-backup"
 SCHEDULED_BACKUP_GLOB = SCHEDULED_ARCHIVE_PREFIX + "-*.ztbackup"
@@ -281,7 +283,6 @@ def run_backup_once_safely() -> bool:
             result = backup_data.create_backup(
                 data_dir=Path(config.BASE_DIR) / "data",
                 backup_dir=Path(config.SCHEDULED_BACKUP_PATH),
-                retention=config.SCHEDULED_BACKUP_RETENTION,
                 # 该参数原本用于阻止独立脚本在API仍运行时误操作。本调用就在API
                 # 进程内部，并复用了Chroma与files_store两把真实写锁，因此可确认。
                 confirm_service_stopped=True,
@@ -367,14 +368,84 @@ class BackupScheduler:
 
 _scheduler_lock = threading.Lock()
 _scheduler = None
+_cleanup_scheduler = None
+
+
+def _cleanup_roots():
+    return [Path(config.BASE_DIR) / "backups", Path(config.SCHEDULED_BACKUP_PATH)]
+
+
+def run_cleanup_once_safely(now: Optional[datetime] = None) -> bool:
+    """与备份持同一把锁；不论备份是否启用/成功，都独立清扫并保存状态。"""
+    current = now or datetime.now(timezone.utc)
+    result = {
+        "checked_at": _utc_iso(current), "status": "failed", "deleted_count": 0,
+        "deleted_by_pool": {}, "leftovers": {}, "reason": None,
+    }
+    with backup_retention.ARCHIVE_LOCK:
+        try:
+            roots = _cleanup_roots()
+            result["leftovers"] = backup_retention.observe_leftovers(
+                roots, Path(config.BASE_DIR) / "data",
+            )
+            backup_retention.sweep_archives(roots, now=current, deleted_counts=result["deleted_by_pool"])
+            result["status"] = "ok"
+        except Exception as exc:
+            result["reason"] = (
+                "备份目录或产物无访问权限" if isinstance(exc, PermissionError)
+                else "备份保留配置或目录无效" if isinstance(exc, (ValueError, NotADirectoryError))
+                else "读取或删除归档失败"
+            )
+            cleanup_logger.warning("归档每日清扫：失败，%s，error_type=%s", result["reason"], type(exc).__name__)
+        result["deleted_count"] = sum(result["deleted_by_pool"].values())
+        try:
+            directory = Path(config.SCHEDULED_BACKUP_PATH)
+            if directory.is_symlink() or directory.is_junction():
+                raise ValueError("拒绝符号链接状态目录")
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / backup_retention.STATUS_NAME
+            temporary = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
+            # 不打开已有临时链接；失败时不删除无法核实归属的遗留物。
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except Exception as exc:
+            cleanup_logger.warning("归档每日清扫：失败，无法写入清扫状态文件，error_type=%s", type(exc).__name__)
+            return False
+        if result["status"] == "ok":
+            cleanup_logger.info("归档每日清扫：ok，删除 %s 份", result["deleted_count"])
+            return True
+        return False
+
+
+class ArchiveCleanupScheduler(BackupScheduler):
+    """UTC+8每日00:30清扫；不依赖定时备份开关或当天备份结果。"""
+
+    def _run(self):
+        # 不在启动时隐式扫盘；固定日历时刻执行，关闭时可立即中断等待。
+        while not self._stop_event.is_set():
+            try:
+                delay = _seconds_until_next_trigger(0, 30)
+            except Exception as exc:
+                cleanup_logger.warning("归档每日清扫：失败，无法计算下次时刻，error_type=%s", type(exc).__name__)
+                delay = 24 * 60 * 60
+            if self._stop_event.wait(max(1.0, delay)):
+                return
+            run_cleanup_once_safely()
 
 
 def start_scheduler() -> None:
-    global _scheduler
-    if not config.SCHEDULED_BACKUP_ENABLED:
-        return
+    global _scheduler, _cleanup_scheduler
     with _scheduler_lock:
-        if _scheduler is not None:
+        if _cleanup_scheduler is None:
+            _cleanup_scheduler = ArchiveCleanupScheduler(0, 30)
+            _cleanup_scheduler._thread.name = "zhitian-archive-cleanup"
+            _cleanup_scheduler.start()
+            cleanup_logger.info("归档每日清扫已启动：local_time=00:30 timezone=UTC+8")
+        if not config.SCHEDULED_BACKUP_ENABLED or _scheduler is not None:
             return
         scheduler = BackupScheduler(
             config.SCHEDULED_BACKUP_LOCAL_HOUR,
@@ -383,17 +454,20 @@ def start_scheduler() -> None:
         scheduler.start()
         _scheduler = scheduler
     logger.info(
-        "进程内加密备份调度已启动：local_time=%s timezone=UTC+8 retention=%s",
+        "进程内加密备份调度已启动：local_time=%s timezone=UTC+8 按天保留并设保底",
         config.SCHEDULED_BACKUP_LOCAL_TIME,
-        config.SCHEDULED_BACKUP_RETENTION,
     )
 
 
 def stop_scheduler() -> None:
-    global _scheduler
+    global _scheduler, _cleanup_scheduler
     with _scheduler_lock:
         scheduler = _scheduler
         _scheduler = None
+        cleanup = _cleanup_scheduler
+        _cleanup_scheduler = None
+    if cleanup is not None:
+        cleanup.stop()
     if scheduler is not None:
         scheduler.stop()
         logger.info("进程内加密备份调度已停止")

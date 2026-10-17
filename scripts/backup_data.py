@@ -6,7 +6,7 @@ RLock，无法暂停另一个后端进程，因此运行本脚本前必须停止
 所有写入已经暂停，并显式传入--confirm-service-stopped。
 
 命令行入口不自动接入应用启动、pytest或CI；进程内调度器只复用本模块的
-create_backup()，并使用独立文件名前缀和轮转范围。
+create_backup()，并使用独立文件名前缀和按天过期范围。
 """
 
 import argparse
@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from layers.chroma_sync import CHROMA_LOCK, close_chroma_client
+from scripts import backup_retention
 
 
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -367,10 +368,6 @@ def decrypt_file(source: Path, destination: Path, key: bytes) -> None:
         raise
 
 
-def _archive_sort_key(path: Path) -> Tuple[int, str]:
-    return (path.stat().st_mtime_ns, path.name)
-
-
 def _validate_archive_prefix(archive_prefix: str) -> None:
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", archive_prefix) is None:
         raise BackupError("备份文件名前缀只能包含字母、数字、连字符和下划线")
@@ -382,32 +379,20 @@ def enforce_retention(
     protected_paths: Optional[Iterable[Path]] = None,
     archive_prefix: str = DEFAULT_ARCHIVE_PREFIX,
 ) -> List[Path]:
-    """只在指定文件名集合内保留最新N份；N小于1时仍至少保留1份。"""
+    """只清扫指定池的过期正式归档；retention保留签名兼容但不再生效。"""
     _validate_archive_prefix(archive_prefix)
-    keep_count = max(1, int(retention))
-    protected: Set[Path] = {
-        path.resolve() for path in (protected_paths or ())
-    }
-    archives = sorted(
-        backup_dir.glob(archive_prefix + "-*.ztbackup"),
-        key=_archive_sort_key,
-        reverse=True,
+    pool = next((pool for pool, prefix in backup_retention.POOL_PREFIXES.items()
+                 if prefix == archive_prefix), None)
+    # 自定义前缀没有登记策略，不擅自删除。
+    if pool is None:
+        return []
+    return backup_retention.prune_pool(
+        Path(backup_dir).glob(archive_prefix + "-*.ztbackup"), archive_prefix,
+        backup_retention.policies()[pool], protected_paths=protected_paths or (),
     )
-    retained: Set[Path] = {
-        path.resolve() for path in archives[:keep_count]
-    }.union(protected)
-    deleted: List[Path] = []
-    for archive in archives:
-        if archive.resolve() in retained:
-            continue
-        remaining_count = len(archives) - len(deleted)
-        if remaining_count <= 1:
-            break
-        archive.unlink()
-        deleted.append(archive)
-    return deleted
 
 
+@backup_retention.archive_operation
 def create_backup(
     data_dir: Path = DEFAULT_DATA_DIR,
     backup_dir: Path = DEFAULT_BACKUP_DIR,
@@ -513,8 +498,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--retention",
         type=int,
-        default=DEFAULT_RETENTION,
-        help="保留最近N份备份，默认3；小于1时仍保留1份",
+        default=None,
+        help="已废弃且不生效；仅为兼容旧命令保留，改用按天和保底配置",
     )
     parser.add_argument(
         "--confirm-service-stopped",
@@ -526,6 +511,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    if args.retention is not None:
+        print(backup_retention.RETENTION_DEPRECATED, file=sys.stderr)
     try:
         result = create_backup(
             data_dir=args.data_dir,

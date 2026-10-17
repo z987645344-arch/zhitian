@@ -95,7 +95,7 @@ def test_scheduler_creates_encrypted_archive_readable_by_restore(tmp_path, monke
     monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", _key())
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(backup_dir))
-    monkeypatch.setattr(config, "SCHEDULED_BACKUP_RETENTION", 3)
+    monkeypatch.setenv("BACKUP_SCHEDULED_MIN_COUNT", "3")
 
     with caplog.at_level(logging.INFO, logger="backup_scheduler"):
         assert backup_scheduler.run_backup_once_safely() is True
@@ -126,7 +126,7 @@ def test_scheduler_retention_does_not_delete_manual_backup(tmp_path, monkeypatch
     monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", _key())
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(backup_dir))
-    monkeypatch.setattr(config, "SCHEDULED_BACKUP_RETENTION", 3)
+    monkeypatch.setenv("BACKUP_SCHEDULED_MIN_COUNT", "3")
     assert backup_data.DEFAULT_RETENTION == 3
 
     manual = backup_data.create_backup(
@@ -139,7 +139,7 @@ def test_scheduler_retention_does_not_delete_manual_backup(tmp_path, monkeypatch
         assert backup_scheduler.run_backup_once_safely() is True
     scheduled = list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
     manual_archives = list(backup_dir.glob(backup_data.BACKUP_GLOB))
-    assert len(scheduled) == 3
+    assert len(scheduled) == 4
     assert manual_archives == [manual.archive_path]
     assert manual.archive_path.is_file()
 
@@ -418,7 +418,7 @@ def test_restarts_same_local_day_do_not_duplicate_and_next_day_runs(
     monkeypatch.setenv("BACKUP_ENCRYPTION_KEY", _key())
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(backup_dir))
-    monkeypatch.setattr(config, "SCHEDULED_BACKUP_RETENTION", 3)
+    monkeypatch.setenv("BACKUP_SCHEDULED_MIN_COUNT", "3")
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_ENABLED", True)
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_LOCAL_HOUR", 0)
     monkeypatch.setattr(config, "SCHEDULED_BACKUP_LOCAL_MINUTE", 0)

@@ -268,7 +268,7 @@ def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
     backup_environment,
 ):
     data_dir, backup_dir = backup_environment
-    base_time = datetime(2026, 8, 25, tzinfo=timezone.utc)
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=1)
     archive_families = (
         (backup_data.DEFAULT_ARCHIVE_PREFIX, backup_data.BACKUP_GLOB),
         (
@@ -284,7 +284,8 @@ def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
     assert restore_data.DEFAULT_PRE_RESTORE_RETENTION == 3
 
     def create_series(prefix: str, offset: int) -> None:
-        for index in range(4):
+        # 调度/恢复前池各已有一份哨兵；同一天每池最终均为4份。
+        for index in range(4 if prefix == backup_data.DEFAULT_ARCHIVE_PREFIX else 3):
             backup_data.create_backup(
                 data_dir=data_dir,
                 backup_dir=backup_dir,
@@ -312,7 +313,7 @@ def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
         archive_prefix=restore_data.PRE_RESTORE_ARCHIVE_PREFIX,
     )
     create_series(backup_data.DEFAULT_ARCHIVE_PREFIX, 0)
-    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 3
+    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 4
     assert len(
         list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
     ) == 1
@@ -328,7 +329,7 @@ def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
     create_series(backup_scheduler.SCHEDULED_ARCHIVE_PREFIX, 10)
     assert len(
         list(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
-    ) == 3
+    ) == 4
     assert set(backup_dir.glob(backup_data.BACKUP_GLOB)) == manual_before
     assert (
         set(backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB))
@@ -342,7 +343,7 @@ def test_manual_scheduled_and_pre_restore_retention_are_pairwise_isolated(
     create_series(restore_data.PRE_RESTORE_ARCHIVE_PREFIX, 20)
     assert len(
         list(backup_dir.glob(restore_data.PRE_RESTORE_BACKUP_GLOB))
-    ) == 3
+    ) == 4
     assert set(backup_dir.glob(backup_data.BACKUP_GLOB)) == manual_before
     assert (
         set(backup_dir.glob(backup_scheduler.SCHEDULED_BACKUP_GLOB))
@@ -378,7 +379,7 @@ def test_tampered_backup_is_rejected_without_changing_data(
     assert _summary(data_dir) == before
 
 
-def test_retention_and_service_stop_guard(backup_environment):
+def test_retention_and_service_stop_guard(backup_environment, monkeypatch, capsys):
     data_dir, backup_dir = backup_environment
     assert memory._chroma_lock is backup_data.CHROMA_LOCK
     with pytest.raises(backup_data.BackupError, match="停止后端"):
@@ -387,7 +388,7 @@ def test_retention_and_service_stop_guard(backup_environment):
             backup_dir=backup_dir,
         )
 
-    base_time = datetime(2026, 7, 31, tzinfo=timezone.utc)
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=1)
     for index in range(4):
         backup_data.create_backup(
             data_dir=data_dir,
@@ -396,7 +397,7 @@ def test_retention_and_service_stop_guard(backup_environment):
             confirm_service_stopped=True,
             backup_time=base_time + timedelta(seconds=index),
         )
-    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 2
+    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 4
     backup_data.create_backup(
         data_dir=data_dir,
         backup_dir=backup_dir,
@@ -404,7 +405,18 @@ def test_retention_and_service_stop_guard(backup_environment):
         confirm_service_stopped=True,
         backup_time=base_time + timedelta(seconds=10),
     )
-    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 1
+    assert len(list(backup_dir.glob(backup_data.BACKUP_GLOB))) == 5
+    # 两个旧CLI参数仍能执行，并且明确提示不生效；不改变停机保护。
+    import sys
+    monkeypatch.setattr(sys, "argv", ["backup_data.py", "--data-dir", str(data_dir),
+        "--backup-dir", str(backup_dir), "--retention", "0", "--confirm-service-stopped"])
+    assert backup_data.main() == 0
+    assert "已废弃且不生效" in capsys.readouterr().err
+    archive = max(backup_dir.glob(backup_data.BACKUP_GLOB), key=lambda item: item.name)
+    monkeypatch.setattr(sys, "argv", ["restore_data.py", str(archive), "--data-dir", str(data_dir),
+        "--backup-dir", str(backup_dir), "--retention", "2", "--confirm-service-stopped"])
+    assert restore_data.main() == 0
+    assert "已废弃且不生效" in capsys.readouterr().err
 
 
 def test_personal_provider_key_remains_ciphertext_inside_decrypted_backup(

@@ -141,6 +141,7 @@ def isolated_persistent_storage(tmp_path, monkeypatch):
 
     _reset_memory_globals()
     monkeypatch.setattr(config, "BASE_DIR", str(runtime_root))
+    monkeypatch.setattr(config, "SCHEDULED_BACKUP_PATH", str(runtime_root / "backups"))
     monkeypatch.setattr(config, "HISTORY_DB_PATH", str(data_root / "history.db"))
     monkeypatch.setattr(config, "VECTORDB_PATH", str(data_root / "vectordb"))
     monkeypatch.setattr(auth, "USERS_DB_PATH", str(data_root / "users.db"))

@@ -50,8 +50,8 @@
 
 - 备份：`python scripts/backup_data.py --confirm-service-stopped`
 - 恢复：`python scripts/restore_data.py <备份包路径> --confirm-service-stopped`
-- 两个命令都必须先停止后端服务或暂停所有写入。SQLite使用官方热备API，但项目Chroma锁只在单进程内有效，不能用它跨进程暂停仍在运行的服务。
+- 两个独立命令都必须先停止API并独占维护，不能只暂停业务写入而保留清扫线程。SQLite使用官方热备API，但项目Chroma及归档锁只在单进程内有效，不能用它们跨进程暂停仍在运行的服务。
 - 恢复命令会先用同一个`BACKUP_ENCRYPTION_KEY`自动备份当前数据，再验证目标包并切换数据。目标包认证或manifest校验失败时不进入恢复；恢复后检查出现差异时保留已恢复数据和安全备份，等待人工判断。
-- 默认备份目录为`backups/`，已由`.gitignore`和`.dockerignore`排除；默认保留最近3份，命令行可用`--retention`调整，但任何配置都至少保留1份。
-- Compose显式开启进程内加密备份：`SCHEDULED_BACKUP_PATH=/app/backups`、`SCHEDULED_BACKUP_LOCAL_TIME=00:00`、保留3份（用户决定与另一项目保持一致），落在独立具名卷；时刻由代码显式按UTC+8解释，不依赖容器TZ。空目录启动会立即产出第一份，此后同一UTC+8日内重启不重复、每日本地00:00触发下一份。直接运行main.py与测试环境默认关闭。调度层调用同一个`backup_data.create_backup()`，因此同样要求`BACKUP_ENCRYPTION_KEY`，产物可直接由`restore_data.py`读取。
+- 默认备份目录为`backups/`，已由`.gitignore`和`.dockerignore`排除；恢复深度3天，不做单项撤销。定时池3天、保底3份，手工/恢复前池3天、保底0份；超出保底且名称时间严格早于3天才删，不依赖mtime。旧`--retention`兼容但明确提示“已废弃且不生效”，旧`SCHEDULED_BACKUP_RETENTION`不再读取。可选天数/保底覆盖变量见备份恢复指南，生产`.env`无需新增。
+- Compose显式开启进程内加密备份：`SCHEDULED_BACKUP_PATH=/app/backups`、`SCHEDULED_BACKUP_LOCAL_TIME=00:00`，落在独立具名卷；时刻由代码显式按UTC+8解释，不依赖容器TZ。空目录启动会立即产出第一份，此后同一UTC+8日内重启不重复、每日本地00:00触发下一份。直接运行main.py与测试环境默认关闭备份，但独立的每日00:30全池清扫照常启动。调度层调用同一个`backup_data.create_backup()`，因此备份同样要求`BACKUP_ENCRYPTION_KEY`，清扫不需要密钥。关注日志`归档每日清扫：ok，删除 N 份`及`archive-cleanup-state.json`；异常临时目录仅统计、不自动删除，人工处理流程见备份恢复指南。
 - 当前尚未提供自动异地复制或服务器真实破坏恢复演练；这些仍属于Phase B服务器工作。
