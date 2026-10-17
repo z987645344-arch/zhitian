@@ -114,23 +114,23 @@ vulnerabilities:
   - id: CVE-2026-66046
     images: [converter]
     purls:
-      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-13
-    expired_at: 2026-11-12
+      - "pkg:deb/debian/libexpat1@2.9.0-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-17
+    expired_at: 2026-11-16
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 storeAtts 多属性处理；尚未证明上传格式会走到 Expat SAX 的该分支。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
-    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-66046 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
+    evidence: "既有加载链复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（此前转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 storeAtts 多属性处理；尚未证明上传格式会走到 Expat SAX 的该分支。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-17 再核 CI run 39052237287：本条仅转换镜像出现。专用临时容器仅升级 libexpat1 至 2.9.0-1~deb13u1；dpkg-query 确认该包、LibreOffice core 4:25.2.3-2+deb13u8、fontconfig 2.15.0-2.3 与本次报告一致，ldd 确认 libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 仍加载系统 libexpat.so.1，加载方未变；未声称临时容器与 CI 镜像逐字节一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入经代码及部署配置复核仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-17 复核 CI run 39052237287（提交 5c0e0ea）：Debian 13.7 trixie，转换镜像 libexpat1 2.9.0-1~deb13u1，本 CVE 仍为 HIGH、affected、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 6339cb8d3800c685b9caf2a01e2cef8142323217201956d3d5bd5835eb720206；原始 trivy-image.json SHA-256 1fa8f6b6d261ff02638ace5fa4157c0155fe2f327e407259c75fbeab2fccf3b6。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-66046 ：trixie 主仓库 2.8.3-1~deb13u1 仍为 vulnerable，但 trixie-security 2.9.0-1~deb13u1 已修复（fixed，DSA-6566-1）；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。本次镜像已安装 Debian 修复包，Trivy 仍判 affected，属于数据库滞后；按精确版本暂时保留例外，数据库跟上、条目消失时必须删除，不跳过扫描或放宽门禁。两个 Dockerfile 的 apt-get update 与 apt-get upgrade 保留，不混用其他发行版包；只升级 Python 不能消除该系统包扫描条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-16 到期（自 2026-10-17 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-77214
     images: [converter]
     purls:
-      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-13
-    expired_at: 2026-11-12
+      - "pkg:deb/debian/libexpat1@2.9.0-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-17
+    expired_at: 2026-11-16
     reachability: "未能判定"
-    evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
-    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-77214 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
+    evidence: "CI run 37875857134 原始双镜像报告经 SHA-256 核对：转换镜像含系统 libexpat1，API 完整包清单不含该 Debian 包。本机同包镜像 dpkg-query/ldd 复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 链接系统 libexpat.so.1。上传 Office 的可控 XML/资源可能进入 LibreOffice 解析链，但本 CVE 还要求 XML_ParseBuffer 在已有缓冲区上接受超过容量的调用方长度；已查 SAX 源码使用 XML_Parse，尚未穷尽其他加载方，也未证明上传可触发该错误长度路径，不能证明不可达。独立转换容器无业务卷或模型密钥，非 root、只读根目录、受限 tmpfs、seccomp 禁网及资源准入仅为补偿措施。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-17 再核 CI run 39052237287：本条仅转换镜像出现。专用临时容器仅升级 libexpat1 至 2.9.0-1~deb13u1；dpkg-query 确认该包、LibreOffice core 4:25.2.3-2+deb13u8、fontconfig 2.15.0-2.3 与本次报告一致，ldd 确认 libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 仍加载系统 libexpat.so.1，加载方未变；未声称临时容器与 CI 镜像逐字节一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入经代码及部署配置复核仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-17 复核 CI run 39052237287（提交 5c0e0ea）：Debian 13.7 trixie，转换镜像 libexpat1 2.9.0-1~deb13u1，本 CVE 仍为 HIGH、affected、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 6339cb8d3800c685b9caf2a01e2cef8142323217201956d3d5bd5835eb720206；原始 trivy-image.json SHA-256 1fa8f6b6d261ff02638ace5fa4157c0155fe2f327e407259c75fbeab2fccf3b6。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-77214 ：trixie 主仓库 2.8.3-1~deb13u1 仍为 vulnerable，但 trixie-security 2.9.0-1~deb13u1 已修复（fixed，DSA-6566-1）；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。本次镜像已安装 Debian 修复包，Trivy 仍判 affected，属于数据库滞后；按精确版本暂时保留例外，数据库跟上、条目消失时必须删除，不跳过扫描或放宽门禁。两个 Dockerfile 的 apt-get update 与 apt-get upgrade 保留，不混用其他发行版包；只升级 Python 不能消除该系统包扫描条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-16 到期（自 2026-10-17 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-6653
     images: [converter]
     purls:
@@ -171,23 +171,23 @@ vulnerabilities:
   - id: CVE-2026-76956
     images: [converter]
     purls:
-      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-13
-    expired_at: 2026-11-12
+      - "pkg:deb/debian/libexpat1@2.9.0-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-17
+    expired_at: 2026-11-16
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 getentropy 失败时的随机化/哈希抗碰撞；尚未证明可控上传 XML 到达该解析器，禁网也不能证明哈希耗尽不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
-    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76956 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
+    evidence: "既有加载链复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（此前转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及 getentropy 失败时的随机化/哈希抗碰撞；尚未证明可控上传 XML 到达该解析器，禁网也不能证明哈希耗尽不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-17 再核 CI run 39052237287：本条仅转换镜像出现。专用临时容器仅升级 libexpat1 至 2.9.0-1~deb13u1；dpkg-query 确认该包、LibreOffice core 4:25.2.3-2+deb13u8、fontconfig 2.15.0-2.3 与本次报告一致，ldd 确认 libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 仍加载系统 libexpat.so.1，加载方未变；未声称临时容器与 CI 镜像逐字节一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入经代码及部署配置复核仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-17 复核 CI run 39052237287（提交 5c0e0ea）：Debian 13.7 trixie，转换镜像 libexpat1 2.9.0-1~deb13u1，本 CVE 仍为 HIGH、affected、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 6339cb8d3800c685b9caf2a01e2cef8142323217201956d3d5bd5835eb720206；原始 trivy-image.json SHA-256 1fa8f6b6d261ff02638ace5fa4157c0155fe2f327e407259c75fbeab2fccf3b6。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76956 ：trixie 主仓库 2.8.3-1~deb13u1 仍为 vulnerable，但 trixie-security 2.9.0-1~deb13u1 已修复（fixed，DSA-6566-1）；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。本次镜像已安装 Debian 修复包，Trivy 仍判 affected，属于数据库滞后；按精确版本暂时保留例外，数据库跟上、条目消失时必须删除，不跳过扫描或放宽门禁。两个 Dockerfile 的 apt-get update 与 apt-get upgrade 保留，不混用其他发行版包；只升级 Python 不能消除该系统包扫描条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-16 到期（自 2026-10-17 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-76957
     images: [converter]
     purls:
-      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-13
-    expired_at: 2026-11-12
+      - "pkg:deb/debian/libexpat1@2.9.0-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-17
+    expired_at: 2026-11-16
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞需要自定义编码回调；LibreOffice SAX 回调返回 0，但尚未穷尽其他加载方及其编码回调，不能据此判为不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
-    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76957 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
+    evidence: "既有加载链复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（此前转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞需要自定义编码回调；LibreOffice SAX 回调返回 0，但尚未穷尽其他加载方及其编码回调，不能据此判为不可达。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-17 再核 CI run 39052237287：本条仅转换镜像出现。专用临时容器仅升级 libexpat1 至 2.9.0-1~deb13u1；dpkg-query 确认该包、LibreOffice core 4:25.2.3-2+deb13u8、fontconfig 2.15.0-2.3 与本次报告一致，ldd 确认 libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 仍加载系统 libexpat.so.1，加载方未变；未声称临时容器与 CI 镜像逐字节一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入经代码及部署配置复核仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-17 复核 CI run 39052237287（提交 5c0e0ea）：Debian 13.7 trixie，转换镜像 libexpat1 2.9.0-1~deb13u1，本 CVE 仍为 HIGH、affected、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 6339cb8d3800c685b9caf2a01e2cef8142323217201956d3d5bd5835eb720206；原始 trivy-image.json SHA-256 1fa8f6b6d261ff02638ace5fa4157c0155fe2f327e407259c75fbeab2fccf3b6。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-76957 ：trixie 主仓库 2.8.3-1~deb13u1 仍为 vulnerable，但 trixie-security 2.9.0-1~deb13u1 已修复（fixed，DSA-6566-1）；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。本次镜像已安装 Debian 修复包，Trivy 仍判 affected，属于数据库滞后；按精确版本暂时保留例外，数据库跟上、条目消失时必须删除，不跳过扫描或放宽门禁。两个 Dockerfile 的 apt-get update 与 apt-get upgrade 保留，不混用其他发行版包；只升级 Python 不能消除该系统包扫描条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-16 到期（自 2026-10-17 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-78408
     images: [api, converter]
     purls:
@@ -332,13 +332,13 @@ vulnerabilities:
   - id: CVE-2026-93990
     images: [converter]
     purls:
-      - "pkg:deb/debian/libexpat1@2.8.3-1~deb13u1?arch=amd64&distro=debian-13.7"
-    reviewed_at: 2026-10-13
-    expired_at: 2026-11-12
+      - "pkg:deb/debian/libexpat1@2.9.0-1~deb13u1?arch=amd64&distro=debian-13.7"
+    reviewed_at: 2026-10-17
+    expired_at: 2026-11-16
     reachability: "未能判定"
-    evidence: "本机同包复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（本次同版本转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及畸形 UTF-16 高代理项；LibreOffice Expat SAX 在 XML_Parse 前做 UTF-8 转换，但尚未穷尽其他解析入口。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-13 再核 CI run 38353419054：本条仅转换镜像出现，指定包版本未变；本机同包镜像 fd1e9eb7245f 的 dpkg-query/ldd 复核加载方与已有证据一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
-    why_not_fixed: "2026-10-13 复核 CI run 38353419054（提交 d0783f0）：Debian 13.7 trixie，转换镜像 libexpat1 2.8.3-1~deb13u1，本 CVE 仍在、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 68a9941a88777f2a1a3ec72821c4960d5d02bf7e652dc0acbf74e95a25bda1fe；原始 trivy-image.json SHA-256 fb3bfbb834fe3889c02cbdfbed472981eac459a73f34594132b8e6d3d3c59e38。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-93990 ：trixie/trixie-security 2.8.3-1~deb13u1 仍为 vulnerable；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。trixie 尚未提供修复包。两个 Dockerfile 均保留 apt-get update 与 apt-get upgrade，但当前无 trixie 修复可装，重建不会自动消除本条；不混用其他发行版包，只升级 Python 不能消除该系统包条目。"
-    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-12 到期（自 2026-10-13 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
+    evidence: "既有加载链复核：libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 加载系统 libexpat.so.1；pyexpat 则静态集成 expat_2.8.5（此前转换镜像pyexpat.EXPAT_VERSION及ldd复核），不加载系统 libexpat1。漏洞涉及畸形 UTF-16 高代理项；LibreOffice Expat SAX 在 XML_Parse 前做 UTF-8 转换，但尚未穷尽其他解析入口。 用户上传可控，仍未能判定。源码：https://github.com/LibreOffice/core/blob/libreoffice-25.2.3.2/sax/source/expatwrap/sax_expat.cxx 。 2026-10-17 再核 CI run 39052237287：本条仅转换镜像出现。专用临时容器仅升级 libexpat1 至 2.9.0-1~deb13u1；dpkg-query 确认该包、LibreOffice core 4:25.2.3-2+deb13u8、fontconfig 2.15.0-2.3 与本次报告一致，ldd 确认 libmergedlo.so、libucpchelp1.so、libfontconfig.so.1 仍加载系统 libexpat.so.1，加载方未变；未声称临时容器与 CI 镜像逐字节一致。现行独立转换服务、internal:true 网络、soffice seccomp 禁网及 close_fds=True、非 root、只读根目录与资源准入经代码及部署配置复核仍保留；这些是补偿措施，不足以改变未能判定结论。本次未重复先前的外链/外连实验。"
+    why_not_fixed: "2026-10-17 复核 CI run 39052237287（提交 5c0e0ea）：Debian 13.7 trixie，转换镜像 libexpat1 2.9.0-1~deb13u1，本 CVE 仍为 HIGH、affected、FixedVersion 为空，API 报告没有该条目。原始 converter-trivy-image.json SHA-256 6339cb8d3800c685b9caf2a01e2cef8142323217201956d3d5bd5835eb720206；原始 trivy-image.json SHA-256 1fa8f6b6d261ff02638ace5fa4157c0155fe2f327e407259c75fbeab2fccf3b6。Debian 安全追踪器 https://security-tracker.debian.org/tracker/CVE-2026-93990 ：trixie 主仓库 2.8.3-1~deb13u1 仍为 vulnerable，但 trixie-security 2.9.0-1~deb13u1 已修复（fixed，DSA-6566-1）；forky 2.9.0-1 已修复，sid 2.9.0-1 已修复。本次镜像已安装 Debian 修复包，Trivy 仍判 affected，属于数据库滞后；按精确版本暂时保留例外，数据库跟上、条目消失时必须删除，不跳过扫描或放宽门禁。两个 Dockerfile 的 apt-get update 与 apt-get upgrade 保留，不混用其他发行版包；只升级 Python 不能消除该系统包扫描条目。"
+    statement: "未能判定；仅转换镜像的上述精确包版本有效，2026-11-16 到期（自 2026-10-17 复核起 30 天）；到期、有修复或条目失效仍由原门禁阻止部署，不放宽严重级别、扫描或作用域。"
   - id: CVE-2026-9538
     images: [api, converter]
     purls:
