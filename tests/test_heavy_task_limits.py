@@ -96,7 +96,7 @@ def test_total_slots_and_user_cap_are_consistent():
 
 # ---------- 闸门一：全局并发槽位 ----------
 
-def test_upload_rejected_when_all_slots_busy(client, auth_headers):
+def test_upload_queued_when_all_slots_busy(client, auth_headers):
     headers, user = auth_headers("employee")
     org = grant_work_organization(user["user_id"])
 
@@ -115,13 +115,20 @@ def test_upload_rejected_when_all_slots_busy(client, auth_headers):
     for _ in range(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS):
         heavy_task_limits.acquire_slot(employee_emergency=True)
 
-    busy = _upload(client, headers, org, "slot_busy.docx")
-    print(
-        "[槽位] %d个槽位全部占满后 -> HTTP %d %s"
-        % (config.MAX_CONCURRENT_HEAVY_TASKS, busy.status_code, busy.json())
-    )
-    assert busy.status_code == 429
-    assert busy.json()["code"] == "heavy_task_busy"
+    from uuid import UUID
+    from layers import upload_reception_queue
+    try:
+        busy = _upload(client, headers, org, "slot_busy.docx")
+        assert busy.status_code == 200, busy.text
+        assert busy.json()["status"] == "accepted"
+        task_id = busy.json()["task_id"]
+        assert str(UUID(task_id)) == task_id
+        state = client.get("/tasks/" + task_id, headers=headers)
+        assert state.status_code == 200
+        assert state.json()["status"] == "pending"
+        assert state.json()["queue_ahead"] == 0
+    finally:
+        upload_reception_queue.stop()
 
 
 def test_slot_is_released_after_success(client, auth_headers):

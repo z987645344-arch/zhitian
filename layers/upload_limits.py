@@ -61,6 +61,9 @@ class UploadAdmissionMiddleware:
             release()
             return await JSONResponse(status_code=rejection[0], content={"detail": rejection[1]})(scope, receive, send)
 
+        # 满位后台路径复用本次请求实际使用的大文件闸门；不复制或新建额度。
+        scope["zhitian.large_upload_gate"] = self.slots
+
         received = 0
         async def bounded_receive():
             nonlocal received, rejection

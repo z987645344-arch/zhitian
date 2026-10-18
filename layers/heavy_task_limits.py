@@ -7,9 +7,9 @@
 1. 全局槽位（模块级信号量，进程内唯一）——限制同时在跑的重任务总数；
 2. 单账号在途上限——防止一个账号占满全部槽位。
 
-两道闸门都是**满了直接拒绝**，不排队。转换体持有转换锁，排队者会在等待中
-烧完自己的响应预算（Agent路径61秒），最终把一个用户的洪水转嫁成所有人的
-超时；而拒绝是立刻可重试的，且把选择权交还给调用方。
+闸门本身仍然满了直接拒绝，客户不排队。员工知识库入口在满位后可把原件交给
+有界接收队列并立即返回任务号；等待不再挂着HTTP请求。已排队员工优先拿位，
+其他入口仍只使用当场可用的共享位，不能借员工紧急位。
 """
 
 import threading
@@ -25,10 +25,11 @@ from layers import resource_admission, task_store
 class HeavyTaskRejected(Exception):
     """闸门拒绝，由调用方翻译成HTTP 429。"""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, queueable=False) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.queueable = queueable
 
 
 # 模块级单例：进程内只有这一个信号量对象，import多少次都是同一个。
@@ -36,7 +37,9 @@ class HeavyTaskRejected(Exception):
 # ThreadPoolExecutor(max_workers=1)只保证单次调用内单线程，不构成全局上限，
 # 本模块要补的正是那个缺口。
 _conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS)
-_slot_state_lock = threading.Lock()
+_slot_state_lock = threading.RLock()
+_slot_condition = threading.Condition(_slot_state_lock)
+_upload_waiters = []
 _slots_in_use = 0
 _slot_reservations = []
 _emergency_slots = threading.BoundedSemaphore(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS)
@@ -55,12 +58,21 @@ def total_slots() -> int:
     return config.FILE_PROCESSING_SHARED_SLOTS + config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS
 
 
-def acquire_slot(*, employee_emergency=False):
+def acquire_slot(*, employee_emergency=False, _ticket=None):
     """占用一个全局槽位；占不到立刻抛HeavyTaskRejected，不阻塞、不排队。
 
     调用方必须在`finally`里配对调用`release_slot()`。已有大段try/finally的
     端点直接用这一对，避免为加一层`with`而重排整块缩进。
     """
+    with _slot_condition:
+        if _upload_waiters and _upload_waiters[0] != _ticket:
+            raise HeavyTaskRejected("heavy_task_busy",
+                "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
+                queueable=True)
+        return _acquire_slot_locked(employee_emergency=employee_emergency)
+
+
+def _acquire_slot_locked(*, employee_emergency):
     global _slots_in_use
     pool = _conversion_slots
     if not pool.acquire(blocking=False):
@@ -69,6 +81,7 @@ def acquire_slot(*, employee_emergency=False):
             raise HeavyTaskRejected(
                 "heavy_task_busy",
                 "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
+                queueable=True,
             )
     amount = config.HEAVY_TASK_MEMORY_RESERVE_MIB
     committed = False
@@ -92,7 +105,7 @@ def acquire_slot(*, employee_emergency=False):
 
 def release_slot(lease=None) -> None:
     global _slots_in_use
-    with _slot_state_lock:
+    with _slot_condition:
         if _slots_in_use <= 0:
             return
         if lease is None:
@@ -102,8 +115,57 @@ def release_slot(lease=None) -> None:
         _slot_reservations.remove(lease)
         _slots_in_use -= 1
         _, pool, amount = lease
-    resource_admission.release(amount)
-    pool.release()
+        resource_admission.release(amount)
+        pool.release()
+        _slot_condition.notify_all()
+
+
+def register_upload_waiter(task_id):
+    with _slot_condition:
+        _upload_waiters.append(task_id)
+        _slot_condition.notify_all()
+
+
+def remove_upload_waiter(task_id):
+    with _slot_condition:
+        if task_id in _upload_waiters:
+            _upload_waiters.remove(task_id)
+        _slot_condition.notify_all()
+
+
+def upload_queue_ahead(task_id):
+    with _slot_state_lock:
+        return _upload_waiters.index(task_id) if task_id in _upload_waiters else None
+
+
+def wait_upload_slot(task_id, deadline, cancellation, large_gate=None):
+    """FIFO的队头在同一临界区拿位；新客户不能抢走已释放的位。"""
+    from layers.file_processing.runner import FileTaskCancelled
+    with _slot_condition:
+        try:
+            while True:
+                if cancellation.is_set():
+                    raise FileTaskCancelled("upload_interrupted")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HeavyTaskRejected("upload_queue_timeout", "排队超时，请稍后重试")
+                if _upload_waiters and _upload_waiters[0] == task_id:
+                    large_acquired = large_gate is not None and large_gate.acquire(blocking=False)
+                    if large_gate is None or large_acquired:
+                        try:
+                            return acquire_slot(employee_emergency=True, _ticket=task_id)
+                        except HeavyTaskRejected as exc:
+                            if large_acquired:
+                                large_gate.release()
+                            if not exc.queueable:
+                                raise
+                        except BaseException:
+                            if large_acquired:
+                                large_gate.release()
+                            raise
+                _slot_condition.wait(min(remaining, .05))
+        finally:
+            remove_upload_waiter(task_id)
 
 
 @contextmanager
@@ -206,7 +268,7 @@ def release_reserved_ingest_slot() -> None:
             _ingest_depth -= 1
 
 
-def acquire_ingest_slot(task_id=None) -> None:
+def acquire_ingest_slot(task_id=None, cancellation=None) -> None:
     """后台worker取用槽位：**阻塞**等待，直到有空位。
 
     调用方必须已经通过`reserve_ingest_slot()`占过队列位，并保证在最外层
@@ -219,6 +281,9 @@ def acquire_ingest_slot(task_id=None) -> None:
         _ingest_waiters.append(ticket)
         try:
             while True:
+                if cancellation is not None and cancellation.is_set():
+                    from layers.file_processing.runner import FileTaskCancelled
+                    raise FileTaskCancelled("upload_interrupted")
                 if _ingest_waiters[0] == ticket and _ingest_slots.acquire(blocking=False):
                     break
                 remaining = slot_deadline - time.monotonic()
@@ -235,6 +300,9 @@ def acquire_ingest_slot(task_id=None) -> None:
     reserved = False
     try:
         while True:
+            if cancellation is not None and cancellation.is_set():
+                from layers.file_processing.runner import FileTaskCancelled
+                raise FileTaskCancelled("upload_interrupted")
             reserved = resource_admission.try_reserve(amount)
             if reserved:
                 with _ingest_state_lock:

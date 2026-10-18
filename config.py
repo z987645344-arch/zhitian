@@ -258,9 +258,8 @@ CONVERSION_SERVICE_KEY = os.getenv("CONVERSION_SERVICE_KEY", "")
 # 这两个端点会串行占用LibreOffice转换锁、解析PDF、跑嵌入模型并写Chroma，
 # 单次转换最长CONVERSION_TIMEOUT_SECONDS秒、Agent路径最长61秒。
 #
-# 全局槽位刻意设计成「满了直接拒绝」而不是排队：转换体持锁，排队者会在
-# 等待中烧完自己的响应预算，最终一个用户的洪水会变成所有人的超时。
-# 拒绝是立刻可重试的，排队不是。
+# 客户全局槽位满了直接拒绝；员工满位时原件进入有界接收队列，立即返回任务号，
+# 不把队列等待计入HTTP响应或转换预算。拿位后沿用原转换/解析预算。
 FILE_PROCESSING_SHARED_SLOTS = max(1, int(os.getenv("FILE_PROCESSING_SHARED_SLOTS", "6")))
 FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS = max(0, int(os.getenv("FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS", "1")))
 # Legacy name denotes the shared pool only; customer code cannot borrow emergency slots.
@@ -277,6 +276,11 @@ MEMORY_ADMISSION_SAFETY_MARGIN_MIB = max(
 # accepted后的入库只有限时等待内存恢复；超时明确标failed，不长期挂pending。
 INGEST_MEMORY_WAIT_SECONDS = max(0.0, float(os.getenv("INGEST_MEMORY_WAIT_SECONDS", "30")))
 INGEST_SLOT_WAIT_SECONDS = max(0.0, float(os.getenv("INGEST_SLOT_WAIT_SECONDS", "300")))
+# 满位时才异步接收；原件配额包含已出队但尚未解析完的原件。
+# 512MiB tmpfs中最多预留128MiB排队原件，给接收副本、转换和运行器留余量。
+UPLOAD_RECEPTION_QUEUE_LIMIT = max(0, int(os.getenv("UPLOAD_RECEPTION_QUEUE_LIMIT", "6")))
+UPLOAD_RECEPTION_QUEUE_MAX_BYTES = max(0, int(os.getenv("UPLOAD_RECEPTION_QUEUE_MAX_BYTES", str(128 * 1024 * 1024))))
+UPLOAD_RECEPTION_QUEUE_WAIT_SECONDS = max(0.0, float(os.getenv("UPLOAD_RECEPTION_QUEUE_WAIT_SECONDS", "300")))
 # 单账号在途（pending/processing）任务上限。必须严格小于全局槽位，
 # 否则一个账号占满后其他人将完全无法提交——这正是本限制存在的理由。
 MAX_USER_INFLIGHT_HEAVY_TASKS = max(

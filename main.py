@@ -41,6 +41,7 @@ from layers.file_processing.input_guard import (
     reject_encrypted, EncryptedFileError, ENCRYPTED_FILE_MESSAGE,
 )
 from layers import temporary_files, chat_originals, file_traces, attachment_reread
+from layers import upload_reception_queue
 from layers.upload_limits import UploadAdmissionMiddleware
 from layers.file_processing.runner import task_scope, cleanup_stale_tasks, FileTaskCancelled, FileTaskTimeout, TaskWorkspace, cleanup_artifact
 from layers import source_policy, session_records
@@ -186,6 +187,7 @@ def _run_ingest_task(
     organization_id: Optional[int],
     uploaded_by: str,
     chunk_section_paths: Optional[List[str]] = None,
+    cancellation=None,
 ) -> None:
     """后台执行向量化与登记。**在工作线程内同步跑**，由BackgroundTasks调度。
 
@@ -203,6 +205,8 @@ def _run_ingest_task(
     total_chunks = len(write_chunks)
 
     def _record_written_batch(processed: int, total: int) -> None:
+        if cancellation is not None and cancellation.is_set():
+            raise FileTaskCancelled("upload_interrupted")
         task_store.update_task(
             task_id, processed_chunks=processed, progress=processed * 100 // total,
             file_progress=FileTaskProgress(stage="ingesting", processed=processed, total=total, unit="chunks")
@@ -211,14 +215,19 @@ def _run_ingest_task(
     # 阻塞等待槽位。此前状态一直是create_task写入的pending，不做任何改动。
     try:
         task_store.update_task(task_id, file_progress=FileTaskProgress(stage="queued", total=total_chunks, unit="chunks"))
-        heavy_task_limits.acquire_ingest_slot(task_id)
-    except heavy_task_limits.HeavyTaskRejected as exc:
+        if cancellation is None:
+            heavy_task_limits.acquire_ingest_slot(task_id)
+        else:
+            heavy_task_limits.acquire_ingest_slot(task_id, cancellation=cancellation)
+    except (heavy_task_limits.HeavyTaskRejected, FileTaskCancelled) as exc:
         try:
-            task_store.update_task(task_id, status="failed", error_message=exc.message,
+            interrupted = isinstance(exc, FileTaskCancelled)
+            task_store.update_task(task_id, status="interrupted" if interrupted else "failed",
+                                   error_message="服务重启导致任务中断，请重新提交" if interrupted else exc.message,
                                    file_progress=FileTaskProgress(stage="failed", total=total_chunks, unit="chunks"))
         finally:
             heavy_task_limits.release_reserved_ingest_slot()
-        logger.warning("入库内存准入超时：task_id=%s code=%s", task_id[:8], exc.code)
+        logger.warning("入库未开始：task_id=%s code=%s", task_id[:8], getattr(exc, "code", "interrupted"))
         return
     try:
         task_store.update_task(
@@ -240,6 +249,8 @@ def _run_ingest_task(
                 )
                 if count != total_chunks:
                     raise RuntimeError("入库切片数与预期不一致")
+                if cancellation is not None and cancellation.is_set():
+                    raise FileTaskCancelled("upload_interrupted")
                 task_store.update_task(task_id, processed_chunks=count, progress=count * 100 // total_chunks,
                     file_progress=FileTaskProgress(stage="validating",
                     processed=count, total=total_chunks, unit="chunks"))
@@ -277,6 +288,10 @@ def _run_ingest_task(
             result_doc_id="",
             file_progress=FileTaskProgress(stage="failed", total=total_chunks, unit="chunks"),
         )
+    except FileTaskCancelled:
+        _purge_partial_document(doc_id)
+        task_store.update_task(task_id, status="interrupted", result_doc_id="",
+                               error_message="服务重启导致任务中断，半成品数据已清理，请重新提交")
     finally:
         # 必须在最外层：覆盖成功return、两次重试、以及任何未预期异常。
         # 进程内泄漏一个槽位要重启才能恢复，_recover_interrupted_tasks只管
@@ -346,6 +361,7 @@ async def lifespan(app: FastAPI):
         temporary_files.stop_cleanup()
         with _request_gate_lock:
             _accepting_requests = False
+        await asyncio.to_thread(upload_reception_queue.stop)
         deadline = time.monotonic() + max(0.0, config.SHUTDOWN_GRACE_PERIOD_SECONDS)
         while _active_request_count() and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
@@ -1992,9 +2008,10 @@ def _get_owned_user_file(
     return record, file_path
 
 
-async def _run_file_thread(function, *args, deadline=None, progress_callback=None, http_request=None):
+async def _run_file_thread(function, *args, deadline=None, progress_callback=None, http_request=None,
+                           cancellation=None):
     """取消后等待文件运行器真正回收进程，而不是丢下仍占资源的线程。"""
-    cancellation = threading.Event()
+    cancellation = cancellation or threading.Event()
     def run():
         seconds = None if deadline is None else max(0, deadline - time.monotonic())
         with task_scope(seconds, cancellation=cancellation, progress=progress_callback) as scope:
@@ -2839,6 +2856,107 @@ async def split_pdf_tool_file(
         workspace.cleanup()
 
 
+class _UploadProgress(list):
+    def __init__(self, task=None):
+        super().__init__()
+        self.task = task
+
+    def append(self, event):
+        super().append(event)
+        if self.task is not None and event.stage != "completed":
+            task_store.update_task(self.task.task_id, file_progress=event)
+
+
+async def _enqueue_reception(request, *, size, suffix, metadata, file=None, content=None):
+    def save_source(path):
+        with open(path, "wb") as target:
+            if file is not None:
+                file.file.seek(0)
+                shutil.copyfileobj(file.file, target, 1024 * 1024)
+            else:
+                target.write(content.encode("utf-8"))
+
+    try:
+        # 与退出闸门原子交接，防止关闭取消队列后仍加入新任务。
+        with _request_gate_lock:
+            if not _accepting_requests:
+                raise HTTPException(status_code=503, detail="服务正在关闭，请稍后重试")
+            large_gate = (request.scope.get("zhitian.large_upload_gate")
+                if file is not None and size > config.LARGE_UPLOAD_THRESHOLD_MB * 1024 * 1024 else None)
+            task = upload_reception_queue.submit(size=size, suffix=suffix, metadata=metadata,
+                save_source=save_source, process=_run_queued_upload, fail=_fail_queued_upload,
+                large_gate=large_gate)
+        return {"status": "accepted", "task_id": task.task_id, "doc_id": metadata["doc_id"],
+                "source": metadata["source"], "chunks": 0, "trust_level": "pending",
+                "queue_ahead": heavy_task_limits.upload_queue_ahead(task.task_id),
+                "file_progress": [FileTaskProgress(stage="queued", total=None, unit="files").model_dump(mode="json")]}
+    except OSError:
+        raise HTTPException(status_code=503, detail="上传暂存空间不足或不可用，请稍后重试") from None
+    finally:
+        if file is not None:
+            await file.close()
+
+
+def _fail_queued_upload(job, exc):
+    interrupted = isinstance(exc, FileTaskCancelled)
+    if interrupted:
+        detail = "服务重启导致任务中断，原件已清理，请重新提交"
+    elif isinstance(exc, HTTPException):
+        detail = exc.detail
+    elif isinstance(exc, heavy_task_limits.HeavyTaskRejected):
+        detail = exc.message
+    else:
+        detail = "文档处理失败，请稍后重试"
+    task_store.update_task(job.task.task_id, status="interrupted" if interrupted else "failed",
+        error_message=detail, result_doc_id="",
+        file_progress=FileTaskProgress(stage="failed", total=None, unit="files"))
+    logger.warning("上传排队结束：task_id=%s result=%s error_type=%s",
+                   job.task.task_id[:8], "interrupted" if interrupted else "failed", type(exc).__name__)
+
+
+def _run_queued_upload(job, processing_lease):
+    async def run():
+        info = job.metadata
+        background = BackgroundTasks()
+        ingest_started = False
+        try:
+            task_store.update_task(job.task.task_id, status="processing",
+                file_progress=FileTaskProgress(stage="preparing", total=None, unit="files"))
+            if info["kind"] == "upload":
+                with open(job.source_path, "rb") as raw:
+                    file = UploadFile(raw, filename=info["source"], size=job.size)
+                    result = await _prepare_document_upload(None, background, file,
+                        info["organization_id"], {"user_id": info["user_id"]}, info["doc_id"],
+                        info["source"], os.path.splitext(info["source"])[1].lower(), info["file_hash"],
+                        job.size, processing_lease, existing_task=job.task, queued_source=job.source_path,
+                        cancellation=job.cancelled)
+            else:
+                with open(job.source_path, encoding="utf-8") as raw:
+                    content = raw.read()
+                result = await _prepare_knowledge(background, content, info["title"], info["source"],
+                    info["file_hash"], info["organization_id"], info["user_id"], processing_lease,
+                    existing_task=job.task, cancellation=job.cancelled, doc_id=info["doc_id"])
+            upload_reception_queue.release_source(job)
+            if result.get("status") == "error":
+                raise HTTPException(status_code=400, detail=result["detail"])
+            # 即使此时取消，也交给原入库函数检查取消并归还已预留的入库队列位。
+            ingest_started = True
+            await background()
+        finally:
+            if background.tasks and not ingest_started:
+                heavy_task_limits.release_reserved_ingest_slot()
+    asyncio.run(run())
+
+
+def _upload_queue_ahead(task):
+    ahead = heavy_task_limits.upload_queue_ahead(task.task_id)
+    if ahead is None:
+        ahead = heavy_task_limits.ingest_queue_ahead(task.task_id)
+    if ahead is None and task.status == "pending" and task.file_progress and task.file_progress.stage == "queued":
+        return 0  # 刚交给入库闸门、还未加入其等待表的短暂交接期。
+    return ahead
+
+
 @app.post("/documents/upload")
 @limiter.limit(_heavy_task_rate_limit)
 async def upload_document(
@@ -2894,7 +3012,25 @@ async def upload_document(
             },
         )
 
-    doc_id = str(uuid.uuid4())
+    try:
+        processing_lease = heavy_task_limits.acquire_slot(employee_emergency=True)
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        if not exc.queueable:
+            raise
+        _validate_upload_content(file, suffix)
+        if len(payload) > max_upload_bytes:
+            raise HTTPException(status_code=413, detail=f"文件大小不能超过{config.MAX_UPLOAD_SIZE_MB}MB")
+        return await _enqueue_reception(request, file=file, size=len(payload), suffix=suffix,
+            metadata={"kind": "upload", "file_hash": file_hash, "source": filename,
+                      "organization_id": organization_id, "user_id": current_user["user_id"],
+                      "doc_id": str(uuid.uuid4())})
+    return await _prepare_document_upload(request, background_tasks, file, organization_id,
+        current_user, str(uuid.uuid4()), filename, suffix, file_hash, len(payload), processing_lease)
+
+
+async def _prepare_document_upload(request, background_tasks, file, organization_id, current_user,
+                                   doc_id, filename, suffix, file_hash, payload_size, processing_lease,
+                                   existing_task=None, queued_source="", cancellation=None):
     temp_path = ""
     converted_path = ""
     converted_from = ""
@@ -2903,11 +3039,10 @@ async def upload_document(
     # 全局槽位：占不到立刻429，不排队。与上面的try:之间不允许插入任何可能
     # 抛异常的语句，否则会漏掉release。
     processing_deadline = time.monotonic() + config.CONVERSION_TIMEOUT_SECONDS
-    file_progress = []
-    processing_lease = heavy_task_limits.acquire_slot(employee_emergency=True)
+    file_progress = _UploadProgress(existing_task)
     try:
-        temp_path = _save_temp_upload(file, doc_id, filename)
-        file_progress.append(FileTaskProgress(stage="uploaded", processed=len(payload), total=len(payload), unit="bytes"))
+        temp_path = queued_source or _save_temp_upload(file, doc_id, filename)
+        file_progress.append(FileTaskProgress(stage="uploaded", processed=payload_size, total=payload_size, unit="bytes"))
         parse_path = temp_path
         if suffix in config.CONVERTIBLE_EXTENSIONS:
             target_format = "docx" if suffix == ".doc" else "pdf"
@@ -2919,7 +3054,7 @@ async def upload_document(
                 target_format,
                 deadline=processing_deadline,
                 progress_callback=file_progress.append,
-                http_request=request,
+                http_request=request, **({"cancellation": cancellation} if cancellation is not None else {}),
             )
             if conversion.status != converter.ConversionStatus.SUCCESS or not conversion.output_path:
                 status_code = 422
@@ -2939,7 +3074,7 @@ async def upload_document(
         # 才真正开始发挥串行化作用，不需要额外加锁。
         text = await _run_file_thread(run_for_entry, FileEntry.UPLOAD_AUTO, document_loader.load_document,
                                      parse_path, deadline=processing_deadline, progress_callback=file_progress.append,
-                                     http_request=request)
+                                     http_request=request, **({"cancellation": cancellation} if cancellation is not None else {}))
         if text.startswith("错误："):
             return {
                 "status": "error",
@@ -2951,7 +3086,8 @@ async def upload_document(
         from layers.document_sections import chunk_section_paths
         section_paths = await _run_file_thread(
             lambda: chunk_section_paths(text, chunks, source_path=parse_path, source_name=filename),
-            deadline=processing_deadline, progress_callback=file_progress.append, http_request=request)
+            deadline=processing_deadline, progress_callback=file_progress.append, http_request=request,
+            **({"cancellation": cancellation} if cancellation is not None else {}))
         if not chunks:
             raise HTTPException(status_code=400, detail=_empty_document_detail(os.path.splitext(parse_path)[1].lower()))
         # F37：切分成本可忽略，向量化才是大头，因此在向量化之前按切片数拒绝。
@@ -2973,10 +3109,13 @@ async def upload_document(
         # 不许先收下再异步失败——那样用户拿到的是accepted，轮询才发现没戏。
         heavy_task_limits.reserve_ingest_slot()
         ingest_reserved = True
-        task = task_store.create_task(
+        task = existing_task or task_store.create_task(
             "upload", file_hash, filename, organization_id,
             current_user["user_id"],
         )
+        if existing_task is not None:
+            task_store.update_task(task.task_id, status="pending", total_chunks=len(chunks),
+                file_progress=FileTaskProgress(stage="queued", total=len(chunks), unit="chunks"))
         background_tasks.add_task(
             _run_ingest_task,
             task.task_id,
@@ -2986,6 +3125,7 @@ async def upload_document(
             converted_from,
             organization_id,
             current_user["user_id"],
+            **({"cancellation": cancellation} if cancellation is not None else {}),
             **({"chunk_section_paths": section_paths} if any(section_paths) else {}),
         )
         accepted_body = {
@@ -3014,7 +3154,8 @@ async def upload_document(
             except Exception as exc:
                 logger.warning("上传清理：删除转换产物失败 error_type=%s", type(exc).__name__)
             try:
-                _remove_temp_upload(temp_path)
+                if not queued_source:
+                    _remove_temp_upload(temp_path)
             except Exception as exc:
                 logger.warning("上传清理：删除临时文件失败 error_type=%s", type(exc).__name__)
         finally:
@@ -3057,12 +3198,32 @@ async def input_knowledge(
 
     title = (knowledge_request.title or "").strip()
     source = f"manual_input:{title}" if title else f"manual_input:{utc_now_naive().isoformat()}"
-    # F35：与/documents/upload同因，切分与向量化一并下放线程池
-    with heavy_task_limits.occupy_slot(employee_emergency=True):
+    try:
+        processing_lease = heavy_task_limits.acquire_slot(employee_emergency=True)
+    except heavy_task_limits.HeavyTaskRejected as exc:
+        if not exc.queueable:
+            raise
+        return await _enqueue_reception(request, content=content, size=len(content.encode("utf-8")),
+            suffix=".txt", metadata={"kind": "knowledge_input", "file_hash": file_hash,
+                "source": source, "title": title, "organization_id": knowledge_request.organization_id,
+                "user_id": current_user["user_id"], "doc_id": str(uuid.uuid4())})
+    return await _prepare_knowledge(background_tasks, content, title, source, file_hash,
+        knowledge_request.organization_id, current_user["user_id"], processing_lease)
+
+
+async def _prepare_knowledge(background_tasks, content, title, source, file_hash,
+                             organization_id, user_id, processing_lease,
+                             existing_task=None, cancellation=None, doc_id=None):
+    # 同步路径的切片/小节计算保持不变；已排队任务携带同一个租约。
+    try:
+        if cancellation is not None and cancellation.is_set():
+            raise FileTaskCancelled("upload_interrupted")
         chunks = await asyncio.to_thread(document_loader.chunk_text, content)
         from layers.document_sections import chunk_section_paths
         section_paths = await asyncio.to_thread(chunk_section_paths, content, chunks,
                                                source_name=title, markdown=True)
+    finally:
+        heavy_task_limits.release_slot(processing_lease)
     # F37：与/documents/upload同一约束，文字录入同样按切片数设上限
     if len(chunks) > config.MAX_DOCUMENT_CHUNKS:
         raise HTTPException(
@@ -3072,17 +3233,20 @@ async def input_knowledge(
                 f"{config.MAX_DOCUMENT_CHUNKS}个），请分次提交"
             ),
         )
-    doc_id = str(uuid.uuid4())
+    doc_id = doc_id or str(uuid.uuid4())
     # 与上传同一口径：队列位在返回accepted之前占住，满了当场拒绝。
     heavy_task_limits.reserve_ingest_slot()
     try:
-        task = task_store.create_task(
+        task = existing_task or task_store.create_task(
             "knowledge_input", file_hash, source,
-            knowledge_request.organization_id, current_user["user_id"],
+            organization_id, user_id,
         )
     except Exception:
         heavy_task_limits.release_reserved_ingest_slot()
         raise
+    if existing_task is not None:
+        task_store.update_task(task.task_id, status="pending", total_chunks=len(chunks),
+            file_progress=FileTaskProgress(stage="queued", total=len(chunks), unit="chunks"))
     background_tasks.add_task(
         _run_ingest_task,
         task.task_id,
@@ -3090,8 +3254,9 @@ async def input_knowledge(
         source,
         chunks,
         "",
-        knowledge_request.organization_id,
-        current_user["user_id"],
+        organization_id,
+        user_id,
+        **({"cancellation": cancellation} if cancellation is not None else {}),
         **({"chunk_section_paths": section_paths} if any(section_paths) else {}),
     )
     return {
@@ -3123,7 +3288,7 @@ async def _task_progress_events(task_id: str, owner_user_id: str):
             yield _sse_data({"status": "failed", "error_message": "无权查看该任务"})
             return
 
-        queue_ahead = heavy_task_limits.ingest_queue_ahead(task_id)
+        queue_ahead = _upload_queue_ahead(task)
         signature = (task.status, task.progress, task.processed_chunks, queue_ahead,
                      task.file_progress.model_dump_json() if task.file_progress else None)
         if signature != last_signature:
@@ -3176,7 +3341,7 @@ async def get_task_status(
         raise HTTPException(status_code=404, detail="任务不存在")
     if task.created_by != current_user["user_id"]:
         raise HTTPException(status_code=403, detail="无权查看该任务")
-    return {**task.model_dump(), "queue_ahead": heavy_task_limits.ingest_queue_ahead(task_id)}
+    return {**task.model_dump(), "queue_ahead": _upload_queue_ahead(task)}
 
 
 @app.get("/documents")
