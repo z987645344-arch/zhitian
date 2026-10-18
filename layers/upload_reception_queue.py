@@ -64,7 +64,8 @@ def submit(*, size, suffix, metadata, save_source, process, fail, large_gate=Non
                                large_gate=large_gate)
             _reserved_bytes += size
             _jobs[task.task_id] = job
-            limits.register_upload_waiter(task.task_id)
+            limits.register_upload_waiter(task.task_id, large_gate=job.large_gate,
+                                          cancellation=job.cancelled, deadline=job.deadline)
             job.thread = threading.Thread(target=_run, args=(job, process, fail),
                                           name="upload-reception-" + task.task_id[:8], daemon=True)
             job.thread.start()

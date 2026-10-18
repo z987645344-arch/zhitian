@@ -87,16 +87,26 @@ def log_startup_state() -> None:
         )
 
 
+def _can_reserve_locked(amount_mib: int) -> bool:
+    snapshot, _ = read_cgroup_memory()
+    return snapshot is None or (
+        snapshot.available_bytes - _reserved_bytes
+        >= (amount_mib + config.MEMORY_ADMISSION_SAFETY_MARGIN_MIB) * _MIB
+    )
+
+
+def can_reserve(amount_mib: int) -> bool:
+    """只读检查队头当前是否可准入；真正拿位仍须原子 try_reserve。"""
+    with _condition:
+        return _can_reserve_locked(amount_mib)
+
+
 def try_reserve(amount_mib: int) -> bool:
     """两道闸门原子共用此账本；cgroup 不可读时只放行，不伪造宿主机容量。"""
     global _reserved_bytes
     amount = amount_mib * _MIB
-    margin = config.MEMORY_ADMISSION_SAFETY_MARGIN_MIB * _MIB
     with _condition:
-        snapshot, _ = read_cgroup_memory()
-        if snapshot is not None and (
-            snapshot.available_bytes - _reserved_bytes < amount + margin
-        ):
+        if not _can_reserve_locked(amount_mib):
             return False
         _reserved_bytes += amount
         return True

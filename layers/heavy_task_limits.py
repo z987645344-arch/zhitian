@@ -40,6 +40,7 @@ _conversion_slots = threading.BoundedSemaphore(config.MAX_CONCURRENT_HEAVY_TASKS
 _slot_state_lock = threading.RLock()
 _slot_condition = threading.Condition(_slot_state_lock)
 _upload_waiters = []
+_upload_wait_conditions = {}
 _slots_in_use = 0
 _slot_reservations = []
 _emergency_slots = threading.BoundedSemaphore(config.FILE_PROCESSING_EMPLOYEE_EMERGENCY_SLOTS)
@@ -66,10 +67,24 @@ def acquire_slot(*, employee_emergency=False, _ticket=None):
     """
     with _slot_condition:
         if _upload_waiters and _upload_waiters[0] != _ticket:
-            raise HeavyTaskRejected("heavy_task_busy",
-                "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
-                queueable=True)
+            if _ticket is not None or _upload_head_ready_locked():
+                raise HeavyTaskRejected("heavy_task_busy",
+                    "服务器正在处理的文档已达上限，请稍后重试（当前请求未排队，重试即可）",
+                    queueable=True)
+            # 队头暂不可运行，不为它闲置共享位；紧急位仍留给 FIFO 队头。
+            employee_emergency = False
         return _acquire_slot_locked(employee_emergency=employee_emergency)
+
+
+def _upload_head_ready_locked():
+    gate, cancellation, deadline = _upload_wait_conditions[_upload_waiters[0]]
+    if cancellation.is_set() or time.monotonic() >= deadline:
+        return False
+    if gate is not None:
+        if not gate.acquire(blocking=False):
+            return False
+        gate.release()
+    return resource_admission.can_reserve(config.HEAVY_TASK_MEMORY_RESERVE_MIB)
 
 
 def _acquire_slot_locked(*, employee_emergency):
@@ -120,8 +135,10 @@ def release_slot(lease=None) -> None:
         _slot_condition.notify_all()
 
 
-def register_upload_waiter(task_id):
+def register_upload_waiter(task_id, *, large_gate, cancellation, deadline):
     with _slot_condition:
+        # 在线程启动前登记，不能依赖 worker 上一次轮询的过时就绪标记。
+        _upload_wait_conditions[task_id] = (large_gate, cancellation, deadline)
         _upload_waiters.append(task_id)
         _slot_condition.notify_all()
 
@@ -130,6 +147,7 @@ def remove_upload_waiter(task_id):
     with _slot_condition:
         if task_id in _upload_waiters:
             _upload_waiters.remove(task_id)
+        _upload_wait_conditions.pop(task_id, None)
         _slot_condition.notify_all()
 
 
@@ -139,7 +157,7 @@ def upload_queue_ahead(task_id):
 
 
 def wait_upload_slot(task_id, deadline, cancellation, large_gate=None):
-    """FIFO的队头在同一临界区拿位；新客户不能抢走已释放的位。"""
+    """FIFO队头就绪时优先拿位；非处理位条件暂不满足时不闲置共享位。"""
     from layers.file_processing.runner import FileTaskCancelled
     with _slot_condition:
         try:
@@ -154,11 +172,10 @@ def wait_upload_slot(task_id, deadline, cancellation, large_gate=None):
                     if large_gate is None or large_acquired:
                         try:
                             return acquire_slot(employee_emergency=True, _ticket=task_id)
-                        except HeavyTaskRejected as exc:
+                        except HeavyTaskRejected:
                             if large_acquired:
                                 large_gate.release()
-                            if not exc.queueable:
-                                raise
+                            # 内存暂不可准入也继续等待，但不为队头保留空位。
                         except BaseException:
                             if large_acquired:
                                 large_gate.release()

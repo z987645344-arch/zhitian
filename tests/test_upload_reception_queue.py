@@ -26,6 +26,7 @@ def clean_queue(isolated_heavy_task_state, isolated_persistent_storage, monkeypa
     queue.stop()
     assert queue.stats() == {"waiting": 0, "bytes": 0, "active": 0}
     assert limits._upload_waiters == []
+    assert limits._upload_wait_conditions == {}
 
 
 def hold_all():
@@ -131,6 +132,142 @@ def test_released_slot_is_reserved_for_fifo_not_new_customer(client, auth_header
     finally:
         queue.stop()
         release_all(leases)
+
+
+def test_large_gate_blocked_head_does_not_idle_shared_slot():
+    gate = threading.BoundedSemaphore(1)
+    gate.acquire()
+    cancelled = threading.Event()
+    leases = hold_all()
+    limits.register_upload_waiter("blocked-head", large_gate=gate,
+        cancellation=cancelled, deadline=time.monotonic() + 300)
+    try:
+        limits.release_slot(leases.pop(0))
+        customer = limits.acquire_slot()
+        leases.append(customer)
+        assert customer[1] is limits._conversion_slots
+        assert limits.upload_queue_ahead("blocked-head") == 0
+        assert limits.slots_in_use() == limits.total_slots()
+        # 后来的排队员工仍不能越过队头；它也不能借走紧急位。
+        limits.register_upload_waiter("next-employee", large_gate=None,
+            cancellation=cancelled, deadline=time.monotonic() + 300)
+        limits.release_slot(leases.pop(-2))
+        with pytest.raises(limits.HeavyTaskRejected):
+            limits.acquire_slot(employee_emergency=True)
+        with pytest.raises(limits.HeavyTaskRejected):
+            limits.acquire_slot(employee_emergency=True, _ticket="next-employee")
+    finally:
+        limits.remove_upload_waiter("blocked-head")
+        limits.remove_upload_waiter("next-employee")
+        gate.release()
+        release_all(leases)
+
+
+def test_large_gate_ready_head_wins_next_release_before_worker_is_scheduled():
+    gate = threading.BoundedSemaphore(1)
+    gate.acquire()
+    cancelled = threading.Event()
+    acquired = threading.Event()
+    finish = threading.Event()
+    errors = []
+    leases = hold_all()
+    limits.register_upload_waiter("large-head", large_gate=gate,
+        cancellation=cancelled, deadline=time.monotonic() + 300)
+
+    def worker():
+        lease = None
+        try:
+            lease = limits.wait_upload_slot("large-head", time.monotonic() + 300, cancelled, gate)
+            acquired.set()
+            finish.wait(10)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if lease is not None:
+                gate.release()
+                limits.release_slot(lease)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        with limits._slot_condition:
+            limits.release_slot(leases.pop(0))
+            leases.append(limits.acquire_slot())  # gate 仍忙，客户可用共享位。
+            gate.release()
+            limits.release_slot(leases.pop())
+            # 刻意扣住调度锁：worker 还没重跑也必须立即恢复队头优先。
+            for _ in range(30):
+                with pytest.raises(limits.HeavyTaskRejected) as exc:
+                    limits.acquire_slot()
+                assert exc.value.code == "heavy_task_busy"
+            assert not acquired.is_set()
+        assert acquired.wait(10)
+        assert limits.upload_queue_ahead("large-head") is None
+    finally:
+        cancelled.set()
+        finish.set()
+        with limits._slot_condition:
+            limits._slot_condition.notify_all()
+        thread.join(10)
+        limits.remove_upload_waiter("large-head")
+        release_all(leases)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_memory_blocked_head_does_not_reserve_idle_slot_and_waits_for_recovery(monkeypatch):
+    from layers import resource_admission
+    mib = 1024 * 1024
+    available = [0]
+    checked = threading.Event()
+    def snapshot():
+        checked.set()
+        return resource_admission.MemorySnapshot(available[0] * mib, 0, 0), ""
+    monkeypatch.setattr(resource_admission, "read_cgroup_memory", snapshot)
+    cancelled = threading.Event()
+    acquired = threading.Event()
+    finish = threading.Event()
+    errors = []
+    limits.register_upload_waiter("memory-head", large_gate=None,
+        cancellation=cancelled, deadline=time.monotonic() + 300)
+    def worker():
+        lease = None
+        try:
+            lease = limits.wait_upload_slot("memory-head", time.monotonic() + 300, cancelled)
+            acquired.set()
+            finish.wait(10)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if lease is not None:
+                limits.release_slot(lease)
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        assert checked.wait(10)
+        with limits._slot_condition:
+            assert limits.upload_queue_ahead("memory-head") == 0
+            assert not resource_admission.can_reserve(config.HEAVY_TASK_MEMORY_RESERVE_MIB)
+            assert resource_admission.reserved_bytes() == 0
+            with pytest.raises(limits.HeavyTaskRejected) as exc:
+                limits.acquire_slot()
+            assert exc.value.message == "服务器繁忙，请稍后重试"  # 实际准入，不是队头挡位。
+            assert limits.slots_in_use() == 0
+            available[0] = 4096
+            with pytest.raises(limits.HeavyTaskRejected) as exc:
+                limits.acquire_slot()
+            assert exc.value.queueable is True
+            limits._slot_condition.notify_all()
+        assert acquired.wait(10)
+    finally:
+        cancelled.set()
+        finish.set()
+        with limits._slot_condition:
+            limits._slot_condition.notify_all()
+        thread.join(10)
+        limits.remove_upload_waiter("memory-head")
+    assert not thread.is_alive()
+    assert errors == []
 
 
 def test_pending_reception_tasks_count_toward_user_two(client, auth_headers):
