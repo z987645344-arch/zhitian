@@ -339,6 +339,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VECTORDB_PATH = os.path.join(BASE_DIR, "data", "vectordb")
 HISTORY_DB_PATH = os.path.join(BASE_DIR, "data", "history.db")
 
+# 账号生命周期在启动重放结束后补跑缺失业务日，避开启动高峰；正常时刻仍为04:00。
+ACCOUNT_LIFECYCLE_CATCH_UP_DELAY_SECONDS = float(
+    os.getenv("ACCOUNT_LIFECYCLE_CATCH_UP_DELAY_SECONDS", "60")
+)
+if not 0 <= ACCOUNT_LIFECYCLE_CATCH_UP_DELAY_SECONDS < 24 * 60 * 60:
+    raise RuntimeError("ACCOUNT_LIFECYCLE_CATCH_UP_DELAY_SECONDS must be between 0 and 86400 seconds")
+
 # 进程内加密备份调度。默认关闭，正式Compose部署会显式开启并把目录挂到独立具名卷；
 # 这样直接运行main.py、pytest导入应用时不会在开发工作区后台生成归档。
 SCHEDULED_BACKUP_ENABLED = (

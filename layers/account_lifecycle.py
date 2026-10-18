@@ -1,7 +1,10 @@
 """按场景注销账号；日常只在API内调用，恢复时仅在停机独占子进程调用。"""
 import calendar
+import json
+import os
+import tempfile
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -13,7 +16,10 @@ _locks_guard = threading.Lock()
 _locks = {}
 _ledger_lock = account_deletions.LOCK
 _developer_lock = threading.RLock()
+_daily_run_lock = threading.Lock()
+_scheduler_lock = threading.Lock()
 LEDGER_NAME = "account-deletions.json"
+SCHEDULER_STATE_NAME = "account-lifecycle-state.json"
 DELETED_USER = "已注销用户"
 DELETED_REGISTRATION_VALUE = "已注销"
 TZ = timezone(timedelta(hours=8))
@@ -362,6 +368,15 @@ def reconcile_deleted_accounts():
 
 
 def run_daily(now=None):
+    """串行执行整轮业务；只有正常完成后才原子记录本轮开始时的业务日。"""
+    from layers.enterprise_password import get_business_day
+    with _daily_run_lock:
+        current = utc(now)
+        _run_daily(current)
+        _write_scheduler_success(get_business_day(current))
+
+
+def _run_daily(now=None):
     from layers import auth, email_provider
     current = utc(now)
     with auth._connect() as conn:
@@ -427,28 +442,88 @@ _stop = threading.Event()
 _thread = None
 
 
+def scheduler_state_path():
+    return ledger_path().with_name(SCHEDULER_STATE_NAME)
+
+
+def _last_success_business_day():
+    path = scheduler_state_path()
+    try:
+        if path.is_symlink():
+            raise ValueError("invalid_scheduler_state")
+        if not path.exists():
+            return None
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("version") != 1:
+            raise ValueError("invalid_scheduler_state")
+        return date.fromisoformat(state["last_success_business_day"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.error("[account-lifecycle] scheduler_state_read_failed error_type=%s", type(exc).__name__)
+        return None
+
+
+def _write_scheduler_success(business_day):
+    path = scheduler_state_path()
+    if path.is_symlink() or path.parent.is_symlink() or path.parent.is_junction():
+        raise ValueError("invalid_scheduler_state_path")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".account-lifecycle-state-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"version": 1, "last_success_business_day": business_day.isoformat(),
+                       "completed_at": utc().isoformat()}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _run_daily_safely(*, catch_up=False):
+    if catch_up:
+        from layers.enterprise_password import get_business_day
+        logger.info("[account-lifecycle] catch_up_run business_day=%s",
+                    get_business_day(datetime.now(TZ)).isoformat())
+    try:
+        run_daily()
+    except Exception as exc:
+        logger.error("[account-lifecycle] daily_run_failed error_type=%s", type(exc).__name__)
+
+
+def _scheduler_work():
+    from layers.enterprise_password import get_business_day, get_next_business_day_start, BUSINESS_DAY_START_HOUR
+    now = datetime.now(TZ)
+    # 04:00前不补跑昨天：正常等待今天边界，避免将日历日误当业务日。
+    if now.hour >= BUSINESS_DAY_START_HOUR and _last_success_business_day() != get_business_day(now):
+        if _stop.wait(config.ACCOUNT_LIFECYCLE_CATCH_UP_DELAY_SECONDS):
+            return
+        _run_daily_safely(catch_up=True)
+    while not _stop.is_set():
+        now = datetime.now(TZ)
+        if _stop.wait((get_next_business_day_start(now) - now).total_seconds()):
+            return
+        _run_daily_safely()
+
+
 def start_scheduler():
     global _thread
-    if _thread is not None and _thread.is_alive():
-        return
-    _stop.clear()
-    def work():
-        while not _stop.is_set():
-            now = datetime.now(TZ)
-            next_run = now.replace(hour=4, minute=0, second=0, microsecond=0)
-            if next_run <= now:
-                next_run += timedelta(days=1)
-            if _stop.wait((next_run - now).total_seconds()):
-                return
-            try:
-                run_daily()
-            except Exception:
-                logger.error("[account-lifecycle] daily_run_failed")
-    _thread = threading.Thread(target=work, name="customer-account-lifecycle", daemon=True)
-    _thread.start()
+    with _scheduler_lock:
+        if _thread is not None and _thread.is_alive():
+            return
+        _stop.clear()
+        _thread = threading.Thread(target=_scheduler_work, name="customer-account-lifecycle", daemon=True)
+        _thread.start()
 
 
 def stop_scheduler():
-    _stop.set()
-    if _thread is not None:
-        _thread.join()  # 清理结束后才关闭Chroma；不放弃半途的注销任务。
+    global _thread
+    with _scheduler_lock:
+        _stop.set()
+        thread = _thread
+    if thread is not None:
+        thread.join()  # 清理结束后才关闭Chroma；不放弃半途的注销任务。
+    with _scheduler_lock:
+        if _thread is thread:
+            _thread = None
