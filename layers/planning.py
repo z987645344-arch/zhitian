@@ -1167,6 +1167,13 @@ def _run_fast_state(state: AgentState) -> AgentState:
         selection_elapsed_ms = int((time.perf_counter() - selection_started_at) * 1000)
         calls = _extract_tool_calls(first_response, allow_attachment_edit=bool(state.get("attachment_ids")),
                                    allow_attachment_reread=bool(state.get("attachment_references")))
+        for call in calls:
+            if call["name"] == "direct_answer":
+                answer = call["arguments"].get("answer")
+                if answer is not None and not isinstance(answer, str):
+                    logger.warning("工具参数校验失败：error_type=%s code=invalid_direct_answer_text",
+                                   InvalidToolArgumentsError.__name__)
+                    raise InvalidToolArgumentsError("invalid_direct_answer_text")
         primary = next((item for item in calls if item.get("name") in {"search_documents", "list_documents", "direct_answer", "edit_attachment", "reread_attachment", "request_file_generation"}), {})
         arguments = primary.get("arguments") or {}
         state["source_policy"] = source_policy.classify_policy(state["message"], arguments.get("source_classification"))
@@ -2539,7 +2546,10 @@ def _build_classify_decision(tool_calls: list[dict]) -> dict:
             return decision
         if name == "ask_clarification":
             decision["intent"] = "clarify"
-            decision["clarification"] = arguments.get("question", "请补充关键信息。")
+            question = arguments.get("question")
+            decision["clarification"] = (
+                question if isinstance(question, str) and question.strip() else "请补充关键信息。"
+            )
             decision["decision_reasoning"] = _normalize_decision_reasoning(
                 arguments.get("reasoning")
             )
@@ -2633,16 +2643,26 @@ def _normalize_decision_reasoning(value) -> str:
     return reasoning[:60]
 
 
+class InvalidToolArgumentsError(ValueError):
+    """工具参数结构无效；只携带固定错误码，不包含模型原始内容。"""
+
+
 def _parse_tool_arguments(raw_arguments) -> dict:
-    """解析Function Call参数"""
+    """只交付对象；保留空缺省和损坏JSON文本兼容，非对象根明确失败。"""
     if isinstance(raw_arguments, dict):
         return raw_arguments
-    if not raw_arguments:
+    if raw_arguments is None:
         return {}
-    try:
-        return json.loads(raw_arguments)
-    except Exception:
-        return {}
+    if isinstance(raw_arguments, (str, bytes, bytearray)):
+        try:
+            parsed = json.loads(raw_arguments)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    logger.warning("工具参数校验失败：error_type=%s code=invalid_tool_arguments_root",
+                   InvalidToolArgumentsError.__name__)
+    raise InvalidToolArgumentsError("invalid_tool_arguments_root")
 
 
 def _load_classify_context(session_id: str, message: str) -> list[str]:
