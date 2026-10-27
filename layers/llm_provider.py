@@ -19,6 +19,7 @@ from openai import APIConnectionError, DefaultHttpxClient, OpenAI
 import config
 from utils.logger import get_logger
 from utils import observability
+from utils import llm_observations as _observations
 
 
 logger = get_logger("llm_provider")
@@ -39,6 +40,7 @@ _optional_stage_guard: ContextVar[Optional["_OptionalStageGuard"]] = ContextVar(
 _request_call_guard: ContextVar[Optional["_RequestCallGuard"]] = ContextVar(
     "request_model_call_guard", default=None
 )
+_observation_call: ContextVar[Any] = ContextVar("llm_observation_call", default=None)
 
 
 class RequestCancelled(BaseException):
@@ -333,6 +335,11 @@ def use_stream_registry(registry: StreamRegistry) -> Iterator[None]:
 
 
 def _close_raw_stream(stream: Any) -> None:
+    if isinstance(stream, _ObservedStream):
+        # The wrapper owns the one physical close; do not shutdown its proxied
+        # response here and again in wrapper.close().
+        stream.close()
+        return
     response = stream if isinstance(stream, httpx.Response) else getattr(stream, "response", None)
     if isinstance(response, httpx.Response) and not response.is_closed:
         # 当前共享池使用HTTP/1.1；只中断本响应的连接，不关闭其他用户的池。
@@ -451,11 +458,22 @@ def reset_request_api_key(token: Token) -> None:
 
 def run_with_api_key(api_key: str, function: Any, *args: Any, **kwargs: Any) -> Any:
     """供后台任务显式继承请求凭据，不依赖线程上下文自动传播。"""
+    observation_trace_id = kwargs.pop("_observation_trace_id", None)
+    if observation_trace_id is not None:
+        with _observations.background(observation_trace_id):
+            with use_request_api_key(api_key):
+                return function(*args, **kwargs)
     with use_request_api_key(api_key):
         return function(*args, **kwargs)
 
 
-def run_request_background(api_key: str, control: Optional[StreamRegistry], function: Any, *args: Any) -> Any:
+def run_request_background(api_key: str, control: Optional[StreamRegistry], function: Any, *args: Any,
+                           _observation_trace_id: Optional[str] = None) -> Any:
+    with _observations.background(_observation_trace_id):
+        return _run_request_background(api_key, control, function, *args)
+
+
+def _run_request_background(api_key: str, control: Optional[StreamRegistry], function: Any, *args: Any) -> Any:
     try:
         if control is None:
             return run_with_api_key(api_key, function, *args)
@@ -467,6 +485,114 @@ def run_request_background(api_key: str, control: Optional[StreamRegistry], func
 
 
 def chat_completion(
+    messages: list[dict], tier: str = "fast", response_format: Optional[dict] = None,
+    timeout: Optional[float] = None, stage: Optional[str] = None, **kwargs: Any,
+) -> Any:
+    """Observe the logical entry, independently of SDK attempts and stream lifetime."""
+    call = _observations.safe(_observations.begin, tier, stage, observability.get_trace_id())
+    token = _observation_call.set(call)
+    try:
+        result = _dispatch_chat_completion(messages, tier, response_format, timeout, stage, **kwargs)
+        if call is not None and not kwargs.get("stream"):
+            usage = _observations.safe(_observations.parse_usage, result)
+            _observations.safe(call.finish, "success", usage, complete=True)
+        return result
+    except BaseException as exc:
+        if call is not None:
+            status = _observation_status(exc)
+            if isinstance(exc, ValueError) and call.sdk_attempts == 0:
+                status = "validation_error"
+            _observations.safe(call.finish, status, stream=bool(kwargs.get("stream")))
+        raise
+    finally:
+        _observation_call.reset(token)
+
+
+def _observation_status(exc: BaseException) -> str:
+    control = current_request_control()
+    if isinstance(exc, RequestCancelled) or (control is not None and control.cancelled.is_set()):
+        return "cancelled"
+    kind = _observations.safe(observability.classify_provider_error, exc)
+    return "timeout" if kind == "timeout" else "error"
+
+
+def _sdk_create(client, request_kwargs):
+    create = client.chat.completions.create
+    call = _observation_call.get()
+    attempt = _observations.safe(call.attempt) if call is not None else None
+    try:
+        response = create(**request_kwargs)
+    except BaseException as exc:
+        if attempt is not None:
+            _observations.safe(attempt.finish, _observation_status(exc))
+        raise
+    if request_kwargs.get("stream"):
+        if call is not None:
+            _observations.safe(call.opened, attempt)
+        return _ObservedStream(response, call, current_request_control())
+    if attempt is not None:
+        _observations.safe(attempt.returned)
+    return response
+
+
+class _ObservedStream:
+    """Pass SDK chunks through unchanged, watching usage before text filtering."""
+    def __init__(self, stream, call, registry):
+        self._stream = stream
+        self._call = call
+        self._registry = registry
+        self._iterator = None
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._usage = None
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+        try:
+            if self._iterator is None:
+                self._iterator = iter(self._stream)
+            chunk = next(self._iterator)
+            present = _observations.safe(lambda: _observations._field(chunk, "usage") is not None)
+            if present:
+                self._usage = _observations.safe(_observations.parse_usage, chunk)
+            return chunk
+        except StopIteration:
+            self._finish("success")
+            raise
+        except BaseException as exc:
+            self._finish(_observation_status(exc))
+            raise
+
+    def _finish(self, status):
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        if self._registry is not None:
+            if self._registry.cancelled.is_set():
+                status = "cancelled"
+            self._registry.unregister(self)
+        if self._call is not None:
+            try:
+                _observations.safe(self._call.finish, status, self._usage,
+                                   complete=status == "success" and self._usage is not None, stream=True)
+            finally:
+                _close_raw_stream(self._stream)
+        else:
+            _close_raw_stream(self._stream)
+
+    def close(self):
+        self._finish("closed")
+
+
+def _dispatch_chat_completion(
     messages: list[dict],
     tier: str = "fast",
     response_format: Optional[dict] = None,
@@ -597,10 +723,10 @@ def _chat_completion(
             request_kwargs["timeout"] = min(request_timeout, remaining)
             registry = current_request_control()
             if registry is None:
-                response = client.chat.completions.create(**request_kwargs)
+                response = _sdk_create(client, request_kwargs)
             else:
                 with registry.model_attempt(stage):
-                    response = client.chat.completions.create(**request_kwargs)
+                    response = _sdk_create(client, request_kwargs)
             if request_kwargs.get("stream"):
                 registry = _stream_registry.get()
                 if registry is not None:

@@ -10,6 +10,7 @@ import time
 from typing import Any, Optional
 
 from utils.logger import get_logger
+from utils import llm_observations
 
 
 logger = get_logger("observability")
@@ -56,11 +57,13 @@ def set_trace_id(trace_id: str, mode: str = "fast") -> Token:
     _request_mode.set(mode if mode in {"fast", "expert"} else "fast")
     _request_started_at.set(time.perf_counter())
     _stage_timings.set({})
+    llm_window = llm_observations.safe(llm_observations.bind_request, trace_id)
     with _stats_lock:
         _active_requests[trace_id] = {
             "mode": _request_mode.get(),
             "started_at": _request_started_at.get(),
             "stage_timings": {},
+            "llm_window": llm_window,
         }
     return _trace_id.set(trace_id)
 
@@ -76,6 +79,7 @@ def reset_trace_id(token: Token) -> None:
     _request_mode.set("fast")
     _request_started_at.set(None)
     _stage_timings.set(None)
+    llm_observations.safe(llm_observations.clear_request)
 
 
 def discard_active_request(trace_id: str) -> None:
@@ -83,7 +87,9 @@ def discard_active_request(trace_id: str) -> None:
     if not trace_id:
         return
     with _stats_lock:
-        _active_requests.pop(trace_id, None)
+        state = _active_requests.pop(trace_id, None)
+        if state is not None and state.get("llm_window") is not None:
+            llm_observations.safe(state["llm_window"].snapshot, seal=True)
 
 
 def get_trace_id() -> str:
@@ -100,13 +106,10 @@ def log_stage(stage: str, elapsed_ms: int) -> None:
     trace_id = get_trace_id()
     if trace_id and stage_name:
         with _stats_lock:
-            request_state = _active_requests.setdefault(trace_id, {
-                "mode": _request_mode.get(),
-                "started_at": _request_started_at.get(),
-                "stage_timings": {},
-            })
-            aggregate = request_state["stage_timings"]
-            aggregate[stage_name] = aggregate.get(stage_name, 0) + max(0, int(elapsed_ms))
+            request_state = _active_requests.get(trace_id)
+            if request_state is not None:
+                aggregate = request_state["stage_timings"]
+                aggregate[stage_name] = aggregate.get(stage_name, 0) + max(0, int(elapsed_ms))
     logger.info("trace_id=%s stage=%s elapsed_ms=%s", get_trace_id() or "none", stage, elapsed_ms)
 
 
@@ -133,6 +136,9 @@ def record_request(
             "status": status,
             "error_type": error_type or "",
             "timestamp": utc_now_naive().isoformat(),
+            "llm_observations": llm_observations.safe(
+                request_state["llm_window"].snapshot, seal=True
+            ) if request_state.get("llm_window") is not None else None,
         })
 
 
@@ -237,6 +243,7 @@ def metrics_snapshot() -> dict[str, Any]:
             "provider_errors": {name: dict(values) for name, values in _provider_errors.items()},
             "latency_percentiles_ms": _latency_percentiles_by_mode(recent_requests),
             "recent_requests": recent_requests,
+            "llm_observations": llm_observations.safe(llm_observations.snapshot),
         }
 
 

@@ -1789,6 +1789,7 @@ async def chat(
                 perception_output.message,
                 mode,
                 current_user["user_id"],
+                _observation_trace_id=trace_id,
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
@@ -1800,6 +1801,7 @@ async def chat(
                     final_data,
                     mode,
                     current_user["user_id"],
+                    _observation_trace_id=trace_id,
                 )
         response_data = output.format_response(
             session_id=perception_output.session_id,
@@ -4121,6 +4123,7 @@ def _chat_stream_events(
                         perception_output.message,
                         "fast",
                         current_user["user_id"],
+                        _observation_trace_id=trace_id,
                     )
                     background_tasks.add_task(
                         llm_provider.run_request_background,
@@ -4132,6 +4135,7 @@ def _chat_stream_events(
                         final_data,
                         "fast",
                         current_user["user_id"],
+                        _observation_trace_id=trace_id,
                     )
             request_status = (
                 "degraded"
@@ -4389,6 +4393,7 @@ def _chat_stream_events(
                 perception_output.message,
                 perception_output.mode,
                 current_user["user_id"],
+                _observation_trace_id=trace_id,
             )
             if assistant_message_type == memory.MESSAGE_TYPE_CHAT:
                 background_tasks.add_task(
@@ -4401,6 +4406,7 @@ def _chat_stream_events(
                     final_data,
                     perception_output.mode,
                     current_user["user_id"],
+                    _observation_trace_id=trace_id,
                 )
     except Exception as e:
         logger.error("/chat/stream未捕获异常：trace_id=%s session_id=%s error_type=%s", observability.get_trace_id(), request.session_id, type(e).__name__)
