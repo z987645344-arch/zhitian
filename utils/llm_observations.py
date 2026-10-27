@@ -77,6 +77,7 @@ def _usage_counter():
 def _counter():
     return {"logical_calls": 0, "sdk_attempts": 0,
             "logical_finished": 0, "sdk_finished": 0,
+            "sdk_late_attempts": 0, "sdk_late_finished": 0,
             "logical_statuses": dict.fromkeys(STATUSES, 0),
             "sdk_statuses": dict.fromkeys(STATUSES, 0),
             "timings": {key: {"samples": 0, "total_ms": 0} for key in
@@ -182,13 +183,13 @@ def background(trace_id=None):
             _context.reset(token)
 
 
-def _targets(call):
+def _targets(call, *, include_window=True):
     key = (call.scope, call.tier, call.stage)
     if key not in _buckets:
         _buckets[key] = _counter()
     bucket = _buckets[key]
     result = [_totals, bucket]
-    if call.window is not None and not call.window.sealed:
+    if include_window and call.window is not None and not call.window.sealed:
         result.append(call.window.counters)
     return result
 
@@ -232,14 +233,14 @@ class Call:
 
     def attempt(self):
         with _lock:
-            if self.done:
-                return None
             attempt = Attempt(self)
-            self.active_attempt = attempt
+            if not attempt.late:
+                self.active_attempt = attempt
             self.sdk_attempts += 1
-            for counter in _targets(self):
+            for counter in _targets(self, include_window=not attempt.late):
                 counter["sdk_attempts"] += 1
-            if self.row is not None and not self.window.sealed:
+                counter["sdk_late_attempts"] += attempt.late
+            if not attempt.late and self.row is not None and not self.window.sealed:
                 self.row["sdk_attempts"] += 1
             return attempt
 
@@ -281,6 +282,7 @@ class Attempt:
         self.started = _clock()
         self.done = False
         self.returned_ms = None
+        self.late = call.done
 
     def returned(self):
         self.returned_ms = _ms(self.started)
@@ -291,8 +293,9 @@ class Attempt:
                 return
             self.done = True
             ms = self.returned_ms if self.returned_ms is not None else _ms(self.started)
-            for counter in _targets(self.call):
+            for counter in _targets(self.call, include_window=not self.late):
                 counter["sdk_finished"] += 1
+                counter["sdk_late_finished"] += self.late
                 counter["sdk_statuses"][status] += 1
                 _timing(counter, "sdk_attempt_ms", ms)
                 _add_usage(counter["attempt_usage"], usage or _unknown(), complete)

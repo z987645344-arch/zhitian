@@ -28,6 +28,7 @@
 
 - `logical_calls`：每次统一 `chat_completion` 入口一次，包括发送前校验失败或取消。这两类可能有0次 SDK 尝试，以终态区分。
 - `sdk_attempts`：实际进入 `client.chat.completions.create` 的次数。原超时重试和发送前连接重置重试分别增加尝试数。**它不是已确认计费次数**；发送、供应商接收和收费无法由本地计数证明。
+- `sdk_late_attempts` / `sdk_late_finished`：逻辑调用已经终结之后才实际进入SDK的尝试及其完成数，是前述SDK计数的子集。仅记全局及固定维度桶，不回写已终结的逻辑明细或冻结前台。因而某前台快照可以是logical timeout、SDK0，稍后全局出现晚到SDK1，二者采样范围不同。
 - `logical_finished` / `sdk_finished`：已经终结的数量，活动调用不进入用量覆盖数。同一调用／尝试只结算一次，重复close、晚到结果不会重复结算。
 - `by_scope_tier_stage`：仅固定维度。tier为fast、expert或other；stage来自现有声明的有限集合，缺省为unknown，其他值为other，不把自由文本变成标签。
 - trace关联只在有界最近请求／后台记录中保留；全局不建立trace历史索引或去重集合。
@@ -44,7 +45,7 @@
 | stream_open_ms | SDK create开始到成功建流，不代表流完成 |
 | stream_total_ms | 逻辑入口到流耗尽、异常、取消或提前关闭 |
 
-非流式墙钟工作线程返回后，尝试计时使用已保存的SDK返回耗时；前台墙钟超时先行结算时，未完成尝试随逻辑调用标timeout，晚到结果不覆写该状态。所有时限、原重试数量、模型及取消规则不变。
+非流式墙钟工作线程返回后，尝试计时使用已保存的SDK返回耗时；前台墙钟超时先行结算时，已登记的未完成尝试随逻辑调用标timeout，晚到结果不覆写该状态。若工作线程此前暂停在方法查找等窗口、实际SDK进入发生在逻辑终结之后，则独立登记晚到尝试并按其实际返回或异常终结，逻辑timeout及前台快照不变。所有时限、原重试数量、模型及取消规则不变，不阻止原路径仍会发生的SDK调用。
 
 并行调用的耗时可以重叠；`total_ms`相加不是请求墙钟耗时。请求墙钟仍读既有 `total_elapsed_ms`，不以各模型调用之和替代。
 
@@ -66,19 +67,21 @@ SDK属性对象和字典均支持；缺失、None、错类型、负数为null（
 
 这只表示有效2份的和为12，不能声称覆盖全部3份。缺字段不补总量，不用prompt+completion凭空生成total。total与已知分项明显矛盾时，total变为未知；缓存计数与prompt矛盾时，缓存计数变为未知，并增加 `anomaly_samples`，不影响回答。
 
-`complete_samples`表示完成并取得响应用量的结算样本；非流式响应成功但未提供usage时字段仍全未知。`incomplete_samples`包括失败、取消、提前关闭或正常流耗尽但未见usage的样本。complete不表示五个字段都有效，具体完整程度必须看各字段覆盖数。
+非流式按完整响应结算，响应成功但未提供usage时字段仍全未知。流式`complete_samples`表示已确认最终usage；没有确认时计incomplete_samples，包括中间累计usage后自然EOF。流式业务终态与用量确认独立：最终usage确认后再close、取消或抛错，保留最终用量及逐字段缺失，状态仍为closed、cancelled或error。complete不表示五个字段都有效，具体完整程度必须看各字段覆盖数。
 
 ## 缓存
 
 `usage.cache`和`attempt_usage.cache`分别报告：
 
 - `valid_samples`：hit/miss均有效、分母>0的终结样本数。
-- `missing_samples`：hit或miss未知的样本数，包括未完整消费的流。
+- `missing_samples`：hit或miss未知的样本数，包括未确认最终usage的流。
 - `zero_denominator_samples`：明确hit=miss=0，已知但不能计算比例。
 - `hit_tokens`、`miss_tokens`：只在有效正分母样本范围相加。
 - `hit_ratio`：上述hit之和除以hit+miss之和，按token加权，不平均各调用百分比。没有有效分母为null。
 
-流式在正文过滤前观察usage，支持choices=[]或非空的结束块；只保存最后所见的累计计数，不逐块加总。重复终态块不会重复记账。断流、取消、提前close、尚未迭代即close时不把曾见累计值冒充最终用量；不会补发请求、继续读取取消流或查询其他接口。
+流式在正文过滤前确认最终usage：usage是字典或带已知用量属性的对象，且choices=[]（usage-only），或非空choices的每项finish_reason均是当前SDK声明的stop、length、tool_calls、content_filter、function_call之一。缺usage、choices形状不明、无明确结束标志都不确认；StopIteration不充当终态证明。
+
+首个确认的最终usage固定保留，不逐块累加；重复最终块不重复记账，后续中间块也不覆盖它。未确认时，EOF、异常、关闭或取消均不把中间累计值升级为最终值；确认后即使随后关闭、取消或异常也不清空。不会补发请求、继续读取取消流或查询其他接口。
 
 ## scope、后台与生命周期
 

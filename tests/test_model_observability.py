@@ -30,8 +30,8 @@ def response(usage=USAGE, content="synthetic answer"):
     return value
 
 
-def chunk(text=None, usage=MISSING, empty=False):
-    value = NS(choices=[] if empty else [NS(delta=NS(content=text))])
+def chunk(text=None, usage=MISSING, empty=False, finish_reason=None):
+    value = NS(choices=[] if empty else [NS(delta=NS(content=text), finish_reason=finish_reason)])
     if usage is not MISSING:
         value.usage = usage
     return value
@@ -180,7 +180,7 @@ def test_before_send_validation_and_cancellation_have_zero_attempts(monkeypatch)
 @pytest.mark.parametrize("usage_only", [False, True])
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_stream_usage_before_empty_text_filter_and_cumulative_blocks(monkeypatch, usage_only, duplicate):
-    final = chunk(usage=USAGE, empty=usage_only)
+    final = chunk(usage=USAGE, empty=usage_only, finish_reason="stop" if not usage_only else None)
     raw = Stream([chunk(), chunk("A"), final] + ([final, final] if duplicate else []))
     create = install(monkeypatch, Mock(return_value=raw))
     stream = llm_provider.chat_completion([], stream=True)
@@ -242,7 +242,7 @@ def test_monotonic_timings_separate_open_and_full_stream(monkeypatch):
     monkeypatch.setattr(obs, "_clock", lambda: clock.now)
     def create(**kw):
         clock.now += 2
-        return Stream([chunk("A", USAGE)])
+        return Stream([chunk("A", USAGE, finish_reason="stop")])
     install(monkeypatch, create)
     stream = llm_provider.chat_completion([], stream=True)
     clock.now += 3
@@ -571,7 +571,7 @@ def test_partial_contradictions_are_unknown_without_inventing_fields(usage, inva
 
 
 def test_stream_consumption_in_another_trace_cannot_move_usage(monkeypatch):
-    create = install(monkeypatch, Mock(return_value=Stream([chunk("A", USAGE)])))
+    create = install(monkeypatch, Mock(return_value=Stream([chunk("A", USAGE, finish_reason="stop")])))
     token_a = observability.set_trace_id("owner-A")
     try:
         stream = llm_provider.chat_completion([], stream=True)
@@ -602,3 +602,195 @@ def test_adapter_does_not_add_or_change_stream_options(monkeypatch, caller_optio
     else:
         assert create.call_args.kwargs["stream_options"] is caller_options
     assert create.call_count == 1
+
+
+@pytest.mark.parametrize("late_outcome", ["success", "error", "timeout"])
+def test_sdk_entry_after_logical_timeout_is_counted_without_thawing_front(monkeypatch, late_outcome):
+    entered, release = threading.Event(), threading.Event()
+    clock = NS(now=0.)
+    monkeypatch.setattr(llm_provider, "time", NS(perf_counter=lambda: clock.now))
+    sdk = Mock(return_value=response(), side_effect=
+        RuntimeError("synthetic-late-error") if late_outcome == "error" else
+        TimeoutError("synthetic-late-timeout") if late_outcome == "timeout" else None)
+
+    class Completions:
+        @property
+        def create(self):
+            # The original budget check has passed; only method lookup is paused.
+            clock.now = 1.
+            entered.set()
+            assert release.wait(2)
+            return sdk
+
+    monkeypatch.setattr(llm_provider, "OpenAI", lambda **kw: NS(chat=NS(completions=Completions())))
+    token = observability.set_trace_id("late-sdk-entry")
+    cleanup_done = False
+    try:
+        with pytest.raises(TimeoutError, match="wall-clock"):
+            llm_provider.chat_completion([], total_budget=.5, enforce_wall_clock=True)
+        assert entered.is_set()
+        assert sdk.call_count == 0
+        observability.record_request("error")
+        at_timeout = observability.metrics_snapshot()
+        assert at_timeout["llm_observations"]["totals"]["sdk_attempts"] == 0
+    finally:
+        observability.reset_trace_id(token)
+        release.set()
+        workers = [t for t in threading.enumerate() if t.name == "llm-optional-stage"]
+        for worker in workers:
+            worker.join(2)
+        cleanup_done = all(not worker.is_alive() for worker in workers)
+    assert cleanup_done
+    after = observability.metrics_snapshot()
+    data = after["llm_observations"]["totals"]
+    assert sdk.call_count == data["sdk_attempts"] == data["sdk_finished"] == 1
+    assert data["sdk_late_attempts"] == data["sdk_late_finished"] == 1
+    assert data["logical_calls"] == data["logical_finished"] == 1
+    assert data["logical_statuses"]["timeout"] == 1
+    assert data["logical_statuses"]["success"] == 0
+    assert data["sdk_statuses"][late_outcome] == 1
+    assert after["recent_requests"] == at_timeout["recent_requests"]
+    assert after["recent_requests"][-1]["llm_observations"]["sdk_attempts"] == 0
+    assert data["usage"]["fields"]["total_tokens"] == {"known_sum": 0, "valid_samples": 0, "missing_samples": 1}
+    assert data["attempt_usage"]["fields"]["total_tokens"] == {
+        "known_sum": 15 if late_outcome == "success" else 0,
+        "valid_samples": int(late_outcome == "success"),
+        "missing_samples": int(late_outcome != "success")}
+    assert not observability._active_requests
+
+
+@pytest.mark.parametrize("ending,status", [("eof", "success"), ("error", "error"),
+                                          ("close", "closed"), ("cancel", "cancelled")])
+def test_nonterminal_usage_never_becomes_final_by_exit_mode(monkeypatch, ending, status):
+    error = RuntimeError("synthetic-stream-error")
+    raw = Stream([chunk("A", USAGE)] + ([error] if ending == "error" else []))
+    sdk = install(monkeypatch, Mock(return_value=raw))
+    control = llm_provider.StreamRegistry()
+    with llm_provider.use_stream_registry(control):
+        stream = llm_provider.chat_completion([], stream=True)
+        text = llm_provider.iter_text(stream)
+        assert next(text) == "A"
+        if ending == "eof":
+            assert list(text) == []
+        elif ending == "error":
+            with pytest.raises(RuntimeError) as caught:
+                next(text)
+            assert caught.value is error
+        elif ending == "cancel":
+            control.cancel("nonterminal-cancel")
+            with pytest.raises(llm_provider.RequestCancelled):
+                next(text)
+        else:
+            text.close()
+        text.close()
+        stream.close()
+    data = totals()
+    assert data["logical_statuses"][status] == data["sdk_statuses"][status] == 1
+    assert data["usage"]["complete_samples"] == data["attempt_usage"]["complete_samples"] == 0
+    assert data["usage"]["incomplete_samples"] == 1
+    assert data["usage"]["fields"]["total_tokens"] == {"known_sum": 0, "valid_samples": 0, "missing_samples": 1}
+    assert data["usage"]["cache"]["hit_ratio"] is None
+    assert sdk.call_count == raw.close_count == data["sdk_attempts"] == data["sdk_finished"] == 1
+
+
+@pytest.mark.parametrize("shape", ["usage-only-object", "usage-only-dict", "choice-object", "choice-dict"])
+@pytest.mark.parametrize("ending,status", [("eof", "success"), ("close", "closed"),
+                                          ("cancel", "cancelled"), ("error", "error")])
+def test_confirmed_final_usage_survives_all_stream_endings(monkeypatch, shape, ending, status):
+    usage_only = shape.startswith("usage-only")
+    if shape.endswith("dict"):
+        final = {"usage": dict(USAGE), "choices": [] if usage_only else [
+            {"delta": {"content": "B"}, "finish_reason": "stop"}]}
+    else:
+        final = chunk(None if usage_only else "B", NS(**USAGE), empty=usage_only, finish_reason="stop")
+    error = RuntimeError("synthetic-after-final")
+    intermediate = chunk(usage={**USAGE, "total_tokens": 999})
+    raw = Stream([chunk("A"), final] + ([error] if ending == "error" else [final, intermediate, final]))
+    sdk = install(monkeypatch, Mock(return_value=raw))
+    control = llm_provider.StreamRegistry()
+    with llm_provider.use_stream_registry(control):
+        stream = llm_provider.chat_completion([], stream=True)
+        assert next(stream).choices[0].delta.content == "A"
+        assert next(stream) is final  # No next()/EOF is needed to confirm final usage.
+        assert totals()["logical_finished"] == totals()["sdk_finished"] == 0
+        if ending == "eof":
+            assert list(stream) == [final, intermediate, final]
+        elif ending == "error":
+            with pytest.raises(RuntimeError) as caught:
+                next(stream)
+            assert caught.value is error
+        elif ending == "cancel":
+            control.cancel("confirmed-final-cancel")
+            with pytest.raises(llm_provider.RequestCancelled):
+                next(llm_provider.iter_text(stream))
+        else:
+            stream.close()
+        stream.close()
+        llm_provider.close_stream(stream)
+    data = totals()
+    assert data["logical_statuses"][status] == data["sdk_statuses"][status] == 1
+    assert data["usage"]["complete_samples"] == data["attempt_usage"]["complete_samples"] == 1
+    assert data["usage"]["incomplete_samples"] == 0
+    assert data["usage"]["fields"]["total_tokens"] == {"known_sum": 15, "valid_samples": 1, "missing_samples": 0}
+    assert data["usage"]["cache"]["hit_tokens"] == 8
+    assert data["usage"]["cache"]["hit_ratio"] == .8
+    assert sdk.call_count == raw.close_count == data["sdk_attempts"] == data["sdk_finished"] == 1
+    assert not control._streams
+
+
+@pytest.mark.parametrize("reason", ["stop", "length", "tool_calls", "content_filter", "function_call"])
+def test_installed_sdk_explicit_finish_reasons_confirm_usage(monkeypatch, reason):
+    raw = Stream([chunk("A", USAGE, finish_reason=reason)])
+    sdk = install(monkeypatch, Mock(return_value=raw))
+    assert list(llm_provider.iter_text(llm_provider.chat_completion([], stream=True))) == ["A"]
+    assert totals()["usage"]["complete_samples"] == 1
+    assert totals()["usage"]["fields"]["total_tokens"]["known_sum"] == 15
+    assert sdk.call_count == raw.close_count == 1
+
+
+@pytest.mark.parametrize("bad_chunk", [
+    pytest.param({"usage": USAGE}, id="missing-choices"),
+    pytest.param({"usage": USAGE, "choices": None}, id="none-choices"),
+    pytest.param({"usage": USAGE, "choices": ""}, id="string-choices"),
+    pytest.param({"usage": USAGE, "choices": [{"finish_reason": None}]}, id="no-ending"),
+    pytest.param({"usage": USAGE, "choices": [{"finish_reason": "unknown"}]}, id="unknown-ending"),
+    pytest.param({"usage": USAGE, "choices": [{"finish_reason": "stop"}, {"finish_reason": None}]}, id="partial-ending"),
+    pytest.param({"choices": [], "usage": False}, id="invalid-usage-root"),
+    pytest.param({"choices": [], "usage": None}, id="no-usage"),
+    pytest.param({"choices": [{"finish_reason": "stop"}]}, id="ending-without-usage"),
+])
+def test_ambiguous_terminal_shapes_stay_unknown(monkeypatch, bad_chunk):
+    raw = Stream([bad_chunk])
+    sdk = install(monkeypatch, Mock(return_value=raw))
+    assert list(llm_provider.chat_completion([], stream=True)) == [bad_chunk]
+    data = totals()
+    assert data["logical_statuses"]["success"] == 1
+    assert data["usage"]["complete_samples"] == 0
+    assert data["usage"]["fields"]["total_tokens"]["missing_samples"] == 1
+    assert data["usage"]["cache"]["hit_ratio"] is None
+    assert sdk.call_count == raw.close_count == 1
+
+
+def test_final_partial_zero_fields_keep_coverage_and_weighting_after_close(monkeypatch):
+    raw_streams = [Stream([chunk(usage=USAGE, empty=True)]),
+                   Stream([chunk(usage=NS(prompt_tokens=0, prompt_cache_hit_tokens=0,
+                                        prompt_cache_miss_tokens=0), finish_reason="stop")]),
+                   Stream([chunk("A", USAGE)])]
+    sdk = install(monkeypatch, Mock(side_effect=raw_streams))
+    for index in range(3):
+        stream = llm_provider.chat_completion([], stream=True)
+        if index < 2:
+            next(stream)
+            stream.close()
+        else:
+            assert list(llm_provider.iter_text(stream)) == ["A"]
+    data = totals()
+    assert data["usage"]["complete_samples"] == 2
+    assert data["usage"]["incomplete_samples"] == 1
+    assert data["usage"]["fields"]["prompt_tokens"] == {"known_sum": 10, "valid_samples": 2, "missing_samples": 1}
+    assert data["usage"]["fields"]["total_tokens"] == {"known_sum": 15, "valid_samples": 1, "missing_samples": 2}
+    assert data["usage"]["cache"] == {"valid_samples": 1, "missing_samples": 1, "zero_denominator_samples": 1,
+                                       "hit_tokens": 8, "miss_tokens": 2, "hit_ratio": .8}
+    assert data["logical_statuses"]["closed"] == 2 and data["logical_statuses"]["success"] == 1
+    assert sdk.call_count == data["sdk_attempts"] == data["sdk_finished"] == 3
+    assert all(raw.close_count == 1 for raw in raw_streams)

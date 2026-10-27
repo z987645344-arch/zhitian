@@ -529,15 +529,39 @@ def _sdk_create(client, request_kwargs):
     if request_kwargs.get("stream"):
         if call is not None:
             _observations.safe(call.opened, attempt)
-        return _ObservedStream(response, call, current_request_control())
+        return _ObservedStream(response, call, current_request_control(), late_attempt=
+                               attempt if attempt is not None and attempt.late else None)
     if attempt is not None:
         _observations.safe(attempt.returned)
+        if attempt.late:
+            try:
+                usage = _observations.safe(_observations.parse_usage, response)
+                _observations.safe(attempt.finish, "success", usage, complete=True)
+            except BaseException as exc:
+                _observations.safe(attempt.finish, _observation_status(exc))
+                raise
     return response
+
+
+def _final_stream_usage(chunk):
+    """Confirm usage only on a protocol terminal shape, never on plain EOF."""
+    usage = _observations._field(chunk, "usage")
+    if usage is None or (not isinstance(usage, dict) and
+                         not any(hasattr(usage, name) for name in _observations.FIELDS)):
+        return None
+    choices = _observations._field(chunk, "choices")
+    if not isinstance(choices, (list, tuple)):
+        return None
+    endings = {"stop", "length", "tool_calls", "content_filter", "function_call"}
+    if choices and not all(_observations._field(choice, "finish_reason") in endings
+                           for choice in choices):
+        return None
+    return _observations.parse_usage(chunk)
 
 
 class _ObservedStream:
     """Pass SDK chunks through unchanged, watching usage before text filtering."""
-    def __init__(self, stream, call, registry):
+    def __init__(self, stream, call, registry, late_attempt=None):
         self._stream = stream
         self._call = call
         self._registry = registry
@@ -545,6 +569,8 @@ class _ObservedStream:
         self._closed = False
         self._close_lock = threading.Lock()
         self._usage = None
+        self._final_usage_confirmed = False
+        self._late_attempt = late_attempt
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -559,9 +585,11 @@ class _ObservedStream:
             if self._iterator is None:
                 self._iterator = iter(self._stream)
             chunk = next(self._iterator)
-            present = _observations.safe(lambda: _observations._field(chunk, "usage") is not None)
-            if present:
-                self._usage = _observations.safe(_observations.parse_usage, chunk)
+            if not self._final_usage_confirmed:
+                usage = _observations.safe(_final_stream_usage, chunk)
+                if usage is not None:
+                    self._usage = usage
+                    self._final_usage_confirmed = True
             return chunk
         except StopIteration:
             self._finish("success")
@@ -581,8 +609,11 @@ class _ObservedStream:
             self._registry.unregister(self)
         if self._call is not None:
             try:
+                if self._late_attempt is not None:
+                    _observations.safe(self._late_attempt.finish, status, self._usage,
+                                       complete=self._final_usage_confirmed)
                 _observations.safe(self._call.finish, status, self._usage,
-                                   complete=status == "success" and self._usage is not None, stream=True)
+                                   complete=self._final_usage_confirmed, stream=True)
             finally:
                 _close_raw_stream(self._stream)
         else:
